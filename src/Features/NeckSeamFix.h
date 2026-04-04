@@ -6,18 +6,20 @@ struct NeckSeamFix : Feature
 {
 private:
 	static constexpr std::string_view MOD_ID = "0";  // placeholder — no Nexus page yet
+	bool EnsureResources();
+	void ReleaseRenderResources();
 
 public:
 	struct Settings
 	{
-		/// Maximum pixel radius to search for skin neighbours on each side of a seam.
+		/// Maximum pixel radius to search for nearby skin pixels around the seam.
 		float SearchRadius = 2.0f;
 
-		/// Maximum linearised depth difference (metres) between a candidate gap
-		/// pixel and its skin neighbours for them to be considered the same surface.
+		/// Maximum linearised depth difference between the head/body edge samples
+		/// that are allowed to participate in the same seam reconstruction.
 		float DepthThreshold = 0.005f;
 
-		/// Blend weight: 0 = no fill, 1 = full replacement with averaged neighbour colour.
+		/// Blend weight used for edge feathering and gap reconstruction.
 		float BlendStrength = 1.0f;
 	};
 
@@ -35,6 +37,13 @@ public:
 
 	ConstantBuffer* neckSeamCB = nullptr;
 	ID3D11ComputeShader* neckSeamCS = nullptr;
+	Texture2D* seamMainTexture = nullptr;
+	Texture2D* seamAlbedoTexture = nullptr;
+	Texture2D* seamNormalRoughnessTexture = nullptr;
+	Texture2D* seamMasksTexture = nullptr;
+	Texture2D* seamDepthTexture = nullptr;
+	Texture2D* seamDepthTexture16 = nullptr;
+	bool seamOutputsValid = false;
 
 	// -------------------------------------------------------------------------
 	// Feature interface
@@ -48,14 +57,14 @@ public:
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return {
-			"Neck Seam Fix closes the 1–2 pixel gap that sometimes appears between Skyrim's\n"
-			"separately-rendered head and body meshes. It works as a post-process compute\n"
-			"pass that detects thin gaps bounded by skin pixels and fills them using colour\n"
-			"data sampled from neighbouring geometry.",
-			{ "Eliminates visible neck seam gaps",
-				"Operates in screen space — works with any body or head mod",
-				"Configurable search radius and blend strength",
-				"Low GPU overhead (single compute dispatch)" }
+			"Neck Seam Fix reconstructs and blends the thin seam that can appear between\n"
+			"Skyrim's separately-rendered head and body skin meshes. It patches the seam\n"
+			"in screen space before later lighting passes so gaps, exposed interior pixels,\n"
+			"and hard body/head edge transitions are smoothed together.",
+			{ "Fills narrow head/body skin gaps",
+				"Blends touching seam edges, not just empty holes",
+				"Updates seam data before later screen-space lighting",
+				"Configurable search radius and blend strength" }
 		};
 	}
 
@@ -67,7 +76,7 @@ public:
 	// -------------------------------------------------------------------------
 
 	virtual void SetupResources() override;
-	virtual void Reset() override {}
+	virtual void Reset() override { seamOutputsValid = false; }
 	virtual void RestoreDefaultSettings() override;
 
 	// -------------------------------------------------------------------------
@@ -82,6 +91,32 @@ public:
 
 	/// \brief Dispatches the seam-fix compute shader.  Called from Deferred::DeferredPasses().
 	void DrawSeamFix();
+	ID3D11ShaderResourceView* GetDepthSRV(bool prefer16bit) const
+	{
+		if (!seamOutputsValid)
+			return nullptr;
+		if (prefer16bit)
+			return seamDepthTexture16 ? seamDepthTexture16->srv.get() : nullptr;
+		return seamDepthTexture ? seamDepthTexture->srv.get() : nullptr;
+	}
+	ID3D11ShaderResourceView* GetAlbedoSRV() const
+	{
+		if (!seamOutputsValid)
+			return nullptr;
+		return seamAlbedoTexture ? seamAlbedoTexture->srv.get() : nullptr;
+	}
+	ID3D11ShaderResourceView* GetNormalRoughnessSRV() const
+	{
+		if (!seamOutputsValid)
+			return nullptr;
+		return seamNormalRoughnessTexture ? seamNormalRoughnessTexture->srv.get() : nullptr;
+	}
+	ID3D11ShaderResourceView* GetMasksSRV() const
+	{
+		if (!seamOutputsValid)
+			return nullptr;
+		return seamMasksTexture ? seamMasksTexture->srv.get() : nullptr;
+	}
 
 	// -------------------------------------------------------------------------
 	// Serialisation

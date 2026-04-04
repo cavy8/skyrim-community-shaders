@@ -1,6 +1,7 @@
 #include "SubsurfaceScattering.h"
 
 #include "Deferred.h"
+#include "Features/NeckSeamFix.h"
 #include "ShaderCache.h"
 #include "State.h"
 
@@ -224,6 +225,7 @@ void SubsurfaceScattering::DrawSSS()
 
 	auto renderer = globals::game::renderer;
 	auto context = globals::d3d::context;
+	auto& neckSeamFix = globals::features::neckSeamFix;
 
 	{
 		ID3D11Buffer* buffer[1] = { blurCB->CB() };
@@ -235,15 +237,31 @@ void SubsurfaceScattering::DrawSSS()
 		auto albedo = renderer->GetRuntimeData().renderTargets[ALBEDO];
 		auto normal = renderer->GetRuntimeData().renderTargets[NORMALROUGHNESS];
 
+		auto* depthSRV = neckSeamFix.GetDepthSRV(true);
+		if (!depthSRV)
+			depthSRV = Util::GetCurrentSceneDepthSRV(true);
+
+		auto* maskSRV = neckSeamFix.GetMasksSRV();
+		if (!maskSRV)
+			maskSRV = mask.SRV;
+
+		auto* albedoSRV = neckSeamFix.GetAlbedoSRV();
+		if (!albedoSRV)
+			albedoSRV = albedo.SRV;
+
+		auto* normalSRV = neckSeamFix.GetNormalRoughnessSRV();
+		if (!normalSRV)
+			normalSRV = normal.SRV;
+
 		ID3D11UnorderedAccessView* uav = blurHorizontalTemp->uav.get();
 		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 
 		ID3D11ShaderResourceView* views[5];
 		views[0] = main.SRV;
-		views[1] = Util::GetCurrentSceneDepthSRV(true);
-		views[2] = mask.SRV;
-		views[3] = albedo.SRV;
-		views[4] = normal.SRV;
+		views[1] = depthSRV;
+		views[2] = maskSRV;
+		views[3] = albedoSRV;
+		views[4] = normalSRV;
 
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 

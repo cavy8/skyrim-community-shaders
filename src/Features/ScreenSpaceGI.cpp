@@ -3,6 +3,7 @@
 #include <DirectXTex.h>
 
 #include "Deferred.h"
+#include "Features/NeckSeamFix.h"
 #include "State.h"
 #include "Util.h"
 
@@ -715,6 +716,7 @@ void ScreenSpaceGI::DrawSSGI()
 	auto renderer = globals::game::renderer;
 	auto rts = renderer->GetRuntimeData().renderTargets;
 	auto deferred = globals::deferred;
+	auto& neckSeamFix = globals::features::neckSeamFix;
 
 	float2 size = Util::ConvertToDynamic(globals::state->screenSize);
 	auto resolution = std::array{ (uint)size.x, (uint)size.y };
@@ -722,6 +724,14 @@ void ScreenSpaceGI::DrawSSGI()
 		resolution, std::array{ resolution[0] >> 1, resolution[1] >> 1 }, std::array{ resolution[0] >> 2, resolution[1] >> 2 }
 	};
 	auto internalRes = resChoices[settings.ResolutionMode];
+
+	auto* depthSRV = neckSeamFix.GetDepthSRV(false);
+	if (!depthSRV)
+		depthSRV = Util::GetCurrentSceneDepthSRV();
+
+	auto* normalRoughnessSRV = neckSeamFix.GetNormalRoughnessSRV();
+	if (!normalRoughnessSRV)
+		normalRoughnessSRV = rts[NORMALROUGHNESS].SRV;
 
 	std::array<ID3D11ShaderResourceView*, 11> srvs = { nullptr };
 	std::array<ID3D11UnorderedAccessView*, 6> uavs = { nullptr };
@@ -747,7 +757,7 @@ void ScreenSpaceGI::DrawSSGI()
 	{
 		TracyD3D11Zone(globals::state->tracyCtx, "SSGI - Prefilter Depths");
 
-		srvs.at(0) = Util::GetCurrentSceneDepthSRV();
+		srvs.at(0) = depthSRV;
 		for (int i = 0; i < 5; ++i)
 			uavs.at(i) = uavWorkingDepth[i].get();
 
@@ -764,7 +774,7 @@ void ScreenSpaceGI::DrawSSGI()
 		resetViews();
 		srvs.at(0) = rts[deferred->forwardRenderTargets[0]].SRV;
 		srvs.at(1) = texWorkingDepth->srv.get();
-		srvs.at(2) = rts[NORMALROUGHNESS].SRV;
+		srvs.at(2) = normalRoughnessSRV;
 		srvs.at(3) = texPrevGeo->srv.get();
 		srvs.at(4) = rts[RE::RENDER_TARGET::kMOTION_VECTOR].SRV;
 		srvs.at(5) = texAccumFrames[lastFrameAccumTexIdx]->srv.get();
@@ -820,7 +830,7 @@ void ScreenSpaceGI::DrawSSGI()
 
 		resetViews();
 		srvs.at(0) = texWorkingDepth->srv.get();
-		srvs.at(1) = rts[NORMALROUGHNESS].SRV;
+		srvs.at(1) = normalRoughnessSRV;
 		srvs.at(2) = texRadiance->srv.get();
 		srvs.at(3) = texNoise->srv.get();
 		srvs.at(4) = texAccumFrames[lastFrameAccumTexIdx]->srv.get();
@@ -852,7 +862,7 @@ void ScreenSpaceGI::DrawSSGI()
 
 		resetViews();
 		srvs.at(0) = texWorkingDepth->srv.get();
-		srvs.at(1) = rts[NORMALROUGHNESS].SRV;
+		srvs.at(1) = normalRoughnessSRV;
 		srvs.at(2) = texAccumFrames[lastFrameAccumTexIdx]->srv.get();
 		srvs.at(3) = texIlY[inputGITexIdx]->srv.get();
 		srvs.at(4) = texIlCoCg[inputGITexIdx]->srv.get();

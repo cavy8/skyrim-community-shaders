@@ -326,6 +326,10 @@ void Deferred::DeferredPasses()
 	bool interior = Util::IsInterior();
 
 	auto& skylighting = globals::features::skylighting;
+	auto& neckSeamFix = globals::features::neckSeamFix;
+
+	if (neckSeamFix.loaded)
+		neckSeamFix.DrawSeamFix();
 
 	auto& ssgi = globals::features::screenSpaceGI;
 	if (ssgi.loaded)
@@ -339,9 +343,21 @@ void Deferred::DeferredPasses()
 	if (sss.loaded)
 		sss.DrawSSS();
 
-	auto& neckSeamFix = globals::features::neckSeamFix;
-	if (neckSeamFix.loaded)
-		neckSeamFix.DrawSeamFix();
+	auto* albedoSRV = neckSeamFix.GetAlbedoSRV();
+	if (!albedoSRV)
+		albedoSRV = albedo.SRV;
+
+	auto* normalRoughnessSRV = neckSeamFix.GetNormalRoughnessSRV();
+	if (!normalRoughnessSRV)
+		normalRoughnessSRV = normalRoughness.SRV;
+
+	auto* masksSRV = neckSeamFix.GetMasksSRV();
+	if (!masksSRV)
+		masksSRV = masks.SRV;
+
+	auto* seamDepthSRV16 = neckSeamFix.GetDepthSRV(true);
+	if (!seamDepthSRV16)
+		seamDepthSRV16 = Util::GetCurrentSceneDepthSRV(true);
 
 	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
 	if (dynamicCubemaps.loaded)
@@ -355,10 +371,10 @@ void Deferred::DeferredPasses()
 
 		ID3D11ShaderResourceView* srvs[16]{
 			specular.SRV,
-			albedo.SRV,
-			normalRoughness.SRV,
-			masks.SRV,
-			dynamicCubemaps.loaded || REL::Module::IsVR() ? Util::GetCurrentSceneDepthSRV(true) : nullptr,
+			albedoSRV,
+			normalRoughnessSRV,
+			masksSRV,
+			dynamicCubemaps.loaded || REL::Module::IsVR() ? seamDepthSRV16 : nullptr,
 			dynamicCubemaps.loaded ? reflectance.SRV : nullptr,
 			dynamicCubemaps.loaded ? dynamicCubemaps.envTexture->srv.get() : nullptr,
 			dynamicCubemaps.loaded ? dynamicCubemaps.envReflectionsTexture->srv.get() : nullptr,
