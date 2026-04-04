@@ -12,6 +12,7 @@
 #include "Features/Skylighting.h"
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
+#include "Features/NeckSeamFix.h"
 #include "Features/Upscaling.h"
 #include "Features/VR.h"
 #include "Features/WeatherEditor.h"
@@ -337,6 +338,10 @@ void Deferred::DeferredPasses()
 	auto& sss = globals::features::subsurfaceScattering;
 	if (sss.loaded)
 		sss.DrawSSS();
+
+	auto& neckSeamFix = globals::features::neckSeamFix;
+	if (neckSeamFix.loaded)
+		neckSeamFix.DrawSeamFix();
 
 	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
 	if (dynamicCubemaps.loaded)

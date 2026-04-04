@@ -34,6 +34,7 @@
 #include "Features/WaterEffects.h"
 #include "Features/WeatherEditor.h"
 #include "Features/WetnessEffects.h"
+#include "Features/NeckSeamFix.h"
 #include "Menu.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -84,6 +85,7 @@ namespace globals
 		RenderDoc renderDoc{};
 		WeatherEditor weatherEditor{};
 		ExponentialHeightFog exponentialHeightFog{};
+		NeckSeamFix neckSeamFix{};
 
 		namespace llf
 		{
