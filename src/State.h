@@ -154,7 +154,8 @@ public:
 		InWorld = 1 << 0,
 		IsReflections = 1 << 1,
 		IsBeastRace = 1 << 2,
-		GrassSphereNormal = 1 << 3
+		GrassSphereNormal = 1 << 3,
+		NeckSeamBody = 1 << 4
 	};
 
 	enum class ExtraFeatureDescriptors : uint32_t

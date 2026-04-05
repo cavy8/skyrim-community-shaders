@@ -110,6 +110,8 @@ void Deferred::SetupResources()
 		SetupRenderTarget(NORMALROUGHNESS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 		// Masks
 		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		// Neck Seam Fix body labels
+		SetupRenderTarget(NeckSeamFix::LABELS_RENDER_TARGET, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 
 		// TAA Water Buffers
 		SetupRenderTarget(RE::RENDER_TARGETS::kWATER_1, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
@@ -246,7 +248,7 @@ void Deferred::StartDeferred()
 		SPECULAR,
 		REFLECTANCE,
 		MASKS,
-		RE::RENDER_TARGET::kNONE
+		globals::features::neckSeamFix.loaded ? NeckSeamFix::LABELS_RENDER_TARGET : RE::RENDER_TARGET::kNONE
 	};
 
 	for (uint i = 2; i < 8; i++) {

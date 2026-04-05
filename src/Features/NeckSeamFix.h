@@ -8,8 +8,12 @@ private:
 	static constexpr std::string_view MOD_ID = "0";  // placeholder — no Nexus page yet
 	bool EnsureResources();
 	void ReleaseRenderResources();
+	void BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass);
+	bool IsTrackedBodyGeometry(const RE::BSGeometry* a_geometry) const;
 
 public:
+	static constexpr RE::RENDER_TARGETS::RENDER_TARGET LABELS_RENDER_TARGET = RE::RENDER_TARGETS::kLENSFLAREVIS;
+
 	struct Settings
 	{
 		/// Maximum pixel radius to search for nearby skin pixels around the seam.
@@ -68,7 +72,7 @@ public:
 		};
 	}
 
-	virtual bool HasShaderDefine(RE::BSShader::Type) override { return false; }
+	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Lighting; }
 	virtual bool SupportsVR() override { return true; }
 
 	// -------------------------------------------------------------------------
@@ -78,6 +82,7 @@ public:
 	virtual void SetupResources() override;
 	virtual void Reset() override { seamOutputsValid = false; }
 	virtual void RestoreDefaultSettings() override;
+	virtual void PostPostLoad() override;
 
 	// -------------------------------------------------------------------------
 	// Settings UI
@@ -131,4 +136,19 @@ public:
 
 	virtual void ClearShaderCache() override;
 	ID3D11ComputeShader* GetComputeShader();
+
+	struct Hooks
+	{
+		struct BSLightingShader_SetupGeometry
+		{
+			static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_renderFlags);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		static void Install()
+		{
+			stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
+			logger::info("[Neck Seam Fix] Installed hooks");
+		}
+	};
 };

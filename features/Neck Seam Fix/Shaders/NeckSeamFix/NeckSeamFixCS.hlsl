@@ -1,29 +1,12 @@
 // =============================================================================
 // NeckSeamFixCS.hlsl
 //
-// Reconstructs the thin seam between Skyrim's head and body skin surfaces.
+// Geometry-assisted body seam reconstruction.
 //
-// The pass operates before screen-space lighting consumers like SSGI/SSS:
-//   1. Gather nearby skin pixels around the current screen pixel.
-//   2. Find opposing skin support across the seam (left/right or up/down).
-//   3. If the current pixel is a hole or exposed interior, reconstruct a skin
-//      surface for MAIN, ALBEDO, NORMALROUGHNESS, MASKS, and depth.
-//   4. If the current pixel is already skin but sits on a seam edge, feather
-//      it toward the opposing side so touching head/body edges blend together.
-//
-// Register layout (must match NeckSeamFix.cpp)
-//   t0  = DepthTexture             (raw scene depth SRV)
-//   t1  = MaskTexture              (MASKS render target; .x > 0 = skin)
-//   t2  = MainTexture              (source direct lighting color)
-//   t3  = AlbedoTexture            (source albedo)
-//   t4  = NormalRoughnessTexture   (source encoded normal + gloss)
-//   u0  = MainOut                  (seam-fixed direct lighting)
-//   u1  = AlbedoOut                (seam-fixed albedo)
-//   u2  = NormalRoughnessOut       (seam-fixed encoded normal + gloss)
-//   u3  = MaskOut                  (seam-fixed mask data)
-//   u4  = DepthOut                 (seam-fixed raw R32 depth)
-//   u5  = DepthOut16               (seam-fixed raw R16 depth)
-//   b1  = NeckSeamCB               (SearchRadius, DepthThreshold, BlendStrength)
+// The body mesh is tagged during the deferred lighting draw. This pass then
+// looks for a seam where that tagged body surface meets another skin surface
+// (head, hands, feet, etc.), fills narrow gaps between them, and feathers the
+// edge pixels toward the opposing surface.
 // =============================================================================
 
 #include "Common/GBuffer.hlsli"
@@ -31,9 +14,10 @@
 
 Texture2D<float> DepthTexture : register(t0);
 Texture2D<float4> MaskTexture : register(t1);
-Texture2D<float4> MainTexture : register(t2);
-Texture2D<float4> AlbedoTexture : register(t3);
-Texture2D<float4> NormalRoughnessTexture : register(t4);
+Texture2D<float4> BodyLabelTexture : register(t2);
+Texture2D<float4> MainTexture : register(t3);
+Texture2D<float4> AlbedoTexture : register(t4);
+Texture2D<float4> NormalRoughnessTexture : register(t5);
 
 RWTexture2D<float4> MainOut : register(u0);
 RWTexture2D<unorm float4> AlbedoOut : register(u1);
@@ -51,14 +35,18 @@ cbuffer NeckSeamCB : register(b1)
 };
 
 static const float kSkinEpsilon = 1e-4f;
-static const float kColorThreshold = 0.03f;
-static const float kColorRange = 0.10f;
-static const float kSkinNormalThreshold = 0.75f;
-static const float kInteriorNormalThreshold = 0.35f;
+static const float kBodyLabelThreshold = 0.5f;
+static const float kSeamSignalFloor = 0.15f;
+static const float kNormalSignalScale = 0.5f;
 
 bool IsValidSceneDepth(float rawDepth)
 {
 	return rawDepth < 0.9999f;
+}
+
+bool IsBodyLabel(float4 labels)
+{
+	return labels.z > kBodyLabelThreshold;
 }
 
 struct Accumulator
@@ -112,12 +100,42 @@ float3 AverageNormal(Accumulator accum, float3 fallbackNormal)
 	if (accum.weight <= 0.0f)
 		return fallbackNormal;
 
-	float3 avgNormal = accum.normal / accum.weight;
-	float normalLength = length(avgNormal);
-	if (normalLength <= 1e-5f)
+	float3 average = accum.normal / accum.weight;
+	float averageLength = length(average);
+	if (averageLength <= 1e-5f)
 		return fallbackNormal;
 
-	return avgNormal / normalLength;
+	return average / averageLength;
+}
+
+float3 AverageMain(Accumulator accum)
+{
+	return accum.mainColor / max(accum.weight, 1e-5f);
+}
+
+float4 AverageAlbedo(Accumulator accum)
+{
+	return accum.albedo / max(accum.weight, 1e-5f);
+}
+
+float4 AverageMask(Accumulator accum)
+{
+	return accum.mask / max(accum.weight, 1e-5f);
+}
+
+float AverageRawDepth(Accumulator accum)
+{
+	return accum.rawDepth / max(accum.weight, 1e-5f);
+}
+
+float AverageLinearDepth(Accumulator accum)
+{
+	return accum.linearDepth / max(accum.weight, 1e-5f);
+}
+
+float AverageGlossiness(Accumulator accum)
+{
+	return accum.glossiness / max(accum.weight, 1e-5f);
 }
 
 [numthreads(8, 8, 1)]
@@ -139,19 +157,23 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float4 sourceAlbedo = AlbedoTexture.Load(int3(pixCoord, 0));
 	float4 sourceNormalRoughness = NormalRoughnessTexture.Load(int3(pixCoord, 0));
 	float4 sourceMask = MaskTexture.Load(int3(pixCoord, 0));
+	float4 sourceLabels = BodyLabelTexture.Load(int3(pixCoord, 0));
 
-	float centerSkinMask = sourceMask.x;
-	bool centerIsSkin = centerSkinMask > kSkinEpsilon;
+	bool centerIsSkin = sourceMask.x > kSkinEpsilon;
+	bool centerIsBody = centerIsSkin && IsBodyLabel(sourceLabels);
+	bool centerIsOtherSkin = centerIsSkin && !centerIsBody;
 	float3 centerNormal = centerHasGeometry ? GBuffer::DecodeNormal(sourceNormalRoughness.xy) : float3(0.0f, 0.0f, 1.0f);
 
-	Accumulator total = (Accumulator)0;
-	Accumulator left = (Accumulator)0;
-	Accumulator right = (Accumulator)0;
-	Accumulator up = (Accumulator)0;
-	Accumulator down = (Accumulator)0;
+	Accumulator leftBody = (Accumulator)0;
+	Accumulator rightBody = (Accumulator)0;
+	Accumulator upBody = (Accumulator)0;
+	Accumulator downBody = (Accumulator)0;
+	Accumulator leftOther = (Accumulator)0;
+	Accumulator rightOther = (Accumulator)0;
+	Accumulator upOther = (Accumulator)0;
+	Accumulator downOther = (Accumulator)0;
 
 	bool hasNearbyGapNeighbour = false;
-
 	float neighbourDepthThreshold = max(DepthThreshold * 2.0f, 0.01f);
 
 	for (int dy = -radius; dy <= radius; ++dy)
@@ -165,7 +187,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 			float rawNeighbourDepth = DepthTexture.Load(int3(sampleCoord, 0)).x;
 			bool neighbourHasGeometry = IsValidSceneDepth(rawNeighbourDepth);
-
 			float4 neighbourMask = MaskTexture.Load(int3(sampleCoord, 0));
 			bool neighbourIsSkin = neighbourMask.x > kSkinEpsilon;
 
@@ -183,6 +204,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 				continue;
 
 			float linearNeighbourDepth = SharedData::GetScreenDepth(rawNeighbourDepth);
+			float4 neighbourLabels = BodyLabelTexture.Load(int3(sampleCoord, 0));
+			bool neighbourIsBody = IsBodyLabel(neighbourLabels);
 			float4 neighbourMain = MainTexture.Load(int3(sampleCoord, 0));
 			float4 neighbourAlbedo = AlbedoTexture.Load(int3(sampleCoord, 0));
 			float4 neighbourNormalRoughness = NormalRoughnessTexture.Load(int3(sampleCoord, 0));
@@ -190,23 +213,63 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			float dist = length(float2(dx, dy));
 			float weight = 1.0f / max(dist, 0.001f);
 
-			AddSample(total, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
-
 			if (abs(dx) >= abs(dy)) {
-				if (dx < 0)
-					AddSample(left, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
-				else
-					AddSample(right, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+				if (dx < 0) {
+					if (neighbourIsBody)
+						AddSample(leftBody, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+					else
+						AddSample(leftOther, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+				} else {
+					if (neighbourIsBody)
+						AddSample(rightBody, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+					else
+						AddSample(rightOther, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+				}
 			}
 
 			if (abs(dy) >= abs(dx)) {
-				if (dy < 0)
-					AddSample(up, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
-				else
-					AddSample(down, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+				if (dy < 0) {
+					if (neighbourIsBody)
+						AddSample(upBody, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+					else
+						AddSample(upOther, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+				} else {
+					if (neighbourIsBody)
+						AddSample(downBody, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+					else
+						AddSample(downOther, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+				}
 			}
 		}
 	}
+
+	Accumulator bodyAccum = (Accumulator)0;
+	Accumulator otherAccum = (Accumulator)0;
+	bool seamAxisFound = false;
+	float bestAxisWeight = 0.0f;
+
+	#define TRY_AXIS(BODY_A, OTHER_B) \
+	{ \
+		if ((BODY_A).weight > 0.0f && (OTHER_B).weight > 0.0f) { \
+			float axisDepthDelta = abs(AverageLinearDepth(BODY_A) - AverageLinearDepth(OTHER_B)); \
+			if (axisDepthDelta <= neighbourDepthThreshold) { \
+				float axisWeight = (BODY_A).weight + (OTHER_B).weight; \
+				if (!seamAxisFound || axisWeight > bestAxisWeight) { \
+					seamAxisFound = true; \
+					bestAxisWeight = axisWeight; \
+					bodyAccum = (BODY_A); \
+					otherAccum = (OTHER_B); \
+				} \
+			} \
+		} \
+	}
+
+	TRY_AXIS(leftBody, rightOther);
+	TRY_AXIS(rightBody, leftOther);
+	TRY_AXIS(upBody, downOther);
+	TRY_AXIS(downBody, upOther);
+
+	#undef TRY_AXIS
 
 	float4 outMain = sourceMain;
 	float4 outAlbedo = sourceAlbedo;
@@ -214,85 +277,80 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float4 outNormalRoughness = sourceNormalRoughness;
 	float outRawDepth = rawCenterDepth;
 
-	if (blendStrength > 0.0f && total.weight > 0.0f) {
-		bool horizontalValid = left.weight > 0.0f && right.weight > 0.0f;
-		bool verticalValid = up.weight > 0.0f && down.weight > 0.0f;
+	if (blendStrength > 0.0f && seamAxisFound) {
+		Accumulator seamAccum = CombineAccum(bodyAccum, otherAccum);
+		float3 seamMain = AverageMain(seamAccum);
+		float4 seamAlbedo = AverageAlbedo(seamAccum);
+		float4 seamMask = AverageMask(seamAccum);
+		float seamRawDepth = min(AverageRawDepth(bodyAccum), AverageRawDepth(otherAccum));
+		float seamLinearDepth = min(AverageLinearDepth(bodyAccum), AverageLinearDepth(otherAccum));
+		float seamGlossiness = 0.5f * (AverageGlossiness(bodyAccum) + AverageGlossiness(otherAccum));
 
-		float horizontalDepthDelta = 1e30f;
-		if (horizontalValid) {
-			float leftDepth = left.linearDepth / left.weight;
-			float rightDepth = right.linearDepth / right.weight;
-			horizontalDepthDelta = abs(leftDepth - rightDepth);
-			horizontalValid = horizontalDepthDelta <= neighbourDepthThreshold;
-		}
+		float3 bodyMain = AverageMain(bodyAccum);
+		float3 otherMain = AverageMain(otherAccum);
+		float4 bodyAlbedo = AverageAlbedo(bodyAccum);
+		float4 otherAlbedo = AverageAlbedo(otherAccum);
+		float4 bodyMask = AverageMask(bodyAccum);
+		float4 otherMask = AverageMask(otherAccum);
+		float bodyRawDepth = AverageRawDepth(bodyAccum);
+		float otherRawDepth = AverageRawDepth(otherAccum);
+		float bodyLinearDepth = AverageLinearDepth(bodyAccum);
+		float otherLinearDepth = AverageLinearDepth(otherAccum);
+		float bodyGlossiness = AverageGlossiness(bodyAccum);
+		float otherGlossiness = AverageGlossiness(otherAccum);
+		float3 bodyNormal = AverageNormal(bodyAccum, centerNormal);
+		float3 otherNormal = AverageNormal(otherAccum, centerNormal);
+		float3 seamNormal = normalize(bodyNormal + otherNormal);
 
-		float verticalDepthDelta = 1e30f;
-		if (verticalValid) {
-			float upDepth = up.linearDepth / up.weight;
-			float downDepth = down.linearDepth / down.weight;
-			verticalDepthDelta = abs(upDepth - downDepth);
-			verticalValid = verticalDepthDelta <= neighbourDepthThreshold;
-		}
+		float colorSignal = max(length(bodyAlbedo.xyz - otherAlbedo.xyz), length(bodyMain - otherMain));
+		float normalSignal = 1.0f - saturate(dot(bodyNormal, otherNormal));
+		float seamSignal = max(colorSignal, normalSignal * kNormalSignalScale);
+		float seamBlend = max(kSeamSignalFloor, seamSignal);
 
-		if (horizontalValid || verticalValid) {
-			bool useHorizontal = horizontalValid && (!verticalValid || (left.weight + right.weight) >= (up.weight + down.weight));
-			Accumulator axisAccum = useHorizontal ? CombineAccum(left, right) : CombineAccum(up, down);
-			Accumulator sideA = useHorizontal ? left : up;
-			Accumulator sideB = useHorizontal ? right : down;
+		float centerNormalToSeam = centerHasGeometry ? saturate(dot(centerNormal, seamNormal)) : 1.0f;
+		bool holeCandidate = !centerHasGeometry || linearCenterDepth > seamLinearDepth + DepthThreshold;
+		bool interiorCandidate =
+			!centerIsSkin &&
+			centerHasGeometry &&
+			linearCenterDepth <= max(bodyLinearDepth, otherLinearDepth) + neighbourDepthThreshold;
 
-			float axisWeight = max(axisAccum.weight, 1e-5f);
-			float4 axisAlbedo = axisAccum.albedo / axisWeight;
-			float4 axisMask = axisAccum.mask / axisWeight;
-			float3 axisMain = axisAccum.mainColor / axisWeight;
-			float axisRawDepth = axisAccum.rawDepth / axisWeight;
-			float axisLinearDepth = axisAccum.linearDepth / axisWeight;
-			float axisGlossiness = axisAccum.glossiness / axisWeight;
-			float3 axisNormal = AverageNormal(axisAccum, centerNormal);
+		float2 encodedSeamNormal = GBuffer::EncodeNormal(seamNormal);
+		float4 seamNormalRoughness = float4(encodedSeamNormal, seamGlossiness, sourceNormalRoughness.w);
 
-			float3 sideAAlbedo = sideA.albedo.xyz / max(sideA.weight, 1e-5f);
-			float3 sideBAlbedo = sideB.albedo.xyz / max(sideB.weight, 1e-5f);
-			float axisColorContrast = length(sideAAlbedo - sideBAlbedo);
-			float centerAlbedoContrast = length(sourceAlbedo.xyz - axisAlbedo.xyz);
-			float centerMainContrast = length(sourceMain.rgb - axisMain);
-			float seamContrast = max(axisColorContrast, max(centerAlbedoContrast, centerMainContrast));
-			float seamFactor = saturate((seamContrast - kColorThreshold) / kColorRange);
+		if (holeCandidate || interiorCandidate) {
+			float fillBlend = saturate(blendStrength * max(0.6f, seamBlend));
+			outMain = float4(lerp(sourceMain.rgb, seamMain, fillBlend), sourceMain.a);
+			outAlbedo = float4(lerp(sourceAlbedo.rgb, seamAlbedo.rgb, fillBlend), sourceAlbedo.a);
+			outMask = float4(lerp(sourceMask.rgb, seamMask.rgb, fillBlend), sourceMask.a);
+			outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, seamNormalRoughness.xyz, fillBlend), sourceNormalRoughness.w);
+			outRawDepth = seamRawDepth;
+		} else if (centerIsBody || centerIsOtherSkin) {
+			float sourceSideLinearDepth = centerIsBody ? bodyLinearDepth : otherLinearDepth;
+			float targetSideLinearDepth = centerIsBody ? otherLinearDepth : bodyLinearDepth;
+			float sourceDepthDelta = abs(linearCenterDepth - sourceSideLinearDepth);
+			bool seamEdgeCandidate =
+				sourceDepthDelta <= neighbourDepthThreshold &&
+				(hasNearbyGapNeighbour || seamSignal > 0.0f || centerNormalToSeam < 0.98f);
 
-			float centerNormalDotAxis = centerHasGeometry ? saturate(dot(centerNormal, axisNormal)) : 1.0f;
-			bool holeCandidate = !centerHasGeometry || linearCenterDepth > axisLinearDepth + DepthThreshold;
-			bool interiorCandidate =
-				!centerIsSkin &&
-				centerHasGeometry &&
-				!holeCandidate &&
-				centerNormalDotAxis < kInteriorNormalThreshold &&
-				(centerMainContrast > kColorThreshold || centerAlbedoContrast > kColorThreshold);
+			if (seamEdgeCandidate) {
+				float3 targetMain = centerIsBody ? otherMain : bodyMain;
+				float4 targetAlbedo = centerIsBody ? otherAlbedo : bodyAlbedo;
+				float4 targetMask = centerIsBody ? otherMask : bodyMask;
+				float3 targetNormal = centerIsBody ? otherNormal : bodyNormal;
+				float targetGlossiness = centerIsBody ? otherGlossiness : bodyGlossiness;
+				float targetRawDepth = centerIsBody ? otherRawDepth : bodyRawDepth;
 
-			float2 encodedAxisNormal = GBuffer::EncodeNormal(axisNormal);
-			float4 targetNormalRoughness = float4(encodedAxisNormal, axisGlossiness, sourceNormalRoughness.w);
+				float depthCloseness = 1.0f - saturate(sourceDepthDelta / max(neighbourDepthThreshold, 1e-5f));
+				float edgeBlend = saturate(blendStrength * max(0.35f, seamBlend) * max(depthCloseness, 0.5f));
 
-			if (holeCandidate || interiorCandidate) {
-				outMain = float4(lerp(sourceMain.rgb, axisMain, blendStrength), sourceMain.a);
-				outAlbedo = float4(lerp(sourceAlbedo.rgb, axisAlbedo.rgb, blendStrength), sourceAlbedo.a);
-				outMask = float4(lerp(sourceMask.rgb, axisMask.rgb, blendStrength), sourceMask.a);
-				outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, targetNormalRoughness.xyz, blendStrength), sourceNormalRoughness.w);
-				outRawDepth = axisRawDepth;
-			} else {
-				bool skinBlendCandidate =
-					centerIsSkin &&
-					centerHasGeometry &&
-					abs(linearCenterDepth - axisLinearDepth) <= neighbourDepthThreshold &&
-					centerNormalDotAxis >= kSkinNormalThreshold &&
-					(hasNearbyGapNeighbour || seamFactor > 0.0f);
+				float2 encodedTargetNormal = GBuffer::EncodeNormal(targetNormal);
+				float4 targetNormalRoughness = float4(encodedTargetNormal, targetGlossiness, sourceNormalRoughness.w);
 
-				if (skinBlendCandidate) {
-					float alignmentFactor = saturate((centerNormalDotAxis - kSkinNormalThreshold) / (1.0f - kSkinNormalThreshold));
-					float baseBlend = hasNearbyGapNeighbour ? max(0.5f, seamFactor) : seamFactor;
-					float edgeBlend = saturate(blendStrength * baseBlend * alignmentFactor);
-
-					outMain = float4(lerp(sourceMain.rgb, axisMain, edgeBlend), sourceMain.a);
-					outAlbedo = float4(lerp(sourceAlbedo.rgb, axisAlbedo.rgb, edgeBlend), sourceAlbedo.a);
-					outMask = float4(lerp(sourceMask.rgb, axisMask.rgb, edgeBlend), sourceMask.a);
-					outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, targetNormalRoughness.xyz, edgeBlend), sourceNormalRoughness.w);
-				}
+				outMain = float4(lerp(sourceMain.rgb, targetMain, edgeBlend), sourceMain.a);
+				outAlbedo = float4(lerp(sourceAlbedo.rgb, targetAlbedo.rgb, edgeBlend), sourceAlbedo.a);
+				outMask = float4(lerp(sourceMask.rgb, targetMask.rgb, edgeBlend), sourceMask.a);
+				outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, targetNormalRoughness.xyz, edgeBlend), sourceNormalRoughness.w);
+				outRawDepth = lerp(outRawDepth, targetRawDepth, edgeBlend * 0.35f);
 			}
 		}
 	}

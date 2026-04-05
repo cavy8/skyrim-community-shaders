@@ -1,5 +1,8 @@
 #include "NeckSeamFix.h"
 
+#include <array>
+#include <cctype>
+
 #include "Deferred.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -9,6 +12,18 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SearchRadius,
 	DepthThreshold,
 	BlendStrength)
+
+namespace
+{
+	std::string ToLowerCopy(std::string_view value)
+	{
+		std::string lowered;
+		lowered.reserve(value.size());
+		for (char c : value)
+			lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+		return lowered;
+	}
+}
 
 void NeckSeamFix::ReleaseRenderResources()
 {
@@ -44,8 +59,9 @@ bool NeckSeamFix::EnsureResources()
 	auto& albedo = runtimeData.renderTargets[ALBEDO];
 	auto& normalRoughness = runtimeData.renderTargets[NORMALROUGHNESS];
 	auto& masks = runtimeData.renderTargets[MASKS];
+	auto& labels = runtimeData.renderTargets[LABELS_RENDER_TARGET];
 
-	if (!main.texture || !main.SRV || !main.UAV || !albedo.texture || !albedo.SRV || !normalRoughness.texture || !normalRoughness.SRV || !masks.texture || !masks.SRV)
+	if (!main.texture || !main.SRV || !main.UAV || !albedo.texture || !albedo.SRV || !normalRoughness.texture || !normalRoughness.SRV || !masks.texture || !masks.SRV || !labels.texture || !labels.SRV)
 		return false;
 
 	D3D11_TEXTURE2D_DESC mainDesc{};
@@ -150,22 +166,22 @@ void NeckSeamFix::DrawSettings()
 		ImGui::SliderFloat("Search Radius", &settings.SearchRadius, 1.0f, 4.0f, "%.1f px");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text(
-				"Maximum pixel radius searched around the seam.\n"
+				"Maximum pixel radius searched around body-to-skin seams.\n"
 				"Higher values catch wider gaps and wider blend zones.");
 		}
 
 		ImGui::SliderFloat("Depth Threshold", &settings.DepthThreshold, 0.001f, 0.05f, "%.4f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text(
-				"Maximum linearised depth difference allowed between the two\n"
-				"skin sides of the seam. Lower = more conservative.");
+				"Maximum linearised depth difference allowed between the body\n"
+				"mesh and the neighbouring skin surface.");
 		}
 
 		ImGui::SliderFloat("Blend Strength", &settings.BlendStrength, 0.0f, 1.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text(
 				"How strongly seam-adjacent pixels are blended toward the\n"
-				"reconstructed skin surface. 1.0 = strongest blend.");
+				"opposing skin surface. 1.0 = strongest blend.");
 		}
 
 		ImGui::Spacing();
@@ -228,15 +244,20 @@ void NeckSeamFix::DrawSeamFix()
 	auto albedo = renderer->GetRuntimeData().renderTargets[ALBEDO];
 	auto normalRoughness = renderer->GetRuntimeData().renderTargets[NORMALROUGHNESS];
 	auto masks = renderer->GetRuntimeData().renderTargets[MASKS];
+	auto labels = renderer->GetRuntimeData().renderTargets[LABELS_RENDER_TARGET];
+
+	if (!labels.SRV)
+		return;
 
 	// SRV inputs
 	{
-		ID3D11ShaderResourceView* srvs[5]{
+		ID3D11ShaderResourceView* srvs[6]{
 			Util::GetCurrentSceneDepthSRV(),  // t0 — raw depth
 			masks.SRV,                        // t1 — MASKS (skin flag in .x)
-			main.SRV,                         // t2 — direct lighting / source color
-			albedo.SRV,                       // t3 — albedo
-			normalRoughness.SRV,              // t4 — encoded normal + gloss
+			labels.SRV,                       // t2 — body mesh label texture
+			main.SRV,                         // t3 — direct lighting / source color
+			albedo.SRV,                       // t4 — albedo
+			normalRoughness.SRV,              // t5 — encoded normal + gloss
 		};
 		context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 	}
@@ -263,7 +284,7 @@ void NeckSeamFix::DrawSeamFix()
 	ID3D11Buffer* nullCB[1] = { nullptr };
 	context->CSSetConstantBuffers(1, 1, nullCB);
 
-	ID3D11ShaderResourceView* nullSRVs[5]{ nullptr, nullptr, nullptr, nullptr, nullptr };
+	ID3D11ShaderResourceView* nullSRVs[6]{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
 	context->CSSetShaderResources(0, ARRAYSIZE(nullSRVs), nullSRVs);
 
 	ID3D11UnorderedAccessView* nullUAVs[6]{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
@@ -297,6 +318,62 @@ void NeckSeamFix::RestoreDefaultSettings()
 	settings = {};
 }
 
+void NeckSeamFix::PostPostLoad()
+{
+	Hooks::Install();
+}
+
+bool NeckSeamFix::IsTrackedBodyGeometry(const RE::BSGeometry* a_geometry) const
+{
+	if (!a_geometry)
+		return false;
+
+	static constexpr std::array<std::string_view, 8> trackedBodyNameParts{
+		"femalebody_0",
+		"femalebody_1",
+		"malebody_0",
+		"malebody_1",
+		"femalebody_0.nif",
+		"femalebody_1.nif",
+		"malebody_0.nif",
+		"malebody_1.nif"
+	};
+
+	const char* rawName = a_geometry->name.c_str();
+	if (!rawName || rawName[0] == '\0')
+		return false;
+
+	const std::string loweredName = ToLowerCopy(rawName);
+	for (auto needle : trackedBodyNameParts) {
+		if (loweredName.find(needle) != std::string::npos)
+			return true;
+	}
+
+	return false;
+}
+
+void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
+{
+	auto* state = globals::state;
+	auto* deferred = globals::deferred;
+	if (!state || !deferred || !deferred->deferredPass || !a_pass || !a_pass->geometry || !a_pass->shaderProperty)
+		return;
+
+	auto& extraDescriptor = state->permutationData.ExtraShaderDescriptor;
+	extraDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamBody);
+
+	const bool isLightingShader = a_pass->shader && a_pass->shader->shaderType.get() == RE::BSShader::Type::Lighting;
+	const bool isFace = a_pass->shaderProperty->flags.any(
+		RE::BSShaderProperty::EShaderPropertyFlag::kFace,
+		RE::BSShaderProperty::EShaderPropertyFlag::kFaceGenRGBTint);
+
+	if (!isLightingShader || isFace)
+		return;
+
+	if (IsTrackedBodyGeometry(a_pass->geometry))
+		extraDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamBody);
+}
+
 // =============================================================================
 // Shader cache
 // =============================================================================
@@ -319,4 +396,10 @@ ID3D11ComputeShader* NeckSeamFix::GetComputeShader()
 			Util::CompileShader(L"Data\\Shaders\\NeckSeamFix\\NeckSeamFixCS.hlsl", {}, "cs_5_0"));
 	}
 	return neckSeamCS;
+}
+
+void NeckSeamFix::Hooks::BSLightingShader_SetupGeometry::thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_renderFlags)
+{
+	globals::features::neckSeamFix.BSLightingShader_SetupGeometry(a_pass);
+	func(a_shader, a_pass, a_renderFlags);
 }

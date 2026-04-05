@@ -343,7 +343,7 @@ struct PS_OUTPUT
 	float4 Specular: SV_Target4;
 	float4 Reflectance: SV_Target5;
 	float4 Masks: SV_Target6;
-#	if defined(SNOW)
+#	if defined(SNOW) || defined(NECK_SEAM_FIX)
 	float4 Parameters: SV_Target7;
 #	endif
 };
@@ -943,7 +943,7 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 
 PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 {
-	PS_OUTPUT psout;
+	PS_OUTPUT psout = (PS_OUTPUT)0;
 	uint eyeIndex = Stereo::GetEyeIndexPS(input.Position, VPOSOffset);
 
 	float3 viewPosition = mul(FrameBuffer::CameraView[eyeIndex], float4(input.WorldPosition.xyz, 1)).xyz;
@@ -3209,6 +3209,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.Masks = float4(saturate(baseColor.a), !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsBeastRace), Color::RGBToYCoCg(directionalAmbientColor).x, psout.Diffuse.w);
 #		else
 	psout.Masks = float4(0, 0, Color::RGBToYCoCg(directionalAmbientColor).x, psout.Diffuse.w);
+#		endif
+
+#		if defined(NECK_SEAM_FIX)
+	const bool neckSeamBody = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::NeckSeamBody) != 0;
+#			if defined(SSS) && defined(SKIN)
+	psout.Parameters.z = neckSeamBody ? 1.0 : 0.0;
+#			else
+	psout.Parameters.z = 0.0;
+#			endif
 #		endif
 
 	float stochasticBlend = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
