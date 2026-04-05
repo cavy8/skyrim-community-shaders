@@ -60,7 +60,8 @@ namespace Permutation
 		static const uint InReflection = (1 << 1);
 		static const uint IsBeastRace = (1 << 2);
 		static const uint GrassSphereNormal = (1 << 3);
-		static const uint NeckSeamBody = (1 << 4);
+		static const uint NeckSeamActorSkin = (1 << 4);
+		static const uint NeckSeamFace = (1 << 5);
 	}
 
 	namespace ExtraFeatureFlags

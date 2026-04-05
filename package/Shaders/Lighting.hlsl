@@ -3212,10 +3212,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif
 
 #		if defined(NECK_SEAM_FIX)
-	const bool neckSeamBody = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::NeckSeamBody) != 0;
+	const bool neckSeamActorSkin = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::NeckSeamActorSkin) != 0;
+	const bool neckSeamFace = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::NeckSeamFace) != 0;
 #			if defined(SSS) && defined(SKIN)
-	psout.Parameters.z = neckSeamBody ? 1.0 : 0.0;
+	psout.Parameters.x = neckSeamActorSkin ? 1.0 : 0.0;
+	psout.Parameters.y = neckSeamFace ? 1.0 : 0.0;
+	psout.Parameters.z = (neckSeamActorSkin && !neckSeamFace) ? 1.0 : 0.0;
 #			else
+	psout.Parameters.x = 0.0;
+	psout.Parameters.y = 0.0;
 	psout.Parameters.z = 0.0;
 #			endif
 #		endif
