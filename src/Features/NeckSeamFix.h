@@ -9,7 +9,7 @@ private:
 	bool EnsureResources();
 	void ReleaseRenderResources();
 	void BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass);
-	bool IsTrackedBodyGeometry(const RE::BSGeometry* a_geometry) const;
+	bool IsTrackedBodyGeometry(const RE::BSGeometry* a_geometry, RE::BSShaderProperty* a_shaderProperty) const;
 
 public:
 	static constexpr RE::RENDER_TARGETS::RENDER_TARGET LABELS_RENDER_TARGET = RE::RENDER_TARGETS::kLENSFLAREVIS;

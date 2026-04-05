@@ -1,8 +1,11 @@
 #include "NeckSeamFix.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 
+#include "RE/B/BSLightingShaderMaterialBase.h"
+#include "RE/B/BSTextureSet.h"
 #include "Deferred.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -15,6 +18,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 namespace
 {
+	bool ContainsAnyToken(std::string_view a_value, const auto& a_tokens)
+	{
+		return std::ranges::any_of(a_tokens, [&](std::string_view token) {
+			return !token.empty() && a_value.find(token) != std::string_view::npos;
+		});
+	}
+
 	std::string ToLowerCopy(std::string_view value)
 	{
 		std::string lowered;
@@ -22,6 +32,49 @@ namespace
 		for (char c : value)
 			lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
 		return lowered;
+	}
+
+	std::string GetLowerTextureHint(RE::BSShaderProperty* a_shaderProperty)
+	{
+		if (!a_shaderProperty)
+			return {};
+
+		if (auto* baseTexture = a_shaderProperty->GetBaseTexture()) {
+			const char* rawName = baseTexture->name.c_str();
+			if (rawName && rawName[0] != '\0')
+				return ToLowerCopy(rawName);
+		}
+
+		auto* material = a_shaderProperty->GetBaseMaterial();
+		if (!material || material->GetType() != RE::BSShaderMaterial::Type::kLighting)
+			return {};
+
+		auto* lightingMaterial = static_cast<RE::BSLightingShaderMaterialBase*>(material);
+		if (auto textureSet = lightingMaterial->GetTextureSet()) {
+			if (const char* diffusePath = textureSet->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse); diffusePath && diffusePath[0] != '\0')
+				return ToLowerCopy(diffusePath);
+		}
+
+		if (lightingMaterial->diffuseTexture) {
+			const char* rawName = lightingMaterial->diffuseTexture->name.c_str();
+			if (rawName && rawName[0] != '\0')
+				return ToLowerCopy(rawName);
+		}
+
+		return {};
+	}
+
+	void LogClassificationSample(bool a_isTrackedBody, std::string_view a_geometryName, std::string_view a_textureHint)
+	{
+		static int loggedSamples = 0;
+		if (loggedSamples >= 20)
+			return;
+
+		++loggedSamples;
+		logger::info("[Neck Seam Fix] body={} geom='{}' tex='{}'",
+			a_isTrackedBody ? 1 : 0,
+			a_geometryName.empty() ? "<unnamed>" : a_geometryName,
+			a_textureHint.empty() ? "<none>" : a_textureHint);
 	}
 }
 
@@ -323,12 +376,12 @@ void NeckSeamFix::PostPostLoad()
 	Hooks::Install();
 }
 
-bool NeckSeamFix::IsTrackedBodyGeometry(const RE::BSGeometry* a_geometry) const
+bool NeckSeamFix::IsTrackedBodyGeometry(const RE::BSGeometry* a_geometry, RE::BSShaderProperty* a_shaderProperty) const
 {
 	if (!a_geometry)
 		return false;
 
-	static constexpr std::array<std::string_view, 8> trackedBodyNameParts{
+	static constexpr std::array<std::string_view, 12> trackedBodyNameParts{
 		"femalebody_0",
 		"femalebody_1",
 		"malebody_0",
@@ -336,20 +389,68 @@ bool NeckSeamFix::IsTrackedBodyGeometry(const RE::BSGeometry* a_geometry) const
 		"femalebody_0.nif",
 		"femalebody_1.nif",
 		"malebody_0.nif",
-		"malebody_1.nif"
+		"malebody_1.nif",
+		" body",
+		"body ",
+		"body[",
+		"torso"
+	};
+	static constexpr std::array<std::string_view, 14> rejectNameParts{
+		"head",
+		"face",
+		"hand",
+		"finger",
+		"foot",
+		"feet",
+		"toe",
+		"eye",
+		"brow",
+		"lash",
+		"teeth",
+		"tongue",
+		"mouth",
+		"hair"
+	};
+	static constexpr std::array<std::string_view, 8> trackedBodyTextureParts{
+		"femalebody",
+		"malebody",
+		"\\body",
+		"/body",
+		"body_0",
+		"body_1",
+		"body.dds",
+		"torso"
+	};
+	static constexpr std::array<std::string_view, 12> rejectTextureParts{
+		"head",
+		"face",
+		"hand",
+		"foot",
+		"eye",
+		"mouth",
+		"teeth",
+		"tongue",
+		"brow",
+		"lash",
+		"hair",
+		"beard"
 	};
 
 	const char* rawName = a_geometry->name.c_str();
-	if (!rawName || rawName[0] == '\0')
-		return false;
+	const std::string loweredName = rawName && rawName[0] != '\0' ? ToLowerCopy(rawName) : std::string{};
+	const std::string textureHint = GetLowerTextureHint(a_shaderProperty);
 
-	const std::string loweredName = ToLowerCopy(rawName);
-	for (auto needle : trackedBodyNameParts) {
-		if (loweredName.find(needle) != std::string::npos)
-			return true;
-	}
+	const bool nameMatch = !loweredName.empty() &&
+		ContainsAnyToken(loweredName, trackedBodyNameParts) &&
+		!ContainsAnyToken(loweredName, rejectNameParts);
+	const bool textureMatch = !textureHint.empty() &&
+		ContainsAnyToken(textureHint, trackedBodyTextureParts) &&
+		!ContainsAnyToken(textureHint, rejectTextureParts);
+	const bool isTrackedBody = nameMatch || textureMatch;
 
-	return false;
+	LogClassificationSample(isTrackedBody, loweredName, textureHint);
+
+	return isTrackedBody;
 }
 
 void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
@@ -363,14 +464,15 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 	extraDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamBody);
 
 	const bool isLightingShader = a_pass->shader && a_pass->shader->shaderType.get() == RE::BSShader::Type::Lighting;
+	const bool isSkinned = a_pass->shaderProperty->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned);
 	const bool isFace = a_pass->shaderProperty->flags.any(
 		RE::BSShaderProperty::EShaderPropertyFlag::kFace,
 		RE::BSShaderProperty::EShaderPropertyFlag::kFaceGenRGBTint);
 
-	if (!isLightingShader || isFace)
+	if (!isLightingShader || !isSkinned || isFace)
 		return;
 
-	if (IsTrackedBodyGeometry(a_pass->geometry))
+	if (IsTrackedBodyGeometry(a_pass->geometry, a_pass->shaderProperty))
 		extraDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamBody);
 }
 
