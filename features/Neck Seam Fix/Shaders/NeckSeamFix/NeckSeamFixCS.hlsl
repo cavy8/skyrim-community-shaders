@@ -41,7 +41,8 @@ cbuffer NeckSeamCB : register(b1)
 static const float kLabelThreshold = 0.5f;
 static const float kSeamSignalFloor = 0.15f;
 static const float kNormalSignalScale = 0.5f;
-static const float kColorSignalThreshold = 0.02f;
+static const float kLocalColorSignalThreshold = 0.06f;
+static const float kLocalNormalSignalThreshold = 0.10f;
 
 bool IsValidSceneDepth(float rawDepth)
 {
@@ -192,6 +193,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	Accumulator down = (Accumulator)0;
 
 	bool hasNearbyGapNeighbour = false;
+	bool hasLocalSkinDiscontinuity = false;
 	float neighbourDepthThreshold = max(DepthThreshold * 8.0f, 0.05f);
 
 	for (int dy = -radius; dy <= radius; ++dy)
@@ -216,6 +218,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
 					float linearNeighbourDepth = SharedData::GetScreenDepth(rawNeighbourDepth);
 					if (linearNeighbourDepth > linearCenterDepth + neighbourDepthThreshold)
 						hasNearbyGapNeighbour = true;
+				}
+			}
+
+			if (centerIsTaggedSkin && neighbourIsTaggedSkin && centerHasGeometry && neighbourHasGeometry && abs(dx) + abs(dy) == 1) {
+				float linearNeighbourDepth = SharedData::GetScreenDepth(rawNeighbourDepth);
+				if (abs(linearNeighbourDepth - linearCenterDepth) <= neighbourDepthThreshold) {
+					float4 neighbourAlbedo = AlbedoTexture.Load(int3(sampleCoord, 0));
+					float4 neighbourNormalRoughness = NormalRoughnessTexture.Load(int3(sampleCoord, 0));
+					float3 neighbourNormal = GBuffer::DecodeNormal(neighbourNormalRoughness.xy);
+
+					float localColorSignal = length(neighbourAlbedo.rgb - sourceAlbedo.rgb);
+					float localNormalSignal = 1.0f - saturate(dot(neighbourNormal, centerNormal));
+					if (localColorSignal > kLocalColorSignalThreshold || localNormalSignal > kLocalNormalSignalThreshold)
+						hasLocalSkinDiscontinuity = true;
 				}
 			}
 
@@ -297,14 +313,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		float3 sideBMain = AverageMain(sideB);
 		float4 sideAAlbedo = AverageAlbedo(sideA);
 		float4 sideBAlbedo = AverageAlbedo(sideB);
-		float4 sideAMask = AverageMask(sideA);
-		float4 sideBMask = AverageMask(sideB);
-		float sideARawDepth = AverageRawDepth(sideA);
-		float sideBRawDepth = AverageRawDepth(sideB);
 		float sideALinearDepth = AverageLinearDepth(sideA);
 		float sideBLinearDepth = AverageLinearDepth(sideB);
-		float sideAGlossiness = AverageGlossiness(sideA);
-		float sideBGlossiness = AverageGlossiness(sideB);
 		float3 sideANormal = AverageNormal(sideA, centerNormal);
 		float3 sideBNormal = AverageNormal(sideB, centerNormal);
 		float3 seamNormal = normalize(sideANormal + sideBNormal);
@@ -314,17 +324,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		float seamSignal = max(colorSignal, normalSignal * kNormalSignalScale);
 		float seamBlend = max(kSeamSignalFloor, seamSignal);
 
-		float centerNormalToSeam = centerHasGeometry ? saturate(dot(centerNormal, seamNormal)) : 1.0f;
 		bool holeCandidate = !centerHasGeometry || linearCenterDepth > seamLinearDepth + DepthThreshold;
-		bool interiorCandidate =
-			!centerIsTaggedSkin &&
-			centerHasGeometry &&
-			linearCenterDepth <= max(sideALinearDepth, sideBLinearDepth) + neighbourDepthThreshold;
 
 		float2 encodedSeamNormal = GBuffer::EncodeNormal(seamNormal);
 		float4 seamNormalRoughness = float4(encodedSeamNormal, seamGlossiness, sourceNormalRoughness.w);
 
-		if (holeCandidate || interiorCandidate) {
+		if (!centerIsTaggedSkin && holeCandidate) {
 			float fillBlend = saturate(blendStrength * max(0.6f, seamBlend));
 			outMain = float4(lerp(sourceMain.rgb, seamMain, fillBlend), sourceMain.a);
 			outAlbedo = float4(lerp(sourceAlbedo.rgb, seamAlbedo.rgb, fillBlend), sourceAlbedo.a);
@@ -337,7 +342,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			float sourceDepthDelta = min(abs(linearCenterDepth - sideALinearDepth), abs(linearCenterDepth - sideBLinearDepth));
 			bool seamEdgeCandidate =
 				sourceDepthDelta <= neighbourDepthThreshold &&
-				(hasNearbyGapNeighbour || seamSignal > kColorSignalThreshold || centerNormalToSeam < 0.98f);
+				(hasNearbyGapNeighbour || hasLocalSkinDiscontinuity);
 
 			if (seamEdgeCandidate) {
 				float depthCloseness = 1.0f - saturate(sourceDepthDelta / max(neighbourDepthThreshold, 1e-5f));
