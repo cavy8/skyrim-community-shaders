@@ -52,16 +52,15 @@ namespace
 		return {};
 	}
 
-	void LogClassificationSample(bool a_isSkinned, bool a_isFace, std::string_view a_geometryName, std::string_view a_textureHint)
+	void LogClassificationSample(bool a_isSkinned, std::string_view a_geometryName, std::string_view a_textureHint)
 	{
 		static int loggedSamples = 0;
 		if (loggedSamples >= 40)
 			return;
 
 		++loggedSamples;
-		logger::info("[Neck Seam Fix] skinned={} face={} geom='{}' tex='{}'",
+		logger::info("[Neck Seam Fix] skinned={} geom='{}' tex='{}'",
 			a_isSkinned ? 1 : 0,
-			a_isFace ? 1 : 0,
 			a_geometryName.empty() ? "<unnamed>" : a_geometryName,
 			a_textureHint.empty() ? "<none>" : a_textureHint);
 	}
@@ -374,15 +373,9 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 
 	auto& extraDescriptor = state->permutationData.ExtraShaderDescriptor;
 	extraDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamActorSkin);
-	extraDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamFace);
 
 	const bool isLightingShader = a_pass->shader && a_pass->shader->shaderType.get() == RE::BSShader::Type::Lighting;
 	const bool isSkinned = a_pass->shaderProperty->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned);
-	const auto* baseMaterial = a_pass->shaderProperty->GetBaseMaterial();
-	const auto materialFeature = baseMaterial ? baseMaterial->GetFeature() : RE::BSShaderMaterial::Feature::kNone;
-	const bool isFace =
-		materialFeature == RE::BSShaderMaterial::Feature::kFaceGen ||
-		materialFeature == RE::BSShaderMaterial::Feature::kFaceGenRGBTint;
 
 	if (!isLightingShader || !isSkinned)
 		return;
@@ -391,12 +384,10 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 		const char* rawName = a_pass->geometry->name.c_str();
 		const std::string loweredName = rawName && rawName[0] != '\0' ? ToLowerCopy(rawName) : std::string{};
 		const std::string textureHint = GetLowerTextureHint(a_pass->shaderProperty);
-		LogClassificationSample(true, isFace, loweredName, textureHint);
+		LogClassificationSample(true, loweredName, textureHint);
 	}
 
 	extraDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamActorSkin);
-	if (isFace)
-		extraDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamFace);
 }
 
 // =============================================================================
