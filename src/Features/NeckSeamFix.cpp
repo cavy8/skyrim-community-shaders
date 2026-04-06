@@ -52,15 +52,16 @@ namespace
 		return {};
 	}
 
-	void LogClassificationSample(bool a_isSkinned, std::string_view a_geometryName, std::string_view a_textureHint)
+	void LogClassificationSample(bool a_isSkinned, bool a_isSkinCandidate, std::string_view a_geometryName, std::string_view a_textureHint)
 	{
 		static int loggedSamples = 0;
 		if (loggedSamples >= 40)
 			return;
 
 		++loggedSamples;
-		logger::info("[Neck Seam Fix] skinned={} geom='{}' tex='{}'",
+		logger::info("[Neck Seam Fix] skinned={} skin={} geom='{}' tex='{}'",
 			a_isSkinned ? 1 : 0,
+			a_isSkinCandidate ? 1 : 0,
 			a_geometryName.empty() ? "<unnamed>" : a_geometryName,
 			a_textureHint.empty() ? "<none>" : a_textureHint);
 	}
@@ -75,6 +76,12 @@ void NeckSeamFix::ReleaseRenderResources()
 
 	delete seamAlbedoTexture;
 	seamAlbedoTexture = nullptr;
+
+	delete seamSpecularTexture;
+	seamSpecularTexture = nullptr;
+
+	delete seamReflectanceTexture;
+	seamReflectanceTexture = nullptr;
 
 	delete seamNormalRoughnessTexture;
 	seamNormalRoughnessTexture = nullptr;
@@ -98,17 +105,23 @@ bool NeckSeamFix::EnsureResources()
 	auto& runtimeData = renderer->GetRuntimeData();
 	auto& main = runtimeData.renderTargets[RE::RENDER_TARGETS::kMAIN];
 	auto& albedo = runtimeData.renderTargets[ALBEDO];
+	auto& specular = runtimeData.renderTargets[SPECULAR];
+	auto& reflectance = runtimeData.renderTargets[REFLECTANCE];
 	auto& normalRoughness = runtimeData.renderTargets[NORMALROUGHNESS];
 	auto& masks = runtimeData.renderTargets[MASKS];
 	auto& labels = runtimeData.renderTargets[LABELS_RENDER_TARGET];
 
-	if (!main.texture || !main.SRV || !main.UAV || !albedo.texture || !albedo.SRV || !normalRoughness.texture || !normalRoughness.SRV || !masks.texture || !masks.SRV || !labels.texture || !labels.SRV)
+	if (!main.texture || !main.SRV || !main.UAV || !albedo.texture || !albedo.SRV || !specular.texture || !specular.SRV || !reflectance.texture || !reflectance.SRV || !normalRoughness.texture || !normalRoughness.SRV || !masks.texture || !masks.SRV || !labels.texture || !labels.SRV)
 		return false;
 
 	D3D11_TEXTURE2D_DESC mainDesc{};
 	main.texture->GetDesc(&mainDesc);
 	D3D11_TEXTURE2D_DESC albedoDesc{};
 	albedo.texture->GetDesc(&albedoDesc);
+	D3D11_TEXTURE2D_DESC specularDesc{};
+	specular.texture->GetDesc(&specularDesc);
+	D3D11_TEXTURE2D_DESC reflectanceDesc{};
+	reflectance.texture->GetDesc(&reflectanceDesc);
 	D3D11_TEXTURE2D_DESC normalDesc{};
 	normalRoughness.texture->GetDesc(&normalDesc);
 	D3D11_TEXTURE2D_DESC masksDesc{};
@@ -117,6 +130,8 @@ bool NeckSeamFix::EnsureResources()
 	bool resourcesMatch =
 		seamMainTexture && seamMainTexture->resource &&
 		seamAlbedoTexture && seamAlbedoTexture->resource &&
+		seamSpecularTexture && seamSpecularTexture->resource &&
+		seamReflectanceTexture && seamReflectanceTexture->resource &&
 		seamNormalRoughnessTexture && seamNormalRoughnessTexture->resource &&
 		seamMasksTexture && seamMasksTexture->resource &&
 		seamDepthTexture && seamDepthTexture->resource &&
@@ -127,6 +142,12 @@ bool NeckSeamFix::EnsureResources()
 		seamAlbedoTexture->desc.Width == albedoDesc.Width &&
 		seamAlbedoTexture->desc.Height == albedoDesc.Height &&
 		seamAlbedoTexture->desc.Format == albedoDesc.Format &&
+		seamSpecularTexture->desc.Width == specularDesc.Width &&
+		seamSpecularTexture->desc.Height == specularDesc.Height &&
+		seamSpecularTexture->desc.Format == specularDesc.Format &&
+		seamReflectanceTexture->desc.Width == reflectanceDesc.Width &&
+		seamReflectanceTexture->desc.Height == reflectanceDesc.Height &&
+		seamReflectanceTexture->desc.Format == reflectanceDesc.Format &&
 		seamNormalRoughnessTexture->desc.Width == normalDesc.Width &&
 		seamNormalRoughnessTexture->desc.Height == normalDesc.Height &&
 		seamNormalRoughnessTexture->desc.Format == normalDesc.Format &&
@@ -167,6 +188,8 @@ bool NeckSeamFix::EnsureResources()
 
 	seamMainTexture = createRWTextureFromRT(main);
 	seamAlbedoTexture = createRWTextureFromRT(albedo);
+	seamSpecularTexture = createRWTextureFromRT(specular);
+	seamReflectanceTexture = createRWTextureFromRT(reflectance);
 	seamNormalRoughnessTexture = createRWTextureFromRT(normalRoughness);
 	seamMasksTexture = createRWTextureFromRT(masks);
 
@@ -283,6 +306,8 @@ void NeckSeamFix::DrawSeamFix()
 
 	auto main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 	auto albedo = renderer->GetRuntimeData().renderTargets[ALBEDO];
+	auto specular = renderer->GetRuntimeData().renderTargets[SPECULAR];
+	auto reflectance = renderer->GetRuntimeData().renderTargets[REFLECTANCE];
 	auto normalRoughness = renderer->GetRuntimeData().renderTargets[NORMALROUGHNESS];
 	auto masks = renderer->GetRuntimeData().renderTargets[MASKS];
 	auto labels = renderer->GetRuntimeData().renderTargets[LABELS_RENDER_TARGET];
@@ -292,26 +317,30 @@ void NeckSeamFix::DrawSeamFix()
 
 	// SRV inputs
 	{
-		ID3D11ShaderResourceView* srvs[6]{
+		ID3D11ShaderResourceView* srvs[8]{
 			Util::GetCurrentSceneDepthSRV(),  // t0 — raw depth
 			masks.SRV,                        // t1 — MASKS (skin flag in .x)
 			labels.SRV,                       // t2 — actor-skin label texture
 			main.SRV,                         // t3 — direct lighting / source color
 			albedo.SRV,                       // t4 — albedo
 			normalRoughness.SRV,              // t5 — encoded normal + gloss
+			specular.SRV,                     // t6 — specular lighting
+			reflectance.SRV,                  // t7 — reflectance / material lobes
 		};
 		context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 	}
 
 	// UAV outputs — seam-fixed buffers used by later passes.
 	{
-		ID3D11UnorderedAccessView* uavs[6] = {
+		ID3D11UnorderedAccessView* uavs[8] = {
 			seamMainTexture->uav.get(),
 			seamAlbedoTexture->uav.get(),
 			seamNormalRoughnessTexture->uav.get(),
 			seamMasksTexture->uav.get(),
 			seamDepthTexture->uav.get(),
-			seamDepthTexture16->uav.get()
+			seamDepthTexture16->uav.get(),
+			seamSpecularTexture->uav.get(),
+			seamReflectanceTexture->uav.get()
 		};
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 	}
@@ -325,10 +354,10 @@ void NeckSeamFix::DrawSeamFix()
 	ID3D11Buffer* nullCB[1] = { nullptr };
 	context->CSSetConstantBuffers(1, 1, nullCB);
 
-	ID3D11ShaderResourceView* nullSRVs[6]{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+	ID3D11ShaderResourceView* nullSRVs[8]{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
 	context->CSSetShaderResources(0, ARRAYSIZE(nullSRVs), nullSRVs);
 
-	ID3D11UnorderedAccessView* nullUAVs[6]{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+	ID3D11UnorderedAccessView* nullUAVs[8]{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullUAVs), nullUAVs, nullptr);
 
 	context->CSSetShader(nullptr, nullptr, 0);
@@ -376,6 +405,9 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 
 	const bool isLightingShader = a_pass->shader && a_pass->shader->shaderType.get() == RE::BSShader::Type::Lighting;
 	const bool isSkinned = a_pass->shaderProperty->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned);
+	const bool isSkinCandidate = a_pass->shaderProperty->flags.any(
+		RE::BSShaderProperty::EShaderPropertyFlag::kFace,
+		RE::BSShaderProperty::EShaderPropertyFlag::kFaceGenRGBTint);
 
 	if (!isLightingShader || !isSkinned)
 		return;
@@ -384,10 +416,11 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 		const char* rawName = a_pass->geometry->name.c_str();
 		const std::string loweredName = rawName && rawName[0] != '\0' ? ToLowerCopy(rawName) : std::string{};
 		const std::string textureHint = GetLowerTextureHint(a_pass->shaderProperty);
-		LogClassificationSample(true, loweredName, textureHint);
+		LogClassificationSample(true, isSkinCandidate, loweredName, textureHint);
 	}
 
-	extraDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamActorSkin);
+	if (isSkinCandidate)
+		extraDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamActorSkin);
 }
 
 // =============================================================================

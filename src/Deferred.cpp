@@ -345,6 +345,10 @@ void Deferred::DeferredPasses()
 	if (sss.loaded)
 		sss.DrawSSS();
 
+	auto* specularSRV = neckSeamFix.GetSpecularSRV();
+	if (!specularSRV)
+		specularSRV = specular.SRV;
+
 	auto* albedoSRV = neckSeamFix.GetAlbedoSRV();
 	if (!albedoSRV)
 		albedoSRV = albedo.SRV;
@@ -356,6 +360,10 @@ void Deferred::DeferredPasses()
 	auto* masksSRV = neckSeamFix.GetMasksSRV();
 	if (!masksSRV)
 		masksSRV = masks.SRV;
+
+	auto* reflectanceSRV = neckSeamFix.GetReflectanceSRV();
+	if (!reflectanceSRV)
+		reflectanceSRV = reflectance.SRV;
 
 	auto* seamDepthSRV16 = neckSeamFix.GetDepthSRV(true);
 	if (!seamDepthSRV16)
@@ -372,12 +380,12 @@ void Deferred::DeferredPasses()
 		TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite");
 
 		ID3D11ShaderResourceView* srvs[16]{
-			specular.SRV,
+			specularSRV,
 			albedoSRV,
 			normalRoughnessSRV,
 			masksSRV,
 			dynamicCubemaps.loaded || REL::Module::IsVR() ? seamDepthSRV16 : nullptr,
-			dynamicCubemaps.loaded ? reflectance.SRV : nullptr,
+			dynamicCubemaps.loaded ? reflectanceSRV : nullptr,
 			dynamicCubemaps.loaded ? dynamicCubemaps.envTexture->srv.get() : nullptr,
 			dynamicCubemaps.loaded ? dynamicCubemaps.envReflectionsTexture->srv.get() : nullptr,
 			dynamicCubemaps.loaded && skylighting.loaded ? skylighting.texProbeArray->srv.get() : nullptr,

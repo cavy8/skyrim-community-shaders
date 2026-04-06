@@ -18,6 +18,8 @@ Texture2D<float4> LabelTexture : register(t2);
 Texture2D<float4> MainTexture : register(t3);
 Texture2D<float4> AlbedoTexture : register(t4);
 Texture2D<float4> NormalRoughnessTexture : register(t5);
+Texture2D<float4> SpecularTexture : register(t6);
+Texture2D<float4> ReflectanceTexture : register(t7);
 
 RWTexture2D<float4> MainOut : register(u0);
 RWTexture2D<unorm float4> AlbedoOut : register(u1);
@@ -25,6 +27,8 @@ RWTexture2D<unorm float4> NormalRoughnessOut : register(u2);
 RWTexture2D<float4> MaskOut : register(u3);
 RWTexture2D<float> DepthOut : register(u4);
 RWTexture2D<unorm half> DepthOut16 : register(u5);
+RWTexture2D<float4> SpecularOut : register(u6);
+RWTexture2D<unorm float4> ReflectanceOut : register(u7);
 
 cbuffer NeckSeamCB : register(b1)
 {
@@ -58,6 +62,8 @@ struct Accumulator
 	float glossiness;
 	float3 mainColor;
 	float4 albedo;
+	float4 specular;
+	float4 reflectance;
 	float4 mask;
 	float3 normal;
 };
@@ -70,6 +76,8 @@ void AddSample(
 	float3 mainColor,
 	float4 albedo,
 	float4 normalRoughness,
+	float4 specular,
+	float4 reflectance,
 	float4 mask)
 {
 	accum.weight += weight;
@@ -78,6 +86,8 @@ void AddSample(
 	accum.glossiness += normalRoughness.z * weight;
 	accum.mainColor += mainColor * weight;
 	accum.albedo += albedo * weight;
+	accum.specular += specular * weight;
+	accum.reflectance += reflectance * weight;
 	accum.mask += mask * weight;
 	accum.normal += GBuffer::DecodeNormal(normalRoughness.xy) * weight;
 }
@@ -91,6 +101,8 @@ Accumulator CombineAccum(Accumulator a, Accumulator b)
 	combined.glossiness = a.glossiness + b.glossiness;
 	combined.mainColor = a.mainColor + b.mainColor;
 	combined.albedo = a.albedo + b.albedo;
+	combined.specular = a.specular + b.specular;
+	combined.reflectance = a.reflectance + b.reflectance;
 	combined.mask = a.mask + b.mask;
 	combined.normal = a.normal + b.normal;
 	return combined;
@@ -117,6 +129,16 @@ float3 AverageMain(Accumulator accum)
 float4 AverageAlbedo(Accumulator accum)
 {
 	return accum.albedo / max(accum.weight, 1e-5f);
+}
+
+float4 AverageSpecular(Accumulator accum)
+{
+	return accum.specular / max(accum.weight, 1e-5f);
+}
+
+float4 AverageReflectance(Accumulator accum)
+{
+	return accum.reflectance / max(accum.weight, 1e-5f);
 }
 
 float4 AverageMask(Accumulator accum)
@@ -157,6 +179,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float4 sourceMain = MainTexture.Load(int3(pixCoord, 0));
 	float4 sourceAlbedo = AlbedoTexture.Load(int3(pixCoord, 0));
 	float4 sourceNormalRoughness = NormalRoughnessTexture.Load(int3(pixCoord, 0));
+	float4 sourceSpecular = SpecularTexture.Load(int3(pixCoord, 0));
+	float4 sourceReflectance = ReflectanceTexture.Load(int3(pixCoord, 0));
 	float4 sourceMask = MaskTexture.Load(int3(pixCoord, 0));
 	float4 sourceLabels = LabelTexture.Load(int3(pixCoord, 0));
 
@@ -204,22 +228,24 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			float4 neighbourMain = MainTexture.Load(int3(sampleCoord, 0));
 			float4 neighbourAlbedo = AlbedoTexture.Load(int3(sampleCoord, 0));
 			float4 neighbourNormalRoughness = NormalRoughnessTexture.Load(int3(sampleCoord, 0));
+			float4 neighbourSpecular = SpecularTexture.Load(int3(sampleCoord, 0));
+			float4 neighbourReflectance = ReflectanceTexture.Load(int3(sampleCoord, 0));
 
 			float dist = length(float2(dx, dy));
 			float weight = 1.0f / max(dist, 0.001f);
 
 			if (abs(dx) >= abs(dy)) {
 				if (dx < 0)
-					AddSample(left, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+					AddSample(left, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 				else
-					AddSample(right, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+					AddSample(right, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 			}
 
 			if (abs(dy) >= abs(dx)) {
 				if (dy < 0)
-					AddSample(up, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+					AddSample(up, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 				else
-					AddSample(down, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourMask);
+					AddSample(down, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 			}
 		}
 	}
@@ -252,6 +278,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 	float4 outMain = sourceMain;
 	float4 outAlbedo = sourceAlbedo;
+	float4 outSpecular = sourceSpecular;
+	float4 outReflectance = sourceReflectance;
 	float4 outMask = sourceMask;
 	float4 outNormalRoughness = sourceNormalRoughness;
 	float outRawDepth = rawCenterDepth;
@@ -260,6 +288,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		Accumulator seamAccum = CombineAccum(sideA, sideB);
 		float3 seamMain = AverageMain(seamAccum);
 		float4 seamAlbedo = AverageAlbedo(seamAccum);
+		float4 seamSpecular = AverageSpecular(seamAccum);
+		float4 seamReflectance = AverageReflectance(seamAccum);
 		float4 seamMask = AverageMask(seamAccum);
 		float seamRawDepth = min(AverageRawDepth(sideA), AverageRawDepth(sideB));
 		float seamLinearDepth = min(AverageLinearDepth(sideA), AverageLinearDepth(sideB));
@@ -300,6 +330,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			float fillBlend = saturate(blendStrength * max(0.6f, seamBlend));
 			outMain = float4(lerp(sourceMain.rgb, seamMain, fillBlend), sourceMain.a);
 			outAlbedo = float4(lerp(sourceAlbedo.rgb, seamAlbedo.rgb, fillBlend), sourceAlbedo.a);
+			outSpecular = float4(lerp(sourceSpecular.rgb, seamSpecular.rgb, fillBlend), sourceSpecular.a);
+			outReflectance = lerp(sourceReflectance, seamReflectance, fillBlend);
 			outMask = float4(lerp(sourceMask.rgb, seamMask.rgb, fillBlend), sourceMask.a);
 			outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, seamNormalRoughness.xyz, fillBlend), sourceNormalRoughness.w);
 			outRawDepth = seamRawDepth;
@@ -315,6 +347,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 				outMain = float4(lerp(sourceMain.rgb, seamMain, edgeBlend), sourceMain.a);
 				outAlbedo = float4(lerp(sourceAlbedo.rgb, seamAlbedo.rgb, edgeBlend), sourceAlbedo.a);
+				outSpecular = float4(lerp(sourceSpecular.rgb, seamSpecular.rgb, edgeBlend), sourceSpecular.a);
+				outReflectance = lerp(sourceReflectance, seamReflectance, edgeBlend);
 				outMask = float4(lerp(sourceMask.rgb, seamMask.rgb, edgeBlend), sourceMask.a);
 				outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, seamNormalRoughness.xyz, edgeBlend), sourceNormalRoughness.w);
 				outRawDepth = lerp(rawCenterDepth, seamRawDepth, edgeBlend * 0.35f);
@@ -328,4 +362,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	MaskOut[pixCoord] = outMask;
 	DepthOut[pixCoord] = outRawDepth;
 	DepthOut16[pixCoord] = outRawDepth;
+	SpecularOut[pixCoord] = outSpecular;
+	ReflectanceOut[pixCoord] = outReflectance;
 }

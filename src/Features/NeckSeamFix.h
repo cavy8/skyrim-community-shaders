@@ -42,6 +42,8 @@ public:
 	ID3D11ComputeShader* neckSeamCS = nullptr;
 	Texture2D* seamMainTexture = nullptr;
 	Texture2D* seamAlbedoTexture = nullptr;
+	Texture2D* seamSpecularTexture = nullptr;
+	Texture2D* seamReflectanceTexture = nullptr;
 	Texture2D* seamNormalRoughnessTexture = nullptr;
 	Texture2D* seamMasksTexture = nullptr;
 	Texture2D* seamDepthTexture = nullptr;
@@ -108,6 +110,18 @@ public:
 		if (!seamOutputsValid)
 			return nullptr;
 		return seamAlbedoTexture ? seamAlbedoTexture->srv.get() : nullptr;
+	}
+	ID3D11ShaderResourceView* GetSpecularSRV() const
+	{
+		if (!seamOutputsValid)
+			return nullptr;
+		return seamSpecularTexture ? seamSpecularTexture->srv.get() : nullptr;
+	}
+	ID3D11ShaderResourceView* GetReflectanceSRV() const
+	{
+		if (!seamOutputsValid)
+			return nullptr;
+		return seamReflectanceTexture ? seamReflectanceTexture->srv.get() : nullptr;
 	}
 	ID3D11ShaderResourceView* GetNormalRoughnessSRV() const
 	{
