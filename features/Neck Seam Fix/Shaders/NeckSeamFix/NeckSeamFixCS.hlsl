@@ -38,7 +38,6 @@ cbuffer NeckSeamCB : register(b1)
 	float pad;
 };
 
-static const float kSkinEpsilon = 1e-4f;
 static const float kLabelThreshold = 0.5f;
 static const float kSeamSignalFloor = 0.15f;
 static const float kNormalSignalScale = 0.5f;
@@ -184,8 +183,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float4 sourceMask = MaskTexture.Load(int3(pixCoord, 0));
 	float4 sourceLabels = LabelTexture.Load(int3(pixCoord, 0));
 
-	bool centerIsSkin = sourceMask.x > kSkinEpsilon;
-	bool centerIsTaggedSkin = centerIsSkin && IsTaggedSkin(sourceLabels);
+	bool centerIsTaggedSkin = IsTaggedSkin(sourceLabels);
 	float3 centerNormal = centerHasGeometry ? GBuffer::DecodeNormal(sourceNormalRoughness.xy) : float3(0.0f, 0.0f, 1.0f);
 
 	Accumulator left = (Accumulator)0;
@@ -194,7 +192,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	Accumulator down = (Accumulator)0;
 
 	bool hasNearbyGapNeighbour = false;
-	float neighbourDepthThreshold = max(DepthThreshold * 2.0f, 0.01f);
+	float neighbourDepthThreshold = max(DepthThreshold * 8.0f, 0.05f);
 
 	for (int dy = -radius; dy <= radius; ++dy)
 	{
@@ -209,7 +207,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			bool neighbourHasGeometry = IsValidSceneDepth(rawNeighbourDepth);
 			float4 neighbourMask = MaskTexture.Load(int3(sampleCoord, 0));
 			float4 neighbourLabels = LabelTexture.Load(int3(sampleCoord, 0));
-			bool neighbourIsTaggedSkin = neighbourMask.x > kSkinEpsilon && IsTaggedSkin(neighbourLabels);
+			bool neighbourIsTaggedSkin = IsTaggedSkin(neighbourLabels);
 
 			if (centerIsTaggedSkin && !neighbourIsTaggedSkin) {
 				if (!neighbourHasGeometry) {
@@ -336,7 +334,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, seamNormalRoughness.xyz, fillBlend), sourceNormalRoughness.w);
 			outRawDepth = seamRawDepth;
 		} else if (centerIsTaggedSkin) {
-			float sourceDepthDelta = abs(linearCenterDepth - seamLinearDepth);
+			float sourceDepthDelta = min(abs(linearCenterDepth - sideALinearDepth), abs(linearCenterDepth - sideBLinearDepth));
 			bool seamEdgeCandidate =
 				sourceDepthDelta <= neighbourDepthThreshold &&
 				(hasNearbyGapNeighbour || seamSignal > kColorSignalThreshold || centerNormalToSeam < 0.98f);

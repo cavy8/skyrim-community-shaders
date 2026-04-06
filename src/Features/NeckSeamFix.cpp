@@ -319,7 +319,7 @@ void NeckSeamFix::DrawSeamFix()
 	{
 		ID3D11ShaderResourceView* srvs[8]{
 			Util::GetCurrentSceneDepthSRV(),  // t0 — raw depth
-			masks.SRV,                        // t1 — MASKS (skin flag in .x)
+			masks.SRV,                        // t1 — material masks to blend through the seam
 			labels.SRV,                       // t2 — actor-skin label texture
 			main.SRV,                         // t3 — direct lighting / source color
 			albedo.SRV,                       // t4 — albedo
