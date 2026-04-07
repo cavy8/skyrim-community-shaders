@@ -10,7 +10,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	NeckSeamFix::Settings,
 	SearchRadius,
 	DepthThreshold,
-	BlendStrength)
+	BlendStrength,
+	LateSearchRadius,
+	LateBlendStrength)
 
 namespace
 {
@@ -264,6 +266,20 @@ void NeckSeamFix::DrawSettings()
 				"opposing skin surface. 1.0 = strongest blend.");
 		}
 
+		ImGui::SliderFloat("Late Search Radius", &settings.LateSearchRadius, 1.0f, 8.0f, "%.1f px");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text(
+				"Maximum pixel radius searched by the post-composite\n"
+				"color offset pass. Higher values create a wider tone fade.");
+		}
+
+		ImGui::SliderFloat("Late Blend Strength", &settings.LateBlendStrength, 0.0f, 1.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text(
+				"How strongly post-composite seam color offsets are applied.\n"
+				"This preserves local detail and only shifts baseline tone.");
+		}
+
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::TreePop();
@@ -312,7 +328,8 @@ void NeckSeamFix::DrawSeamFix()
 		cbData.SearchRadius = settings.SearchRadius;
 		cbData.DepthThreshold = settings.DepthThreshold;
 		cbData.BlendStrength = settings.BlendStrength;
-		cbData.pad = 0.0f;
+		cbData.LateSearchRadius = settings.LateSearchRadius;
+		cbData.LateBlendStrength = settings.LateBlendStrength;
 		neckSeamCB->Update(cbData);
 	}
 
@@ -385,6 +402,81 @@ void NeckSeamFix::DrawSeamFix()
 	context->CopyResource(main.texture, seamMainTexture->resource.get());
 
 	seamOutputsValid = true;
+}
+
+void NeckSeamFix::DrawSeamFixLate()
+{
+	ZoneScoped;
+	TracyD3D11Zone(globals::state->tracyCtx, "Neck Seam Fix - Late Color");
+
+	auto renderer = globals::game::renderer;
+	auto context = globals::d3d::context;
+
+	if (!seamOutputsValid || !neckSeamCB || !EnsureResources())
+		return;
+
+	auto shader = GetLateComputeShader();
+	if (!shader)
+		return;
+
+	auto main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	auto labels = renderer->GetRuntimeData().renderTargets[LABELS_RENDER_TARGET];
+	if (!main.texture || !main.SRV || !labels.SRV || !seamMainTexture || !seamMainTexture->uav)
+		return;
+
+	{
+		NeckSeamCB cbData{};
+		cbData.SearchRadius = settings.SearchRadius;
+		cbData.DepthThreshold = settings.DepthThreshold;
+		cbData.BlendStrength = settings.BlendStrength;
+		cbData.LateSearchRadius = settings.LateSearchRadius;
+		cbData.LateBlendStrength = settings.LateBlendStrength;
+		neckSeamCB->Update(cbData);
+	}
+
+	// DeferredCompositeCS leaves kMAIN bound as a UAV. Unbind first so the late
+	// pass can read final gamma-space MAIN and write the corrected scratch copy.
+	ID3D11UnorderedAccessView* nullCompositeUAVs[3]{ nullptr, nullptr, nullptr };
+	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullCompositeUAVs), nullCompositeUAVs, nullptr);
+
+	ID3D11ShaderResourceView* nullCompositeSRVs[17]{
+		nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+		nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+	};
+	context->CSSetShaderResources(0, ARRAYSIZE(nullCompositeSRVs), nullCompositeSRVs);
+
+	ID3D11Buffer* cb[1] = { neckSeamCB->CB() };
+	context->CSSetConstantBuffers(1, 1, cb);
+
+	ID3D11ShaderResourceView* srvs[3]{
+		Util::GetCurrentSceneDepthSRV(),
+		labels.SRV,
+		main.SRV
+	};
+	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+
+	ID3D11UnorderedAccessView* uavs[1]{
+		seamMainTexture->uav.get()
+	};
+	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+	context->CSSetShader(shader, nullptr, 0);
+
+	auto dispatchCount = Util::GetScreenDispatchCount();
+	context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+
+	ID3D11Buffer* nullCB[1] = { nullptr };
+	context->CSSetConstantBuffers(1, 1, nullCB);
+
+	ID3D11ShaderResourceView* nullSRVs[3]{ nullptr, nullptr, nullptr };
+	context->CSSetShaderResources(0, ARRAYSIZE(nullSRVs), nullSRVs);
+
+	ID3D11UnorderedAccessView* nullUAVs[1]{ nullptr };
+	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullUAVs), nullUAVs, nullptr);
+
+	context->CSSetShader(nullptr, nullptr, 0);
+
+	context->CopyResource(main.texture, seamMainTexture->resource.get());
 }
 
 // =============================================================================
@@ -466,6 +558,11 @@ void NeckSeamFix::ClearShaderCache()
 		neckSeamCS->Release();
 		neckSeamCS = nullptr;
 	}
+
+	if (neckSeamLateCS) {
+		neckSeamLateCS->Release();
+		neckSeamLateCS = nullptr;
+	}
 }
 
 ID3D11ComputeShader* NeckSeamFix::GetComputeShader()
@@ -476,6 +573,16 @@ ID3D11ComputeShader* NeckSeamFix::GetComputeShader()
 			Util::CompileShader(L"Data\\Shaders\\NeckSeamFix\\NeckSeamFixCS.hlsl", {}, "cs_5_0"));
 	}
 	return neckSeamCS;
+}
+
+ID3D11ComputeShader* NeckSeamFix::GetLateComputeShader()
+{
+	if (!neckSeamLateCS) {
+		logger::debug("Compiling NeckSeamFixLateCS");
+		neckSeamLateCS = static_cast<ID3D11ComputeShader*>(
+			Util::CompileShader(L"Data\\Shaders\\NeckSeamFix\\NeckSeamFixLateCS.hlsl", {}, "cs_5_0"));
+	}
+	return neckSeamLateCS;
 }
 
 void NeckSeamFix::Hooks::BSLightingShader_SetupGeometry::thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_renderFlags)

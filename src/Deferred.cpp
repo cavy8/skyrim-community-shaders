@@ -428,6 +428,9 @@ void Deferred::DeferredPasses()
 		}
 	}
 
+	if (neckSeamFix.loaded)
+		neckSeamFix.DrawSeamFixLate();
+
 	// VR: Deactivate stencil culling now that geometry rendering is complete.
 	// Must happen before StereoBlend so the blend pass itself isn't stencil-blocked.
 	if (globals::game::isVR) {

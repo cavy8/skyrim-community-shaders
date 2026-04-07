@@ -24,6 +24,12 @@ public:
 
 		/// Blend weight used for edge feathering and gap reconstruction.
 		float BlendStrength = 1.0f;
+
+		/// Maximum pixel radius for post-composite color offset correction.
+		float LateSearchRadius = 2.0f;
+
+		/// Blend weight for post-composite color offset correction.
+		float LateBlendStrength = 0.8f;
 	};
 
 	Settings settings;
@@ -34,7 +40,9 @@ public:
 		float SearchRadius;
 		float DepthThreshold;
 		float BlendStrength;
-		float pad;
+		float LateSearchRadius;
+		float LateBlendStrength;
+		float pad[3];
 	};
 	STATIC_ASSERT_ALIGNAS_16(NeckSeamCB);
 
@@ -48,6 +56,7 @@ public:
 	ConstantBuffer* neckSeamCB = nullptr;
 	ConstantBuffer* neckSeamPerGeometryCB = nullptr;
 	ID3D11ComputeShader* neckSeamCS = nullptr;
+	ID3D11ComputeShader* neckSeamLateCS = nullptr;
 	Texture2D* seamMainTexture = nullptr;
 	Texture2D* seamAlbedoTexture = nullptr;
 	Texture2D* seamSpecularTexture = nullptr;
@@ -105,6 +114,8 @@ public:
 
 	/// \brief Dispatches the seam-fix compute shader.  Called from Deferred::DeferredPasses().
 	void DrawSeamFix();
+	/// \brief Applies post-composite color offset correction across detected skin seams.
+	void DrawSeamFixLate();
 	ID3D11ShaderResourceView* GetDepthSRV(bool prefer16bit) const
 	{
 		if (!seamOutputsValid)
@@ -157,6 +168,7 @@ public:
 
 	virtual void ClearShaderCache() override;
 	ID3D11ComputeShader* GetComputeShader();
+	ID3D11ComputeShader* GetLateComputeShader();
 
 	struct Hooks
 	{
