@@ -43,6 +43,8 @@ static const float kSeamSignalFloor = 0.15f;
 static const float kNormalSignalScale = 0.5f;
 static const float kLocalColorSignalThreshold = 0.06f;
 static const float kLocalNormalSignalThreshold = 0.10f;
+static const float kCrossAxisColorSignalThreshold = 0.04f;
+static const float kCrossAxisNormalSignalThreshold = 0.08f;
 
 bool IsValidSceneDepth(float rawDepth)
 {
@@ -192,8 +194,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	Accumulator up = (Accumulator)0;
 	Accumulator down = (Accumulator)0;
 
-	bool hasNearbyGapNeighbour = false;
-	bool hasLocalSkinDiscontinuity = false;
+	bool hasHorizontalGapNeighbour = false;
+	bool hasVerticalGapNeighbour = false;
+	bool hasHorizontalLocalDiscontinuity = false;
+	bool hasVerticalLocalDiscontinuity = false;
 	float neighbourDepthThreshold = max(DepthThreshold * 8.0f, 0.05f);
 
 	for (int dy = -radius; dy <= radius; ++dy)
@@ -212,12 +216,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			bool neighbourIsTaggedSkin = IsTaggedSkin(neighbourLabels);
 
 			if (centerIsTaggedSkin && !neighbourIsTaggedSkin) {
+				bool gapCandidate = false;
 				if (!neighbourHasGeometry) {
-					hasNearbyGapNeighbour = true;
+					gapCandidate = true;
 				} else if (centerHasGeometry) {
 					float linearNeighbourDepth = SharedData::GetScreenDepth(rawNeighbourDepth);
 					if (linearNeighbourDepth > linearCenterDepth + neighbourDepthThreshold)
-						hasNearbyGapNeighbour = true;
+						gapCandidate = true;
+				}
+
+				if (gapCandidate) {
+					if (abs(dx) >= abs(dy))
+						hasHorizontalGapNeighbour = true;
+					if (abs(dy) >= abs(dx))
+						hasVerticalGapNeighbour = true;
 				}
 			}
 
@@ -230,8 +242,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 					float localColorSignal = length(neighbourAlbedo.rgb - sourceAlbedo.rgb);
 					float localNormalSignal = 1.0f - saturate(dot(neighbourNormal, centerNormal));
-					if (localColorSignal > kLocalColorSignalThreshold || localNormalSignal > kLocalNormalSignalThreshold)
-						hasLocalSkinDiscontinuity = true;
+					if (localColorSignal > kLocalColorSignalThreshold || localNormalSignal > kLocalNormalSignalThreshold) {
+						if (dx != 0)
+							hasHorizontalLocalDiscontinuity = true;
+						else
+							hasVerticalLocalDiscontinuity = true;
+					}
 				}
 			}
 
@@ -267,16 +283,21 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	Accumulator sideA = (Accumulator)0;
 	Accumulator sideB = (Accumulator)0;
 	bool seamAxisFound = false;
+	bool bestAxisHasEvidence = false;
+	int bestAxis = -1;
 	float bestAxisWeight = 0.0f;
 
-	#define TRY_AXIS(ACCUM_A, ACCUM_B) \
+	#define TRY_AXIS(ACCUM_A, ACCUM_B, AXIS, AXIS_EVIDENCE) \
 	{ \
 		if ((ACCUM_A).weight > 0.0f && (ACCUM_B).weight > 0.0f) { \
 			float axisDepthDelta = abs(AverageLinearDepth(ACCUM_A) - AverageLinearDepth(ACCUM_B)); \
 			if (axisDepthDelta <= neighbourDepthThreshold) { \
 				float axisWeight = (ACCUM_A).weight + (ACCUM_B).weight; \
-				if (!seamAxisFound || axisWeight > bestAxisWeight) { \
+				bool axisEvidence = (AXIS_EVIDENCE); \
+				if (!seamAxisFound || (axisEvidence && !bestAxisHasEvidence) || (axisEvidence == bestAxisHasEvidence && axisWeight > bestAxisWeight)) { \
 					seamAxisFound = true; \
+					bestAxisHasEvidence = axisEvidence; \
+					bestAxis = (AXIS); \
 					bestAxisWeight = axisWeight; \
 					sideA = (ACCUM_A); \
 					sideB = (ACCUM_B); \
@@ -285,8 +306,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		} \
 	}
 
-	TRY_AXIS(left, right);
-	TRY_AXIS(up, down);
+	TRY_AXIS(left, right, 0, hasHorizontalGapNeighbour || hasHorizontalLocalDiscontinuity);
+	TRY_AXIS(up, down, 1, hasVerticalGapNeighbour || hasVerticalLocalDiscontinuity);
 
 	#undef TRY_AXIS
 
@@ -323,6 +344,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		float normalSignal = 1.0f - saturate(dot(sideANormal, sideBNormal));
 		float seamSignal = max(colorSignal, normalSignal * kNormalSignalScale);
 		float seamBlend = max(kSeamSignalFloor, seamSignal);
+		bool crossAxisDiscontinuity =
+			colorSignal > kCrossAxisColorSignalThreshold ||
+			normalSignal > kCrossAxisNormalSignalThreshold;
 
 		bool holeCandidate = !centerHasGeometry || linearCenterDepth > seamLinearDepth + DepthThreshold;
 
@@ -340,9 +364,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			outRawDepth = seamRawDepth;
 		} else if (centerIsTaggedSkin) {
 			float sourceDepthDelta = min(abs(linearCenterDepth - sideALinearDepth), abs(linearCenterDepth - sideBLinearDepth));
+			bool selectedAxisGap = bestAxis == 0 ? hasHorizontalGapNeighbour : hasVerticalGapNeighbour;
+			bool selectedAxisLocalDiscontinuity = bestAxis == 0 ? hasHorizontalLocalDiscontinuity : hasVerticalLocalDiscontinuity;
 			bool seamEdgeCandidate =
 				sourceDepthDelta <= neighbourDepthThreshold &&
-				(hasNearbyGapNeighbour || hasLocalSkinDiscontinuity);
+				(selectedAxisGap || (selectedAxisLocalDiscontinuity && crossAxisDiscontinuity));
 
 			if (seamEdgeCandidate) {
 				float depthCloseness = 1.0f - saturate(sourceDepthDelta / max(neighbourDepthThreshold, 1e-5f));
