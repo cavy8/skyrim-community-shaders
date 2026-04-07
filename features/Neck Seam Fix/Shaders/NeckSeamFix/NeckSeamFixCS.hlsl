@@ -35,7 +35,9 @@ cbuffer NeckSeamCB : register(b1)
 	float SearchRadius;
 	float DepthThreshold;
 	float BlendStrength;
-	float pad;
+	float LateSearchRadius;
+	float LateBlendStrength;
+	float3 pad;
 };
 
 static const float kLabelThreshold = 0.5f;

@@ -26,7 +26,7 @@ cbuffer NeckSeamCB : register(b1)
 };
 
 static const float kLabelThreshold = 0.5f;
-static const float kMaxCorrection = 0.15f;
+static const float kMaxCorrection = 0.20f;
 
 bool IsValidSceneDepth(float rawDepth)
 {
@@ -84,6 +84,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	}
 
 	int radius = max(1, (int)round(LateSearchRadius));
+	float rawCenterDepth = DepthTexture.Load(int3(pixCoord, 0)).x;
 	float4 centerLabels = LabelTexture.Load(int3(pixCoord, 0));
 	float centerObjectId = DecodeObjectId(centerLabels);
 	bool centerIsSkin = IsTaggedSkin(centerLabels) && centerObjectId > 0.0f;
@@ -103,6 +104,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			int2 sampleCoord = clamp(pixCoord + int2(dx, dy), int2(0, 0), int2(bufDim) - 1);
 			float rawNeighbourDepth = DepthTexture.Load(int3(sampleCoord, 0)).x;
 			if (!IsValidSceneDepth(rawNeighbourDepth))
+				continue;
+			if (abs(rawNeighbourDepth - rawCenterDepth) > DepthThreshold)
 				continue;
 
 			float4 neighbourLabels = LabelTexture.Load(int3(sampleCoord, 0));
@@ -191,7 +194,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	}
 
 	float seamProximity = opposingSideWeight / max(sameSideWeight + opposingSideWeight, 1e-5f);
-	float falloff = centerIsSkin ? smoothstep(0.0f, 0.5f, seamProximity) : 1.0f;
+	float falloff = centerIsSkin ? pow(seamProximity, 2.0f) : 1.0f;
 	correction = clamp(correction, float3(-kMaxCorrection, -kMaxCorrection, -kMaxCorrection), float3(kMaxCorrection, kMaxCorrection, kMaxCorrection));
 
 	float3 finalColor = max(float3(0.0f, 0.0f, 0.0f), sourceMain.rgb + correction * falloff * lateBlendStrength);
