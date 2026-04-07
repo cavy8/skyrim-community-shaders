@@ -41,10 +41,6 @@ cbuffer NeckSeamCB : register(b1)
 static const float kLabelThreshold = 0.5f;
 static const float kSeamSignalFloor = 0.15f;
 static const float kNormalSignalScale = 0.5f;
-static const float kLocalColorSignalThreshold = 0.06f;
-static const float kLocalNormalSignalThreshold = 0.10f;
-static const float kCrossAxisColorSignalThreshold = 0.04f;
-static const float kCrossAxisNormalSignalThreshold = 0.08f;
 
 bool IsValidSceneDepth(float rawDepth)
 {
@@ -56,12 +52,17 @@ bool IsTaggedSkin(float4 labels)
 	return labels.x > kLabelThreshold;
 }
 
+float DecodeObjectId(float4 labels)
+{
+	return floor(labels.y * 255.0f + 0.5f) + floor(labels.z * 255.0f + 0.5f) * 256.0f;
+}
+
 struct Accumulator
 {
 	float weight;
 	float rawDepth;
-	float linearDepth;
 	float glossiness;
+	float objectId;
 	float3 mainColor;
 	float4 albedo;
 	float4 specular;
@@ -74,7 +75,7 @@ void AddSample(
 	inout Accumulator accum,
 	float weight,
 	float rawDepth,
-	float linearDepth,
+	float objectId,
 	float3 mainColor,
 	float4 albedo,
 	float4 normalRoughness,
@@ -84,8 +85,8 @@ void AddSample(
 {
 	accum.weight += weight;
 	accum.rawDepth += rawDepth * weight;
-	accum.linearDepth += linearDepth * weight;
 	accum.glossiness += normalRoughness.z * weight;
+	accum.objectId += objectId * weight;
 	accum.mainColor += mainColor * weight;
 	accum.albedo += albedo * weight;
 	accum.specular += specular * weight;
@@ -99,8 +100,8 @@ Accumulator CombineAccum(Accumulator a, Accumulator b)
 	Accumulator combined = (Accumulator)0;
 	combined.weight = a.weight + b.weight;
 	combined.rawDepth = a.rawDepth + b.rawDepth;
-	combined.linearDepth = a.linearDepth + b.linearDepth;
 	combined.glossiness = a.glossiness + b.glossiness;
+	combined.objectId = a.objectId + b.objectId;
 	combined.mainColor = a.mainColor + b.mainColor;
 	combined.albedo = a.albedo + b.albedo;
 	combined.specular = a.specular + b.specular;
@@ -153,14 +154,14 @@ float AverageRawDepth(Accumulator accum)
 	return accum.rawDepth / max(accum.weight, 1e-5f);
 }
 
-float AverageLinearDepth(Accumulator accum)
-{
-	return accum.linearDepth / max(accum.weight, 1e-5f);
-}
-
 float AverageGlossiness(Accumulator accum)
 {
 	return accum.glossiness / max(accum.weight, 1e-5f);
+}
+
+float AverageObjectId(Accumulator accum)
+{
+	return floor(accum.objectId / max(accum.weight, 1e-5f) + 0.5f);
 }
 
 [numthreads(8, 8, 1)]
@@ -176,7 +177,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 	float rawCenterDepth = DepthTexture.Load(int3(pixCoord, 0)).x;
 	bool centerHasGeometry = IsValidSceneDepth(rawCenterDepth);
-	float linearCenterDepth = centerHasGeometry ? SharedData::GetScreenDepth(rawCenterDepth) : 0.0f;
 
 	float4 sourceMain = MainTexture.Load(int3(pixCoord, 0));
 	float4 sourceAlbedo = AlbedoTexture.Load(int3(pixCoord, 0));
@@ -186,19 +186,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float4 sourceMask = MaskTexture.Load(int3(pixCoord, 0));
 	float4 sourceLabels = LabelTexture.Load(int3(pixCoord, 0));
 
-	bool centerIsTaggedSkin = IsTaggedSkin(sourceLabels);
+	float centerObjectId = DecodeObjectId(sourceLabels);
+	bool centerIsTaggedSkin = IsTaggedSkin(sourceLabels) && centerObjectId > 0.0f;
 	float3 centerNormal = centerHasGeometry ? GBuffer::DecodeNormal(sourceNormalRoughness.xy) : float3(0.0f, 0.0f, 1.0f);
 
 	Accumulator left = (Accumulator)0;
 	Accumulator right = (Accumulator)0;
 	Accumulator up = (Accumulator)0;
 	Accumulator down = (Accumulator)0;
-
-	bool hasHorizontalGapNeighbour = false;
-	bool hasVerticalGapNeighbour = false;
-	bool hasHorizontalLocalDiscontinuity = false;
-	bool hasVerticalLocalDiscontinuity = false;
-	float neighbourDepthThreshold = max(DepthThreshold * 8.0f, 0.05f);
 
 	for (int dy = -radius; dy <= radius; ++dy)
 	{
@@ -213,48 +208,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			bool neighbourHasGeometry = IsValidSceneDepth(rawNeighbourDepth);
 			float4 neighbourMask = MaskTexture.Load(int3(sampleCoord, 0));
 			float4 neighbourLabels = LabelTexture.Load(int3(sampleCoord, 0));
-			bool neighbourIsTaggedSkin = IsTaggedSkin(neighbourLabels);
-
-			if (centerIsTaggedSkin && !neighbourIsTaggedSkin) {
-				bool gapCandidate = false;
-				if (!neighbourHasGeometry) {
-					gapCandidate = true;
-				} else if (centerHasGeometry) {
-					float linearNeighbourDepth = SharedData::GetScreenDepth(rawNeighbourDepth);
-					if (linearNeighbourDepth > linearCenterDepth + neighbourDepthThreshold)
-						gapCandidate = true;
-				}
-
-				if (gapCandidate) {
-					if (abs(dx) >= abs(dy))
-						hasHorizontalGapNeighbour = true;
-					if (abs(dy) >= abs(dx))
-						hasVerticalGapNeighbour = true;
-				}
-			}
-
-			if (centerIsTaggedSkin && neighbourIsTaggedSkin && centerHasGeometry && neighbourHasGeometry && abs(dx) + abs(dy) == 1) {
-				float linearNeighbourDepth = SharedData::GetScreenDepth(rawNeighbourDepth);
-				if (abs(linearNeighbourDepth - linearCenterDepth) <= neighbourDepthThreshold) {
-					float4 neighbourAlbedo = AlbedoTexture.Load(int3(sampleCoord, 0));
-					float4 neighbourNormalRoughness = NormalRoughnessTexture.Load(int3(sampleCoord, 0));
-					float3 neighbourNormal = GBuffer::DecodeNormal(neighbourNormalRoughness.xy);
-
-					float localColorSignal = length(neighbourAlbedo.rgb - sourceAlbedo.rgb);
-					float localNormalSignal = 1.0f - saturate(dot(neighbourNormal, centerNormal));
-					if (localColorSignal > kLocalColorSignalThreshold || localNormalSignal > kLocalNormalSignalThreshold) {
-						if (dx != 0)
-							hasHorizontalLocalDiscontinuity = true;
-						else
-							hasVerticalLocalDiscontinuity = true;
-					}
-				}
-			}
+			float neighbourObjectId = DecodeObjectId(neighbourLabels);
+			bool neighbourIsTaggedSkin = IsTaggedSkin(neighbourLabels) && neighbourObjectId > 0.0f;
 
 			if (!neighbourIsTaggedSkin || !neighbourHasGeometry)
 				continue;
 
-			float linearNeighbourDepth = SharedData::GetScreenDepth(rawNeighbourDepth);
 			float4 neighbourMain = MainTexture.Load(int3(sampleCoord, 0));
 			float4 neighbourAlbedo = AlbedoTexture.Load(int3(sampleCoord, 0));
 			float4 neighbourNormalRoughness = NormalRoughnessTexture.Load(int3(sampleCoord, 0));
@@ -266,16 +225,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 			if (abs(dx) >= abs(dy)) {
 				if (dx < 0)
-					AddSample(left, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
+					AddSample(left, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 				else
-					AddSample(right, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
+					AddSample(right, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 			}
 
 			if (abs(dy) >= abs(dx)) {
 				if (dy < 0)
-					AddSample(up, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
+					AddSample(up, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 				else
-					AddSample(down, weight, rawNeighbourDepth, linearNeighbourDepth, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
+					AddSample(down, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 			}
 		}
 	}
@@ -283,21 +242,18 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	Accumulator sideA = (Accumulator)0;
 	Accumulator sideB = (Accumulator)0;
 	bool seamAxisFound = false;
-	bool bestAxisHasEvidence = false;
-	int bestAxis = -1;
 	float bestAxisWeight = 0.0f;
 
-	#define TRY_AXIS(ACCUM_A, ACCUM_B, AXIS, AXIS_EVIDENCE) \
+	#define TRY_AXIS(ACCUM_A, ACCUM_B) \
 	{ \
 		if ((ACCUM_A).weight > 0.0f && (ACCUM_B).weight > 0.0f) { \
-			float axisDepthDelta = abs(AverageLinearDepth(ACCUM_A) - AverageLinearDepth(ACCUM_B)); \
-			if (axisDepthDelta <= neighbourDepthThreshold) { \
+			float objectIdA = AverageObjectId(ACCUM_A); \
+			float objectIdB = AverageObjectId(ACCUM_B); \
+			bool axisHasObjectOverlap = objectIdA > 0.0f && objectIdB > 0.0f && (centerIsTaggedSkin ? (objectIdA != centerObjectId || objectIdB != centerObjectId) : (objectIdA != objectIdB)); \
+			if (axisHasObjectOverlap) { \
 				float axisWeight = (ACCUM_A).weight + (ACCUM_B).weight; \
-				bool axisEvidence = (AXIS_EVIDENCE); \
-				if (!seamAxisFound || (axisEvidence && !bestAxisHasEvidence) || (axisEvidence == bestAxisHasEvidence && axisWeight > bestAxisWeight)) { \
+				if (!seamAxisFound || axisWeight > bestAxisWeight) { \
 					seamAxisFound = true; \
-					bestAxisHasEvidence = axisEvidence; \
-					bestAxis = (AXIS); \
 					bestAxisWeight = axisWeight; \
 					sideA = (ACCUM_A); \
 					sideB = (ACCUM_B); \
@@ -306,8 +262,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		} \
 	}
 
-	TRY_AXIS(left, right, 0, hasHorizontalGapNeighbour || hasHorizontalLocalDiscontinuity);
-	TRY_AXIS(up, down, 1, hasVerticalGapNeighbour || hasVerticalLocalDiscontinuity);
+	TRY_AXIS(left, right);
+	TRY_AXIS(up, down);
 
 	#undef TRY_AXIS
 
@@ -327,15 +283,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		float4 seamReflectance = AverageReflectance(seamAccum);
 		float4 seamMask = AverageMask(seamAccum);
 		float seamRawDepth = min(AverageRawDepth(sideA), AverageRawDepth(sideB));
-		float seamLinearDepth = min(AverageLinearDepth(sideA), AverageLinearDepth(sideB));
 		float seamGlossiness = 0.5f * (AverageGlossiness(sideA) + AverageGlossiness(sideB));
 
 		float3 sideAMain = AverageMain(sideA);
 		float3 sideBMain = AverageMain(sideB);
 		float4 sideAAlbedo = AverageAlbedo(sideA);
 		float4 sideBAlbedo = AverageAlbedo(sideB);
-		float sideALinearDepth = AverageLinearDepth(sideA);
-		float sideBLinearDepth = AverageLinearDepth(sideB);
 		float3 sideANormal = AverageNormal(sideA, centerNormal);
 		float3 sideBNormal = AverageNormal(sideB, centerNormal);
 		float3 seamNormal = normalize(sideANormal + sideBNormal);
@@ -344,16 +297,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		float normalSignal = 1.0f - saturate(dot(sideANormal, sideBNormal));
 		float seamSignal = max(colorSignal, normalSignal * kNormalSignalScale);
 		float seamBlend = max(kSeamSignalFloor, seamSignal);
-		bool crossAxisDiscontinuity =
-			colorSignal > kCrossAxisColorSignalThreshold ||
-			normalSignal > kCrossAxisNormalSignalThreshold;
-
-		bool holeCandidate = !centerHasGeometry || linearCenterDepth > seamLinearDepth + DepthThreshold;
 
 		float2 encodedSeamNormal = GBuffer::EncodeNormal(seamNormal);
 		float4 seamNormalRoughness = float4(encodedSeamNormal, seamGlossiness, sourceNormalRoughness.w);
 
-		if (!centerIsTaggedSkin && holeCandidate) {
+		if (!centerIsTaggedSkin) {
 			float fillBlend = saturate(blendStrength * max(0.6f, seamBlend));
 			outMain = float4(lerp(sourceMain.rgb, seamMain, fillBlend), sourceMain.a);
 			outAlbedo = float4(lerp(sourceAlbedo.rgb, seamAlbedo.rgb, fillBlend), sourceAlbedo.a);
@@ -363,25 +311,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, seamNormalRoughness.xyz, fillBlend), sourceNormalRoughness.w);
 			outRawDepth = seamRawDepth;
 		} else if (centerIsTaggedSkin) {
-			float sourceDepthDelta = min(abs(linearCenterDepth - sideALinearDepth), abs(linearCenterDepth - sideBLinearDepth));
-			bool selectedAxisGap = bestAxis == 0 ? hasHorizontalGapNeighbour : hasVerticalGapNeighbour;
-			bool selectedAxisLocalDiscontinuity = bestAxis == 0 ? hasHorizontalLocalDiscontinuity : hasVerticalLocalDiscontinuity;
-			bool seamEdgeCandidate =
-				sourceDepthDelta <= neighbourDepthThreshold &&
-				(selectedAxisGap || (selectedAxisLocalDiscontinuity && crossAxisDiscontinuity));
+			float edgeBlend = saturate(blendStrength * max(0.35f, seamBlend));
 
-			if (seamEdgeCandidate) {
-				float depthCloseness = 1.0f - saturate(sourceDepthDelta / max(neighbourDepthThreshold, 1e-5f));
-				float edgeBlend = saturate(blendStrength * max(0.35f, seamBlend) * max(depthCloseness, 0.5f));
-
-				outMain = float4(lerp(sourceMain.rgb, seamMain, edgeBlend), sourceMain.a);
-				outAlbedo = float4(lerp(sourceAlbedo.rgb, seamAlbedo.rgb, edgeBlend), sourceAlbedo.a);
-				outSpecular = float4(lerp(sourceSpecular.rgb, seamSpecular.rgb, edgeBlend), sourceSpecular.a);
-				outReflectance = lerp(sourceReflectance, seamReflectance, edgeBlend);
-				outMask = float4(lerp(sourceMask.rgb, seamMask.rgb, edgeBlend), sourceMask.a);
-				outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, seamNormalRoughness.xyz, edgeBlend), sourceNormalRoughness.w);
-				outRawDepth = lerp(rawCenterDepth, seamRawDepth, edgeBlend * 0.35f);
-			}
+			outMain = float4(lerp(sourceMain.rgb, seamMain, edgeBlend), sourceMain.a);
+			outAlbedo = float4(lerp(sourceAlbedo.rgb, seamAlbedo.rgb, edgeBlend), sourceAlbedo.a);
+			outSpecular = float4(lerp(sourceSpecular.rgb, seamSpecular.rgb, edgeBlend), sourceSpecular.a);
+			outReflectance = lerp(sourceReflectance, seamReflectance, edgeBlend);
+			outMask = float4(lerp(sourceMask.rgb, seamMask.rgb, edgeBlend), sourceMask.a);
+			outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, seamNormalRoughness.xyz, edgeBlend), sourceNormalRoughness.w);
+			outRawDepth = lerp(rawCenterDepth, seamRawDepth, edgeBlend * 0.35f);
 		}
 	}
 

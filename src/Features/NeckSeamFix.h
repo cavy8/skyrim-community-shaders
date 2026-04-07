@@ -38,7 +38,15 @@ public:
 	};
 	STATIC_ASSERT_ALIGNAS_16(NeckSeamCB);
 
+	struct alignas(16) NeckSeamPerGeometryCB
+	{
+		float ObjectId;
+		float pad[3];
+	};
+	STATIC_ASSERT_ALIGNAS_16(NeckSeamPerGeometryCB);
+
 	ConstantBuffer* neckSeamCB = nullptr;
+	ConstantBuffer* neckSeamPerGeometryCB = nullptr;
 	ID3D11ComputeShader* neckSeamCS = nullptr;
 	Texture2D* seamMainTexture = nullptr;
 	Texture2D* seamAlbedoTexture = nullptr;

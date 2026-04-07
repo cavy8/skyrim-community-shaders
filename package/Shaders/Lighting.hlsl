@@ -637,6 +637,13 @@ cbuffer PerGeometry : register(b2)
 #	endif  // VR
 };
 
+#	if defined(NECK_SEAM_FIX)
+cbuffer NeckSeamPerGeometry : register(b7)
+{
+	float4 NeckSeamData : packoffset(c0);
+}
+#	endif
+
 #	if !defined(VR)
 cbuffer AlphaTestRefBuffer : register(b11)
 {
@@ -3213,10 +3220,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #		if defined(NECK_SEAM_FIX)
 	const bool neckSeamActorSkin = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::NeckSeamActorSkin) != 0;
+	const uint neckSeamObjectId = (uint)round(NeckSeamData.x);
 #			if defined(SSS) && defined(SKIN)
 	psout.Parameters.x = neckSeamActorSkin ? 1.0 : 0.0;
-	psout.Parameters.y = 0.0;
-	psout.Parameters.z = 0.0;
+	psout.Parameters.y = neckSeamActorSkin ? (float)(neckSeamObjectId & 0xFF) / 255.0 : 0.0;
+	psout.Parameters.z = neckSeamActorSkin ? (float)((neckSeamObjectId >> 8) & 0xFF) / 255.0 : 0.0;
 #			else
 	psout.Parameters.x = 0.0;
 	psout.Parameters.y = 0.0;

@@ -1,6 +1,7 @@
 #include "NeckSeamFix.h"
 
 #include <cctype>
+#include <unordered_map>
 #include "Deferred.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -64,6 +65,21 @@ namespace
 			a_isSkinCandidate ? 1 : 0,
 			a_geometryName.empty() ? "<unnamed>" : a_geometryName,
 			a_textureHint.empty() ? "<none>" : a_textureHint);
+	}
+
+	uint16_t GetGeometryMaskId(const RE::BSGeometry* a_geometry)
+	{
+		static std::unordered_map<const RE::BSGeometry*, uint16_t> geometryIds;
+		static uint16_t nextId = 1;
+
+		auto [it, inserted] = geometryIds.try_emplace(a_geometry, nextId);
+		if (inserted) {
+			++nextId;
+			if (nextId == 0)
+				nextId = 1;
+		}
+
+		return it->second;
 	}
 }
 
@@ -262,6 +278,8 @@ void NeckSeamFix::SetupResources()
 {
 	if (!neckSeamCB)
 		neckSeamCB = new ConstantBuffer(ConstantBufferDesc<NeckSeamCB>());
+	if (!neckSeamPerGeometryCB)
+		neckSeamPerGeometryCB = new ConstantBuffer(ConstantBufferDesc<NeckSeamPerGeometryCB>());
 
 	seamOutputsValid = false;
 	ReleaseRenderResources();
@@ -405,9 +423,24 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 
 	const bool isLightingShader = a_pass->shader && a_pass->shader->shaderType.get() == RE::BSShader::Type::Lighting;
 	const bool isSkinned = a_pass->shaderProperty->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned);
-	const bool isSkinCandidate = a_pass->shaderProperty->flags.any(
+	const bool isSkinCandidate = isLightingShader && isSkinned && a_pass->shaderProperty->flags.any(
 		RE::BSShaderProperty::EShaderPropertyFlag::kFace,
 		RE::BSShaderProperty::EShaderPropertyFlag::kFaceGenRGBTint);
+
+	uint32_t geometryMaskId = 0;
+	if (isSkinCandidate) {
+		geometryMaskId = GetGeometryMaskId(a_pass->geometry);
+		extraDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamActorSkin);
+	}
+
+	if (isLightingShader && neckSeamPerGeometryCB) {
+		NeckSeamPerGeometryCB cbData{};
+		cbData.ObjectId = static_cast<float>(geometryMaskId);
+		neckSeamPerGeometryCB->Update(cbData);
+
+		ID3D11Buffer* buffer = neckSeamPerGeometryCB->CB();
+		globals::d3d::context->PSSetConstantBuffers(7, 1, &buffer);
+	}
 
 	if (!isLightingShader || !isSkinned)
 		return;
@@ -419,8 +452,6 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 		LogClassificationSample(true, isSkinCandidate, loweredName, textureHint);
 	}
 
-	if (isSkinCandidate)
-		extraDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::NeckSeamActorSkin);
 }
 
 // =============================================================================
