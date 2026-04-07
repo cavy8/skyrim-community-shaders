@@ -330,14 +330,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			outNormalRoughness = lerp(sourceNormalRoughness, seamNormalRoughness, fillBlend);
 			outRawDepth = lerp(rawCenterDepth, seamRawDepth, fillBlend);
 		} else if (centerIsTaggedSkin) {
-			float edgeBlend = saturate(blendStrength * max(0.35f, seamBlend));
+			float textureEdgeBlend = saturate(colorSignal * 4.0f);
+			float edgeBlend = saturate(blendStrength * max(max(0.35f, seamBlend), textureEdgeBlend));
 
-			outMain = float4(lerp(sourceMain.rgb, seamMain, edgeBlend), sourceMain.a);
-			outAlbedo = float4(lerp(sourceAlbedo.rgb, seamAlbedo.rgb, edgeBlend), sourceAlbedo.a);
-			outSpecular = float4(lerp(sourceSpecular.rgb, seamSpecular.rgb, edgeBlend), sourceSpecular.a);
+			outMain = lerp(sourceMain, float4(seamMain, seamMainAlpha), edgeBlend);
+			outAlbedo = lerp(sourceAlbedo, seamAlbedo, edgeBlend);
+			outSpecular = lerp(sourceSpecular, seamSpecular, edgeBlend);
 			outReflectance = lerp(sourceReflectance, seamReflectance, edgeBlend);
-			outMask = float4(lerp(sourceMask.rgb, seamMask.rgb, edgeBlend), sourceMask.a);
-			outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, seamNormalRoughness.xyz, edgeBlend), sourceNormalRoughness.w);
+			outMask = lerp(sourceMask, seamMask, edgeBlend);
+			outNormalRoughness = lerp(sourceNormalRoughness, seamNormalRoughness, edgeBlend);
 			outRawDepth = lerp(rawCenterDepth, seamRawDepth, edgeBlend * 0.35f);
 		}
 	}
