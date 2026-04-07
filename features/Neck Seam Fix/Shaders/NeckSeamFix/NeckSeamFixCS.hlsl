@@ -64,11 +64,13 @@ struct Accumulator
 	float glossiness;
 	float objectId;
 	float3 mainColor;
+	float mainAlpha;
 	float4 albedo;
 	float4 specular;
 	float4 reflectance;
 	float4 mask;
 	float3 normal;
+	float normalAlpha;
 };
 
 void AddSample(
@@ -77,6 +79,7 @@ void AddSample(
 	float rawDepth,
 	float objectId,
 	float3 mainColor,
+	float mainAlpha,
 	float4 albedo,
 	float4 normalRoughness,
 	float4 specular,
@@ -88,11 +91,13 @@ void AddSample(
 	accum.glossiness += normalRoughness.z * weight;
 	accum.objectId += objectId * weight;
 	accum.mainColor += mainColor * weight;
+	accum.mainAlpha += mainAlpha * weight;
 	accum.albedo += albedo * weight;
 	accum.specular += specular * weight;
 	accum.reflectance += reflectance * weight;
 	accum.mask += mask * weight;
 	accum.normal += GBuffer::DecodeNormal(normalRoughness.xy) * weight;
+	accum.normalAlpha += normalRoughness.w * weight;
 }
 
 Accumulator CombineAccum(Accumulator a, Accumulator b)
@@ -103,11 +108,13 @@ Accumulator CombineAccum(Accumulator a, Accumulator b)
 	combined.glossiness = a.glossiness + b.glossiness;
 	combined.objectId = a.objectId + b.objectId;
 	combined.mainColor = a.mainColor + b.mainColor;
+	combined.mainAlpha = a.mainAlpha + b.mainAlpha;
 	combined.albedo = a.albedo + b.albedo;
 	combined.specular = a.specular + b.specular;
 	combined.reflectance = a.reflectance + b.reflectance;
 	combined.mask = a.mask + b.mask;
 	combined.normal = a.normal + b.normal;
+	combined.normalAlpha = a.normalAlpha + b.normalAlpha;
 	return combined;
 }
 
@@ -127,6 +134,11 @@ float3 AverageNormal(Accumulator accum, float3 fallbackNormal)
 float3 AverageMain(Accumulator accum)
 {
 	return accum.mainColor / max(accum.weight, 1e-5f);
+}
+
+float AverageMainAlpha(Accumulator accum)
+{
+	return accum.mainAlpha / max(accum.weight, 1e-5f);
 }
 
 float4 AverageAlbedo(Accumulator accum)
@@ -157,6 +169,11 @@ float AverageRawDepth(Accumulator accum)
 float AverageGlossiness(Accumulator accum)
 {
 	return accum.glossiness / max(accum.weight, 1e-5f);
+}
+
+float AverageNormalAlpha(Accumulator accum)
+{
+	return accum.normalAlpha / max(accum.weight, 1e-5f);
 }
 
 float AverageObjectId(Accumulator accum)
@@ -225,16 +242,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 			if (abs(dx) >= abs(dy)) {
 				if (dx < 0)
-					AddSample(left, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
+					AddSample(left, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourMain.a, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 				else
-					AddSample(right, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
+					AddSample(right, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourMain.a, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 			}
 
 			if (abs(dy) >= abs(dx)) {
 				if (dy < 0)
-					AddSample(up, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
+					AddSample(up, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourMain.a, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 				else
-					AddSample(down, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
+					AddSample(down, weight, rawNeighbourDepth, neighbourObjectId, neighbourMain.rgb, neighbourMain.a, neighbourAlbedo, neighbourNormalRoughness, neighbourSpecular, neighbourReflectance, neighbourMask);
 			}
 		}
 	}
@@ -278,12 +295,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	if (blendStrength > 0.0f && seamAxisFound) {
 		Accumulator seamAccum = CombineAccum(sideA, sideB);
 		float3 seamMain = AverageMain(seamAccum);
+		float seamMainAlpha = AverageMainAlpha(seamAccum);
 		float4 seamAlbedo = AverageAlbedo(seamAccum);
 		float4 seamSpecular = AverageSpecular(seamAccum);
 		float4 seamReflectance = AverageReflectance(seamAccum);
 		float4 seamMask = AverageMask(seamAccum);
 		float seamRawDepth = min(AverageRawDepth(sideA), AverageRawDepth(sideB));
 		float seamGlossiness = 0.5f * (AverageGlossiness(sideA) + AverageGlossiness(sideB));
+		float seamNormalAlpha = AverageNormalAlpha(seamAccum);
 
 		float3 sideAMain = AverageMain(sideA);
 		float3 sideBMain = AverageMain(sideB);
@@ -299,17 +318,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		float seamBlend = max(kSeamSignalFloor, seamSignal);
 
 		float2 encodedSeamNormal = GBuffer::EncodeNormal(seamNormal);
-		float4 seamNormalRoughness = float4(encodedSeamNormal, seamGlossiness, sourceNormalRoughness.w);
+		float4 seamNormalRoughness = float4(encodedSeamNormal, seamGlossiness, seamNormalAlpha);
 
 		if (!centerIsTaggedSkin) {
-			float fillBlend = saturate(blendStrength * max(0.6f, seamBlend));
-			outMain = float4(lerp(sourceMain.rgb, seamMain, fillBlend), sourceMain.a);
-			outAlbedo = float4(lerp(sourceAlbedo.rgb, seamAlbedo.rgb, fillBlend), sourceAlbedo.a);
-			outSpecular = float4(lerp(sourceSpecular.rgb, seamSpecular.rgb, fillBlend), sourceSpecular.a);
+			float fillBlend = blendStrength;
+			outMain = lerp(sourceMain, float4(seamMain, seamMainAlpha), fillBlend);
+			outAlbedo = lerp(sourceAlbedo, seamAlbedo, fillBlend);
+			outSpecular = lerp(sourceSpecular, seamSpecular, fillBlend);
 			outReflectance = lerp(sourceReflectance, seamReflectance, fillBlend);
-			outMask = float4(lerp(sourceMask.rgb, seamMask.rgb, fillBlend), sourceMask.a);
-			outNormalRoughness = float4(lerp(sourceNormalRoughness.xyz, seamNormalRoughness.xyz, fillBlend), sourceNormalRoughness.w);
-			outRawDepth = seamRawDepth;
+			outMask = lerp(sourceMask, seamMask, fillBlend);
+			outNormalRoughness = lerp(sourceNormalRoughness, seamNormalRoughness, fillBlend);
+			outRawDepth = lerp(rawCenterDepth, seamRawDepth, fillBlend);
 		} else if (centerIsTaggedSkin) {
 			float edgeBlend = saturate(blendStrength * max(0.35f, seamBlend));
 
