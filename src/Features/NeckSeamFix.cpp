@@ -449,7 +449,7 @@ void NeckSeamFix::DrawSeamFixLate()
 	context->CSSetConstantBuffers(1, 1, cb);
 
 	ID3D11ShaderResourceView* srvs[3]{
-		Util::GetCurrentSceneDepthSRV(),
+		seamDepthTexture && seamDepthTexture->srv ? seamDepthTexture->srv.get() : Util::GetCurrentSceneDepthSRV(),
 		labels.SRV,
 		main.SRV
 	};
