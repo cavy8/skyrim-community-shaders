@@ -47,13 +47,16 @@ struct SideAccumulator
 	float weight;
 	float objectId;
 	float3 color;
+	float minDistance;
 };
 
-void AddSample(inout SideAccumulator accum, float weight, float objectId, float3 color)
+void AddSample(inout SideAccumulator accum, float weight, float distance, float objectId, float3 color)
 {
+	float previousWeight = accum.weight;
 	accum.weight += weight;
 	accum.objectId += objectId * weight;
 	accum.color += color * weight;
+	accum.minDistance = previousWeight > 0.0f ? min(accum.minDistance, distance) : distance;
 }
 
 float AverageObjectId(SideAccumulator accum)
@@ -119,16 +122,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 			if (abs(dx) >= abs(dy)) {
 				if (dx < 0)
-					AddSample(left, weight, neighbourObjectId, neighbourColor);
+					AddSample(left, weight, dist, neighbourObjectId, neighbourColor);
 				else
-					AddSample(right, weight, neighbourObjectId, neighbourColor);
+					AddSample(right, weight, dist, neighbourObjectId, neighbourColor);
 			}
 
 			if (abs(dy) >= abs(dx)) {
 				if (dy < 0)
-					AddSample(up, weight, neighbourObjectId, neighbourColor);
+					AddSample(up, weight, dist, neighbourObjectId, neighbourColor);
 				else
-					AddSample(down, weight, neighbourObjectId, neighbourColor);
+					AddSample(down, weight, dist, neighbourObjectId, neighbourColor);
 			}
 		}
 	}
@@ -173,38 +176,39 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float3 meanB = AverageColor(sideB);
 	float3 midpoint = 0.5f * (meanA + meanB);
 
-	float sameSideWeight = 0.0f;
-	float opposingSideWeight = 0.0f;
 	float3 mySideMean = midpoint;
+	float nearestOpposingDistance = LateSearchRadius;
+	bool centerMatchedSide = false;
 
 	if (centerIsSkin && abs(centerObjectId - sideAObjectId) < 0.5f) {
-		sameSideWeight = sideA.weight;
-		opposingSideWeight = sideB.weight;
 		mySideMean = meanA;
+		nearestOpposingDistance = sideB.minDistance;
+		centerMatchedSide = true;
 	} else if (centerIsSkin && abs(centerObjectId - sideBObjectId) < 0.5f) {
-		sameSideWeight = sideB.weight;
-		opposingSideWeight = sideA.weight;
 		mySideMean = meanB;
-	} else {
-		// Gap pixel — blend fully toward midpoint
-		opposingSideWeight = 1.0f;
+		nearestOpposingDistance = sideA.minDistance;
+		centerMatchedSide = true;
 	}
 
-	// seamProximity: 0 deep inside one mesh, ~0.5 at the seam boundary.
-	// Remap so boundary (0.5) → 1.0 for full gradient effect there.
-	float seamProximity = opposingSideWeight / max(sameSideWeight + opposingSideWeight, 1e-5f);
-	float t = saturate(seamProximity * 2.0f);
+	float3 corrected = midpoint;
+	if (centerMatchedSide) {
+		// Distance falloff is more stable than side-weight ratios as the search
+		// radius changes: immediate opposing skin = full correction, far = none.
+		float distanceRange = max(LateSearchRadius - 1.0f, 1.0f);
+		float normalizedDistance = saturate((nearestOpposingDistance - 1.0f) / distanceRange);
+		float t = 1.0f - smoothstep(0.0f, 1.0f, normalizedDistance);
 
-	// Decompose this pixel's color into base tone + high-frequency detail:
-	//   detail = pores, SSS variation, specular highlights, shadow gradients
-	//   mySideMean = average skin tone for this mesh
-	float3 detail = sourceMain.rgb - mySideMean;
+		// Decompose this pixel's color into base tone + high-frequency detail:
+		//   detail = pores, SSS variation, specular highlights, shadow gradients
+		//   mySideMean = average skin tone for this mesh
+		float3 detail = sourceMain.rgb - mySideMean;
 
-	// Smooth gradient from this side's mean toward the midpoint of both sides.
-	// At t=0 (deep inside): gradient = mySideMean → corrected = original
-	// At t=1 (at boundary): gradient = midpoint   → corrected = midpoint + detail
-	float3 gradient = lerp(mySideMean, midpoint, t);
-	float3 corrected = gradient + detail;
+		// Smooth gradient from this side's mean toward the midpoint of both sides.
+		// At t=0 (deep inside): gradient = mySideMean -> corrected = original
+		// At t=1 (at boundary): gradient = midpoint   -> corrected = midpoint + detail
+		float3 gradient = lerp(mySideMean, midpoint, t);
+		corrected = gradient + detail;
+	}
 
 	float3 finalColor = lerp(sourceMain.rgb, corrected, lateBlendStrength);
 	MainOut[pixCoord] = float4(max(0.0f, finalColor), sourceMain.a);
