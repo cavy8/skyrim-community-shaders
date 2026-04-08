@@ -3,10 +3,11 @@
 //
 // Post-composite seam color projection.
 //
-// Runs after DeferredCompositeCS. This pass reflects color response across the
-// detected seam: each skin pixel looks through nearby same-object/gap pixels for
-// the opposing skin object, samples an equal-distance point on its own side as a
-// baseline, and transfers a clamped color offset that fades with seam distance.
+// Runs after DeferredCompositeCS. This pass performs a one-way transfer from
+// the head mesh onto nearby body skin in screen space. It finds the nearest
+// head-labeled pixel around a body-side pixel, mirrors that vector into the
+// body mesh for a baseline sample, and transfers a clamped color offset that
+// fades out with distance from the seam.
 // =============================================================================
 
 #include "Common/SharedData.hlsli"
@@ -40,6 +41,11 @@ bool IsTaggedSkin(float4 labels)
 	return labels.x > kLabelThreshold;
 }
 
+bool IsHeadLabel(float4 labels)
+{
+	return labels.w > kLabelThreshold;
+}
+
 float DecodeObjectId(float4 labels)
 {
 	return floor(labels.y * 255.0f + 0.5f) + floor(labels.z * 255.0f + 0.5f) * 256.0f;
@@ -63,33 +69,9 @@ RayHit EmptyHit()
 	return hit;
 }
 
-RayHit TraceAnySkinRay(int2 pixCoord, int2 direction, int radius, uint2 bufDim)
+float SquaredLength(int2 v)
 {
-	RayHit hit = EmptyHit();
-
-	for (int step = 1; step <= radius; ++step)
-	{
-		int2 sampleCoord = pixCoord + direction * step;
-		if (any(sampleCoord < int2(0, 0)) || any(sampleCoord >= int2(bufDim)))
-			break;
-
-		float rawDepth = DepthTexture.Load(int3(sampleCoord, 0)).x;
-		if (!IsValidSceneDepth(rawDepth))
-			continue;
-
-		float4 labels = LabelTexture.Load(int3(sampleCoord, 0));
-		float objectId = DecodeObjectId(labels);
-		if (!IsTaggedSkin(labels) || objectId <= 0.0f)
-			continue;
-
-		hit.hit = true;
-		hit.objectId = objectId;
-		hit.distance = (float)step;
-		hit.color = MainTexture.Load(int3(sampleCoord, 0)).rgb;
-		break;
-	}
-
-	return hit;
+	return (float)(v.x * v.x + v.y * v.y);
 }
 
 bool IsSameObject(float a, float b)
@@ -97,67 +79,129 @@ bool IsSameObject(float a, float b)
 	return abs(a - b) < 0.5f;
 }
 
-RayHit TraceOpposingSkinRay(int2 pixCoord, int2 direction, int radius, uint2 bufDim, float centerObjectId)
+RayHit FindNearestHeadPixel(int2 pixCoord, int radius, uint2 bufDim, float excludedObjectId, out int2 hitOffset)
 {
 	RayHit hit = EmptyHit();
+	float bestDistanceSq = 0.0f;
+	hitOffset = int2(0, 0);
 
-	for (int step = 1; step <= radius; ++step)
+	for (int y = -radius; y <= radius; ++y)
 	{
-		int2 sampleCoord = pixCoord + direction * step;
-		if (any(sampleCoord < int2(0, 0)) || any(sampleCoord >= int2(bufDim)))
-			break;
+		for (int x = -radius; x <= radius; ++x)
+		{
+			int2 offset = int2(x, y);
+			if (all(offset == int2(0, 0)))
+				continue;
 
-		float rawDepth = DepthTexture.Load(int3(sampleCoord, 0)).x;
-		if (!IsValidSceneDepth(rawDepth))
-			continue;
+			float distanceSq = SquaredLength(offset);
+			if (distanceSq > (float)(radius * radius))
+				continue;
 
-		float4 labels = LabelTexture.Load(int3(sampleCoord, 0));
-		float objectId = DecodeObjectId(labels);
-		if (!IsTaggedSkin(labels) || objectId <= 0.0f)
-			continue;
+			int2 sampleCoord = pixCoord + offset;
+			if (any(sampleCoord < int2(0, 0)) || any(sampleCoord >= int2(bufDim)))
+				continue;
 
-		if (IsSameObject(objectId, centerObjectId))
-			continue;
+			float rawDepth = DepthTexture.Load(int3(sampleCoord, 0)).x;
+			if (!IsValidSceneDepth(rawDepth))
+				continue;
 
-		hit.hit = true;
-		hit.objectId = objectId;
-		hit.distance = (float)step;
-		hit.color = MainTexture.Load(int3(sampleCoord, 0)).rgb;
-		break;
+			float4 labels = LabelTexture.Load(int3(sampleCoord, 0));
+			float objectId = DecodeObjectId(labels);
+			if (!IsTaggedSkin(labels) || !IsHeadLabel(labels) || objectId <= 0.0f)
+				continue;
+			if (excludedObjectId > 0.0f && IsSameObject(objectId, excludedObjectId))
+				continue;
+
+			if (!hit.hit || distanceSq < bestDistanceSq) {
+				hit.hit = true;
+				hit.objectId = objectId;
+				hit.distance = sqrt(distanceSq);
+				hit.color = MainTexture.Load(int3(sampleCoord, 0)).rgb;
+				bestDistanceSq = distanceSq;
+				hitOffset = offset;
+			}
+		}
 	}
 
 	return hit;
 }
 
-RayHit SampleSameObjectAtDistance(int2 pixCoord, int2 direction, int distance, uint2 bufDim, float centerObjectId)
+RayHit FindNearestNonHeadSkinPixel(int2 pixCoord, int radius, uint2 bufDim, float excludedObjectId)
 {
 	RayHit hit = EmptyHit();
+	float bestDistanceSq = 0.0f;
 
-	// Prefer the exact reflected point, but tolerate one pixel of label jitter.
-	for (int offset = 0; offset <= 1; ++offset)
+	for (int y = -radius; y <= radius; ++y)
 	{
-		int step = distance - offset;
-		if (step < 1)
-			continue;
+		for (int x = -radius; x <= radius; ++x)
+		{
+			int2 offset = int2(x, y);
+			if (all(offset == int2(0, 0)))
+				continue;
 
-		int2 sampleCoord = pixCoord + direction * step;
-		if (any(sampleCoord < int2(0, 0)) || any(sampleCoord >= int2(bufDim)))
-			continue;
+			float distanceSq = SquaredLength(offset);
+			if (distanceSq > (float)(radius * radius))
+				continue;
 
-		float rawDepth = DepthTexture.Load(int3(sampleCoord, 0)).x;
-		if (!IsValidSceneDepth(rawDepth))
-			continue;
+			int2 sampleCoord = pixCoord + offset;
+			if (any(sampleCoord < int2(0, 0)) || any(sampleCoord >= int2(bufDim)))
+				continue;
 
-		float4 labels = LabelTexture.Load(int3(sampleCoord, 0));
-		float objectId = DecodeObjectId(labels);
-		if (!IsTaggedSkin(labels) || !IsSameObject(objectId, centerObjectId))
-			continue;
+			float rawDepth = DepthTexture.Load(int3(sampleCoord, 0)).x;
+			if (!IsValidSceneDepth(rawDepth))
+				continue;
 
-		hit.hit = true;
-		hit.objectId = objectId;
-		hit.distance = (float)step;
-		hit.color = MainTexture.Load(int3(sampleCoord, 0)).rgb;
-		break;
+			float4 labels = LabelTexture.Load(int3(sampleCoord, 0));
+			float objectId = DecodeObjectId(labels);
+			if (!IsTaggedSkin(labels) || IsHeadLabel(labels) || objectId <= 0.0f)
+				continue;
+			if (excludedObjectId > 0.0f && IsSameObject(objectId, excludedObjectId))
+				continue;
+
+			if (!hit.hit || distanceSq < bestDistanceSq) {
+				hit.hit = true;
+				hit.objectId = objectId;
+				hit.distance = sqrt(distanceSq);
+				hit.color = MainTexture.Load(int3(sampleCoord, 0)).rgb;
+				bestDistanceSq = distanceSq;
+			}
+		}
+	}
+
+	return hit;
+}
+
+RayHit SampleSameObjectNearCoord(int2 sampleCoord, uint2 bufDim, float centerObjectId)
+{
+	RayHit hit = EmptyHit();
+	float bestDistanceSq = 0.0f;
+
+	for (int y = -1; y <= 1; ++y)
+	{
+		for (int x = -1; x <= 1; ++x)
+		{
+			int2 candidateCoord = sampleCoord + int2(x, y);
+			if (any(candidateCoord < int2(0, 0)) || any(candidateCoord >= int2(bufDim)))
+				continue;
+
+			float rawDepth = DepthTexture.Load(int3(candidateCoord, 0)).x;
+			if (!IsValidSceneDepth(rawDepth))
+				continue;
+
+			float4 labels = LabelTexture.Load(int3(candidateCoord, 0));
+			float objectId = DecodeObjectId(labels);
+			if (!IsTaggedSkin(labels) || !IsSameObject(objectId, centerObjectId))
+				continue;
+
+			float distanceSq = SquaredLength(int2(x, y));
+			if (!hit.hit || distanceSq < bestDistanceSq) {
+				hit.hit = true;
+				hit.objectId = objectId;
+				hit.distance = sqrt(distanceSq);
+				hit.color = MainTexture.Load(int3(candidateCoord, 0)).rgb;
+				bestDistanceSq = distanceSq;
+			}
+		}
 	}
 
 	return hit;
@@ -191,26 +235,30 @@ ProjectionCandidate EmptyCandidate()
 	return candidate;
 }
 
-ProjectionCandidate BuildReflectionCandidate(
+ProjectionCandidate BuildHeadToBodyCandidate(
 	int2 pixCoord,
-	int2 opposingDirection,
 	int radius,
 	uint2 bufDim,
 	float centerObjectId,
 	float3 sourceColor)
 {
 	ProjectionCandidate candidate = EmptyCandidate();
-	RayHit opposing = TraceOpposingSkinRay(pixCoord, opposingDirection, radius, bufDim, centerObjectId);
-	if (!opposing.hit)
+	int2 headOffset = int2(0, 0);
+	RayHit head = FindNearestHeadPixel(pixCoord, radius, bufDim, centerObjectId, headOffset);
+	if (!head.hit)
 		return candidate;
 
-	RayHit sameMirror = SampleSameObjectAtDistance(pixCoord, -opposingDirection, (int)round(opposing.distance), bufDim, centerObjectId);
+	int2 mirroredCoord = pixCoord - headOffset;
+	RayHit sameMirror = SampleSameObjectNearCoord(mirroredCoord, bufDim, centerObjectId);
+	if (!sameMirror.hit)
+		return candidate;
+
 	float3 sameBaseline = sameMirror.hit ? sameMirror.color : sourceColor;
-	float seamFalloff = SeamDistanceFalloff(opposing.distance, (float)radius);
-	float3 offset = ClampColorOffset(opposing.color - sameBaseline);
+	float seamFalloff = SeamDistanceFalloff(head.distance, (float)radius);
+	float3 offset = ClampColorOffset(head.color - sameBaseline);
 
 	candidate.valid = true;
-	candidate.score = seamFalloff / max(opposing.distance, 1.0f);
+	candidate.score = seamFalloff / max(head.distance, 1.0f);
 	candidate.color = sourceColor + offset * seamFalloff;
 	return candidate;
 }
@@ -235,51 +283,31 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float4 centerLabels = LabelTexture.Load(int3(pixCoord, 0));
 	float centerObjectId = DecodeObjectId(centerLabels);
 	bool centerIsSkin = IsTaggedSkin(centerLabels) && centerObjectId > 0.0f;
+	bool centerIsHead = IsHeadLabel(centerLabels);
 
 	float3 corrected = sourceMain.rgb;
 	bool shouldCorrect = false;
 	float bestScore = 0.0f;
 
-	if (centerIsSkin) {
-		#define TRY_REFLECTION(DIRECTION) \
-		{ \
-			ProjectionCandidate candidate = BuildReflectionCandidate(pixCoord, DIRECTION, radius, bufDim, centerObjectId, sourceMain.rgb); \
-			if (candidate.valid && (!shouldCorrect || candidate.score > bestScore)) { \
-				corrected = candidate.color; \
-				shouldCorrect = true; \
-				bestScore = candidate.score; \
-			} \
+	if (centerIsSkin && !centerIsHead) {
+		ProjectionCandidate candidate = BuildHeadToBodyCandidate(pixCoord, radius, bufDim, centerObjectId, sourceMain.rgb);
+		if (candidate.valid) {
+			corrected = candidate.color;
+			shouldCorrect = true;
+			bestScore = candidate.score;
 		}
-
-		TRY_REFLECTION(int2(-1, 0));
-		TRY_REFLECTION(int2(1, 0));
-		TRY_REFLECTION(int2(0, -1));
-		TRY_REFLECTION(int2(0, 1));
-
-		#undef TRY_REFLECTION
-	} else {
-		RayHit left = TraceAnySkinRay(pixCoord, int2(-1, 0), radius, bufDim);
-		RayHit right = TraceAnySkinRay(pixCoord, int2(1, 0), radius, bufDim);
-		RayHit up = TraceAnySkinRay(pixCoord, int2(0, -1), radius, bufDim);
-		RayHit down = TraceAnySkinRay(pixCoord, int2(0, 1), radius, bufDim);
-
-		#define TRY_GAP_PROJECTION(HIT_A, HIT_B) \
-		{ \
-			if ((HIT_A).hit && (HIT_B).hit && !IsSameObject((HIT_A).objectId, (HIT_B).objectId)) { \
-				float score = 1.0f / max((HIT_A).distance + (HIT_B).distance, 1.0f); \
-				if (!shouldCorrect || score > bestScore) { \
-					float sumDistance = max((HIT_A).distance + (HIT_B).distance, 1.0f); \
-					corrected = ((HIT_A).color * (HIT_B).distance + (HIT_B).color * (HIT_A).distance) / sumDistance; \
-					shouldCorrect = true; \
-					bestScore = score; \
-				} \
-			} \
+	} else if (!centerIsHead) {
+		int2 headOffset = int2(0, 0);
+		RayHit head = FindNearestHeadPixel(pixCoord, radius, bufDim, 0.0f, headOffset);
+		RayHit body = FindNearestNonHeadSkinPixel(pixCoord, radius, bufDim, head.objectId);
+		if (head.hit && body.hit && !IsSameObject(head.objectId, body.objectId)) {
+			float seamFalloff = SeamDistanceFalloff(head.distance, (float)radius);
+			float score = seamFalloff / max(head.distance + body.distance, 1.0f);
+			float3 offset = ClampColorOffset(head.color - body.color);
+			corrected = sourceMain.rgb + offset * seamFalloff;
+			shouldCorrect = true;
+			bestScore = score;
 		}
-
-		TRY_GAP_PROJECTION(left, right);
-		TRY_GAP_PROJECTION(up, down);
-
-		#undef TRY_GAP_PROJECTION
 	}
 
 	float3 finalColor = shouldCorrect ? lerp(sourceMain.rgb, corrected, lateBlendStrength) : sourceMain.rgb;

@@ -55,16 +55,22 @@ namespace
 		return {};
 	}
 
-	void LogClassificationSample(bool a_isSkinned, bool a_isSkinCandidate, std::string_view a_geometryName, std::string_view a_textureHint)
+	bool IsHeadGeometryName(std::string_view a_geometryName)
+	{
+		return a_geometryName.find("head") != std::string_view::npos;
+	}
+
+	void LogClassificationSample(bool a_isSkinned, bool a_isSkinCandidate, bool a_isHead, std::string_view a_geometryName, std::string_view a_textureHint)
 	{
 		static int loggedSamples = 0;
 		if (loggedSamples >= 40)
 			return;
 
 		++loggedSamples;
-		logger::info("[Neck Seam Fix] skinned={} skin={} geom='{}' tex='{}'",
+		logger::info("[Neck Seam Fix] skinned={} skin={} head={} geom='{}' tex='{}'",
 			a_isSkinned ? 1 : 0,
 			a_isSkinCandidate ? 1 : 0,
+			a_isHead ? 1 : 0,
 			a_geometryName.empty() ? "<unnamed>" : a_geometryName,
 			a_textureHint.empty() ? "<none>" : a_textureHint);
 	}
@@ -515,9 +521,12 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 
 	const bool isLightingShader = a_pass->shader && a_pass->shader->shaderType.get() == RE::BSShader::Type::Lighting;
 	const bool isSkinned = a_pass->shaderProperty->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned);
+	const char* rawName = a_pass->geometry->name.c_str();
+	const std::string loweredName = rawName && rawName[0] != '\0' ? ToLowerCopy(rawName) : std::string{};
 	const bool isSkinCandidate = isLightingShader && isSkinned && a_pass->shaderProperty->flags.any(
 		RE::BSShaderProperty::EShaderPropertyFlag::kFace,
 		RE::BSShaderProperty::EShaderPropertyFlag::kFaceGenRGBTint);
+	const bool isHeadCandidate = isSkinCandidate && IsHeadGeometryName(loweredName);
 
 	uint32_t geometryMaskId = 0;
 	if (isSkinCandidate) {
@@ -528,6 +537,7 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 	if (isLightingShader && neckSeamPerGeometryCB) {
 		NeckSeamPerGeometryCB cbData{};
 		cbData.ObjectId = static_cast<float>(geometryMaskId);
+		cbData.Flags = isHeadCandidate ? 1.0f : 0.0f;
 		neckSeamPerGeometryCB->Update(cbData);
 
 		ID3D11Buffer* buffer = neckSeamPerGeometryCB->CB();
@@ -538,10 +548,8 @@ void NeckSeamFix::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 		return;
 
 	if (a_pass->geometry) {
-		const char* rawName = a_pass->geometry->name.c_str();
-		const std::string loweredName = rawName && rawName[0] != '\0' ? ToLowerCopy(rawName) : std::string{};
 		const std::string textureHint = GetLowerTextureHint(a_pass->shaderProperty);
-		LogClassificationSample(true, isSkinCandidate, loweredName, textureHint);
+		LogClassificationSample(true, isSkinCandidate, isHeadCandidate, loweredName, textureHint);
 	}
 
 }
