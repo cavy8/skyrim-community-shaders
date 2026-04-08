@@ -335,7 +335,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			float textureEdgeBlend = saturate(colorSignal * 4.0f);
 			float edgeBlend = saturate(blendStrength * max(max(0.35f, seamBlend), textureEdgeBlend));
 
-			outMain = lerp(sourceMain, float4(seamMain, seamMainAlpha), edgeBlend);
+			// NOTE: outMain is intentionally NOT blended here.
+			// The late pass (NeckSeamFixLateCS) handles the final color transition
+			// after SSS and DeferredComposite, using clean post-composite colors.
 			outAlbedo = lerp(sourceAlbedo, seamAlbedo, edgeBlend);
 			outSpecular = lerp(sourceSpecular, seamSpecular, edgeBlend);
 			outReflectance = lerp(sourceReflectance, seamReflectance, edgeBlend);

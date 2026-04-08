@@ -26,7 +26,6 @@ cbuffer NeckSeamCB : register(b1)
 };
 
 static const float kLabelThreshold = 0.5f;
-static const float kMaxCorrection = 0.20f;
 
 bool IsValidSceneDepth(float rawDepth)
 {
@@ -172,31 +171,41 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float sideBObjectId = AverageObjectId(sideB);
 	float3 meanA = AverageColor(sideA);
 	float3 meanB = AverageColor(sideB);
-	float3 seamTarget = 0.5f * (meanA + meanB);
+	float3 midpoint = 0.5f * (meanA + meanB);
 
-	float3 correction = 0.0f;
 	float sameSideWeight = 0.0f;
 	float opposingSideWeight = 0.0f;
+	float3 mySideMean = midpoint;
 
 	if (centerIsSkin && abs(centerObjectId - sideAObjectId) < 0.5f) {
-		correction = seamTarget - meanA;
 		sameSideWeight = sideA.weight;
 		opposingSideWeight = sideB.weight;
+		mySideMean = meanA;
 	} else if (centerIsSkin && abs(centerObjectId - sideBObjectId) < 0.5f) {
-		correction = seamTarget - meanB;
 		sameSideWeight = sideB.weight;
 		opposingSideWeight = sideA.weight;
+		mySideMean = meanB;
 	} else {
-		// Gap or unmatched pixels have no local detail to preserve, so nudge them
-		// directly toward the consensus color produced by the two skin sides.
-		correction = seamTarget - sourceMain.rgb;
+		// Gap pixel — blend fully toward midpoint
 		opposingSideWeight = 1.0f;
 	}
 
+	// seamProximity: 0 deep inside one mesh, ~0.5 at the seam boundary.
+	// Remap so boundary (0.5) → 1.0 for full gradient effect there.
 	float seamProximity = opposingSideWeight / max(sameSideWeight + opposingSideWeight, 1e-5f);
-	float falloff = centerIsSkin ? pow(seamProximity, 2.0f) : 1.0f;
-	correction = clamp(correction, float3(-kMaxCorrection, -kMaxCorrection, -kMaxCorrection), float3(kMaxCorrection, kMaxCorrection, kMaxCorrection));
+	float t = saturate(seamProximity * 2.0f);
 
-	float3 finalColor = max(float3(0.0f, 0.0f, 0.0f), sourceMain.rgb + correction * falloff * lateBlendStrength);
-	MainOut[pixCoord] = float4(finalColor, sourceMain.a);
+	// Decompose this pixel's color into base tone + high-frequency detail:
+	//   detail = pores, SSS variation, specular highlights, shadow gradients
+	//   mySideMean = average skin tone for this mesh
+	float3 detail = sourceMain.rgb - mySideMean;
+
+	// Smooth gradient from this side's mean toward the midpoint of both sides.
+	// At t=0 (deep inside): gradient = mySideMean → corrected = original
+	// At t=1 (at boundary): gradient = midpoint   → corrected = midpoint + detail
+	float3 gradient = lerp(mySideMean, midpoint, t);
+	float3 corrected = gradient + detail;
+
+	float3 finalColor = lerp(sourceMain.rgb, corrected, lateBlendStrength);
+	MainOut[pixCoord] = float4(max(0.0f, finalColor), sourceMain.a);
 }
