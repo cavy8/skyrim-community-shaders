@@ -49,8 +49,7 @@ public:
 	struct alignas(16) NeckSeamPerGeometryCB
 	{
 		float ObjectId;
-		float Flags;
-		float pad[2];
+		float pad[3];
 	};
 	STATIC_ASSERT_ALIGNAS_16(NeckSeamPerGeometryCB);
 
