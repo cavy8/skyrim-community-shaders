@@ -42,6 +42,8 @@ bool NeuralRendering::Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut
 	inputs.motionVectors = motionVectors;
 	inputs.width = width;
 	inputs.height = height;
+	inputs.guideWidth = options.guideWidth ? options.guideWidth : width;
+	inputs.guideHeight = options.guideHeight ? options.guideHeight : height;
 	inputs.intensity = options.intensity;
 	inputs.localToneStrength = options.localToneStrength;
 	inputs.localStructureStrength = options.localStructureStrength;

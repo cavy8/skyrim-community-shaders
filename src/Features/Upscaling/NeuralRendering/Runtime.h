@@ -107,19 +107,31 @@ namespace NeuralRendering
 		 * @param depth Input depth buffer.
 		 * @param motionVectors Input motion vector buffer.
 		 * @param output Output colour buffer.
-		 * @param inputWidth Guide (render) resolution width.
-		 * @param inputHeight Guide (render) resolution height.
-		 * @param outputWidth Colour/output resolution width.
-		 * @param outputHeight Colour/output resolution height.
-		 * @param motionVectorScaleX Motion vector X scale applied by the runtime.
-		 * @param motionVectorScaleY Motion vector Y scale applied by the runtime.
+		 * @param colorWidth Valid (written) region of the colour and output buffers - render
+		 *                   resolution when Neural Rendering runs before the upscaler, display
+		 *                   resolution when it runs after.
+		 * @param colorHeight Valid region height of the colour and output buffers.
+		 * @param guideWidth Valid region of the depth and motion-vector buffers. These come from
+		 *                   the game's render pass and are at render (dynamic) resolution in both
+		 *                   placements.
+		 * @param guideHeight Valid region height of the depth and motion-vector buffers.
+		 * @param outputWidth Allocation width of the colour/output buffers; the feature is created
+		 *                    for this and never rebuilt for a smaller valid region.
+		 * @param outputHeight Allocation height of the colour/output buffers.
+		 * @param motionVectorScaleX Factor turning a motion-vector texel into pixels of @p guideWidth.
+		 *                           For Skyrim's normalised vectors this is @p guideWidth itself; it
+		 *                           must NOT also fold in the render/display ratio, which the subrects
+		 *                           already carry.
+		 * @param motionVectorScaleY Motion-vector Y scale, analogous to @p motionVectorScaleX.
 		 * @param tuning Feature tuning parameters.
 		 * @param reset True to discard temporal history this frame.
 		 * @return True when the evaluation succeeded.
 		 */
 		bool Execute(ID3D12GraphicsCommandList* commandList,
 			ID3D12Resource* color, ID3D12Resource* depth, ID3D12Resource* motionVectors, ID3D12Resource* output,
-			std::uint32_t inputWidth, std::uint32_t inputHeight, std::uint32_t outputWidth, std::uint32_t outputHeight,
+			std::uint32_t colorWidth, std::uint32_t colorHeight,
+			std::uint32_t guideWidth, std::uint32_t guideHeight,
+			std::uint32_t outputWidth, std::uint32_t outputHeight,
 			float motionVectorScaleX, float motionVectorScaleY, const Tuning& tuning, bool reset);
 
 		/**

@@ -40,8 +40,10 @@ public:
 		ID3D11Resource* depth = nullptr;               ///< Game depth buffer.
 		ID3D11ShaderResourceView* depthSRV = nullptr;  ///< SRV over @c depth, used by the guide pass.
 		ID3D11Resource* motionVectors = nullptr;       ///< Motion vectors matching @c depth.
-		std::uint32_t width = 0;                       ///< Active region width in pixels.
-		std::uint32_t height = 0;                      ///< Active region height in pixels.
+		std::uint32_t width = 0;                       ///< Colour/output active region width in pixels.
+		std::uint32_t height = 0;                      ///< Colour/output active region height in pixels.
+		std::uint32_t guideWidth = 0;                  ///< Depth/motion-vector active region width (render resolution).
+		std::uint32_t guideHeight = 0;                 ///< Depth/motion-vector active region height (render resolution).
 		float intensity = 0.8f;
 		float localToneStrength = 0.75f;
 		float localStructureStrength = 0.9f;

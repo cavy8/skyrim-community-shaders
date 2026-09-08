@@ -1565,6 +1565,9 @@ void Upscaling::Upscale()
 				neuralOptions.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
 				neuralOptions.automaticMask = settings.neuralRenderingAutomaticMask;
 				neuralOptions.reset = false;
+				// Before the upscaler colour and guides are both at render resolution.
+				neuralOptions.guideWidth = renderWidth;
+				neuralOptions.guideHeight = renderHeight;
 				const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 				if (neuralRendering.Evaluate(main.texture,
 						neuralRenderingTexture->resource.get(),
@@ -1601,6 +1604,9 @@ void Upscaling::PerformUpscaling()
 		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
 		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
+		// After the upscaler the colour input is display resolution, but depth and
+		// motion vectors are still the game's render-resolution targets.
+		const auto guideSize = Util::ConvertToDynamic(float2{ (float)nativeWidth, (float)nativeHeight });
 		NeuralRendering::Options neuralOptions{};
 		neuralOptions.style = settings.neuralRenderingStyle;
 		neuralOptions.intensity = settings.neuralRenderingIntensity;
@@ -1609,6 +1615,8 @@ void Upscaling::PerformUpscaling()
 		neuralOptions.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
 		neuralOptions.automaticMask = settings.neuralRenderingAutomaticMask;
 		neuralOptions.reset = false;
+		neuralOptions.guideWidth = static_cast<uint32_t>(guideSize.x);
+		neuralOptions.guideHeight = static_cast<uint32_t>(guideSize.y);
 		neuralRenderingResultValid = neuralRendering.Evaluate(sharpenerTexture->resource.get(),
 			neuralRenderingTexture->resource.get(),
 			depth.texture,

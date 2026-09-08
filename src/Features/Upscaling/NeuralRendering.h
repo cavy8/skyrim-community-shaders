@@ -28,6 +28,15 @@ public:
 		float skinStructureStrength = 0.9f;
 		bool automaticMask = true;
 		bool reset = false;
+
+		/// Valid region of @p depth and @p motionVectors, i.e. the game's render
+		/// (dynamic) resolution. Zero means "same as width/height" - correct only
+		/// when Neural Rendering runs before the upscaler, where the colour input is
+		/// also at render resolution. After the upscaler the colour input is at
+		/// display resolution while the guides are still at render resolution, so
+		/// this must be set.
+		uint32_t guideWidth = 0;
+		uint32_t guideHeight = 0;
 	};
 
 	NeuralRendering();

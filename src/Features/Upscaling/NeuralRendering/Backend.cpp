@@ -94,12 +94,15 @@ struct NeuralRenderingBackend::State
 	bool featureAvailable = false;
 	bool resetPending = true;
 
-	/// Active render region NGX last saw. A change (dynamic resolution, or the
-	/// Before/After placement toggle switching between render- and native-res
-	/// input) keeps the feature handle but makes its temporal history invalid for
-	/// one frame, so it is discarded rather than smeared into the new domain.
+	/// Colour/output and guide (depth+motion) regions NGX last saw. A change in
+	/// either (dynamic resolution, or the Before/After placement toggle switching
+	/// the colour input between render- and display-res) keeps the feature handle
+	/// but makes its temporal history invalid for one frame, so it is discarded
+	/// rather than smeared into the new domain.
 	std::uint32_t lastActiveWidth = 0;
 	std::uint32_t lastActiveHeight = 0;
+	std::uint32_t lastGuideWidth = 0;
+	std::uint32_t lastGuideHeight = 0;
 
 	bool loggedProbeFailure = false;
 	bool loggedInvalidInputs = false;
@@ -340,20 +343,28 @@ struct NeuralRenderingBackend::State
 			return LatchFailure("shared resource creation", interop.LastError());
 
 		// Dynamic resolution renders into the top-left of natively sized targets, so
-		// the active region is simply clamped to the smallest allocation involved;
-		// NGX is told about it through the subrect parameters Runtime::Execute
-		// derives from these extents. Nothing is reallocated when it changes.
-		const std::uint32_t activeWidth = std::min({ inputs.width, color.desc.Width, output.desc.Width,
-			depth.desc.Width, motionVectors.desc.Width });
-		const std::uint32_t activeHeight = std::min({ inputs.height, color.desc.Height, output.desc.Height,
-			depth.desc.Height, motionVectors.desc.Height });
-		if (!activeWidth || !activeHeight)
+		// each region is clamped to the smallest allocation involved and handed to
+		// NGX through subrect parameters; nothing is reallocated when it changes.
+		// Colour/output and the depth+motion guides are tracked separately: after
+		// the upscaler the colour input is display resolution while the guides are
+		// still render resolution, and conflating them fed the model a stale native
+		// margin as if it were scene.
+		const std::uint32_t colorWidth = std::min({ inputs.width, color.desc.Width, output.desc.Width });
+		const std::uint32_t colorHeight = std::min({ inputs.height, color.desc.Height, output.desc.Height });
+		const std::uint32_t guideSrcWidth = inputs.guideWidth ? inputs.guideWidth : inputs.width;
+		const std::uint32_t guideSrcHeight = inputs.guideHeight ? inputs.guideHeight : inputs.height;
+		const std::uint32_t guideWidth = std::min({ guideSrcWidth, depth.desc.Width, motionVectors.desc.Width });
+		const std::uint32_t guideHeight = std::min({ guideSrcHeight, depth.desc.Height, motionVectors.desc.Height });
+		if (!colorWidth || !colorHeight || !guideWidth || !guideHeight)
 			return false;
 
-		if (activeWidth != lastActiveWidth || activeHeight != lastActiveHeight) {
+		if (colorWidth != lastActiveWidth || colorHeight != lastActiveHeight ||
+			guideWidth != lastGuideWidth || guideHeight != lastGuideHeight) {
 			resetPending = true;
-			lastActiveWidth = activeWidth;
-			lastActiveHeight = activeHeight;
+			lastActiveWidth = colorWidth;
+			lastActiveHeight = colorHeight;
+			lastGuideWidth = guideWidth;
+			lastGuideHeight = guideHeight;
 		}
 
 		auto* encodeShader = GetShader(encodeColorCS, encodeColorAttempted, kEncodeColorPath, "EncodeColorCS");
@@ -367,10 +378,10 @@ struct NeuralRenderingBackend::State
 
 		// (b) Colour moves through compute passes rather than CopyResource so an
 		// encode/decode transform can be introduced later without restructuring.
-		DispatchTransfer(context, encodeShader, colorInView, color.uav11.Get(), activeWidth, activeHeight);
-		DispatchTransfer(context, guideShader, inputs.depthSRV, depth.uav11.Get(), activeWidth, activeHeight);
+		DispatchTransfer(context, encodeShader, colorInView, color.uav11.Get(), colorWidth, colorHeight);
+		DispatchTransfer(context, guideShader, inputs.depthSRV, depth.uav11.Get(), guideWidth, guideHeight);
 
-		const D3D11_BOX motionBox{ 0, 0, 0, activeWidth, activeHeight, 1 };
+		const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
 		context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
 
 		NeuralRendering::Tuning tuning;
@@ -401,17 +412,18 @@ struct NeuralRenderingBackend::State
 		}
 		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
 
-		// Output extents are the stable native allocation size; the active render
-		// region travels only through the NGX subrects Runtime::Execute derives
-		// from activeWidth/activeHeight. Passing the active region as the output
-		// extent would rebuild the feature every time dynamic resolution moves or
-		// the Before/After placement changes - releasing NGX resources while the
-		// interop queue is still reading them (frozen frame, then a CreateFeature
-		// crash on the way back).
+		// Output extents are the stable native allocation size; the live colour and
+		// guide regions travel only through the NGX subrects. Passing a live region
+		// as the output extent would rebuild the feature every time dynamic
+		// resolution moves or the Before/After placement changes - releasing NGX
+		// resources while the interop queue is still reading them (frozen frame,
+		// then a CreateFeature crash on the way back). The motion-vector scale is
+		// the guide resolution, not a render/display ratio: the subrects already
+		// carry that ratio and folding it in again halves or doubles the motion.
 		const bool executed = NeuralRendering::Runtime::Instance().Execute(commandList,
 			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
-			activeWidth, activeHeight, output.desc.Width, output.desc.Height,
-			static_cast<float>(activeWidth), static_cast<float>(activeHeight),
+			colorWidth, colorHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
+			static_cast<float>(guideWidth), static_cast<float>(guideHeight),
 			tuning, inputs.reset || resetPending);
 
 		for (auto& barrier : barriers)
@@ -423,7 +435,7 @@ struct NeuralRenderingBackend::State
 		if (!executed)
 			return LatchFailure("Feature 18 execution", static_cast<HRESULT>(NeuralRendering::Runtime::Instance().NgxResult()));
 
-		DispatchTransfer(context, decodeShader, outputSRV.get(), colorOutView, activeWidth, activeHeight);
+		DispatchTransfer(context, decodeShader, outputSRV.get(), colorOutView, colorWidth, colorHeight);
 
 		resetPending = false;
 		featureAvailable = true;
@@ -492,6 +504,8 @@ struct NeuralRenderingBackend::State
 		resetPending = true;
 		lastActiveWidth = 0;
 		lastActiveHeight = 0;
+		lastGuideWidth = 0;
+		lastGuideHeight = 0;
 
 		loggedInvalidInputs = false;
 		loggedShaderFailure = false;

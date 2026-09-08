@@ -301,7 +301,9 @@ namespace NeuralRendering
 
 	bool Runtime::Execute(ID3D12GraphicsCommandList* commandList,
 		ID3D12Resource* color, ID3D12Resource* depth, ID3D12Resource* motionVectors, ID3D12Resource* output,
-		std::uint32_t inputWidth, std::uint32_t inputHeight, std::uint32_t outputWidth, std::uint32_t outputHeight,
+		std::uint32_t colorWidth, std::uint32_t colorHeight,
+		std::uint32_t guideWidth, std::uint32_t guideHeight,
+		std::uint32_t outputWidth, std::uint32_t outputHeight,
 		float motionVectorScaleX, float motionVectorScaleY, const Tuning& tuning, bool reset)
 	{
 		if (status_ != RuntimeStatus::Initialized || !commandList || !color || !depth || !motionVectors || !output)
@@ -363,22 +365,26 @@ namespace NeuralRendering
 		parameters->Set("DLSSNR.Depth", depth);
 		parameters->Set("DLSSNR.MVec", motionVectors);
 		parameters->Set("DLSSNR.Output", output);
+		// Colour and output share the display-referred region; depth and motion vectors
+		// carry the game's render-resolution region. Each resource states its own valid
+		// extent so the model can bridge the two - this is also why the motion-vector
+		// scale below must not fold in the resolution ratio a second time.
 		parameters->Set("DLSSNR.ColorSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.ColorSubrectBaseY", 0u);
-		parameters->Set("DLSSNR.ColorSubrectWidth", inputWidth);
-		parameters->Set("DLSSNR.ColorSubrectHeight", inputHeight);
+		parameters->Set("DLSSNR.ColorSubrectWidth", colorWidth);
+		parameters->Set("DLSSNR.ColorSubrectHeight", colorHeight);
 		parameters->Set("DLSSNR.DepthSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.DepthSubrectBaseY", 0u);
-		parameters->Set("DLSSNR.DepthSubrectWidth", inputWidth);
-		parameters->Set("DLSSNR.DepthSubrectHeight", inputHeight);
+		parameters->Set("DLSSNR.DepthSubrectWidth", guideWidth);
+		parameters->Set("DLSSNR.DepthSubrectHeight", guideHeight);
 		parameters->Set("DLSSNR.MVecSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.MVecSubrectBaseY", 0u);
-		parameters->Set("DLSSNR.MVecSubrectWidth", inputWidth);
-		parameters->Set("DLSSNR.MVecSubrectHeight", inputHeight);
+		parameters->Set("DLSSNR.MVecSubrectWidth", guideWidth);
+		parameters->Set("DLSSNR.MVecSubrectHeight", guideHeight);
 		parameters->Set("DLSSNR.OutputSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.OutputSubrectBaseY", 0u);
-		parameters->Set("DLSSNR.OutputSubrectWidth", inputWidth);
-		parameters->Set("DLSSNR.OutputSubrectHeight", inputHeight);
+		parameters->Set("DLSSNR.OutputSubrectWidth", colorWidth);
+		parameters->Set("DLSSNR.OutputSubrectHeight", colorHeight);
 		parameters->Set("DLSSNR.MVecScaleX", motionVectorScaleX);
 		parameters->Set("DLSSNR.MVecScaleY", motionVectorScaleY);
 		parameters->Set("DLSSNR.DepthInverted", 0u);
