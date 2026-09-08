@@ -70,14 +70,12 @@ public:
 		float reflexFPSLimit = 60.0f;
 		bool neuralRenderingEnabled = false;
 		uint neuralRenderingPlacement = 1;  // 0=Before Upscaling, 1=After Upscaling
-		float neuralRenderingResolution = 1.0f;
-		uint neuralRenderingPreset = 0;  // 0=Default, 1-3=Preset #1-#3
-		uint neuralRenderingStyle = 0;  // 0=Default, 1=Natural, 2=Cinematic
-		float neuralRenderingIntensity = 1.0f;
-		float neuralRenderingLocalToneStrength = 1.0f;
-		float neuralRenderingLocalStructureStrength = 1.0f;
-		float neuralRenderingSkinStructureStrength = -1.0f;
-		bool neuralRenderingAutomaticMask = false;
+		uint neuralRenderingStyle = 3;  // 0=Default, 1=Natural, 2=Cinematic, 3=Style #3
+		float neuralRenderingIntensity = 0.8f;
+		float neuralRenderingLocalToneStrength = 0.75f;
+		float neuralRenderingLocalStructureStrength = 0.9f;
+		float neuralRenderingSkinStructureStrength = 0.9f;
+		bool neuralRenderingAutomaticMask = true;
 	};
 
 	Settings settings;

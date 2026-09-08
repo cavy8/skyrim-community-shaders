@@ -41,8 +41,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	reflexFPSLimit,
 	neuralRenderingEnabled,
 	neuralRenderingPlacement,
-	neuralRenderingResolution,
-	neuralRenderingPreset,
 	neuralRenderingStyle,
 	neuralRenderingIntensity,
 	neuralRenderingLocalToneStrength,
@@ -342,36 +340,17 @@ void Upscaling::DrawSettings()
 						"Run Neural Rendering before DLSS upscaling or after the upscaled image is produced."));
 				}
 
-				int neuralResolution = std::clamp(static_cast<int>(std::lround(settings.neuralRenderingResolution * 100.0f)), 25, 100);
-				if (ImGui::SliderInt(T(TKEY("neural_rendering_resolution"), "NR Resolution"), &neuralResolution, 25, 100, "%d%%"))
-					settings.neuralRenderingResolution = static_cast<float>(neuralResolution) / 100.0f;
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_tooltip"),
-						"Controls Neural Rendering input resolution from 25% to 100% relative to the selected stage. "
-						"After Upscaling uses native output resolution; Before Upscaling compounds with the base DLSS render resolution."));
-				}
 
-				const char* neuralPresets[] = {
-					T(TKEY("neural_rendering_preset_default"), "Default"),
-					T(TKEY("neural_rendering_preset_1"), "Preset #1"),
-					T(TKEY("neural_rendering_preset_2"), "Preset #2"),
-					T(TKEY("neural_rendering_preset_3"), "Preset #3")
-				};
-				int neuralPreset = static_cast<int>(settings.neuralRenderingPreset);
-				if (ImGui::Combo(T(TKEY("neural_rendering_preset"), "NR Preset"), &neuralPreset, neuralPresets, IM_ARRAYSIZE(neuralPresets)))
-					settings.neuralRenderingPreset = static_cast<uint>(std::clamp(neuralPreset, 0, 3));
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_preset_tooltip"), "Select the DLSS Neural Rendering model preset."));
-				}
 
 				const char* neuralStyles[] = {
 					T(TKEY("neural_rendering_style_default"), "Default"),
 					T(TKEY("neural_rendering_style_natural"), "Natural"),
-					T(TKEY("neural_rendering_style_cinematic"), "Cinematic")
+					T(TKEY("neural_rendering_style_cinematic"), "Cinematic"),
+					T(TKEY("neural_rendering_style_3"), "Style #3")
 				};
 				int neuralStyle = static_cast<int>(settings.neuralRenderingStyle);
 				if (ImGui::Combo(T(TKEY("neural_rendering_style"), "NR Style"), &neuralStyle, neuralStyles, IM_ARRAYSIZE(neuralStyles)))
-					settings.neuralRenderingStyle = static_cast<uint>(std::clamp(neuralStyle, 0, 2));
+					settings.neuralRenderingStyle = static_cast<uint>(std::clamp(neuralStyle, 0, 3));
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_style_tooltip"), "Choose the Neural Rendering visual style."));
 				}
@@ -621,23 +600,17 @@ void Upscaling::LoadSettings(json& o_json)
 		logger::warn("[Upscaling] Loaded neuralRenderingPlacement {} out of range, clamping to 1", settings.neuralRenderingPlacement);
 		settings.neuralRenderingPlacement = 1;
 	}
-	if (!std::isfinite(settings.neuralRenderingResolution)) {
-		settings.neuralRenderingResolution = 1.0f;
-	}
-	settings.neuralRenderingResolution = std::clamp(settings.neuralRenderingResolution, 0.25f, 1.0f);
-	if (settings.neuralRenderingPreset > 3)
-		settings.neuralRenderingPreset = 0;
-	if (settings.neuralRenderingStyle > 2)
-		settings.neuralRenderingStyle = 0;
+	if (settings.neuralRenderingStyle > 3)
+		settings.neuralRenderingStyle = 3;
 	const auto sanitizeNeuralFloat = [](float& value, float fallback, float min, float max) {
 		if (!std::isfinite(value))
 			value = fallback;
 		value = std::clamp(value, min, max);
 	};
-	sanitizeNeuralFloat(settings.neuralRenderingIntensity, 1.0f, 0.0f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingLocalToneStrength, 1.0f, 0.0f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingLocalStructureStrength, 1.0f, 0.0f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingSkinStructureStrength, -1.0f, -1.0f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingIntensity, 0.8f, 0.0f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingLocalToneStrength, 0.75f, 0.0f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingLocalStructureStrength, 0.9f, 0.0f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingSkinStructureStrength, 0.9f, -1.0f, 2.0f);
 	auto iniSettingCollection = globals::game::iniPrefSettingCollection;
 	if (iniSettingCollection) {
 		auto setting = iniSettingCollection->GetSetting("bUseTAA:Display");
@@ -1585,8 +1558,6 @@ void Upscaling::Upscale()
 			if (settings.neuralRenderingEnabled && settings.neuralRenderingPlacement == 0 && neuralRendering.IsAvailable() && neuralRenderingTexture) {
 				neuralRenderingResourcesActive = true;
 				NeuralRendering::Options neuralOptions{};
-				neuralOptions.resolutionScale = settings.neuralRenderingResolution;
-				neuralOptions.preset = settings.neuralRenderingPreset;
 				neuralOptions.style = settings.neuralRenderingStyle;
 				neuralOptions.intensity = settings.neuralRenderingIntensity;
 				neuralOptions.localToneStrength = settings.neuralRenderingLocalToneStrength;
@@ -1598,6 +1569,7 @@ void Upscaling::Upscale()
 				if (neuralRendering.Evaluate(main.texture,
 						neuralRenderingTexture->resource.get(),
 						depth.texture,
+						depth.depthSRV,
 						motionVectorCopyTexture ? motionVectorCopyTexture->resource.get() : motionVector.texture,
 						renderWidth,
 						renderHeight,
@@ -1630,8 +1602,6 @@ void Upscaling::PerformUpscaling()
 		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
 		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
 		NeuralRendering::Options neuralOptions{};
-		neuralOptions.resolutionScale = settings.neuralRenderingResolution;
-		neuralOptions.preset = settings.neuralRenderingPreset;
 		neuralOptions.style = settings.neuralRenderingStyle;
 		neuralOptions.intensity = settings.neuralRenderingIntensity;
 		neuralOptions.localToneStrength = settings.neuralRenderingLocalToneStrength;
@@ -1642,6 +1612,7 @@ void Upscaling::PerformUpscaling()
 		neuralRenderingResultValid = neuralRendering.Evaluate(sharpenerTexture->resource.get(),
 			neuralRenderingTexture->resource.get(),
 			depth.texture,
+			depth.depthSRV,
 			motionVector.texture,
 			nativeWidth,
 			nativeHeight,

@@ -4,13 +4,16 @@
 #include <memory>
 
 struct ID3D11Resource;
+struct ID3D11ShaderResourceView;
 
 /**
- * @brief Experimental direct NGX backend for DLSS 5 Neural Rendering.
+ * @brief DLSS Neural Rendering (NGX Feature 18) backend.
  *
- * This class uses the NGX instance initialized by Streamline. It neither
- * initializes nor shuts down NGX, and requires a user-supplied
- * nvngx_dlssnr.dll in Streamline's plugin directory.
+ * Feature 18 only ever exposes a D3D12 ABI, so this class does not talk to the
+ * Streamline-owned NGX core. It drives a directly loaded nvngx_dlssnr.dll
+ * through the transport layer in `NeuralRendering/`, bridging Skyrim's D3D11
+ * resources into D3D12 with shared textures. The runtime DLL is proprietary and
+ * must be supplied by the user; Community Shaders never ships it.
  */
 class NeuralRendering final
 {
@@ -18,14 +21,12 @@ public:
 	/** @brief Settings passed to the Neural Rendering feature. */
 	struct Options
 	{
-		float resolutionScale = 1.0f;
-		uint32_t preset = 0;
-		uint32_t style = 0;
-		float intensity = 1.0f;
-		float localToneStrength = 1.0f;
-		float localStructureStrength = 1.0f;
-		float skinStructureStrength = -1.0f;
-		bool automaticMask = false;
+		uint32_t style = 3;
+		float intensity = 0.8f;
+		float localToneStrength = 0.75f;
+		float localStructureStrength = 0.9f;
+		float skinStructureStrength = 0.9f;
+		bool automaticMask = true;
 		bool reset = false;
 	};
 
@@ -36,36 +37,45 @@ public:
 	NeuralRendering& operator=(const NeuralRendering&) = delete;
 
 	/**
-	 * @brief Checks whether the NGX core and required D3D11 exports can be bound.
-	 * @return True when the core entry points are present; nvngx_dlssnr.dll support is confirmed only by Evaluate.
+	 * @brief Checks whether a usable nvngx_dlssnr.dll can be found and loaded.
+	 * @return True when the runtime probe succeeded; the probe runs once and its result is cached.
 	 */
 	bool IsAvailable() const;
 
 	/**
-	 * @brief Checks whether Feature 18 was successfully created for the current resource configuration.
-	 * @return True only after a successful Evaluate-created Feature 18 instance; false does not imply the NGX core is absent.
+	 * @brief Checks whether Feature 18 has produced at least one successful frame.
+	 * @return True after a successful evaluation; false does not imply the runtime is absent.
 	 */
 	bool IsFeatureAvailable() const;
 
 	/**
 	 * @brief Executes Neural Rendering on the current D3D11 immediate context.
-	 * @param colorIn Input color resource.
-	 * @param colorOut Distinct output resource receiving the neural-rendered image.
+	 *
+	 * The shared textures backing the D3D12 bridge are allocated at the native
+	 * extents of the supplied resources. @p width and @p height describe only the
+	 * active dynamic-resolution region and are forwarded to NGX as subrect
+	 * extents, so changing dynamic resolution never reallocates anything.
+	 *
+	 * @param colorIn Input color resource; must be shader-readable.
+	 * @param colorOut Distinct output resource receiving the neural-rendered image; must be UAV-writable.
 	 * @param depth Depth resource.
+	 * @param depthSRV Shader resource view over @p depth, used by the depth-guide compute pass.
 	 * @param motionVectors Motion-vector resource.
-	 * @param width Output width in pixels.
-	 * @param height Output height in pixels.
+	 * @param width Active region width in pixels.
+	 * @param height Active region height in pixels.
 	 * @param options Neural Rendering settings.
-	 * @return True when NGX successfully evaluates the feature.
+	 * @return True when NGX successfully evaluates the feature and the result reaches @p colorOut.
 	 */
 	bool Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
-		ID3D11Resource* depth, ID3D11Resource* motionVectors,
+		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
+		ID3D11Resource* motionVectors,
 		uint32_t width, uint32_t height, const Options& options);
 
 	/**
-	 * @brief Releases the NGX feature, parameter map, and scratch resource.
+	 * @brief Releases the NGX feature, the runtime, the D3D12 interop device and every shared resource.
 	 *
-	 * This does not shut down NGX because Streamline owns its lifetime.
+	 * Also clears the failure latch, so toggling Neural Rendering off and on is
+	 * the supported way to retry after a hard failure.
 	 */
 	void DestroyResources();
 
