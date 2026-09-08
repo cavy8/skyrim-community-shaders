@@ -13,6 +13,8 @@
 
 # Skyrim Community Shaders
 
+HEAVILY VIBECODED PERSONAL BRANCH WITH EXPERIMENTAL FEATURES: in short, none of this is intended for production or other users, nor is it planned to ever be. It is solely for my own use, made where polish and accuracy isn't necessarily as important as just getting me the basic features I want for my own game.
+
 SKSE core plugin for community-driven advanced graphics modifications.
 
 [Nexus](https://www.nexusmods.com/skyrimspecialedition/mods/86492)
