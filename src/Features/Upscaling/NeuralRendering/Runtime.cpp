@@ -347,7 +347,20 @@ namespace NeuralRendering
 			parameters->Set("DLSSNR.Scale", 1.0f);
 			parameters->Set("DLSSNR.Upscaling", 1u);
 			parameters->Set("DLSSNR.ScalingRatio", 1.0f);
+
+			// The model latches its tuning at feature-create time; the same names
+			// written only at evaluate are read by nothing. They are set again in
+			// the evaluate block below purely so a future shared-parameter-block
+			// path stays correct, but this is the write that takes effect. A tuning
+			// change therefore needs the feature rebuilt - today that means toggling
+			// Neural Rendering off and on; a debounced in-place rebuild is a follow-up.
 			parameters->Set("DLSSNR.Hint.Render.Preset", 0u);
+			parameters->Set("DLSSNR.Intensity", tuning.intensity);
+			parameters->Set("DLSSNR.Style", tuning.style);
+			parameters->Set("DLSSNR.LocalToneStrength", tuning.localToneStrength);
+			parameters->Set("DLSSNR.LocalStructureStrength", tuning.localStructureStrength);
+			parameters->Set("DLSSNR.SkinStructureStrength", tuning.skinStructureStrength);
+			parameters->Set("DLSSNR.UseAutoMask", tuning.useAutoMask ? 1u : 0u);
 			NVSDK_NGX_Handle* handle = nullptr;
 			ngxResult_ = static_cast<std::uint32_t>(create(commandList, kFeatureDlssNr, parameters, &handle));
 			if (ngxResult_ != NVSDK_NGX_Result_Success || !handle) {
