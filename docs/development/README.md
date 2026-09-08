@@ -5,6 +5,10 @@
 -   **[VSCode Setup](./vscode-setup.md)** - IDE configuration, extensions, and auto-deploy
 -   **[Shader Workflow](./shader-workflow.md)** - Fast shader iteration and deployment
 
+## Feature Internals
+
+-   **[Neural Rendering](./neural-rendering.md)** - DLSS NGX feature 18: source layout, placement modes, colour domain
+
 ## Quick Links
 
 ### Common Tasks
