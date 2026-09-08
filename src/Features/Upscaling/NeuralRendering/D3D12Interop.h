@@ -110,7 +110,10 @@ namespace NeuralRendering
 		};
 
 		bool RecordFailure(HRESULT result);
-		bool WaitForFence(std::uint64_t value);
+		/// @param timeoutMs CPU wait budget. The per-frame backpressure path keeps the
+		///        short default; WaitForIdle() passes a longer budget because a feature
+		///        rebuild it is fencing against can legitimately take longer than a frame.
+		bool WaitForFence(std::uint64_t value, std::uint32_t timeoutMs = 250);
 
 		Microsoft::WRL::ComPtr<ID3D11Device5> device11_;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext4> context11_;

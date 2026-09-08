@@ -94,6 +94,13 @@ struct NeuralRenderingBackend::State
 	bool featureAvailable = false;
 	bool resetPending = true;
 
+	/// Active render region NGX last saw. A change (dynamic resolution, or the
+	/// Before/After placement toggle switching between render- and native-res
+	/// input) keeps the feature handle but makes its temporal history invalid for
+	/// one frame, so it is discarded rather than smeared into the new domain.
+	std::uint32_t lastActiveWidth = 0;
+	std::uint32_t lastActiveHeight = 0;
+
 	bool loggedProbeFailure = false;
 	bool loggedInvalidInputs = false;
 	bool loggedShaderFailure = false;
@@ -343,6 +350,12 @@ struct NeuralRenderingBackend::State
 		if (!activeWidth || !activeHeight)
 			return false;
 
+		if (activeWidth != lastActiveWidth || activeHeight != lastActiveHeight) {
+			resetPending = true;
+			lastActiveWidth = activeWidth;
+			lastActiveHeight = activeHeight;
+		}
+
 		auto* encodeShader = GetShader(encodeColorCS, encodeColorAttempted, kEncodeColorPath, "EncodeColorCS");
 		auto* decodeShader = GetShader(decodeColorCS, decodeColorAttempted, kDecodeColorPath, "DecodeColorCS");
 		auto* guideShader = GetShader(copyDepthGuideCS, copyDepthGuideAttempted, kCopyDepthGuidePath, "CopyDepthGuideCS");
@@ -388,9 +401,16 @@ struct NeuralRenderingBackend::State
 		}
 		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
 
+		// Output extents are the stable native allocation size; the active render
+		// region travels only through the NGX subrects Runtime::Execute derives
+		// from activeWidth/activeHeight. Passing the active region as the output
+		// extent would rebuild the feature every time dynamic resolution moves or
+		// the Before/After placement changes - releasing NGX resources while the
+		// interop queue is still reading them (frozen frame, then a CreateFeature
+		// crash on the way back).
 		const bool executed = NeuralRendering::Runtime::Instance().Execute(commandList,
 			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
-			activeWidth, activeHeight, activeWidth, activeHeight,
+			activeWidth, activeHeight, output.desc.Width, output.desc.Height,
 			static_cast<float>(activeWidth), static_cast<float>(activeHeight),
 			tuning, inputs.reset || resetPending);
 
@@ -470,6 +490,8 @@ struct NeuralRenderingBackend::State
 		failureLatched = false;
 		featureAvailable = false;
 		resetPending = true;
+		lastActiveWidth = 0;
+		lastActiveHeight = 0;
 
 		loggedInvalidInputs = false;
 		loggedShaderFailure = false;

@@ -314,8 +314,15 @@ namespace NeuralRendering
 		if (!scope.IsInstalled())
 			return false;
 
-		const bool dimensionsChanged = featureInputWidth_ != inputWidth || featureInputHeight_ != inputHeight ||
-			featureOutputWidth_ != outputWidth || featureOutputHeight_ != outputHeight;
+		// The feature is built once at the stable output (native) extents. A smaller
+		// render region - dynamic resolution, or the "Before Upscaling" placement
+		// running at render resolution - is expressed per frame through the eval
+		// subrects below, never by rebuilding the feature. Only a genuine
+		// output-extent change (display resolution or mode) forces a rebuild, and by
+		// the time that reaches here the backend has already drained the interop
+		// queue via EnsureResources(), so no in-flight command list still
+		// references the handle being released.
+		const bool dimensionsChanged = featureOutputWidth_ != outputWidth || featureOutputHeight_ != outputHeight;
 		if (featureHandle_ && dimensionsChanged) {
 			release(static_cast<NVSDK_NGX_Handle*>(featureHandle_));
 			featureHandle_ = nullptr;
@@ -329,15 +336,15 @@ namespace NeuralRendering
 			parameters->Set("OutHeight", outputHeight);
 			parameters->Set("DLSSNR.Width", outputWidth);
 			parameters->Set("DLSSNR.Height", outputHeight);
-			parameters->Set("DLSSNR.InputWidth", inputWidth);
-			parameters->Set("DLSSNR.InputHeight", inputHeight);
+			parameters->Set("DLSSNR.InputWidth", outputWidth);
+			parameters->Set("DLSSNR.InputHeight", outputHeight);
 			parameters->Set("DLSSNR.OutputWidth", outputWidth);
 			parameters->Set("DLSSNR.OutputHeight", outputHeight);
 			parameters->Set("DLSSNR.Output.Width", outputWidth);
 			parameters->Set("DLSSNR.Output.Height", outputHeight);
-			parameters->Set("DLSSNR.Scale", static_cast<float>(outputWidth) / static_cast<float>(inputWidth));
+			parameters->Set("DLSSNR.Scale", 1.0f);
 			parameters->Set("DLSSNR.Upscaling", 1u);
-			parameters->Set("DLSSNR.ScalingRatio", static_cast<float>(outputWidth) / static_cast<float>(inputWidth));
+			parameters->Set("DLSSNR.ScalingRatio", 1.0f);
 			parameters->Set("DLSSNR.Hint.Render.Preset", 0u);
 			NVSDK_NGX_Handle* handle = nullptr;
 			ngxResult_ = static_cast<std::uint32_t>(create(commandList, kFeatureDlssNr, parameters, &handle));
@@ -346,8 +353,6 @@ namespace NeuralRendering
 				return false;
 			}
 			featureHandle_ = handle;
-			featureInputWidth_ = inputWidth;
-			featureInputHeight_ = inputHeight;
 			featureOutputWidth_ = outputWidth;
 			featureOutputHeight_ = outputHeight;
 			reset = true;
@@ -360,8 +365,8 @@ namespace NeuralRendering
 		parameters->Set("DLSSNR.Output", output);
 		parameters->Set("DLSSNR.ColorSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.ColorSubrectBaseY", 0u);
-		parameters->Set("DLSSNR.ColorSubrectWidth", outputWidth);
-		parameters->Set("DLSSNR.ColorSubrectHeight", outputHeight);
+		parameters->Set("DLSSNR.ColorSubrectWidth", inputWidth);
+		parameters->Set("DLSSNR.ColorSubrectHeight", inputHeight);
 		parameters->Set("DLSSNR.DepthSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.DepthSubrectBaseY", 0u);
 		parameters->Set("DLSSNR.DepthSubrectWidth", inputWidth);
@@ -372,8 +377,8 @@ namespace NeuralRendering
 		parameters->Set("DLSSNR.MVecSubrectHeight", inputHeight);
 		parameters->Set("DLSSNR.OutputSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.OutputSubrectBaseY", 0u);
-		parameters->Set("DLSSNR.OutputSubrectWidth", outputWidth);
-		parameters->Set("DLSSNR.OutputSubrectHeight", outputHeight);
+		parameters->Set("DLSSNR.OutputSubrectWidth", inputWidth);
+		parameters->Set("DLSSNR.OutputSubrectHeight", inputHeight);
 		parameters->Set("DLSSNR.MVecScaleX", motionVectorScaleX);
 		parameters->Set("DLSSNR.MVecScaleY", motionVectorScaleY);
 		parameters->Set("DLSSNR.DepthInverted", 0u);
@@ -409,7 +414,6 @@ namespace NeuralRendering
 					static_cast<std::uint32_t>(result), scope.IsInstalled());
 		}
 		featureHandle_ = nullptr;
-		featureInputWidth_ = featureInputHeight_ = 0;
 		featureOutputWidth_ = featureOutputHeight_ = 0;
 		successfulFrames_ = 0;
 	}

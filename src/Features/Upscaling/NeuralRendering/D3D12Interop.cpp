@@ -197,13 +197,13 @@ namespace NeuralRendering
 		return true;
 	}
 
-	bool D3D12Interop::WaitForFence(std::uint64_t value)
+	bool D3D12Interop::WaitForFence(std::uint64_t value, std::uint32_t timeoutMs)
 	{
 		if (!value || fence12_->GetCompletedValue() >= value)
 			return true;
 		const HRESULT result = fence12_->SetEventOnCompletion(value, fenceEvent_);
 		if (FAILED(result)) return RecordFailure(result);
-		const DWORD waitResult = WaitForSingleObject(fenceEvent_, 250);
+		const DWORD waitResult = WaitForSingleObject(fenceEvent_, timeoutMs);
 		if (waitResult != WAIT_OBJECT_0)
 			return RecordFailure(waitResult == WAIT_TIMEOUT ? HRESULT_FROM_WIN32(ERROR_TIMEOUT) :
 															  HRESULT_FROM_WIN32(GetLastError()));
@@ -218,6 +218,8 @@ namespace NeuralRendering
 		std::uint64_t lastSubmittedValue = 0;
 		for (const auto& commandContext : commandContexts_)
 			lastSubmittedValue = std::max(lastSubmittedValue, commandContext.fenceValue);
-		return WaitForFence(lastSubmittedValue);
+		// A rebuild-fencing idle can outlast a frame; don't give up after the
+		// per-frame backpressure budget.
+		return WaitForFence(lastSubmittedValue, 2000);
 	}
 }

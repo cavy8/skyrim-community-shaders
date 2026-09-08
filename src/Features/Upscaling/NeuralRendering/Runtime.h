@@ -95,7 +95,11 @@ namespace NeuralRendering
 		/**
 		 * @brief Create (if needed) and evaluate the Neural Rendering feature.
 		 *
-		 * The feature handle is recreated whenever the input or output extents change.
+		 * The feature handle is built for the output extents and reused across frames.
+		 * A smaller input (render) region is passed through the NGX subrects, so
+		 * dynamic resolution and the Before/After placement toggle do not recreate it;
+		 * only an output-extent change does, and the caller must have drained any
+		 * command list still referencing the handle before that happens.
 		 * All resources must be D3D12 resources visible to the device passed to Initialize().
 		 *
 		 * @param commandList Command list to record the evaluation into.
@@ -149,8 +153,9 @@ namespace NeuralRendering
 		void* module_ = nullptr;
 		void* parameters_ = nullptr;
 		void* featureHandle_ = nullptr;
-		std::uint32_t featureInputWidth_ = 0;
-		std::uint32_t featureInputHeight_ = 0;
+		// Output (native) extents the feature was built for. The active render
+		// region is passed per frame as an NGX subrect, not baked into the handle,
+		// so dynamic resolution and the Before/After placement toggle never rebuild.
 		std::uint32_t featureOutputWidth_ = 0;
 		std::uint32_t featureOutputHeight_ = 0;
 		ID3D12Device* device_ = nullptr;
