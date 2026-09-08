@@ -3,6 +3,7 @@
 #include "Feature.h"
 #include "Upscaling/DX12SwapChain.h"
 #include "Upscaling/FidelityFX.h"
+#include "Upscaling/NeuralRendering.h"
 #include "Upscaling/RCAS/RCAS.h"
 #include "Upscaling/Streamline.h"
 #include <d3d11_4.h>
@@ -67,6 +68,16 @@ public:
 		bool reflexUseMarkersToOptimize = false;
 		bool reflexUseFPSLimit = false;
 		float reflexFPSLimit = 60.0f;
+		bool neuralRenderingEnabled = false;
+		uint neuralRenderingPlacement = 1;  // 0=Before Upscaling, 1=After Upscaling
+		float neuralRenderingResolution = 1.0f;
+		uint neuralRenderingPreset = 0;  // 0=Default, 1-3=Preset #1-#3
+		uint neuralRenderingStyle = 0;  // 0=Default, 1=Natural, 2=Cinematic
+		float neuralRenderingIntensity = 1.0f;
+		float neuralRenderingLocalToneStrength = 1.0f;
+		float neuralRenderingLocalStructureStrength = 1.0f;
+		float neuralRenderingSkinStructureStrength = -1.0f;
+		bool neuralRenderingAutomaticMask = false;
 	};
 
 	Settings settings;
@@ -156,6 +167,9 @@ public:
 	Texture2D* transparencyCompositionMaskTexture = nullptr;
 	Texture2D* motionVectorCopyTexture = nullptr;
 	Texture2D* sharpenerTexture = nullptr;
+	Texture2D* neuralRenderingTexture = nullptr;
+	bool neuralRenderingResultValid = false;
+	bool neuralRenderingResourcesActive = false;
 
 	virtual void ClearShaderCache() override;
 
@@ -164,6 +178,7 @@ public:
 	static inline FidelityFX fidelityFX;  ///< Only for frame generation
 	static inline DX12SwapChain dx12SwapChain;
 	static inline RCAS rcas;  ///< Standalone RCAS sharpening for DLSS
+	static inline NeuralRendering neuralRendering;
 
 	winrt::com_ptr<ID3D11PixelShader> copyDepthToSharedBufferPS;
 
