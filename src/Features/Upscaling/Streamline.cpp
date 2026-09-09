@@ -352,13 +352,19 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport)
 	auto& upscaling = globals::features::upscaling;
 	auto jitter = upscaling.jitter;
 	slConstants.jitterOffset = { -jitter.x, -jitter.y };
-	slConstants.reset = sl::Boolean::eFalse;
+	// Keep DLSS SR and Neural Rendering on the same history boundary after a
+	// loading transition. Reprojecting either feature across a camera/world jump
+	// leaves the other one consuming guides from an unrelated frame.
+	slConstants.reset = upscaling.neuralRenderingResetThisFrame ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
 	slConstants.mvecScale = { 1.0f, 1.0f };
 	slConstants.motionVectors3D = sl::Boolean::eFalse;
 	slConstants.motionVectorsInvalidValue = FLT_MIN;
 	slConstants.orthographicProjection = sl::Boolean::eFalse;
-	slConstants.motionVectorsDilated = sl::Boolean::eFalse;
+	// EncodeTexturesCS has already depth-dilated the DLSS motion-vector input.
+	// Advertising it as undilated makes Streamline perform incompatible guide
+	// preparation on a field that has already been expanded at silhouettes.
+	slConstants.motionVectorsDilated = sl::Boolean::eTrue;
 	slConstants.motionVectorsJittered = sl::Boolean::eFalse;
 
 	if (SL_FAILED(res, slSetConstants(slConstants, *frameToken, p_viewport))) {

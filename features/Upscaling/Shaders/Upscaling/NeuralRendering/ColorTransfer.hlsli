@@ -12,15 +12,18 @@
 // pixels every frame with nothing anchoring them, which reads as shimmer and
 // flicker on exactly the bright regions.
 //
-// EncodeNeuralColor brings the frame into that display-referred domain and
-// DecodeNeuralColor is its exact inverse, so when the model returns its input
-// unchanged the round trip is the identity and the frame is unaffected. The
-// operator is a per-channel Reinhard curve (x / (1 + x)) followed by the sRGB
-// transfer function; both are invertible in closed form. The decode clamps the
-// model's answer just below 1.0 before inverting the curve so a blown highlight
-// stays a bright highlight instead of resolving to infinity.
+// EncodeNeuralColor brings the frame into that display-referred domain. The
+// model's answer is deliberately not inverse-tonemapped.  The derivative of
+// inverse Reinhard is 1 / (1 - x)^2, so tiny frame-to-frame changes near white
+// used to become enormous scene-linear shading changes.  Instead the resolve
+// measures the model's bounded luminance change in proxy space and applies that
+// as a guarded scalar ratio to the untouched scene colour.  This preserves the
+// original hue and HDR headroom while re-anchoring every frame to deterministic
+// renderer output rather than to model history.
 
-static const float kNeuralDecodeCeiling = 0.99987793;  // 1 - 2^-13; caps the reconstructed HDR ratio near 8192x.
+static const float3 kNeuralLuma = float3(0.2126, 0.7152, 0.0722);
+static const float kNeuralRatioFloor = 1.0 / 512.0;
+static const float kNeuralMaxRatio = 2.0;
 
 float3 NeuralLinearToSrgb(float3 v)
 {
@@ -45,13 +48,33 @@ float4 EncodeNeuralColor(float4 color)
 }
 
 /**
- * Inverse of EncodeNeuralColor, applied to the Feature 18 output.
+ * Compose the Feature 18 answer onto the untouched scene colour.
+ *
+ * A model no-op is an exact no-op apart from normal texture precision: its
+ * luminance matches the reconstructed proxy, making the ratio one.  The common
+ * floor makes the ratio converge smoothly to one in deep shadow, where a tiny
+ * absolute model change would otherwise become an unbounded relative change.
+ * A two-sided guard limits both flashes and sudden collapses without clipping
+ * individual RGB channels.
  */
-float4 DecodeNeuralColor(float4 color)
+float4 ResolveNeuralColor(float4 modelColor, float4 originalColor)
 {
-	float3 tonemapped = min(NeuralSrgbToLinear(color.rgb), kNeuralDecodeCeiling);
-	float3 linearColor = tonemapped / (1.0 - tonemapped);  // inverse Reinhard, back to linear HDR
-	return float4(linearColor, color.a);
+	float3 original = max(originalColor.rgb, 0.0);
+	float3 proxy = NeuralSrgbToLinear(EncodeNeuralColor(originalColor).rgb);
+	float3 model = NeuralSrgbToLinear(modelColor.rgb);
+
+	float proxyLuma = dot(proxy, kNeuralLuma);
+	float modelLuma = dot(model, kNeuralLuma);
+	// Some incompatible model/runtime combinations return an empty or invalid
+	// frame. Treat that as no edit instead of turning a transient failure into a
+	// half-bright flash through the lower ratio guard.
+	if (!(modelLuma > 1e-5))
+		return float4(original, originalColor.a);
+
+	float ratio = (modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor);
+	ratio = clamp(ratio, 1.0 / kNeuralMaxRatio, kNeuralMaxRatio);
+
+	return float4(original * ratio, originalColor.a);
 }
 
 #endif

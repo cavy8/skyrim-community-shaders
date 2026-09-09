@@ -316,14 +316,11 @@ namespace NeuralRendering
 		if (!scope.IsInstalled())
 			return false;
 
-		// The feature is built once at the stable output (native) extents. A smaller
-		// render region - dynamic resolution, or the "Before Upscaling" placement
-		// running at render resolution - is expressed per frame through the eval
-		// subrects below, never by rebuilding the feature. Only a genuine
-		// output-extent change (display resolution or mode) forces a rebuild, and by
-		// the time that reaches here the backend has already drained the interop
-		// queue via EnsureResources(), so no in-flight command list still
-		// references the handle being released.
+		// The feature is built for the active colour raster. Before-upscale operation
+		// therefore creates it at render resolution and after-upscale operation at
+		// display resolution. When that raster changes the backend has already
+		// drained the interop queue via EnsureResources(), so no in-flight command
+		// list still references the handle being released.
 		const bool dimensionsChanged = featureOutputWidth_ != outputWidth || featureOutputHeight_ != outputHeight;
 		if (featureHandle_ && dimensionsChanged) {
 			release(static_cast<NVSDK_NGX_Handle*>(featureHandle_));
@@ -332,21 +329,11 @@ namespace NeuralRendering
 
 		if (!featureHandle_) {
 			parameters->Reset();
-			parameters->Set("Width", outputWidth);
-			parameters->Set("Height", outputHeight);
-			parameters->Set("OutWidth", outputWidth);
-			parameters->Set("OutHeight", outputHeight);
+			parameters->Set("DLSSNR.Enabled", 1u);
 			parameters->Set("DLSSNR.Width", outputWidth);
 			parameters->Set("DLSSNR.Height", outputHeight);
-			parameters->Set("DLSSNR.InputWidth", outputWidth);
-			parameters->Set("DLSSNR.InputHeight", outputHeight);
-			parameters->Set("DLSSNR.OutputWidth", outputWidth);
-			parameters->Set("DLSSNR.OutputHeight", outputHeight);
-			parameters->Set("DLSSNR.Output.Width", outputWidth);
-			parameters->Set("DLSSNR.Output.Height", outputHeight);
-			parameters->Set("DLSSNR.Scale", 1.0f);
-			parameters->Set("DLSSNR.Upscaling", 1u);
-			parameters->Set("DLSSNR.ScalingRatio", 1.0f);
+			parameters->Set("CreationNodeMask", 1u);
+			parameters->Set("VisibilityNodeMask", 1u);
 
 			// The model latches its tuning at feature-create time; the same names
 			// written only at evaluate are read by nothing. They are set again in
@@ -361,6 +348,7 @@ namespace NeuralRendering
 			parameters->Set("DLSSNR.LocalStructureStrength", tuning.localStructureStrength);
 			parameters->Set("DLSSNR.SkinStructureStrength", tuning.skinStructureStrength);
 			parameters->Set("DLSSNR.UseAutoMask", tuning.useAutoMask ? 1u : 0u);
+			parameters->Set("DLSSNR.UICorrection", tuning.uiCorrection ? 1u : 0u);
 			NVSDK_NGX_Handle* handle = nullptr;
 			ngxResult_ = static_cast<std::uint32_t>(create(commandList, kFeatureDlssNr, parameters, &handle));
 			if (ngxResult_ != NVSDK_NGX_Result_Success || !handle) {
@@ -378,6 +366,11 @@ namespace NeuralRendering
 		parameters->Set("DLSSNR.Depth", depth);
 		parameters->Set("DLSSNR.MVec", motionVectors);
 		parameters->Set("DLSSNR.Output", output);
+		// Reset() clears the parameter block. Feature 18 reads these dimensions
+		// during evaluation too, so restate the complete per-frame contract rather
+		// than relying on values written when the handle was created.
+		parameters->Set("DLSSNR.Width", colorWidth);
+		parameters->Set("DLSSNR.Height", colorHeight);
 		// Colour and output share the display-referred region; depth and motion vectors
 		// carry the game's render-resolution region. Each resource states its own valid
 		// extent so the model can bridge the two - this is also why the motion-vector

@@ -35,14 +35,16 @@ namespace
 	/**
 	 * @brief Builds a single-mip, single-sample shared-texture description from a game resource.
 	 *
-	 * Extents are taken verbatim from the source, which Skyrim always allocates at
-	 * native resolution; dynamic resolution only shrinks the region that is drawn
-	 * into. Keeping the allocation native is what lets the active region be
-	 * expressed purely through NGX subrect parameters.
+	 * The supplied active extent deliberately replaces the source allocation
+	 * extent. Feature 18 builds internal history for its creation dimensions, so
+	 * a render-resolution frame must not masquerade as a padded native frame.
 	 */
-	D3D11_TEXTURE2D_DESC MakeSharedDesc(const D3D11_TEXTURE2D_DESC& source, DXGI_FORMAT format, UINT bindFlags)
+	D3D11_TEXTURE2D_DESC MakeSharedDesc(const D3D11_TEXTURE2D_DESC& source, DXGI_FORMAT format, UINT bindFlags,
+		UINT width, UINT height)
 	{
 		auto desc = source;
+		desc.Width = width;
+		desc.Height = height;
 		desc.Format = format;
 		desc.MipLevels = 1;
 		desc.ArraySize = 1;
@@ -87,6 +89,9 @@ struct NeuralRenderingBackend::State
 	/// UAV over the caller's colour destination, cached against the resource it was created from.
 	winrt::com_ptr<ID3D11UnorderedAccessView> colorOutUAV;
 	ID3D11Resource* colorOutUAVSource = nullptr;
+	/// Colour source used on the preceding frame. A change means the model moved
+	/// between pre- and post-upscale domains and its temporal history is invalid.
+	ID3D11Resource* lastColorInput = nullptr;
 
 	bool probeAttempted = false;
 	bool probeSucceeded = false;
@@ -96,9 +101,8 @@ struct NeuralRenderingBackend::State
 
 	/// Colour/output and guide (depth+motion) regions NGX last saw. A change in
 	/// either (dynamic resolution, or the Before/After placement toggle switching
-	/// the colour input between render- and display-res) keeps the feature handle
-	/// but makes its temporal history invalid for one frame, so it is discarded
-	/// rather than smeared into the new domain.
+	/// the colour input between render- and display-res) invalidates temporal
+	/// history rather than smearing it into the new domain.
 	std::uint32_t lastActiveWidth = 0;
 	std::uint32_t lastActiveHeight = 0;
 	std::uint32_t lastGuideWidth = 0;
@@ -184,7 +188,7 @@ struct NeuralRenderingBackend::State
 	}
 
 	/**
-	 * @brief Creates or validates the shared textures at the native extents of the inputs.
+	 * @brief Creates or validates compact shared textures at the active input extents.
 	 * @return False only when the descriptions cannot be read or a shared texture cannot be created.
 	 */
 	bool EnsureResources(const FrameInputs& inputs)
@@ -197,16 +201,18 @@ struct NeuralRenderingBackend::State
 			return false;
 
 		constexpr UINT sharedFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-		const auto colorDesc = MakeSharedDesc(colorSource, colorSource.Format, sharedFlags);
-		const auto outputDesc = MakeSharedDesc(colorSource, colorSource.Format, sharedFlags);
-		const auto depthDesc = MakeSharedDesc(depthSource, DXGI_FORMAT_R32_FLOAT, sharedFlags);
-		const auto motionDesc = MakeSharedDesc(motionSource, motionSource.Format, sharedFlags);
+		const auto colorDesc = MakeSharedDesc(colorSource, colorSource.Format, sharedFlags, inputs.width, inputs.height);
+		const auto outputDesc = MakeSharedDesc(colorSource, colorSource.Format, sharedFlags, inputs.width, inputs.height);
+		const auto depthDesc = MakeSharedDesc(depthSource, DXGI_FORMAT_R32_FLOAT, sharedFlags,
+			inputs.guideWidth, inputs.guideHeight);
+		const auto motionDesc = MakeSharedDesc(motionSource, motionSource.Format, sharedFlags,
+			inputs.guideWidth, inputs.guideHeight);
 
 		if (Matches(color, colorDesc) && Matches(output, outputDesc) &&
 			Matches(depth, depthDesc) && Matches(motionVectors, motionDesc) && outputSRV)
 			return true;
 
-		// Native extents changed (a resolution or display-mode change). Everything
+		// Active extents changed (a resolution, placement, or display-mode change). Everything
 		// downstream of the allocation - including the NGX feature handle - is stale.
 		if (!interop.WaitForIdle())
 			return false;
@@ -297,19 +303,21 @@ struct NeuralRenderingBackend::State
 		return colorOutUAV.get();
 	}
 
-	/// Runs a single-SRV/single-UAV compute pass over the active region and unbinds afterwards.
+	/// Runs a one- or two-SRV/single-UAV compute pass over the active region and unbinds afterwards.
 	static void DispatchTransfer(ID3D11DeviceContext* context, ID3D11ComputeShader* shader,
-		ID3D11ShaderResourceView* source, ID3D11UnorderedAccessView* destination,
+		ID3D11ShaderResourceView* source, ID3D11ShaderResourceView* secondarySource,
+		ID3D11UnorderedAccessView* destination,
 		std::uint32_t width, std::uint32_t height)
 	{
 		context->CSSetShader(shader, nullptr, 0);
-		context->CSSetShaderResources(0, 1, &source);
+		ID3D11ShaderResourceView* sources[2]{ source, secondarySource };
+		context->CSSetShaderResources(0, static_cast<UINT>(std::size(sources)), sources);
 		context->CSSetUnorderedAccessViews(0, 1, &destination, nullptr);
 		context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 
-		ID3D11ShaderResourceView* nullSRV = nullptr;
+		ID3D11ShaderResourceView* nullSRVs[2]{};
 		ID3D11UnorderedAccessView* nullUAV = nullptr;
-		context->CSSetShaderResources(0, 1, &nullSRV);
+		context->CSSetShaderResources(0, static_cast<UINT>(std::size(nullSRVs)), nullSRVs);
 		context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
@@ -342,13 +350,10 @@ struct NeuralRenderingBackend::State
 		if (!EnsureResources(inputs))
 			return LatchFailure("shared resource creation", interop.LastError());
 
-		// Dynamic resolution renders into the top-left of natively sized targets, so
-		// each region is clamped to the smallest allocation involved and handed to
-		// NGX through subrect parameters; nothing is reallocated when it changes.
-		// Colour/output and the depth+motion guides are tracked separately: after
-		// the upscaler the colour input is display resolution while the guides are
-		// still render resolution, and conflating them fed the model a stale native
-		// margin as if it were scene.
+		// Dynamic resolution renders into the top-left of natively sized game
+		// targets. Shared resources are compact, but keep these clamps as a final
+		// guard against malformed active extents. Colour/output and depth+motion
+		// regions remain independent because post-upscale colour is display sized.
 		const std::uint32_t colorWidth = std::min({ inputs.width, color.desc.Width, output.desc.Width });
 		const std::uint32_t colorHeight = std::min({ inputs.height, color.desc.Height, output.desc.Height });
 		const std::uint32_t guideSrcWidth = inputs.guideWidth ? inputs.guideWidth : inputs.width;
@@ -366,6 +371,10 @@ struct NeuralRenderingBackend::State
 			lastGuideWidth = guideWidth;
 			lastGuideHeight = guideHeight;
 		}
+		if (inputs.colorIn != lastColorInput) {
+			resetPending = true;
+			lastColorInput = inputs.colorIn;
+		}
 
 		auto* encodeShader = GetShader(encodeColorCS, encodeColorAttempted, kEncodeColorPath, "EncodeColorCS");
 		auto* decodeShader = GetShader(decodeColorCS, decodeColorAttempted, kDecodeColorPath, "DecodeColorCS");
@@ -378,8 +387,8 @@ struct NeuralRenderingBackend::State
 
 		// (b) Colour moves through compute passes rather than CopyResource so an
 		// encode/decode transform can be introduced later without restructuring.
-		DispatchTransfer(context, encodeShader, colorInView, color.uav11.Get(), colorWidth, colorHeight);
-		DispatchTransfer(context, guideShader, inputs.depthSRV, depth.uav11.Get(), guideWidth, guideHeight);
+		DispatchTransfer(context, encodeShader, colorInView, nullptr, color.uav11.Get(), colorWidth, colorHeight);
+		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, depth.uav11.Get(), guideWidth, guideHeight);
 
 		const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
 		context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
@@ -412,14 +421,10 @@ struct NeuralRenderingBackend::State
 		}
 		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
 
-		// Output extents are the stable native allocation size; the live colour and
-		// guide regions travel only through the NGX subrects. Passing a live region
-		// as the output extent would rebuild the feature every time dynamic
-		// resolution moves or the Before/After placement changes - releasing NGX
-		// resources while the interop queue is still reading them (frozen frame,
-		// then a CreateFeature crash on the way back). The motion-vector scale is
-		// the guide resolution, not a render/display ratio: the subrects already
-		// carry that ratio and folding it in again halves or doubles the motion.
+		// Feature/output extents match the compact active colour raster. A raster
+		// change rebuilds only after EnsureResources drains the interop queue. The
+		// motion-vector scale is the guide resolution because Skyrim stores vectors
+		// as normalized UV displacement; the NGX scale converts them to pixels.
 		const bool executed = NeuralRendering::Runtime::Instance().Execute(commandList,
 			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
 			colorWidth, colorHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
@@ -435,7 +440,10 @@ struct NeuralRenderingBackend::State
 		if (!executed)
 			return LatchFailure("Feature 18 execution", static_cast<HRESULT>(NeuralRendering::Runtime::Instance().NgxResult()));
 
-		DispatchTransfer(context, decodeShader, outputSRV.get(), colorOutView, colorWidth, colorHeight);
+		// Re-anchor the model's bounded luminance change to the untouched source.
+		// This avoids inverse-tonemap amplification and prevents the model from
+		// replacing stable renderer colour with independently varying RGB.
+		DispatchTransfer(context, decodeShader, outputSRV.get(), colorInView, colorOutView, colorWidth, colorHeight);
 
 		resetPending = false;
 		featureAvailable = true;
@@ -457,9 +465,8 @@ struct NeuralRenderingBackend::State
 
 		TracyD3D11Zone(globals::state->tracyCtx, "Neural Rendering");
 
-		// The "After Upscaling" placement runs straight after depth upscaling, which
-		// leaves render targets bound; a UAV write to a bound resource would be
-		// silently dropped, so unbind and restore around the whole pass.
+		// Callers may still have render targets bound; a UAV write to a bound
+		// resource would be silently dropped, so unbind and restore around the pass.
 		ID3D11RenderTargetView* savedRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
 		ID3D11DepthStencilView* savedDSV = nullptr;
 		context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, &savedDSV);
@@ -491,6 +498,7 @@ struct NeuralRenderingBackend::State
 		colorInSRVSource = nullptr;
 		colorOutUAV = nullptr;
 		colorOutUAVSource = nullptr;
+		lastColorInput = nullptr;
 
 		encodeColorCS = nullptr;
 		decodeColorCS = nullptr;

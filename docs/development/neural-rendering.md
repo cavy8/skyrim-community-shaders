@@ -28,12 +28,11 @@ Colour and the depth/motion guides are all at render resolution.
 
 ### After Upscaling (`neuralRenderingPlacement == 1`, default)
 
-Runs in `Upscaling::PerformUpscaling()` after `Upscale()` + `UpscaleDepth()`, on
-the display-resolution upscaled frame, before RCAS sharpening / copy-back. The
-colour input is display resolution; **depth and motion vectors are still the
-game's render-resolution targets**, so each resource carries its own NGX subrect
-and the backend tracks the colour region and the guide region separately
-(`FrameInputs::guideWidth/guideHeight`).
+Runs in `Upscaling::PerformUpscaling()` after the colour upscale and before
+`UpscaleDepth()`, on the display-resolution upscaled frame, before RCAS
+sharpening / copy-back. Depth and motion therefore remain the exact
+render-resolution guides used for the colour upscale. The backend tracks the
+colour region and guide region separately (`FrameInputs::guideWidth/guideHeight`).
 
 ## Why there is no separate "Inside Upscaling" mode
 
@@ -58,46 +57,22 @@ CS's NR already runs through a D3D11↔D3D12 bridge - structurally the same plac
 OptiScaler's "inside the bridge" call site - so "Before Upscaling" *is* the
 inside-the-bridge position in OptiScaler's taxonomy.
 
-## The one genuinely distinct third mode: Neural Rendering as the upscaler
-
-Feature 18 exposes `DLSSNR.Upscaling` / `DLSSNR.Scale` / `DLSSNR.ScalingRatio` and
-belongs to the same family as Ray Reconstruction, which replaces DLSS SR when
-active - so it can plausibly produce a display-resolution frame from a
-render-resolution input in one pass. That, not a repositioned post-process, is
-what "inside the upscaler" (OptiScaler's `DualFeature`) actually means.
-
-Integration recipe, if it is validated on hardware:
-
-1. Add placement value `2` = "Instead of upscaler".
-2. In `Upscaling::Upscale()` for `kDLSS` + placement 2, **skip `streamline.Upscale`**.
-3. Call NR with colour input = render-resolution `main.texture` (render-resolution
-   colour subrect), guides = render resolution, **output extents = display
-   resolution**.
-4. In `Runtime::Execute` for this path, create the feature with
-   `DLSSNR.Scale` / `DLSSNR.ScalingRatio` = display/render, `DLSSNR.Upscaling = 1`,
-   `Output*` / `OutputSubrect*` = display, `ColorSubrect*` = render.
-5. `neuralRenderingTexture` (display resolution) becomes the upscaled frame:
-   set `neuralRenderingResultValid = true` so `ApplySharpening()` consumes it.
-6. Drop the DLSS-only reactive / transparency-mask inputs (feature 18 does not
-   consume them); keep the motion-vector copy.
-
-**Not wired today because it cannot be verified here.** If feature 18 does not
-produce an acceptable *upscale* (as opposed to 1:1 detail synthesis), placement 2
-is a broken render path with no way to catch it without an NVIDIA GPU running a
-compatible `nvngx_dlssnr.dll`. It must be A/B'd against DLSS SR on real hardware
-before it ships.
-
 ## Colour domain
 
 `ColorTransfer.hlsli` maps the linear open-ended HDR scene colour into the
-display-referred (tone-mapped + sRGB) domain the model was trained on, and its
-exact inverse on the way out, so a model that returns its input unchanged leaves
-the frame untouched. The current operator is a per-channel Reinhard curve plus the
-sRGB transfer function. NVIDIA/RenoDX's own DLSS-5 composition uses a soft-knee
-proxy and a measured white point instead of a plain curve, and re-anchors the
-model's answer as a luminance *ratio* against a kept copy of the original rather
-than replacing the colour; that is the proven-steady form and the place to look if
-highlights still shimmer.
+display-referred (tone-mapped + sRGB) domain the model was trained on. The model
+answer is **not** inverse-Reinhard decoded: that inverse has an unbounded slope
+near white and turned tiny output changes into severe HDR flicker. Instead the
+resolve compares model and proxy luminance, adds a shared `1/512` shadow floor,
+clamps the ratio to `0.5..2.0`, and applies that one scalar to the untouched scene
+colour. The original hue, HDR headroom, and alpha remain renderer-owned, while
+the model contributes bounded local shading/detail. No temporal accumulator or
+midpoint blend is involved; every frame is independently re-anchored.
+
+Shared colour/output resources use the active colour extent rather than the
+game target's padded native allocation. Before-upscale mode therefore creates
+Feature 18 at render resolution; after-upscale mode creates it at display
+resolution. Loading transitions request a one-frame history reset.
 
 ## Model tuning parameters
 

@@ -168,6 +168,7 @@ public:
 	Texture2D* neuralRenderingTexture = nullptr;
 	bool neuralRenderingResultValid = false;
 	bool neuralRenderingResourcesActive = false;
+	bool neuralRenderingResetThisFrame = false;
 
 	virtual void ClearShaderCache() override;
 
@@ -191,8 +192,8 @@ public:
 
 	/**
 	 * Set by MenuOpenCloseEventHandler when LoadingMenu closes (cell/worldspace transitions,
-	 * initial load). Consumed at the start of Upscale() to force a one-frame DLSS feature
-	 * rebuild.
+	 * initial load). Consumed at the start of Upscale() to reset the DLSS SR and
+	 * Neural Rendering temporal histories on the same frame.
 	 */
 	std::atomic<bool> pendingDLSSReset{ false };
 

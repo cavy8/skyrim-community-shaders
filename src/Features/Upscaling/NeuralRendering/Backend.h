@@ -29,9 +29,9 @@ public:
 	 * @brief One frame of Neural Rendering work.
 	 *
 	 * @c width and @c height describe the *active* region only. The shared
-	 * textures are allocated at the native extents of the supplied resources and
-	 * the active region is expressed to NGX through its subrect parameters, so
-	 * dynamic resolution does not reallocate anything.
+	 * textures are allocated at the active colour and guide extents. This keeps
+	 * Feature 18's creation dimensions identical to the raster it processes and
+	 * prevents padded/stale source margins from becoming temporal history.
 	 */
 	struct FrameInputs
 	{

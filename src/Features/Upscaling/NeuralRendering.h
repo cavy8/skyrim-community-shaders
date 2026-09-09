@@ -60,10 +60,9 @@ public:
 	/**
 	 * @brief Executes Neural Rendering on the current D3D11 immediate context.
 	 *
-	 * The shared textures backing the D3D12 bridge are allocated at the native
-	 * extents of the supplied resources. @p width and @p height describe only the
-	 * active dynamic-resolution region and are forwarded to NGX as subrect
-	 * extents, so changing dynamic resolution never reallocates anything.
+	 * The shared textures backing the D3D12 bridge are compact allocations at the
+	 * active colour and guide extents. This keeps Feature 18's creation raster and
+	 * per-frame subrect contract identical.
 	 *
 	 * @param colorIn Input color resource; must be shader-readable.
 	 * @param colorOut Distinct output resource receiving the neural-rendered image; must be UAV-writable.

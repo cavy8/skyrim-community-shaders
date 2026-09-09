@@ -52,9 +52,9 @@ bool NeuralRendering::Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut
 	inputs.automaticMask = options.automaticMask;
 	inputs.reset = options.reset;
 
-	// Neural Rendering runs strictly 1:1: the depth guide is a texel-for-texel
-	// copy, so guide and colour extents must agree. The runtime owns the
-	// render-preset hint.
+	// Each placement is 1:1 in colour/output space. After-upscale colour is
+	// display-resolution while the depth and motion guides retain the render
+	// resolution used by DLSS SR, so their extents are carried independently.
 	return impl->backend.Evaluate(inputs);
 }
 

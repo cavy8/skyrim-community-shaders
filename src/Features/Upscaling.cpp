@@ -678,6 +678,9 @@ void Upscaling::PostPostLoad()
 	// Forces FXAA off
 	stl::detour_thunk<BSImageSpace_Init_FXAA>(REL::RelocationID(98974, 105626));
 
+	if (!MenuOpenCloseEventHandler::Register())
+		logger::warn("[Upscaling] MenuOpenCloseEventHandler registration failed; temporal history may survive loading transitions");
+
 	logger::info("[Upscaling] Installed hooks");
 }
 
@@ -1481,6 +1484,7 @@ void Upscaling::Upscale()
 	ZoneScoped;
 	auto upscaleMethod = GetUpscaleMethod();
 	neuralRenderingResultValid = false;
+	neuralRenderingResetThisFrame = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
 	if (!settings.neuralRenderingEnabled && neuralRenderingResourcesActive) {
 		neuralRendering.DestroyResources();
 		neuralRenderingResourcesActive = false;
@@ -1564,7 +1568,7 @@ void Upscaling::Upscale()
 				neuralOptions.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
 				neuralOptions.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
 				neuralOptions.automaticMask = settings.neuralRenderingAutomaticMask;
-				neuralOptions.reset = false;
+				neuralOptions.reset = neuralRenderingResetThisFrame;
 				// Before the upscaler colour and guides are both at render resolution.
 				neuralOptions.guideWidth = renderWidth;
 				neuralOptions.guideHeight = renderHeight;
@@ -1573,7 +1577,7 @@ void Upscaling::Upscale()
 						neuralRenderingTexture->resource.get(),
 						depth.texture,
 						depth.depthSRV,
-						motionVectorCopyTexture ? motionVectorCopyTexture->resource.get() : motionVector.texture,
+						motionVectorCopyTexture->resource.get(),
 						renderWidth,
 						renderHeight,
 						neuralOptions)) {
@@ -1595,12 +1599,10 @@ void Upscaling::PerformUpscaling()
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Upscaling");
 	Upscale();
-	UpscaleDepth();
 
 	if (GetUpscaleMethod() == UpscaleMethod::kDLSS && settings.neuralRenderingEnabled && settings.neuralRenderingPlacement == 1 && neuralRendering.IsAvailable() && neuralRenderingTexture && sharpenerTexture) {
 		neuralRenderingResourcesActive = true;
 		auto renderer = globals::game::renderer;
-		auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
 		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
@@ -1614,18 +1616,23 @@ void Upscaling::PerformUpscaling()
 		neuralOptions.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
 		neuralOptions.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
 		neuralOptions.automaticMask = settings.neuralRenderingAutomaticMask;
-		neuralOptions.reset = false;
+		neuralOptions.reset = neuralRenderingResetThisFrame;
 		neuralOptions.guideWidth = static_cast<uint32_t>(guideSize.x);
 		neuralOptions.guideHeight = static_cast<uint32_t>(guideSize.y);
 		neuralRenderingResultValid = neuralRendering.Evaluate(sharpenerTexture->resource.get(),
 			neuralRenderingTexture->resource.get(),
 			depth.texture,
 			depth.depthSRV,
-			motionVector.texture,
+			motionVectorCopyTexture->resource.get(),
 			nativeWidth,
 			nativeHeight,
 			neuralOptions);
 	}
+
+	// Neural Rendering consumes the same render-resolution depth and motion
+	// guides that produced the DLSS frame. Expand depth only after NR has read
+	// them; doing this first paired native depth data with render-size metadata.
+	UpscaleDepth();
 
 	auto& runtimeData = globals::game::graphicsState->GetRuntimeData();
 
@@ -1916,4 +1923,32 @@ void Upscaling::BSFaceGenManager_UpdatePendingCustomizationTextures::thunk()
 	runtimeData.dynamicResolutionLock = 1;
 	func();
 	runtimeData.dynamicResolutionLock = 0;
+}
+
+RE::BSEventNotifyControl Upscaling::MenuOpenCloseEventHandler::ProcessEvent(
+	const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
+{
+	if (a_event && a_event->menuName == RE::LoadingMenu::MENU_NAME && !a_event->opening)
+		globals::features::upscaling.pendingDLSSReset.store(true, std::memory_order_release);
+
+	return RE::BSEventNotifyControl::kContinue;
+}
+
+bool Upscaling::MenuOpenCloseEventHandler::Register()
+{
+	static MenuOpenCloseEventHandler singleton;
+	static bool registered = false;
+	if (registered)
+		return true;
+
+	auto* ui = globals::game::ui;
+	if (!ui)
+		return false;
+	auto* source = ui->GetEventSource<RE::MenuOpenCloseEvent>();
+	if (!source)
+		return false;
+
+	source->AddEventSink(&singleton);
+	registered = true;
+	return true;
 }
