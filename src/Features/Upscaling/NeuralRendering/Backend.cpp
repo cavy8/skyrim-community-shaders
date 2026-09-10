@@ -24,10 +24,10 @@ namespace
 	{
 		float jitterOffset[2]{};  ///< Sub-pixel projection offset of the colour raster, in render pixels.
 		float colorStrength = 1.0f;
-		float transferStrength = 1.0f;  ///< Overall edit weight; one reproduces the model's change exactly.
-		std::uint32_t activeSize[2]{};  ///< Colour/output active region, in colour texels.
-		std::uint32_t workSize[2]{};    ///< Model raster; the shared colour/output textures are this size.
-		std::uint32_t guideSize[2]{};   ///< Depth guide active region, in guide texels.
+		float transferStrength = 1.0f;        ///< Overall edit weight; one reproduces the model's change exactly.
+		std::uint32_t activeSize[2]{};        ///< Colour/output active region, in colour texels.
+		std::uint32_t workSize[2]{};          ///< Model raster; the shared colour/output textures are this size.
+		std::uint32_t guideSize[2]{};         ///< Depth guide active region, in guide texels.
 		std::uint32_t depthAwareResolve = 0;  ///< Non-zero: fade the edit across depth silhouettes in the decode.
 		std::uint32_t skipFrame = 0;          ///< Non-zero: the model did not run; the decode re-applies its stale answer.
 	};
@@ -628,7 +628,7 @@ struct NeuralRenderingBackend::State
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		if (!skipFrame && !EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,
-								 modelWidth, modelHeight, guideWidth, guideHeight))
+							  modelWidth, modelHeight, guideWidth, guideHeight))
 			return false;
 
 		// Re-anchor the model's bounded luminance to the untouched source, then
