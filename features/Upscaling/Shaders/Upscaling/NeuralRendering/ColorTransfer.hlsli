@@ -128,6 +128,45 @@ float3 SampleNeuralSourceCatmullRom(Texture2D<float4> source, SamplerState linea
 }
 
 /**
+ * Depth-aware silhouette weight for a full-resolution pixel (from
+ * DLSSNR-Cost-Scaler's "Depth-Aware Bilateral Silhouette Preservation").
+ *
+ * When the model runs below the colour resolution its edit is upsampled
+ * bilinearly, so at a geometric silhouette the background's edit bleeds a
+ * texel or two into the thin foreground and vice versa. This measures the
+ * relative depth range of the five-texel cross around the pixel's guide texel
+ * and fades the edit towards a quarter across strong discontinuities, leaving
+ * flat interiors untouched.
+ *
+ * @param guideDepth Game depth (the guide the model received), any allocation.
+ * @param guideTexel Guide texel this colour pixel maps to.
+ * @param guideSize Valid guide region in texels.
+ */
+float NeuralSilhouetteWeight(Texture2D<float> guideDepth, int2 guideTexel, uint2 guideSize)
+{
+	uint allocationWidth;
+	uint allocationHeight;
+	guideDepth.GetDimensions(allocationWidth, allocationHeight);
+	int2 maxTexel = int2(min(guideSize, uint2(allocationWidth, allocationHeight))) - 1;
+	if (any(maxTexel < 0))
+		return 1.0;
+	int2 centre = clamp(guideTexel, int2(0, 0), maxTexel);
+	float depthCentre = guideDepth.Load(int3(centre, 0));
+	float depthEast = guideDepth.Load(int3(min(centre.x + 1, maxTexel.x), centre.y, 0));
+	float depthWest = guideDepth.Load(int3(max(centre.x - 1, 0), centre.y, 0));
+	float depthSouth = guideDepth.Load(int3(centre.x, min(centre.y + 1, maxTexel.y), 0));
+	float depthNorth = guideDepth.Load(int3(centre.x, max(centre.y - 1, 0), 0));
+
+	float minDepth = min(depthCentre, min(min(depthEast, depthWest), min(depthSouth, depthNorth)));
+	float maxDepth = max(depthCentre, max(max(depthEast, depthWest), max(depthSouth, depthNorth)));
+	float depthRange = (maxDepth - minDepth) / (maxDepth + 1e-4);
+	if (depthRange <= 0.02)
+		return 1.0;
+	float edgeWeight = saturate(1.0 - (depthRange - 0.02) * 20.0);
+	return lerp(0.25, 1.0, edgeWeight);
+}
+
+/**
  * Compose the Feature 18 answer onto the untouched scene colour.
  *
  * @p modelColor and @p proxyColor are the model's answer and the exact proxy it

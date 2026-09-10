@@ -82,6 +82,7 @@ public:
 		float neuralRenderingResolutionScaleX = 1.0f;
 		float neuralRenderingResolutionScaleY = 1.0f;
 		float neuralRenderingTransferStrength = 1.0f;
+		bool neuralRenderingDepthAwareResolve = true;
 	};
 
 	Settings settings;

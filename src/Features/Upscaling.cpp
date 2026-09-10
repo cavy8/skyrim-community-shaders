@@ -53,7 +53,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingResolutionScale,
 	neuralRenderingResolutionScaleX,
 	neuralRenderingResolutionScaleY,
-	neuralRenderingTransferStrength);
+	neuralRenderingTransferStrength,
+	neuralRenderingDepthAwareResolve);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
 
@@ -392,6 +393,12 @@ void Upscaling::DrawSettings()
 						ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_y_tooltip"),
 							"Model height relative to the frame height. Changes apply once the slider settles."));
 					}
+				}
+				ImGui::Checkbox(T(TKEY("neural_rendering_depth_aware_resolve"), "Depth-Aware Silhouette Preservation"), &settings.neuralRenderingDepthAwareResolve);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextUnformatted(T(TKEY("neural_rendering_depth_aware_resolve_tooltip"),
+						"When the model runs below full resolution, fades its edit across depth edges so background "
+						"changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0."));
 				}
 
 				const char* neuralStyles[] = {
@@ -1673,6 +1680,7 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.intensity = settings.neuralRenderingIntensity;
 	options.colorStrength = settings.neuralRenderingColorStrength;
 	options.transferStrength = settings.neuralRenderingTransferStrength;
+	options.depthAwareResolve = settings.neuralRenderingDepthAwareResolve;
 	options.localToneStrength = settings.neuralRenderingLocalToneStrength;
 	options.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
 	options.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;

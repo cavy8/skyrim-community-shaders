@@ -192,6 +192,18 @@ therefore bit-exact with the previous behaviour, zero returns the untouched
 frame, and two exaggerates the model's relative change. Unlike the `DLSSNR.*`
 tuning parameters it is a per-frame constant, so it responds immediately.
 
+## Depth-aware silhouette preservation
+
+With the model below the colour resolution its edit is bilinearly upsampled,
+so at a geometric silhouette the background's edit bleeds a texel or two into
+thin foreground geometry. `NeuralSilhouetteWeight` (`ColorTransfer.hlsli`) ports
+the proxy's guard: it reads the game depth (the same guide the model received,
+bound as `t3` of `DecodeColorCS`) at the guide texel the colour pixel maps to,
+measures the relative depth range of the five-texel cross and fades the edit
+weight towards 0.25 across discontinuities above 2%. The backend forces it off
+at native scale, where there is no upsample to bleed, so the 1.0 path stays
+bit-exact.
+
 ## Model tuning parameters
 
 `DLSSNR.Intensity` / `Style` / `LocalToneStrength` / `LocalStructureStrength` /

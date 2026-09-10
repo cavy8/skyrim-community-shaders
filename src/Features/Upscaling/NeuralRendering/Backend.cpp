@@ -27,8 +27,11 @@ namespace
 		float transferStrength = 1.0f;  ///< Overall edit weight; one reproduces the model's change exactly.
 		std::uint32_t activeSize[2]{};  ///< Colour/output active region, in colour texels.
 		std::uint32_t workSize[2]{};    ///< Model raster; the shared colour/output textures are this size.
+		std::uint32_t guideSize[2]{};   ///< Depth guide active region, in guide texels.
+		std::uint32_t depthAwareResolve = 0;  ///< Non-zero: fade the edit across depth silhouettes in the decode.
+		std::uint32_t padding2 = 0;
 	};
-	static_assert(sizeof(TransferParams) == 32);
+	static_assert(sizeof(TransferParams) == 48);
 
 	constexpr float kMinimumResolutionScale = 0.25f;
 	constexpr float kMaximumResolutionScale = 2.0f;
@@ -388,22 +391,23 @@ struct NeuralRenderingBackend::State
 		return colorOutUAV.get();
 	}
 
-	/// Runs an up-to-three-SRV/single-UAV compute pass over the active region and unbinds afterwards.
+	/// Runs an up-to-four-SRV/single-UAV compute pass over the given extent and unbinds afterwards.
 	static void DispatchTransfer(ID3D11DeviceContext* context, ID3D11ComputeShader* shader,
 		ID3D11ShaderResourceView* source, ID3D11ShaderResourceView* secondarySource,
-		ID3D11ShaderResourceView* tertiarySource, ID3D11UnorderedAccessView* destination,
+		ID3D11ShaderResourceView* tertiarySource, ID3D11ShaderResourceView* quaternarySource,
+		ID3D11UnorderedAccessView* destination,
 		ID3D11Buffer* constants, ID3D11SamplerState* sampler,
 		std::uint32_t width, std::uint32_t height)
 	{
 		context->CSSetShader(shader, nullptr, 0);
-		ID3D11ShaderResourceView* sources[3]{ source, secondarySource, tertiarySource };
+		ID3D11ShaderResourceView* sources[4]{ source, secondarySource, tertiarySource, quaternarySource };
 		context->CSSetShaderResources(0, static_cast<UINT>(std::size(sources)), sources);
 		context->CSSetUnorderedAccessViews(0, 1, &destination, nullptr);
 		context->CSSetConstantBuffers(0, 1, &constants);
 		context->CSSetSamplers(0, 1, &sampler);
 		context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 
-		ID3D11ShaderResourceView* nullSRVs[3]{};
+		ID3D11ShaderResourceView* nullSRVs[4]{};
 		ID3D11UnorderedAccessView* nullUAV = nullptr;
 		ID3D11Buffer* nullCB = nullptr;
 		ID3D11SamplerState* nullSampler = nullptr;
@@ -523,6 +527,13 @@ struct NeuralRenderingBackend::State
 		transferParams.activeSize[1] = colorHeight;
 		transferParams.workSize[0] = modelWidth;
 		transferParams.workSize[1] = modelHeight;
+		transferParams.guideSize[0] = guideWidth;
+		transferParams.guideSize[1] = guideHeight;
+		// Silhouette fading only addresses the bilinear upsample of a reduced-
+		// resolution edit; at native scale there is nothing to bleed, so leave the
+		// resolve exactly as before (the proxy likewise bypasses at 1.0).
+		const bool modelBelowNative = modelWidth < colorWidth || modelHeight < colorHeight;
+		transferParams.depthAwareResolve = inputs.depthAwareResolve && modelBelowNative ? 1u : 0u;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		// (b) Colour moves through compute passes rather than CopyResource. The
@@ -530,9 +541,9 @@ struct NeuralRenderingBackend::State
 		// raster so the model sees a stable framing; the decode later samples its
 		// answer back at each original pixel's jittered position at the active
 		// extent (see ColorTransfer.hlsli).
-		DispatchTransfer(context, encodeShader, colorInView, nullptr, nullptr, color.uav11.Get(),
+		DispatchTransfer(context, encodeShader, colorInView, nullptr, nullptr, nullptr, color.uav11.Get(),
 			transferParamsCB.get(), linearClampSampler.get(), modelWidth, modelHeight);
-		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, nullptr, depth.uav11.Get(),
+		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, nullptr, nullptr, depth.uav11.Get(),
 			nullptr, nullptr, guideWidth, guideHeight);
 
 		const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
@@ -591,9 +602,10 @@ struct NeuralRenderingBackend::State
 		// restore its chromaticity through the independently controlled colour pass.
 		// The edit is measured against the exact proxy the model received, sampled
 		// at the same (jitter-compensated) position. No inverse tonemap or temporal
-		// colour accumulator is involved.
-		DispatchTransfer(context, decodeShader, outputSRV.get(), colorInView, colorSRV.get(), colorOutView,
-			transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight);
+		// colour accumulator is involved. The game depth rides along as the
+		// silhouette guide for the depth-aware resolve.
+		DispatchTransfer(context, decodeShader, outputSRV.get(), colorInView, colorSRV.get(), inputs.depthSRV,
+			colorOutView, transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight);
 
 		resetPending = false;
 		featureAvailable = true;

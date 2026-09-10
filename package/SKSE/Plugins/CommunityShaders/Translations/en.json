@@ -1538,6 +1538,8 @@
     "feature.upscaling.neural_rendering_color_strength_tooltip": "Blend the model's color changes independently of its bounded lighting and detail changes.",
     "feature.upscaling.neural_rendering_compare_screenshot": "Take Comparison Screenshot",
     "feature.upscaling.neural_rendering_compare_screenshot_tooltip": "Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on - with no HUD or menu, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off.",
+    "feature.upscaling.neural_rendering_depth_aware_resolve": "Depth-Aware Silhouette Preservation",
+    "feature.upscaling.neural_rendering_depth_aware_resolve_tooltip": "When the model runs below full resolution, fades its edit across depth edges so background changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0.",
     "feature.upscaling.neural_rendering_enabled": "Enable Neural Rendering",
     "feature.upscaling.neural_rendering_enabled_tooltip": "Applies DLSS 5 Neural Rendering to the upscaled image. A compatible user-supplied nvngx_dlssnr.dll is required.",
     "feature.upscaling.neural_rendering_intensity": "NR Intensity",

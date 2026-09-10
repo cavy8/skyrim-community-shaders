@@ -28,6 +28,10 @@ public:
 		/// frame untouched, one applies the model's change exactly, two doubles its
 		/// relative luminance change (still inside the resolve's ratio guard).
 		float transferStrength = 1.0f;
+		/// When the model runs below the colour resolution, fade its edit across
+		/// depth silhouettes so a bilinearly upsampled background edit does not
+		/// bleed into thin foreground geometry. No effect at native scale.
+		bool depthAwareResolve = true;
 		float localToneStrength = 0.75f;
 		float localStructureStrength = 0.9f;
 		float skinStructureStrength = 0.9f;

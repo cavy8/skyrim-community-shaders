@@ -7,6 +7,9 @@ cbuffer TransferParams : register(b0)
 	float TransferStrength;
 	uint2 ActiveSize;  // Valid region of SourceColor, in source texels.
 	uint2 WorkSize;    // Model raster; DestinationColor is allocated at this size.
+	uint2 GuideSize;   // Unused here; keeps the layout shared with DecodeColorCS.
+	uint DepthAwareResolve;
+	uint TransferParamsPadding;
 };
 
 Texture2D<float4> SourceColor : register(t0);
