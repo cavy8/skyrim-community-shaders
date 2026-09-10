@@ -138,8 +138,15 @@ float3 SampleNeuralSourceCatmullRom(Texture2D<float4> source, SamplerState linea
  * change would otherwise become an unbounded relative change. A two-sided guard
  * limits both flashes and sudden collapses without clipping individual RGB
  * channels.
+ *
+ * @p editWeight scales the edit as a whole (the proxy's "transfer strength"):
+ * the luminance ratio is raised to it, so zero is the untouched frame, one is
+ * exactly the model's relative change and two doubles it in log space, and the
+ * two-sided guard clamps after scaling so a weight above one cannot escape it.
+ * Chroma follows the same weight, saturated, on top of @p colorStrength.
  */
-float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalColor, float colorStrength)
+float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalColor, float colorStrength,
+	float editWeight)
 {
 	float3 original = max(originalColor.rgb, 0.0);
 	float3 proxy = NeuralSrgbToLinear(proxyColor.rgb);
@@ -153,8 +160,9 @@ float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalC
 	if (!(modelLuma > 1e-5))
 		return float4(original, originalColor.a);
 
+	editWeight = max(editWeight, 0.0);
 	float ratio = (modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor);
-	ratio = clamp(ratio, 1.0 / kNeuralMaxRatio, kNeuralMaxRatio);
+	ratio = clamp(pow(ratio, editWeight), 1.0 / kNeuralMaxRatio, kNeuralMaxRatio);
 
 	float3 luminanceResult = original * ratio;
 	float targetLuma = dot(luminanceResult, kNeuralLuma);
@@ -168,7 +176,7 @@ float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalC
 	// while allowing the complete model palette everywhere with meaningful light.
 	float shadowConfidence = smoothstep(kNeuralRatioFloor, 4.0 * kNeuralRatioFloor,
 		min(proxyLuma, modelLuma));
-	float resolvedColorStrength = saturate(colorStrength) * shadowConfidence;
+	float resolvedColorStrength = saturate(colorStrength) * shadowConfidence * saturate(editWeight);
 
 	return float4(lerp(luminanceResult, fullColorResult, resolvedColorStrength), originalColor.a);
 }

@@ -4,7 +4,7 @@ cbuffer TransferParams : register(b0)
 {
 	float2 JitterOffset;  // Sub-pixel projection offset of the source raster, in render pixels.
 	float ColorStrength;
-	float TransferParamsPadding;
+	float TransferStrength;
 	uint2 ActiveSize;  // Valid region of SourceColor, in source texels.
 	uint2 WorkSize;    // Model raster; DestinationColor is allocated at this size.
 };

@@ -4,7 +4,7 @@ cbuffer TransferParams : register(b0)
 {
 	float2 JitterOffset;  // Sub-pixel projection offset of the original raster, in render pixels.
 	float ColorStrength;
-	float TransferParamsPadding;
+	float TransferStrength;  // Overall edit weight (0 = untouched frame, 1 = the model's change, 2 = doubled).
 	uint2 ActiveSize;  // Valid region of OriginalColor and DestinationColor, in their texels.
 	uint2 WorkSize;    // Model raster; ModelColor and ProxyColor are allocated at this size.
 };
@@ -39,5 +39,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float4 model = ModelColor.SampleLevel(LinearClampSampler, uv, 0);
 	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, uv, 0);
 	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy,
-		OriginalColor[dispatchThreadID.xy], ColorStrength);
+		OriginalColor[dispatchThreadID.xy], ColorStrength, TransferStrength);
 }

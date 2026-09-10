@@ -59,6 +59,8 @@ public:
 		float resolutionScaleY = 1.0f;
 		float intensity = 0.8f;
 		float colorStrength = 1.0f;
+		/// Overall weight of the model's edit (0..2); one applies it exactly.
+		float transferStrength = 1.0f;
 		float localToneStrength = 0.75f;
 		float localStructureStrength = 0.9f;
 		float skinStructureStrength = 0.9f;

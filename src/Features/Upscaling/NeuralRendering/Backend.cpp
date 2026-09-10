@@ -24,7 +24,7 @@ namespace
 	{
 		float jitterOffset[2]{};  ///< Sub-pixel projection offset of the colour raster, in render pixels.
 		float colorStrength = 1.0f;
-		float padding = 0.0f;
+		float transferStrength = 1.0f;  ///< Overall edit weight; one reproduces the model's change exactly.
 		std::uint32_t activeSize[2]{};  ///< Colour/output active region, in colour texels.
 		std::uint32_t workSize[2]{};    ///< Model raster; the shared colour/output textures are this size.
 	};
@@ -420,6 +420,7 @@ struct NeuralRenderingBackend::State
 		                      inputs.colorIn != inputs.motionVectors && inputs.colorOut != inputs.depth &&
 		                      inputs.colorOut != inputs.motionVectors && inputs.depth != inputs.motionVectors;
 		const bool finite = std::isfinite(inputs.intensity) && std::isfinite(inputs.colorStrength) &&
+		                    std::isfinite(inputs.transferStrength) &&
 		                    std::isfinite(inputs.jitterOffsetX) && std::isfinite(inputs.jitterOffsetY) &&
 		                    std::isfinite(inputs.resolutionScaleX) && std::isfinite(inputs.resolutionScaleY) &&
 		                    std::isfinite(inputs.localToneStrength) &&
@@ -517,6 +518,7 @@ struct NeuralRenderingBackend::State
 		transferParams.jitterOffset[0] = std::abs(inputs.jitterOffsetX) <= 1.0f ? inputs.jitterOffsetX : 0.0f;
 		transferParams.jitterOffset[1] = std::abs(inputs.jitterOffsetY) <= 1.0f ? inputs.jitterOffsetY : 0.0f;
 		transferParams.colorStrength = std::clamp(inputs.colorStrength, 0.0f, 1.0f);
+		transferParams.transferStrength = std::clamp(inputs.transferStrength, 0.0f, 2.0f);
 		transferParams.activeSize[0] = colorWidth;
 		transferParams.activeSize[1] = colorHeight;
 		transferParams.workSize[0] = modelWidth;

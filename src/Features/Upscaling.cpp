@@ -52,7 +52,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingResolutionMode,
 	neuralRenderingResolutionScale,
 	neuralRenderingResolutionScaleX,
-	neuralRenderingResolutionScaleY);
+	neuralRenderingResolutionScaleY,
+	neuralRenderingTransferStrength);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
 
@@ -414,6 +415,12 @@ void Upscaling::DrawSettings()
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_color_strength_tooltip"),
 						"Blend the model's color changes independently of its bounded lighting and detail changes."));
 				}
+				ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"), &settings.neuralRenderingTransferStrength, 0.0f, 2.0f, "%.2f");
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextUnformatted(T(TKEY("neural_rendering_transfer_strength_tooltip"),
+						"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
+						"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
+				}
 				ImGui::SliderFloat(T(TKEY("neural_rendering_local_tone"), "Local Tone Strength"), &settings.neuralRenderingLocalToneStrength, 0.0f, 2.0f, "%.2f");
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_local_tone_tooltip"), "Adjust local tone detail."));
@@ -672,6 +679,7 @@ void Upscaling::LoadSettings(json& o_json)
 	sanitizeNeuralFloat(settings.neuralRenderingResolutionScale, 1.0f, 0.25f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleX, 1.0f, 0.25f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleY, 1.0f, 0.25f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingTransferStrength, 1.0f, 0.0f, 2.0f);
 	auto iniSettingCollection = globals::game::iniPrefSettingCollection;
 	if (iniSettingCollection) {
 		auto setting = iniSettingCollection->GetSetting("bUseTAA:Display");
@@ -1664,6 +1672,7 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.style = settings.neuralRenderingStyle;
 	options.intensity = settings.neuralRenderingIntensity;
 	options.colorStrength = settings.neuralRenderingColorStrength;
+	options.transferStrength = settings.neuralRenderingTransferStrength;
 	options.localToneStrength = settings.neuralRenderingLocalToneStrength;
 	options.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
 	options.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;

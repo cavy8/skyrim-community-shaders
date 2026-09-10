@@ -1567,6 +1567,8 @@
     "feature.upscaling.neural_rendering_style_default": "Default",
     "feature.upscaling.neural_rendering_style_natural": "Natural",
     "feature.upscaling.neural_rendering_style_tooltip": "Choose the Neural Rendering visual style.",
+    "feature.upscaling.neural_rendering_transfer_strength": "Transfer Strength",
+    "feature.upscaling.neural_rendering_transfer_strength_tooltip": "How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately.",
     "feature.upscaling.neural_rendering_unavailable": "DLSS Neural Rendering is unavailable. Install a compatible user-supplied nvngx_dlssnr.dll.",
     "feature.upscaling.nvidia_reflex": "NVIDIA Reflex",
     "feature.upscaling.preset_balanced": "Balanced",

@@ -50,6 +50,7 @@ bool NeuralRendering::Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut
 	inputs.resolutionScaleY = options.resolutionScaleY;
 	inputs.intensity = options.intensity;
 	inputs.colorStrength = options.colorStrength;
+	inputs.transferStrength = options.transferStrength;
 	inputs.localToneStrength = options.localToneStrength;
 	inputs.localStructureStrength = options.localStructureStrength;
 	inputs.skinStructureStrength = options.skinStructureStrength;

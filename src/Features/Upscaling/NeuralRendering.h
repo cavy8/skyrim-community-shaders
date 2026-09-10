@@ -24,6 +24,10 @@ public:
 		uint32_t style = 3;
 		float intensity = 0.8f;
 		float colorStrength = 1.0f;
+		/// Overall weight of the model's edit on the frame (0..2). Zero leaves the
+		/// frame untouched, one applies the model's change exactly, two doubles its
+		/// relative luminance change (still inside the resolve's ratio guard).
+		float transferStrength = 1.0f;
 		float localToneStrength = 0.75f;
 		float localStructureStrength = 0.9f;
 		float skinStructureStrength = 0.9f;

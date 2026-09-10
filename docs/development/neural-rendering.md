@@ -182,6 +182,16 @@ guide-to-colour ratio from the per-resource subrects, and folding a resolution
 ratio into the scale on top of that counted it twice. The scale therefore stays
 the guide resolution; only the colour/output subrects change.
 
+## Transfer strength
+
+`Transfer Strength` (0..2, default 1) is the proxy's overall edit weight,
+expressed in the ratio design: `ResolveNeuralColor` raises the model/proxy
+luminance ratio to it (log-space scaling, clamped afterwards by the existing
+`0.5..2.0` guard) and multiplies the chroma blend by its saturated value. One is
+therefore bit-exact with the previous behaviour, zero returns the untouched
+frame, and two exaggerates the model's relative change. Unlike the `DLSSNR.*`
+tuning parameters it is a per-frame constant, so it responds immediately.
+
 ## Model tuning parameters
 
 `DLSSNR.Intensity` / `Style` / `LocalToneStrength` / `LocalStructureStrength` /
