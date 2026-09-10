@@ -29,6 +29,13 @@ namespace Math
 	static const float HALF_PI = PI * 0.5f;                      // PI / 2
 	static const float TAU = PI * 2.0f;                          // PI * 2
 	static const float INV_PI = 1.0f / PI;                       // 1 / PI
+
+	// pow() NaNs on a negative base; use when base is non-negative by construction
+	// except for FP rounding noise.
+	float SafePow(float base, float exponent)
+	{
+		return pow(abs(base), exponent);
+	}
 }
 
 #endif  //__MATH_DEPENDENCY_HLSL__

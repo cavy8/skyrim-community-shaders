@@ -3,12 +3,14 @@
 #include "FeatureIssues.h"
 #include "FeatureVersions.h"
 #include "Features/CSEditor.h"
+#include "Features/CloudRelight.h"
 #include "Features/CloudShadows.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
+#include "Features/FoliageLighting.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/GrassOptimizations.h"
@@ -37,6 +39,7 @@
 #include "Features/TerrainVariation.h"
 #include "Features/UnifiedWater.h"
 #include "Features/Upscaling.h"
+#include "Features/VanillaFresnel.h"
 #include "Features/VolumetricLighting.h"
 #include "Features/VolumetricShadows.h"
 #include "Features/WaterEffects.h"
@@ -223,6 +226,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::truePBR,
 		&globals::features::volumetricShadows,
 		&globals::features::grassLighting,
+		&globals::features::foliageLighting,
 		&globals::features::grassCollision,
 		&globals::features::grassOptimizations,
 		&globals::features::screenSpaceShadows,
@@ -231,6 +235,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::lightLimitFix,
 		&globals::features::dynamicCubemaps,
 		&globals::features::cloudShadows,
+		&globals::features::cloudRelight,
 		&globals::features::waterEffects,
 		&globals::features::performanceOverlay,
 		&globals::features::subsurfaceScattering,
@@ -240,6 +245,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::skySync,
 		&globals::features::terrainBlending,
 		&globals::features::terrainHelper,
+		&globals::features::vanillaFresnel,
 		&globals::features::volumetricLighting,
 		&globals::features::lodBlending,
 		&globals::features::inverseSquareLighting,

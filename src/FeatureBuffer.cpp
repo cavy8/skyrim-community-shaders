@@ -2,12 +2,14 @@
 
 #include <array>
 
+#include "Features/CloudRelight.h"
 #include "Features/CloudShadows.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
+#include "Features/FoliageLighting.h"
 #include "Features/GrassLighting.h"
 #include "Features/HairSpecular.h"
 #include "Features/IBL.h"
@@ -19,6 +21,7 @@
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
+#include "Features/VanillaFresnel.h"
 #include "Features/WetnessEffects.h"
 #include "TruePBR.h"
 
@@ -62,5 +65,8 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::terrainBlending.settings,
 		globals::features::exponentialHeightFog.GetCommonBufferData(),
 		globals::features::truePBR.settings,
-		globals::features::skin.GetCommonBufferData());
+		globals::features::skin.GetCommonBufferData(),
+		globals::features::cloudRelight.GetCommonBufferData(),
+		globals::features::foliageLighting.settings,
+		globals::features::vanillaFresnel.settings);
 }

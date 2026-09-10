@@ -1,8 +1,12 @@
+#ifndef CLOUD_SHADOWS_HLSLI
+#define CLOUD_SHADOWS_HLSLI
+
 #include "Common/Game.hlsli"
 
 namespace CloudShadows
 {
 	TextureCube<float> CloudShadowsTexture : register(t25);
+	TextureCube<float> CloudSelfShadowTexture : register(t26);
 
 	const static float CloudHeight = (2e3f / GAME_UNIT_TO_M);
 	const static float PlanetRadius = (6371e3f / GAME_UNIT_TO_M);
@@ -26,3 +30,5 @@ namespace CloudShadows
 		return saturate(1.0 - cloudCubeSample * SharedData::cloudShadowsSettings.Opacity);
 	}
 }
+
+#endif

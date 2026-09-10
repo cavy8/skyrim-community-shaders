@@ -77,6 +77,8 @@ namespace Permutation
 		static const uint IsSun = (1 << 4);
 		static const uint SuppressExternalEmittance = (1 << 5);
 		static const uint AdditiveLighting = (1 << 6);
+		// Reserved high bit to avoid colliding with upstream's sequential flags.
+		static const uint IsEye = (1u << 31);
 	}
 
 	namespace ExtraFeatureFlags

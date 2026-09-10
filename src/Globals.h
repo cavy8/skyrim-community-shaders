@@ -3,9 +3,11 @@
 #include <atomic>
 
 struct CloudShadows;
+struct CloudRelight;
 struct DynamicCubemaps;
 struct VolumetricShadows;
 struct ExtendedMaterials;
+struct FoliageLighting;
 struct GrassCollision;
 struct GrassLighting;
 struct GrassOptimizations;
@@ -27,6 +29,7 @@ struct TerrainBlending;
 struct TerrainHelper;
 struct TerrainShadows;
 struct UnifiedWater;
+struct VanillaFresnel;
 struct VolumetricLighting;
 struct WaterEffects;
 struct PerformanceOverlay;
@@ -93,9 +96,11 @@ namespace globals
 	namespace features
 	{
 		extern CloudShadows cloudShadows;
+		extern CloudRelight cloudRelight;
 		extern DynamicCubemaps dynamicCubemaps;
 		extern VolumetricShadows volumetricShadows;
 		extern ExtendedMaterials extendedMaterials;
+		extern FoliageLighting foliageLighting;
 		extern GrassCollision grassCollision;
 		extern GrassLighting grassLighting;
 		extern GrassOptimizations grassOptimizations;
@@ -117,6 +122,7 @@ namespace globals
 		extern TerrainHelper terrainHelper;
 		extern TerrainShadows terrainShadows;
 		extern UnifiedWater unifiedWater;
+		extern VanillaFresnel vanillaFresnel;
 		extern VolumetricLighting volumetricLighting;
 		extern WaterEffects waterEffects;
 		extern PerformanceOverlay performanceOverlay;
