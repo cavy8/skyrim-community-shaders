@@ -38,6 +38,15 @@ public:
 		/// this must be set.
 		uint32_t guideWidth = 0;
 		uint32_t guideHeight = 0;
+
+		/// Sub-pixel TAA jitter of @p colorIn in render pixels, using the same
+		/// convention Streamline receives (a scene point at unjittered position u
+		/// lands in the raster at u + offset). Feature 18 has no jitter parameter,
+		/// so the backend resamples the frame onto the unjittered grid before the
+		/// model sees it and maps the edit back afterwards. Zero when the colour
+		/// input is the already-unjittered upscaled frame.
+		float jitterOffsetX = 0.0f;
+		float jitterOffsetY = 0.0f;
 	};
 
 	NeuralRendering();

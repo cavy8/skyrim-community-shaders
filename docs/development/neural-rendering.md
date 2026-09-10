@@ -26,6 +26,12 @@ to be handed to DLSS. The model's output replaces the DLSS input colour; DLSS th
 upscales the enhanced render-resolution frame to display resolution as normal.
 Colour and the depth/motion guides are all at render resolution.
 
+The render-resolution colour is the game's *jittered* raster: every frame is
+projected with the sub-pixel Halton offset DLSS later removes. Feature 18 has no
+jitter parameter (neither does OptiScaler's pre-SR path), so the backend
+compensates for it itself; see *Jitter* below. `Upscaling::Upscale()` passes the
+same offset Streamline receives (`-jitter`) through `NeuralRendering::Options`.
+
 ### After Upscaling (`neuralRenderingPlacement == 1`, default)
 
 Runs in `Upscaling::PerformUpscaling()` after the colour upscale and before
@@ -71,6 +77,32 @@ stable renderer chroma at zero to the full model palette at one, fading only in
 near-black pixels where normalized colour is numerically ambiguous. HDR
 headroom and alpha remain renderer-owned. No temporal accumulator or midpoint
 blend is involved; every frame is independently re-anchored.
+
+## Jitter
+
+The model re-decides its local tone and structure whenever the framing changes
+(OptiScaler measured the same: a reprojected temporal accumulator on the edit
+was a dead end twice, because "an old answer does not belong to a new frame").
+Before the upscaler the framing changes every frame by up to a pixel, which
+showed up as shadows and detail drifting around; after the upscaler the frame is
+already unjittered and was stable.
+
+`EncodeColorCS` therefore resamples the scene colour onto the **unjittered**
+pixel grid (Catmull-Rom, taps clamped to the active region, result clamped to the
+2x2 neighbourhood so HDR speculars cannot ring) before encoding it, so the model
+sees a stable framing. `DecodeColorCS` samples the model's answer *and the exact
+proxy it was given* (an SRV over the shared input texture, not a re-encode) back
+at each original pixel's jittered position and forms the luminance ratio from
+that pair. Only the edit is ever resampled: DLSS still receives the original
+jittered sample scaled by it, so its input stays sharp and correctly jittered.
+Both passes share one `TransferParams` constant buffer (`JitterOffset`,
+`ColorStrength`) and a linear clamp sampler. With a zero offset - the After
+Upscaling placement - every sample lands exactly on a texel centre and the pass
+degenerates to the previous per-texel resolve.
+
+The depth and motion-vector guides are not shifted: a sub-pixel move of a
+single-texel guide is a no-op under nearest sampling, and the model tolerates
+the same half-pixel guide/colour offset in every DLSS title.
 
 Shared colour/output resources use the active colour extent rather than the
 game target's padded native allocation. Before-upscale mode therefore creates

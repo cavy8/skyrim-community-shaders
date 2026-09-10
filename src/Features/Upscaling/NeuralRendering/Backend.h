@@ -44,6 +44,12 @@ public:
 		std::uint32_t height = 0;                      ///< Colour/output active region height in pixels.
 		std::uint32_t guideWidth = 0;                  ///< Depth/motion-vector active region width (render resolution).
 		std::uint32_t guideHeight = 0;                 ///< Depth/motion-vector active region height (render resolution).
+		/// Sub-pixel projection offset of @c colorIn in render pixels (Streamline
+		/// convention: a scene point at unjittered position u lands at u + offset).
+		/// Non-zero only when @c colorIn is the game's jittered render; the
+		/// upscaled frame is unjittered and passes zero.
+		float jitterOffsetX = 0.0f;
+		float jitterOffsetY = 0.0f;
 		float intensity = 0.8f;
 		float colorStrength = 1.0f;
 		float localToneStrength = 0.75f;

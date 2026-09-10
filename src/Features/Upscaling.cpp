@@ -1577,9 +1577,13 @@ void Upscaling::Upscale()
 				neuralOptions.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
 				neuralOptions.automaticMask = settings.neuralRenderingAutomaticMask;
 				neuralOptions.reset = neuralRenderingResetThisFrame;
-				// Before the upscaler colour and guides are both at render resolution.
+				// Before the upscaler colour and guides are both at render resolution,
+				// and the colour is the jittered raster DLSS is about to de-jitter. Hand
+				// the model the same offset Streamline gets so it can see a stable framing.
 				neuralOptions.guideWidth = renderWidth;
 				neuralOptions.guideHeight = renderHeight;
+				neuralOptions.jitterOffsetX = -jitter.x;
+				neuralOptions.jitterOffsetY = -jitter.y;
 				const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 				if (neuralRendering.Evaluate(main.texture,
 						neuralRenderingTexture->resource.get(),
