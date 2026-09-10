@@ -167,6 +167,24 @@ float NeuralSilhouetteWeight(Texture2D<float> guideDepth, int2 guideTexel, uint2
 }
 
 /**
+ * Confidence that a model answer from the previous evaluated frame still
+ * belongs to this pixel (alternating-frame mode, the proxy's "VRNR").
+ *
+ * Compares the luminance of the stale proxy the model actually saw against the
+ * fresh frame encoded into the same domain. Where they differ the scene moved
+ * under this pixel and the stale edit fades towards no edit, so the pixel shows
+ * the clean current frame rather than a misplaced ratio. Constants match the
+ * proxy's skip-frame guard.
+ */
+float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor)
+{
+	float staleLuma = dot(NeuralSrgbToLinear(proxyColor.rgb), kNeuralLuma);
+	float freshLuma = dot(EncodeNeuralProxy(originalColor.rgb), kNeuralLuma);
+	float difference = abs(staleLuma - freshLuma);
+	return saturate(1.0 - (difference * 2.5) / (staleLuma + freshLuma + 0.05));
+}
+
+/**
  * Compose the Feature 18 answer onto the untouched scene colour.
  *
  * @p modelColor and @p proxyColor are the model's answer and the exact proxy it

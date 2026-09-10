@@ -54,7 +54,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingResolutionScaleX,
 	neuralRenderingResolutionScaleY,
 	neuralRenderingTransferStrength,
-	neuralRenderingDepthAwareResolve);
+	neuralRenderingDepthAwareResolve,
+	neuralRenderingAlternateFrames);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
 
@@ -399,6 +400,13 @@ void Upscaling::DrawSettings()
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_depth_aware_resolve_tooltip"),
 						"When the model runs below full resolution, fades its edit across depth edges so background "
 						"changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0."));
+				}
+				ImGui::Checkbox(T(TKEY("neural_rendering_alternate_frames"), "Alternate Frames (Experimental)"), &settings.neuralRenderingAlternateFrames);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextUnformatted(T(TKEY("neural_rendering_alternate_frames_tooltip"),
+						"Runs the model every other frame and re-applies its previous result to the frames in between, "
+						"fading it wherever the image changed. Halves the neural cost, but fast motion may show a "
+						"one-frame lag in the model's lighting and detail changes."));
 				}
 
 				const char* neuralStyles[] = {
@@ -1681,6 +1689,7 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.colorStrength = settings.neuralRenderingColorStrength;
 	options.transferStrength = settings.neuralRenderingTransferStrength;
 	options.depthAwareResolve = settings.neuralRenderingDepthAwareResolve;
+	options.alternateFrames = settings.neuralRenderingAlternateFrames;
 	options.localToneStrength = settings.neuralRenderingLocalToneStrength;
 	options.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
 	options.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;

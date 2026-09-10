@@ -29,7 +29,7 @@ namespace
 		std::uint32_t workSize[2]{};    ///< Model raster; the shared colour/output textures are this size.
 		std::uint32_t guideSize[2]{};   ///< Depth guide active region, in guide texels.
 		std::uint32_t depthAwareResolve = 0;  ///< Non-zero: fade the edit across depth silhouettes in the decode.
-		std::uint32_t padding2 = 0;
+		std::uint32_t skipFrame = 0;          ///< Non-zero: the model did not run; the decode re-applies its stale answer.
 	};
 	static_assert(sizeof(TransferParams) == 48);
 
@@ -160,6 +160,9 @@ struct NeuralRenderingBackend::State
 	std::uint32_t requestedModelWidth = 0;
 	std::uint32_t requestedModelHeight = 0;
 	std::uint32_t requestedModelStableFrames = 0;
+
+	/// Counts Run() calls; odd frames are skipped in alternating-frame mode.
+	std::uint64_t evaluateFrameIndex = 0;
 
 	bool loggedProbeFailure = false;
 	bool loggedInvalidInputs = false;
@@ -440,8 +443,86 @@ struct NeuralRenderingBackend::State
 		return false;
 	}
 
+	/**
+	 * @brief Encodes the frame and guides into the shared textures and runs Feature 18 on them.
+	 *
+	 * Everything the model needs for one evaluation: the colour encode at the
+	 * model raster, the depth-guide copy, the motion-vector copy, and the D3D12
+	 * submission. Failures latch. The caller decodes the answer afterwards.
+	 */
+	bool EvaluateModel(const FrameInputs& inputs, ID3D11DeviceContext* context,
+		ID3D11ComputeShader* encodeShader, ID3D11ComputeShader* guideShader, ID3D11ShaderResourceView* colorInView,
+		std::uint32_t modelWidth, std::uint32_t modelHeight, std::uint32_t guideWidth, std::uint32_t guideHeight)
+	{
+		// (b) Colour moves through compute passes rather than CopyResource. The
+		// encode resamples the frame onto the unjittered pixel grid at the model
+		// raster so the model sees a stable framing; the decode later samples its
+		// answer back at each original pixel's jittered position at the active
+		// extent (see ColorTransfer.hlsli).
+		DispatchTransfer(context, encodeShader, colorInView, nullptr, nullptr, nullptr, color.uav11.Get(),
+			transferParamsCB.get(), linearClampSampler.get(), modelWidth, modelHeight);
+		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, nullptr, nullptr, depth.uav11.Get(),
+			nullptr, nullptr, guideWidth, guideHeight);
+
+		const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
+		context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
+
+		NeuralRendering::Tuning tuning;
+		tuning.intensity = inputs.intensity;
+		tuning.localToneStrength = inputs.localToneStrength;
+		tuning.localStructureStrength = inputs.localStructureStrength;
+		tuning.skinStructureStrength = inputs.skinStructureStrength;
+		tuning.style = inputs.style;
+		tuning.useAutoMask = inputs.automaticMask;
+		tuning.uiCorrection = false;  // Community Shaders never runs Neural Rendering after the UI composite.
+
+		ID3D12GraphicsCommandList* commandList = nullptr;
+		if (!interop.BeginD3D12(&commandList) || !commandList)
+			return LatchFailure("BeginD3D12", interop.LastError());
+
+		ID3D12Resource* resources[4]{
+			color.resource12.Get(), depth.resource12.Get(),
+			motionVectors.resource12.Get(), output.resource12.Get()
+		};
+		D3D12_RESOURCE_BARRIER barriers[4]{};
+		for (std::size_t index = 0; index < std::size(barriers); ++index) {
+			barriers[index].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barriers[index].Transition.pResource = resources[index];
+			barriers[index].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			barriers[index].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+			barriers[index].Transition.StateAfter = index == 3 ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS :
+			                                                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+		}
+		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
+
+		// Feature/output extents match the compact model raster. A raster change
+		// rebuilds only after EnsureResources drains the interop queue. The
+		// motion-vector scale is the guide resolution because Skyrim stores vectors
+		// as normalized UV displacement; the NGX scale converts them to guide pixels
+		// and the model bridges guide and colour rasters from the subrects, so the
+		// model scale is deliberately not folded in (see neural-rendering.md). In
+		// alternating-frame mode the vectors still describe one frame of motion
+		// although two elapsed since the last evaluation; this matches the proxy.
+		const bool executed = NeuralRendering::Runtime::Instance().Execute(commandList,
+			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
+			modelWidth, modelHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
+			static_cast<float>(guideWidth), static_cast<float>(guideHeight),
+			tuning, inputs.reset || resetPending);
+
+		for (auto& barrier : barriers)
+			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
+
+		if (!interop.EndD3D12())
+			return LatchFailure("EndD3D12", interop.LastError());
+		if (!executed)
+			return LatchFailure("Feature 18 execution", static_cast<HRESULT>(NeuralRendering::Runtime::Instance().NgxResult()));
+		return true;
+	}
+
 	bool Run(const FrameInputs& inputs, ID3D11Device* device, ID3D11DeviceContext* context)
 	{
+		++evaluateFrameIndex;
 		if (!interop.IsInitialized() && !InitializeInterop(device, context))
 			return false;
 		if (NeuralRendering::Runtime::Instance().Status() != NeuralRendering::RuntimeStatus::Initialized &&
@@ -484,6 +565,15 @@ struct NeuralRenderingBackend::State
 			resetPending = true;
 			lastColorInput = inputs.colorIn;
 		}
+
+		// Alternating frames (the proxy's experimental "VRNR"): run the model every
+		// other frame and, in between, re-apply its previous answer to the fresh
+		// frame through the decode alone. The shared colour/output textures keep
+		// the previous proxy/answer pair, which D3D11 already waited on when that
+		// frame's D3D12 work was submitted. The first frame after a history reset,
+		// a raster change or a failure always evaluates.
+		const bool skipFrame = inputs.alternateFrames && featureAvailable && !resetPending && !inputs.reset &&
+		                       (evaluateFrameIndex % 2) == 1;
 
 		auto* encodeShader = GetShader(encodeColorCS, encodeColorAttempted, kEncodeColorPath, "EncodeColorCS");
 		auto* decodeShader = GetShader(decodeColorCS, decodeColorAttempted, kDecodeColorPath, "DecodeColorCS");
@@ -534,69 +624,12 @@ struct NeuralRenderingBackend::State
 		// resolve exactly as before (the proxy likewise bypasses at 1.0).
 		const bool modelBelowNative = modelWidth < colorWidth || modelHeight < colorHeight;
 		transferParams.depthAwareResolve = inputs.depthAwareResolve && modelBelowNative ? 1u : 0u;
+		transferParams.skipFrame = skipFrame ? 1u : 0u;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
-		// (b) Colour moves through compute passes rather than CopyResource. The
-		// encode resamples the frame onto the unjittered pixel grid at the model
-		// raster so the model sees a stable framing; the decode later samples its
-		// answer back at each original pixel's jittered position at the active
-		// extent (see ColorTransfer.hlsli).
-		DispatchTransfer(context, encodeShader, colorInView, nullptr, nullptr, nullptr, color.uav11.Get(),
-			transferParamsCB.get(), linearClampSampler.get(), modelWidth, modelHeight);
-		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, nullptr, nullptr, depth.uav11.Get(),
-			nullptr, nullptr, guideWidth, guideHeight);
-
-		const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
-		context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
-
-		NeuralRendering::Tuning tuning;
-		tuning.intensity = inputs.intensity;
-		tuning.localToneStrength = inputs.localToneStrength;
-		tuning.localStructureStrength = inputs.localStructureStrength;
-		tuning.skinStructureStrength = inputs.skinStructureStrength;
-		tuning.style = inputs.style;
-		tuning.useAutoMask = inputs.automaticMask;
-		tuning.uiCorrection = false;  // Community Shaders never runs Neural Rendering after the UI composite.
-
-		ID3D12GraphicsCommandList* commandList = nullptr;
-		if (!interop.BeginD3D12(&commandList) || !commandList)
-			return LatchFailure("BeginD3D12", interop.LastError());
-
-		ID3D12Resource* resources[4]{
-			color.resource12.Get(), depth.resource12.Get(),
-			motionVectors.resource12.Get(), output.resource12.Get()
-		};
-		D3D12_RESOURCE_BARRIER barriers[4]{};
-		for (std::size_t index = 0; index < std::size(barriers); ++index) {
-			barriers[index].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			barriers[index].Transition.pResource = resources[index];
-			barriers[index].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			barriers[index].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-			barriers[index].Transition.StateAfter = index == 3 ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS :
-			                                                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-		}
-		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
-
-		// Feature/output extents match the compact model raster. A raster change
-		// rebuilds only after EnsureResources drains the interop queue. The
-		// motion-vector scale is the guide resolution because Skyrim stores vectors
-		// as normalized UV displacement; the NGX scale converts them to guide pixels
-		// and the model bridges guide and colour rasters from the subrects, so the
-		// model scale is deliberately not folded in (see neural-rendering.md).
-		const bool executed = NeuralRendering::Runtime::Instance().Execute(commandList,
-			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
-			modelWidth, modelHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
-			static_cast<float>(guideWidth), static_cast<float>(guideHeight),
-			tuning, inputs.reset || resetPending);
-
-		for (auto& barrier : barriers)
-			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
-		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
-
-		if (!interop.EndD3D12())
-			return LatchFailure("EndD3D12", interop.LastError());
-		if (!executed)
-			return LatchFailure("Feature 18 execution", static_cast<HRESULT>(NeuralRendering::Runtime::Instance().NgxResult()));
+		if (!skipFrame && !EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,
+								 modelWidth, modelHeight, guideWidth, guideHeight))
+			return false;
 
 		// Re-anchor the model's bounded luminance to the untouched source, then
 		// restore its chromaticity through the independently controlled colour pass.
@@ -684,6 +717,7 @@ struct NeuralRenderingBackend::State
 		requestedModelWidth = 0;
 		requestedModelHeight = 0;
 		requestedModelStableFrames = 0;
+		evaluateFrameIndex = 0;
 
 		loggedInvalidInputs = false;
 		loggedShaderFailure = false;

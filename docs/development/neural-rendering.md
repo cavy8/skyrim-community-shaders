@@ -204,6 +204,24 @@ weight towards 0.25 across discontinuities above 2%. The backend forces it off
 at native scale, where there is no upsample to bleed, so the 1.0 path stays
 bit-exact.
 
+## Alternating frames
+
+`Alternate Frames` is the proxy's experimental "VRNR": Feature 18 runs on even
+frames only. On odd frames the backend skips the encode, guide copies and the
+D3D12 submission entirely and runs `DecodeColorCS` alone against the shared
+textures, which still hold the previous frame's proxy/answer pair (D3D11
+already waited on that submission). `NeuralStaleEditWeight` compares the stale
+proxy's luminance with the fresh frame encoded the same way and fades the edit
+wherever they differ, so moving content shows the clean current frame instead
+of a misplaced ratio. A pending history reset, a raster change or a latched
+failure always forces an evaluation, so the first frame after enabling is never
+a skip.
+
+Two known compromises, both shared with the proxy: the model's own temporal
+state sees every second frame, and the motion vectors it is given describe one
+frame of motion although two elapsed. Doubling the motion-vector scale on
+evaluated frames would be the obvious refinement and has not been tried.
+
 ## Model tuning parameters
 
 `DLSSNR.Intensity` / `Style` / `LocalToneStrength` / `LocalStructureStrength` /

@@ -1530,6 +1530,8 @@
     "feature.upscaling.method_taa": "TAA",
     "feature.upscaling.name": "Upscaling",
     "feature.upscaling.neural_rendering": "DLSS Neural Rendering",
+    "feature.upscaling.neural_rendering_alternate_frames": "Alternate Frames (Experimental)",
+    "feature.upscaling.neural_rendering_alternate_frames_tooltip": "Runs the model every other frame and re-applies its previous result to the frames in between, fading it wherever the image changed. Halves the neural cost, but fast motion may show a one-frame lag in the model's lighting and detail changes.",
     "feature.upscaling.neural_rendering_automatic_mask": "Automatic Mask",
     "feature.upscaling.neural_rendering_automatic_mask_tooltip": "Generates the skin mask automatically.",
     "feature.upscaling.neural_rendering_available": "DLSS Neural Rendering is available.",

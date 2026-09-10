@@ -9,7 +9,7 @@ cbuffer TransferParams : register(b0)
 	uint2 WorkSize;    // Model raster; DestinationColor is allocated at this size.
 	uint2 GuideSize;   // Unused here; keeps the layout shared with DecodeColorCS.
 	uint DepthAwareResolve;
-	uint TransferParamsPadding;
+	uint SkipFrame;
 };
 
 Texture2D<float4> SourceColor : register(t0);

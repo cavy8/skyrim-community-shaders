@@ -9,7 +9,7 @@ cbuffer TransferParams : register(b0)
 	uint2 WorkSize;    // Model raster; ModelColor and ProxyColor are allocated at this size.
 	uint2 GuideSize;   // Valid region of GuideDepth (render resolution), in its texels.
 	uint DepthAwareResolve;  // Non-zero: fade the edit across depth silhouettes (see NeuralSilhouetteWeight).
-	uint TransferParamsPadding;
+	uint SkipFrame;          // Non-zero: the model was not run this frame; ModelColor/ProxyColor are stale.
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
@@ -43,7 +43,12 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float4 model = ModelColor.SampleLevel(LinearClampSampler, uv, 0);
 	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, uv, 0);
 
+	float4 original = OriginalColor[dispatchThreadID.xy];
 	float editWeight = TransferStrength;
+	// On an alternating skip frame the model's previous answer is re-applied to
+	// the fresh frame; fade it out wherever the content under the pixel changed.
+	if (SkipFrame != 0)
+		editWeight *= NeuralStaleEditWeight(proxy, original);
 	if (DepthAwareResolve != 0 && all(GuideSize > 0)) {
 		// The guide is at render resolution; after the upscaler the colour pixel
 		// is display resolution, so map through the active/guide ratio (unity
@@ -53,6 +58,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		editWeight *= NeuralSilhouetteWeight(GuideDepth, guideTexel, GuideSize);
 	}
 
-	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy,
-		OriginalColor[dispatchThreadID.xy], ColorStrength, editWeight);
+	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, ColorStrength, editWeight);
 }

@@ -64,6 +64,9 @@ public:
 		/// Fade the edit across depth silhouettes when the model runs below the
 		/// colour resolution; no effect at native scale.
 		bool depthAwareResolve = true;
+		/// Run the model every other frame and re-apply its previous answer to the
+		/// fresh frame in between (experimental; halves the neural cost).
+		bool alternateFrames = false;
 		float localToneStrength = 0.75f;
 		float localStructureStrength = 0.9f;
 		float skinStructureStrength = 0.9f;

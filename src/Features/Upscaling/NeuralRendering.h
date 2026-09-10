@@ -32,6 +32,11 @@ public:
 		/// depth silhouettes so a bilinearly upsampled background edit does not
 		/// bleed into thin foreground geometry. No effect at native scale.
 		bool depthAwareResolve = true;
+		/// Experimental: evaluate the model every other frame and re-apply its
+		/// previous answer to the fresh frame in between, fading it where the
+		/// content under a pixel changed. Halves the neural cost; the model's
+		/// own temporal state then sees every second frame.
+		bool alternateFrames = false;
 		float localToneStrength = 0.75f;
 		float localStructureStrength = 0.9f;
 		float skinStructureStrength = 0.9f;
