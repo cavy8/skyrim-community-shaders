@@ -18,6 +18,7 @@
 #include "Features/LinearLighting.h"
 #include "Features/Skin.h"
 #include "Features/Skylighting.h"
+#include "Features/SnowCover.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
@@ -68,5 +69,6 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::skin.GetCommonBufferData(),
 		globals::features::cloudRelight.GetCommonBufferData(),
 		globals::features::foliageLighting.settings,
-		globals::features::vanillaFresnel.settings);
+		globals::features::vanillaFresnel.settings,
+		globals::features::snowCover.GetCommonBufferData());
 }
