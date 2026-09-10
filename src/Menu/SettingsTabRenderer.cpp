@@ -415,6 +415,18 @@ void SettingsTabRenderer::RenderKeybindingsTab(
 			state.settingNeuralRenderingCompareKey,
 			"Change##NeuralRenderingCompare");
 
+		Util::InputComboWidget(
+			T("menu.settings.neural_rendering_scale_up_key", "Neural Rendering Scale Up Key:"),
+			settings.NeuralRenderingScaleUpKey,
+			state.settingNeuralRenderingScaleUpKey,
+			"Change##NeuralRenderingScaleUp");
+
+		Util::InputComboWidget(
+			T("menu.settings.neural_rendering_scale_down_key", "Neural Rendering Scale Down Key:"),
+			settings.NeuralRenderingScaleDownKey,
+			state.settingNeuralRenderingScaleDownKey,
+			"Change##NeuralRenderingScaleDown");
+
 		ImGui::EndTabItem();
 	}
 }

@@ -429,6 +429,8 @@ void Menu::Load(json& o_json)
 	migrateKey(o_json, "Effects11ToggleKey", settings.Effects11ToggleKey);
 	migrateKey(o_json, "NeuralRenderingToggleKey", settings.NeuralRenderingToggleKey);
 	migrateKey(o_json, "NeuralRenderingCompareKey", settings.NeuralRenderingCompareKey);
+	migrateKey(o_json, "NeuralRenderingScaleUpKey", settings.NeuralRenderingScaleUpKey);
+	migrateKey(o_json, "NeuralRenderingScaleDownKey", settings.NeuralRenderingScaleDownKey);
 
 	// Helper for new smart serialization with error handling
 	auto loadComboList = [](const json& j, const char* keyName, std::vector<InputCombo>& target) {
@@ -453,6 +455,8 @@ void Menu::Load(json& o_json)
 	loadComboList(o_json, "Effects11ToggleKey", settings.Effects11ToggleKey);
 	loadComboList(o_json, "NeuralRenderingToggleKey", settings.NeuralRenderingToggleKey);
 	loadComboList(o_json, "NeuralRenderingCompareKey", settings.NeuralRenderingCompareKey);
+	loadComboList(o_json, "NeuralRenderingScaleUpKey", settings.NeuralRenderingScaleUpKey);
+	loadComboList(o_json, "NeuralRenderingScaleDownKey", settings.NeuralRenderingScaleDownKey);
 
 	// Legacy support: If old config has Theme data and no SelectedThemePreset, load it
 	if (o_json.contains("Theme") && o_json["Theme"].is_object() && settings.SelectedThemePreset.empty()) {
@@ -524,6 +528,8 @@ void Menu::Save(json& o_json)
 	InputCombo::ComboList::to_json(o_json["Effects11ToggleKey"], settings.Effects11ToggleKey);
 	InputCombo::ComboList::to_json(o_json["NeuralRenderingToggleKey"], settings.NeuralRenderingToggleKey);
 	InputCombo::ComboList::to_json(o_json["NeuralRenderingCompareKey"], settings.NeuralRenderingCompareKey);
+	InputCombo::ComboList::to_json(o_json["NeuralRenderingScaleUpKey"], settings.NeuralRenderingScaleUpKey);
+	InputCombo::ComboList::to_json(o_json["NeuralRenderingScaleDownKey"], settings.NeuralRenderingScaleDownKey);
 }
 
 void Menu::LoadTheme(json& o_json)
@@ -874,7 +880,9 @@ void Menu::DrawGeneralSettings()
 		.settingScreenshotKey = settingScreenshotKey,
 		.settingEffects11ToggleKey = settingEffects11ToggleKey,
 		.settingNeuralRenderingToggleKey = settingNeuralRenderingToggleKey,
-		.settingNeuralRenderingCompareKey = settingNeuralRenderingCompareKey
+		.settingNeuralRenderingCompareKey = settingNeuralRenderingCompareKey,
+		.settingNeuralRenderingScaleUpKey = settingNeuralRenderingScaleUpKey,
+		.settingNeuralRenderingScaleDownKey = settingNeuralRenderingScaleDownKey
 	};
 
 	// Render settings using extracted component
@@ -1044,6 +1052,38 @@ static std::vector<InputCombo> DeriveCSEditorKey(const std::vector<InputCombo>& 
 	return { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(baseKey) };
 }
 
+// Steps the Neural Rendering resolution scale by delta (positive = up, negative = down),
+// clamping to [0.25, 2.0] and rounding to 2 decimals to avoid float drift. Applies to the
+// uniform scale or both per-axis scales depending on neuralRenderingResolutionMode, then
+// shows a HUD message with the resulting scale(s) on the game's main thread.
+static void StepNeuralRenderingScale(float delta)
+{
+	auto& upscaling = globals::features::upscaling;
+	if (!upscaling.loaded)
+		return;
+
+	auto clampRound = [](float value) {
+		value = std::clamp(value, 0.25f, 2.0f);
+		return std::round(value * 100.0f) / 100.0f;
+	};
+
+	std::string hudMessage;
+	if (upscaling.settings.neuralRenderingResolutionMode == 0) {
+		upscaling.settings.neuralRenderingResolutionScale = clampRound(upscaling.settings.neuralRenderingResolutionScale + delta);
+		hudMessage = std::format("Neural Rendering Scale: {:.2f}", upscaling.settings.neuralRenderingResolutionScale);
+	} else {
+		upscaling.settings.neuralRenderingResolutionScaleX = clampRound(upscaling.settings.neuralRenderingResolutionScaleX + delta);
+		upscaling.settings.neuralRenderingResolutionScaleY = clampRound(upscaling.settings.neuralRenderingResolutionScaleY + delta);
+		hudMessage = std::format("Neural Rendering Scale: {:.2f} x {:.2f}", upscaling.settings.neuralRenderingResolutionScaleX, upscaling.settings.neuralRenderingResolutionScaleY);
+	}
+
+	// ShowHUDMessage must run on the game's main thread.
+	if (auto* task = SKSE::GetTaskInterface())
+		task->AddTask([hudMessage]() {
+			RE::SendHUDMessage::ShowHUDMessage(hudMessage.c_str(), nullptr, true);
+		});
+}
+
 void Menu::ProcessInputEventQueue()
 {
 	std::unique_lock<std::shared_mutex> mutex(_inputEventMutex);
@@ -1140,6 +1180,8 @@ void Menu::ProcessInputEventQueue()
 						 if (globals::features::upscaling.loaded)
 							 globals::features::upscaling.RequestNeuralRenderingComparisonCapture();
 					 } },
+					{ settings.NeuralRenderingScaleUpKey, []() { StepNeuralRenderingScale(0.05f); } },
+					{ settings.NeuralRenderingScaleDownKey, []() { StepNeuralRenderingScale(-0.05f); } },
 				};
 				// RenderDoc's capture key is a single, unmodified key; only consider it on key-up.
 				if (!combosOnly && globals::features::renderDoc.HandleCaptureHotkey(key))
@@ -1194,6 +1236,8 @@ void Menu::ProcessInputEventQueue()
 					{ &settings.Effects11ToggleKey, &settingEffects11ToggleKey, [this](std::vector<InputCombo> keys) { settings.Effects11ToggleKey = keys; settingEffects11ToggleKey = false; } },
 					{ &settings.NeuralRenderingToggleKey, &settingNeuralRenderingToggleKey, [this](std::vector<InputCombo> keys) { settings.NeuralRenderingToggleKey = keys; settingNeuralRenderingToggleKey = false; } },
 					{ &settings.NeuralRenderingCompareKey, &settingNeuralRenderingCompareKey, [this](std::vector<InputCombo> keys) { settings.NeuralRenderingCompareKey = keys; settingNeuralRenderingCompareKey = false; } },
+					{ &settings.NeuralRenderingScaleUpKey, &settingNeuralRenderingScaleUpKey, [this](std::vector<InputCombo> keys) { settings.NeuralRenderingScaleUpKey = keys; settingNeuralRenderingScaleUpKey = false; } },
+					{ &settings.NeuralRenderingScaleDownKey, &settingNeuralRenderingScaleDownKey, [this](std::vector<InputCombo> keys) { settings.NeuralRenderingScaleDownKey = keys; settingNeuralRenderingScaleDownKey = false; } },
 				};
 				bool handled = false;
 				for (auto& h : hotkeyActions) {
@@ -1275,7 +1319,9 @@ void Menu::ProcessInputEventQueue()
 				&settings.ScreenshotKey,
 				&settings.Effects11ToggleKey,
 				&settings.NeuralRenderingToggleKey,
-				&settings.NeuralRenderingCompareKey
+				&settings.NeuralRenderingCompareKey,
+				&settings.NeuralRenderingScaleUpKey,
+				&settings.NeuralRenderingScaleDownKey
 			};
 			bool isHotkey = ShouldSwallowInput() && std::any_of(std::begin(hotkeys), std::end(hotkeys),
 														[key](const auto* combo) { return InputCombo::MatchesKeyboardCombo(*combo, key); });
@@ -1317,7 +1363,8 @@ bool Menu::IsCapturingHotkeyInput() const
 {
 	return settingToggleKey || settingSkipCompilationKey || settingsEffectsToggle ||
 	       settingOverlayToggleKey || settingShaderBlockPrevKey || settingShaderBlockNextKey || settingCSEditorToggleKey || settingScreenshotKey || settingEffects11ToggleKey ||
-	       settingNeuralRenderingToggleKey || settingNeuralRenderingCompareKey;
+	       settingNeuralRenderingToggleKey || settingNeuralRenderingCompareKey ||
+	       settingNeuralRenderingScaleUpKey || settingNeuralRenderingScaleDownKey;
 }
 
 void Menu::addToEventQueue(KeyEvent e)

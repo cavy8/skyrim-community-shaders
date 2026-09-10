@@ -179,6 +179,8 @@ public:
 	bool settingEffects11ToggleKey = false;      // Effects 11 toggle key
 	bool settingNeuralRenderingToggleKey = false;   // DLSS Neural Rendering toggle key
 	bool settingNeuralRenderingCompareKey = false;  // DLSS Neural Rendering comparison screenshot key
+	bool settingNeuralRenderingScaleUpKey = false;    // DLSS Neural Rendering scale up key
+	bool settingNeuralRenderingScaleDownKey = false;  // DLSS Neural Rendering scale down key
 
 	// Font caching (made public for ThemeManager and OverlayRenderer access)
 	// Marked mutable because they're cache fields that may be updated from const methods
@@ -472,6 +474,8 @@ public:
 		std::vector<InputCombo> Effects11ToggleKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_MULTIPLY) };  // Effects 11 toggle key
 		std::vector<InputCombo> NeuralRenderingToggleKey = { InputCombo::Keyboard(VK_F6) };                              // DLSS Neural Rendering toggle key
 		std::vector<InputCombo> NeuralRenderingCompareKey = {};                                                         // DLSS Neural Rendering A/B comparison screenshot key (unbound by default)
+		std::vector<InputCombo> NeuralRenderingScaleUpKey = {};                                                         // DLSS Neural Rendering scale up key (unbound by default)
+		std::vector<InputCombo> NeuralRenderingScaleDownKey = {};                                                       // DLSS Neural Rendering scale down key (unbound by default)
 		bool EnableShaderBlocking = false;                                                  // Enable shader blocking hotkeys for debugging
 		bool FirstTimeSetupCompleted = false;                                               // Track if first-time setup has been completed
 		bool SkipClearCacheConfirmation = false;                                            // Skip confirmation dialog when clearing shader cache

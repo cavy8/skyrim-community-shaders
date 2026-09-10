@@ -175,6 +175,10 @@ backend debounces the request (`SettleModelRaster`, 12 stable frames) so a
 slider drag does not drain the interop queue every frame; the previous raster
 keeps running until the value settles.
 
+Two unbound-by-default hotkeys (`Neural Rendering Scale Up/Down Key`, Settings ->
+Keybindings) step the active scale (both axes in Per-Axis mode) by 0.05 with a
+HUD message, the proxy's PageUp/PageDown equivalent.
+
 **Motion-vector scale under scaling.** The proxy multiplies `DLSSNR.MVecScaleX/Y`
 by `work / native`. Community Shaders deliberately does not: the guide fix
 (commit `7310537a`) established empirically that the model derives the
