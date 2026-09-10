@@ -70,7 +70,7 @@ public:
 		float reflexFPSLimit = 60.0f;
 		bool neuralRenderingEnabled = false;
 		uint neuralRenderingPlacement = 1;  // 0=Before Upscaling, 1=After Upscaling
-		uint neuralRenderingStyle = 3;  // 0=Default, 1=Natural, 2=Cinematic, 3=Style #3
+		uint neuralRenderingStyle = 2;  // 0=Default, 1=Natural, 2=Cinematic
 		float neuralRenderingIntensity = 0.8f;
 		float neuralRenderingColorStrength = 1.0f;
 		float neuralRenderingLocalToneStrength = 0.75f;

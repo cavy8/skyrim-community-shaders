@@ -1549,7 +1549,6 @@
     "feature.upscaling.neural_rendering_skin_structure": "Skin Structure Strength",
     "feature.upscaling.neural_rendering_skin_structure_tooltip": "Adjust skin structure detail. -1 disables this control.",
     "feature.upscaling.neural_rendering_style": "NR Style",
-    "feature.upscaling.neural_rendering_style_3": "Style #3",
     "feature.upscaling.neural_rendering_style_cinematic": "Cinematic",
     "feature.upscaling.neural_rendering_style_default": "Default",
     "feature.upscaling.neural_rendering_style_natural": "Natural",

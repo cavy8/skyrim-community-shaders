@@ -346,12 +346,11 @@ void Upscaling::DrawSettings()
 				const char* neuralStyles[] = {
 					T(TKEY("neural_rendering_style_default"), "Default"),
 					T(TKEY("neural_rendering_style_natural"), "Natural"),
-					T(TKEY("neural_rendering_style_cinematic"), "Cinematic"),
-					T(TKEY("neural_rendering_style_3"), "Style #3")
+					T(TKEY("neural_rendering_style_cinematic"), "Cinematic")
 				};
 				int neuralStyle = static_cast<int>(settings.neuralRenderingStyle);
 				if (ImGui::Combo(T(TKEY("neural_rendering_style"), "NR Style"), &neuralStyle, neuralStyles, IM_ARRAYSIZE(neuralStyles)))
-					settings.neuralRenderingStyle = static_cast<uint>(std::clamp(neuralStyle, 0, 3));
+					settings.neuralRenderingStyle = static_cast<uint>(std::clamp(neuralStyle, 0, 2));
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_style_tooltip"), "Choose the Neural Rendering visual style."));
 				}
@@ -606,8 +605,8 @@ void Upscaling::LoadSettings(json& o_json)
 		logger::warn("[Upscaling] Loaded neuralRenderingPlacement {} out of range, clamping to 1", settings.neuralRenderingPlacement);
 		settings.neuralRenderingPlacement = 1;
 	}
-	if (settings.neuralRenderingStyle > 3)
-		settings.neuralRenderingStyle = 3;
+	if (settings.neuralRenderingStyle > 2)
+		settings.neuralRenderingStyle = 2;
 	const auto sanitizeNeuralFloat = [](float& value, float fallback, float min, float max) {
 		if (!std::isfinite(value))
 			value = fallback;
