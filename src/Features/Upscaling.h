@@ -202,7 +202,8 @@ public:
 	 * Set by the Neural Rendering comparison hotkey / menu button. Serviced by
 	 * Main_PostProcessing, which drives neuralRenderingCompareStep over four frames
 	 * (Neural Rendering forced off, then on, each with a warm-up frame) and grabs the
-	 * off/on frames through the normal (UI-free) screenshot path into Data/DLSS 5 Screenshots/.
+	 * off/on frames at the end of post-processing - before any HUD or menu is drawn -
+	 * into Data/DLSS 5 Screenshots/.
 	 */
 	std::atomic<bool> neuralRenderingComparePending{ false };
 	// Render-thread only. 0 = idle; 1-4 = comparison capture frame (see ServiceNeuralRenderingComparison).

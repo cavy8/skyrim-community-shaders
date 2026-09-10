@@ -1537,7 +1537,7 @@
     "feature.upscaling.neural_rendering_color_strength": "Color Strength",
     "feature.upscaling.neural_rendering_color_strength_tooltip": "Blend the model's color changes independently of its bounded lighting and detail changes.",
     "feature.upscaling.neural_rendering_compare_screenshot": "Take Comparison Screenshot",
-    "feature.upscaling.neural_rendering_compare_screenshot_tooltip": "Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on - with no UI, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off.",
+    "feature.upscaling.neural_rendering_compare_screenshot_tooltip": "Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on - with no HUD or menu, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off.",
     "feature.upscaling.neural_rendering_enabled": "Enable Neural Rendering",
     "feature.upscaling.neural_rendering_enabled_tooltip": "Applies DLSS 5 Neural Rendering to the upscaled image. A compatible user-supplied nvngx_dlssnr.dll is required.",
     "feature.upscaling.neural_rendering_intensity": "NR Intensity",

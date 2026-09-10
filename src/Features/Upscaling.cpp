@@ -334,7 +334,7 @@ void Upscaling::DrawSettings()
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_compare_screenshot_tooltip"),
 						"Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on "
-						"- with no UI, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off."));
+						"- with no HUD or menu, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off."));
 				}
 
 				const bool neuralRenderingControlsAvailable = settings.neuralRenderingEnabled && neuralRenderingBackendAvailable;
@@ -1951,15 +1951,18 @@ void Upscaling::ServiceNeuralRenderingComparison(UpscaleMethod a_upscaleMethod, 
 		return;
 	}
 
-	// Frame phase end: the frame has been composited (still no UI). Queue its screenshot
-	// where applicable and set up the next step.
+	// Frame phase end: post-processing is done and the game UI has not been drawn yet, so
+	// a capture here has no HUD and no CS menu. Grab the frame where applicable, then set
+	// up the next step.
 	switch (neuralRenderingCompareStep) {
 	case 1:
 		neuralRenderingCompareStep = 2;
 		settings.neuralRenderingEnabled = false;  // frame 2: OFF, capture
 		break;
 	case 2:
-		globals::features::screenshotFeature.QueueNeuralRenderingComparisonShot(neuralRenderingCompareStamp, "_NR-off");
+		// Runs at the end of Main_PostProcessing, before the game UI is drawn -> no HUD, no CS menu.
+		globals::features::screenshotFeature.Capture(
+			ScreenshotFeature::NeuralRenderingComparisonPath(neuralRenderingCompareStamp, "_NR-off"), /*forceCleanNoUI=*/true);
 		neuralRenderingCompareStep = 3;
 		settings.neuralRenderingEnabled = true;  // frame 3: ON, warm-up
 		pendingDLSSReset.store(true, std::memory_order_release);
@@ -1969,7 +1972,8 @@ void Upscaling::ServiceNeuralRenderingComparison(UpscaleMethod a_upscaleMethod, 
 		settings.neuralRenderingEnabled = true;  // frame 4: ON, capture
 		break;
 	case 4:
-		globals::features::screenshotFeature.QueueNeuralRenderingComparisonShot(neuralRenderingCompareStamp, "_NR-on");
+		globals::features::screenshotFeature.Capture(
+			ScreenshotFeature::NeuralRenderingComparisonPath(neuralRenderingCompareStamp, "_NR-on"), /*forceCleanNoUI=*/true);
 		settings.neuralRenderingEnabled = neuralRenderingCompareUserSetting;  // restore
 		pendingDLSSReset.store(true, std::memory_order_release);
 		neuralRenderingCompareStep = 0;
