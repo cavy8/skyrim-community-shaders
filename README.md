@@ -223,3 +223,4 @@ See LICENSE within each directory; if none, it's [Default](#default)
 ### Branch-Specific Credits
 
 - [dlssnr-vr fork of Open Shaders](https://github.com/YtzyFvra/skyrim-community-shaders/tree/feature/dlssnr-vr)
+- [OptiScaler DLSS-NR pre-SR multipass fork](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass)
