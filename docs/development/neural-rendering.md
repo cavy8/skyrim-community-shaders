@@ -40,6 +40,33 @@ sharpening / copy-back. Depth and motion therefore remain the exact
 render-resolution guides used for the colour upscale. The backend tracks the
 colour region and guide region separately (`FrameInputs::guideWidth/guideHeight`).
 
+## Motion vectors
+
+Both placements pass the game's **raw** motion-vector target
+(`RE::RENDER_TARGETS::kMOTION_VECTOR`) to `NeuralRendering::Evaluate`, not the
+`motionVectorCopyTexture` that `EncodeTexturesCS` produces for DLSS.
+
+That copy is a 5x5 *dilated* field: each pixel adopts a closer, faster-moving
+neighbour's vector, faded back toward its own vector for anything nearer than
+~10,000 game units, so only far scenery is fully substituted. Streamline is told
+the field is pre-dilated (`Streamline.cpp`), so DLSS skips its own dilation. The
+dilation is deliberate: a two-texel rim of background around each moving
+silhouette is tagged with the foreground's motion, DLSS's history-rejection then
+kills the would-be ghost trail behind the object.
+
+Neural Rendering's motion input feeds *the model's own* temporal state, not
+DLSS's, and NVIDIA's DLSS-NR integration guidance (and the driver-level path, and
+OptiScaler) supplies plain per-pixel vectors with the model dilating internally.
+Fed the dilated rim, the model either re-decides those pixels every frame (a
+flickering outline that tracks moving edges) or trusts it and smears foreground
+detail into the background. An undilated field is the model's training
+distribution; the dilated one is not.
+
+The copy is allocated with the game target's exact format
+(`Upscaling.cpp`, `motionVectorCopyTexture` creation), so the backend's shared
+texture, the subresource copy, and the motion-vector scale / subrects are
+identical whichever resource is passed. DLSS keeps its dilated copy unchanged.
+
 ## Why there is no separate "Inside Upscaling" mode
 
 OptiScaler's DLSS-NR fork offers *before / inside / after* the upscaler. "Inside"

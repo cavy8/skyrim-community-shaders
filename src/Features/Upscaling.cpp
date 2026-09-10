@@ -1585,11 +1585,17 @@ void Upscaling::Upscale()
 				neuralOptions.jitterOffsetX = -jitter.x;
 				neuralOptions.jitterOffsetY = -jitter.y;
 				const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+				// Hand the model the game's raw motion-vector target, not the 5x5
+				// dilated ghosting-reduction copy Streamline gets below. That copy
+				// tags a two-texel rim of background with foreground motion, which
+				// is a deliberate lie for DLSS's history rejection. The model feeds
+				// its own temporal state and was trained on plain per-pixel vectors,
+				// so the dilated rim reads as flicker or smear along moving edges.
 				if (neuralRendering.Evaluate(main.texture,
 						neuralRenderingTexture->resource.get(),
 						depth.texture,
 						depth.depthSRV,
-						motionVectorCopyTexture->resource.get(),
+						motionVector.texture,
 						renderWidth,
 						renderHeight,
 						neuralOptions)) {
@@ -1616,6 +1622,7 @@ void Upscaling::PerformUpscaling()
 		neuralRenderingResourcesActive = true;
 		auto renderer = globals::game::renderer;
 		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
 		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
 		// After the upscaler the colour input is display resolution, but depth and
@@ -1632,11 +1639,13 @@ void Upscaling::PerformUpscaling()
 		neuralOptions.reset = neuralRenderingResetThisFrame;
 		neuralOptions.guideWidth = static_cast<uint32_t>(guideSize.x);
 		neuralOptions.guideHeight = static_cast<uint32_t>(guideSize.y);
+		// Raw game motion-vector target, not the dilated ghosting-reduction copy
+		// DLSS consumes; see the matching note in Upscale() for the reasoning.
 		neuralRenderingResultValid = neuralRendering.Evaluate(sharpenerTexture->resource.get(),
 			neuralRenderingTexture->resource.get(),
 			depth.texture,
 			depth.depthSRV,
-			motionVectorCopyTexture->resource.get(),
+			motionVector.texture,
 			nativeWidth,
 			nativeHeight,
 			neuralOptions);
