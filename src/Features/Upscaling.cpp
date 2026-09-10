@@ -48,7 +48,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingLocalToneStrength,
 	neuralRenderingLocalStructureStrength,
 	neuralRenderingSkinStructureStrength,
-	neuralRenderingAutomaticMask);
+	neuralRenderingAutomaticMask,
+	neuralRenderingResolutionMode,
+	neuralRenderingResolutionScale,
+	neuralRenderingResolutionScaleX,
+	neuralRenderingResolutionScaleY);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
 
@@ -353,7 +357,41 @@ void Upscaling::DrawSettings()
 						"Run Neural Rendering before DLSS upscaling or after the upscaled image is produced."));
 				}
 
-
+				const char* resolutionModeLabels[] = {
+					T(TKEY("neural_rendering_resolution_mode_uniform"), "Uniform"),
+					T(TKEY("neural_rendering_resolution_mode_per_axis"), "Per-Axis (Experimental)")
+				};
+				int resolutionMode = static_cast<int>(settings.neuralRenderingResolutionMode);
+				if (ImGui::Combo(T(TKEY("neural_rendering_resolution_mode"), "Model Resolution"), &resolutionMode, resolutionModeLabels, IM_ARRAYSIZE(resolutionModeLabels)))
+					settings.neuralRenderingResolutionMode = static_cast<uint>(std::clamp(resolutionMode, 0, 1));
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_mode_tooltip"),
+						"Uniform runs the model at one scale of the frame it processes.\n"
+						"Per-Axis scales width and height independently (for example 0.65 x 0.85), trading a little "
+						"horizontal detail for a larger reduction of the neural workload."));
+				}
+				if (settings.neuralRenderingResolutionMode == 0) {
+					ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale"), "Resolution Scale"), &settings.neuralRenderingResolutionScale, 0.25f, 2.0f, "%.2f");
+					if (auto _tt = Util::HoverTooltipWrapper()) {
+						ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_tooltip"),
+							"Resolution the model runs at, relative to the frame it processes.\n"
+							"Below 1.0 the model works on a downsampled copy and only its lighting and colour edit is applied "
+							"to the full-resolution frame, so fine detail is kept; 0.75-0.85 cuts the neural cost by roughly a "
+							"third with little visible loss. Above 1.0 supersamples the model input.\n"
+							"Changes apply once the slider settles."));
+					}
+				} else {
+					ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale_x"), "Horizontal Scale"), &settings.neuralRenderingResolutionScaleX, 0.25f, 2.0f, "%.2f");
+					if (auto _tt = Util::HoverTooltipWrapper()) {
+						ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_x_tooltip"),
+							"Model width relative to the frame width. Changes apply once the slider settles."));
+					}
+					ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale_y"), "Vertical Scale"), &settings.neuralRenderingResolutionScaleY, 0.25f, 2.0f, "%.2f");
+					if (auto _tt = Util::HoverTooltipWrapper()) {
+						ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_y_tooltip"),
+							"Model height relative to the frame height. Changes apply once the slider settles."));
+					}
+				}
 
 				const char* neuralStyles[] = {
 					T(TKEY("neural_rendering_style_default"), "Default"),
@@ -629,6 +667,11 @@ void Upscaling::LoadSettings(json& o_json)
 	sanitizeNeuralFloat(settings.neuralRenderingLocalToneStrength, 0.75f, 0.0f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingLocalStructureStrength, 0.9f, 0.0f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingSkinStructureStrength, 0.9f, -1.0f, 2.0f);
+	if (settings.neuralRenderingResolutionMode > 1)
+		settings.neuralRenderingResolutionMode = 1;
+	sanitizeNeuralFloat(settings.neuralRenderingResolutionScale, 1.0f, 0.25f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleX, 1.0f, 0.25f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleY, 1.0f, 0.25f, 2.0f);
 	auto iniSettingCollection = globals::game::iniPrefSettingCollection;
 	if (iniSettingCollection) {
 		auto setting = iniSettingCollection->GetSetting("bUseTAA:Display");
@@ -1579,15 +1622,7 @@ void Upscaling::Upscale()
 			ID3D11Resource* dlssInput = main.texture;
 			if (settings.neuralRenderingEnabled && settings.neuralRenderingPlacement == 0 && neuralRendering.IsAvailable() && neuralRenderingTexture) {
 				neuralRenderingResourcesActive = true;
-				NeuralRendering::Options neuralOptions{};
-				neuralOptions.style = settings.neuralRenderingStyle;
-				neuralOptions.intensity = settings.neuralRenderingIntensity;
-				neuralOptions.colorStrength = settings.neuralRenderingColorStrength;
-				neuralOptions.localToneStrength = settings.neuralRenderingLocalToneStrength;
-				neuralOptions.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
-				neuralOptions.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
-				neuralOptions.automaticMask = settings.neuralRenderingAutomaticMask;
-				neuralOptions.reset = neuralRenderingResetThisFrame;
+				NeuralRendering::Options neuralOptions = MakeNeuralRenderingOptions();
 				// Before the upscaler colour and guides are both at render resolution,
 				// and the colour is the jittered raster DLSS is about to de-jitter. Hand
 				// the model the same offset Streamline gets so it can see a stable framing.
@@ -1623,6 +1658,23 @@ void Upscaling::Upscale()
 	}
 }
 
+NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
+{
+	NeuralRendering::Options options{};
+	options.style = settings.neuralRenderingStyle;
+	options.intensity = settings.neuralRenderingIntensity;
+	options.colorStrength = settings.neuralRenderingColorStrength;
+	options.localToneStrength = settings.neuralRenderingLocalToneStrength;
+	options.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
+	options.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
+	options.automaticMask = settings.neuralRenderingAutomaticMask;
+	options.reset = neuralRenderingResetThisFrame;
+	const bool perAxis = settings.neuralRenderingResolutionMode == 1;
+	options.resolutionScaleX = perAxis ? settings.neuralRenderingResolutionScaleX : settings.neuralRenderingResolutionScale;
+	options.resolutionScaleY = perAxis ? settings.neuralRenderingResolutionScaleY : settings.neuralRenderingResolutionScale;
+	return options;
+}
+
 void Upscaling::RequestNeuralRenderingComparisonCapture()
 {
 	neuralRenderingComparePending.store(true, std::memory_order_release);
@@ -1644,15 +1696,7 @@ void Upscaling::PerformUpscaling()
 		// After the upscaler the colour input is display resolution, but depth and
 		// motion vectors are still the game's render-resolution targets.
 		const auto guideSize = Util::ConvertToDynamic(float2{ (float)nativeWidth, (float)nativeHeight });
-		NeuralRendering::Options neuralOptions{};
-		neuralOptions.style = settings.neuralRenderingStyle;
-		neuralOptions.intensity = settings.neuralRenderingIntensity;
-		neuralOptions.colorStrength = settings.neuralRenderingColorStrength;
-		neuralOptions.localToneStrength = settings.neuralRenderingLocalToneStrength;
-		neuralOptions.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
-		neuralOptions.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
-		neuralOptions.automaticMask = settings.neuralRenderingAutomaticMask;
-		neuralOptions.reset = neuralRenderingResetThisFrame;
+		NeuralRendering::Options neuralOptions = MakeNeuralRenderingOptions();
 		neuralOptions.guideWidth = static_cast<uint32_t>(guideSize.x);
 		neuralOptions.guideHeight = static_cast<uint32_t>(guideSize.y);
 		// Raw game motion-vector target, not the dilated ghosting-reduction copy

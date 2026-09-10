@@ -25,8 +25,35 @@ namespace
 		float jitterOffset[2]{};  ///< Sub-pixel projection offset of the colour raster, in render pixels.
 		float colorStrength = 1.0f;
 		float padding = 0.0f;
+		std::uint32_t activeSize[2]{};  ///< Colour/output active region, in colour texels.
+		std::uint32_t workSize[2]{};    ///< Model raster; the shared colour/output textures are this size.
 	};
-	static_assert(sizeof(TransferParams) == 16);
+	static_assert(sizeof(TransferParams) == 32);
+
+	constexpr float kMinimumResolutionScale = 0.25f;
+	constexpr float kMaximumResolutionScale = 2.0f;
+	/// Feature 18 is not created below this per-axis extent.
+	constexpr std::uint32_t kMinimumModelExtent = 64;
+	/// Frames a changed model raster must stay stable before the shared textures
+	/// and the NGX feature are rebuilt for it. Rebuilding drains the interop queue,
+	/// so applying every intermediate value of a slider drag would hitch per frame.
+	constexpr std::uint32_t kModelRasterDebounceFrames = 12;
+
+	/**
+	 * @brief Model raster extent for one axis.
+	 *
+	 * Scale one is exact so the native path is untouched. Otherwise the active
+	 * extent is scaled, rounded to an even texel count and floored at
+	 * kMinimumModelExtent, matching the raster the DLSSNR-Cost-Scaler proxy builds.
+	 */
+	std::uint32_t ScaledExtent(std::uint32_t active, float scale)
+	{
+		scale = std::clamp(scale, kMinimumResolutionScale, kMaximumResolutionScale);
+		if (std::abs(scale - 1.0f) < 0.005f)
+			return active;
+		const auto scaled = static_cast<std::uint32_t>(std::lround(static_cast<double>(active) * scale)) & ~1u;
+		return std::max(scaled, kMinimumModelExtent);
+	}
 
 	constexpr const wchar_t* kEncodeColorPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\EncodeColorCS.hlsl";
 	constexpr const wchar_t* kDecodeColorPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\DecodeColorCS.hlsl";
@@ -122,6 +149,14 @@ struct NeuralRenderingBackend::State
 	std::uint32_t lastActiveHeight = 0;
 	std::uint32_t lastGuideWidth = 0;
 	std::uint32_t lastGuideHeight = 0;
+	std::uint32_t lastModelWidth = 0;
+	std::uint32_t lastModelHeight = 0;
+
+	/// Model raster the caller most recently asked for and how many consecutive
+	/// frames it has been asked for; see SettleModelRaster.
+	std::uint32_t requestedModelWidth = 0;
+	std::uint32_t requestedModelHeight = 0;
+	std::uint32_t requestedModelStableFrames = 0;
 
 	bool loggedProbeFailure = false;
 	bool loggedInvalidInputs = false;
@@ -203,10 +238,39 @@ struct NeuralRenderingBackend::State
 	}
 
 	/**
-	 * @brief Creates or validates compact shared textures at the active input extents.
+	 * @brief Debounces model-raster changes so a slider drag does not rebuild Feature 18 every frame.
+	 *
+	 * A new raster is adopted immediately when nothing is allocated yet or the
+	 * colour active region itself changed (EnsureResources rebuilds then anyway).
+	 * Otherwise the current allocation is kept until the request has been stable
+	 * for kModelRasterDebounceFrames.
+	 *
+	 * @return The model raster to run this frame.
+	 */
+	std::pair<std::uint32_t, std::uint32_t> SettleModelRaster(std::uint32_t desiredWidth, std::uint32_t desiredHeight,
+		std::uint32_t activeWidth, std::uint32_t activeHeight)
+	{
+		if (desiredWidth != requestedModelWidth || desiredHeight != requestedModelHeight) {
+			requestedModelWidth = desiredWidth;
+			requestedModelHeight = desiredHeight;
+			requestedModelStableFrames = 0;
+		} else if (requestedModelStableFrames < kModelRasterDebounceFrames) {
+			++requestedModelStableFrames;
+		}
+		const bool allocated = color.resource11 && output.resource11;
+		const bool activeUnchanged = activeWidth == lastActiveWidth && activeHeight == lastActiveHeight;
+		if (allocated && activeUnchanged && requestedModelStableFrames < kModelRasterDebounceFrames)
+			return { color.desc.Width, color.desc.Height };
+		return { desiredWidth, desiredHeight };
+	}
+
+	/**
+	 * @brief Creates or validates compact shared textures at the model and guide extents.
+	 * @param modelWidth Model raster width the colour/output textures are allocated at.
+	 * @param modelHeight Model raster height.
 	 * @return False only when the descriptions cannot be read or a shared texture cannot be created.
 	 */
-	bool EnsureResources(const FrameInputs& inputs)
+	bool EnsureResources(const FrameInputs& inputs, std::uint32_t modelWidth, std::uint32_t modelHeight)
 	{
 		D3D11_TEXTURE2D_DESC colorSource{};
 		D3D11_TEXTURE2D_DESC depthSource{};
@@ -216,8 +280,8 @@ struct NeuralRenderingBackend::State
 			return false;
 
 		constexpr UINT sharedFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-		const auto colorDesc = MakeSharedDesc(colorSource, colorSource.Format, sharedFlags, inputs.width, inputs.height);
-		const auto outputDesc = MakeSharedDesc(colorSource, colorSource.Format, sharedFlags, inputs.width, inputs.height);
+		const auto colorDesc = MakeSharedDesc(colorSource, colorSource.Format, sharedFlags, modelWidth, modelHeight);
+		const auto outputDesc = MakeSharedDesc(colorSource, colorSource.Format, sharedFlags, modelWidth, modelHeight);
 		const auto depthDesc = MakeSharedDesc(depthSource, DXGI_FORMAT_R32_FLOAT, sharedFlags,
 			inputs.guideWidth, inputs.guideHeight);
 		const auto motionDesc = MakeSharedDesc(motionSource, motionSource.Format, sharedFlags,
@@ -259,8 +323,9 @@ struct NeuralRenderingBackend::State
 		Util::SetResourceName(colorSRV.get(), "NeuralRendering::Color SRV");
 
 		resetPending = true;
-		logger::info("[NeuralRendering] Shared resources allocated colour={}x{} depth={}x{} motion={}x{}",
-			colorDesc.Width, colorDesc.Height, depthDesc.Width, depthDesc.Height, motionDesc.Width, motionDesc.Height);
+		logger::info("[NeuralRendering] Shared resources allocated model={}x{} (active {}x{}) depth={}x{} motion={}x{}",
+			colorDesc.Width, colorDesc.Height, inputs.width, inputs.height,
+			depthDesc.Width, depthDesc.Height, motionDesc.Width, motionDesc.Height);
 		return true;
 	}
 
@@ -356,6 +421,7 @@ struct NeuralRenderingBackend::State
 		                      inputs.colorOut != inputs.motionVectors && inputs.depth != inputs.motionVectors;
 		const bool finite = std::isfinite(inputs.intensity) && std::isfinite(inputs.colorStrength) &&
 		                    std::isfinite(inputs.jitterOffsetX) && std::isfinite(inputs.jitterOffsetY) &&
+		                    std::isfinite(inputs.resolutionScaleX) && std::isfinite(inputs.resolutionScaleY) &&
 		                    std::isfinite(inputs.localToneStrength) &&
 		                    std::isfinite(inputs.localStructureStrength) && std::isfinite(inputs.skinStructureStrength);
 		if (inputs.colorIn && inputs.colorOut && inputs.depth && inputs.depthSRV && inputs.motionVectors &&
@@ -376,29 +442,38 @@ struct NeuralRenderingBackend::State
 		if (NeuralRendering::Runtime::Instance().Status() != NeuralRendering::RuntimeStatus::Initialized &&
 			!InitializeRuntime())
 			return false;
-		if (!EnsureResources(inputs))
+		// The colour/output region is the caller's active extent: dynamic resolution
+		// renders into the top-left of natively sized game targets, and both colour
+		// passes clamp against the real allocation. The model raster is that extent
+		// scaled per axis; the shared colour/output textures are compact at the
+		// model raster, the depth+motion guides at the guide extent. The two stay
+		// independent because post-upscale colour is display sized.
+		const std::uint32_t colorWidth = inputs.width;
+		const std::uint32_t colorHeight = inputs.height;
+		const std::uint32_t desiredModelWidth = ScaledExtent(colorWidth, inputs.resolutionScaleX);
+		const std::uint32_t desiredModelHeight = ScaledExtent(colorHeight, inputs.resolutionScaleY);
+		const auto [modelWidth, modelHeight] = SettleModelRaster(desiredModelWidth, desiredModelHeight, colorWidth, colorHeight);
+
+		if (!EnsureResources(inputs, modelWidth, modelHeight))
 			return LatchFailure("shared resource creation", interop.LastError());
 
-		// Dynamic resolution renders into the top-left of natively sized game
-		// targets. Shared resources are compact, but keep these clamps as a final
-		// guard against malformed active extents. Colour/output and depth+motion
-		// regions remain independent because post-upscale colour is display sized.
-		const std::uint32_t colorWidth = std::min({ inputs.width, color.desc.Width, output.desc.Width });
-		const std::uint32_t colorHeight = std::min({ inputs.height, color.desc.Height, output.desc.Height });
 		const std::uint32_t guideSrcWidth = inputs.guideWidth ? inputs.guideWidth : inputs.width;
 		const std::uint32_t guideSrcHeight = inputs.guideHeight ? inputs.guideHeight : inputs.height;
 		const std::uint32_t guideWidth = std::min({ guideSrcWidth, depth.desc.Width, motionVectors.desc.Width });
 		const std::uint32_t guideHeight = std::min({ guideSrcHeight, depth.desc.Height, motionVectors.desc.Height });
-		if (!colorWidth || !colorHeight || !guideWidth || !guideHeight)
+		if (!colorWidth || !colorHeight || !guideWidth || !guideHeight || !modelWidth || !modelHeight)
 			return false;
 
 		if (colorWidth != lastActiveWidth || colorHeight != lastActiveHeight ||
-			guideWidth != lastGuideWidth || guideHeight != lastGuideHeight) {
+			guideWidth != lastGuideWidth || guideHeight != lastGuideHeight ||
+			modelWidth != lastModelWidth || modelHeight != lastModelHeight) {
 			resetPending = true;
 			lastActiveWidth = colorWidth;
 			lastActiveHeight = colorHeight;
 			lastGuideWidth = guideWidth;
 			lastGuideHeight = guideHeight;
+			lastModelWidth = modelWidth;
+			lastModelHeight = modelHeight;
 		}
 		if (inputs.colorIn != lastColorInput) {
 			resetPending = true;
@@ -442,14 +517,19 @@ struct NeuralRenderingBackend::State
 		transferParams.jitterOffset[0] = std::abs(inputs.jitterOffsetX) <= 1.0f ? inputs.jitterOffsetX : 0.0f;
 		transferParams.jitterOffset[1] = std::abs(inputs.jitterOffsetY) <= 1.0f ? inputs.jitterOffsetY : 0.0f;
 		transferParams.colorStrength = std::clamp(inputs.colorStrength, 0.0f, 1.0f);
+		transferParams.activeSize[0] = colorWidth;
+		transferParams.activeSize[1] = colorHeight;
+		transferParams.workSize[0] = modelWidth;
+		transferParams.workSize[1] = modelHeight;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		// (b) Colour moves through compute passes rather than CopyResource. The
-		// encode resamples the frame onto the unjittered pixel grid so the model
-		// sees a stable framing; the decode later samples its answer back at each
-		// original pixel's jittered position (see ColorTransfer.hlsli).
+		// encode resamples the frame onto the unjittered pixel grid at the model
+		// raster so the model sees a stable framing; the decode later samples its
+		// answer back at each original pixel's jittered position at the active
+		// extent (see ColorTransfer.hlsli).
 		DispatchTransfer(context, encodeShader, colorInView, nullptr, nullptr, color.uav11.Get(),
-			transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight);
+			transferParamsCB.get(), linearClampSampler.get(), modelWidth, modelHeight);
 		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, nullptr, depth.uav11.Get(),
 			nullptr, nullptr, guideWidth, guideHeight);
 
@@ -484,13 +564,15 @@ struct NeuralRenderingBackend::State
 		}
 		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
 
-		// Feature/output extents match the compact active colour raster. A raster
-		// change rebuilds only after EnsureResources drains the interop queue. The
+		// Feature/output extents match the compact model raster. A raster change
+		// rebuilds only after EnsureResources drains the interop queue. The
 		// motion-vector scale is the guide resolution because Skyrim stores vectors
-		// as normalized UV displacement; the NGX scale converts them to pixels.
+		// as normalized UV displacement; the NGX scale converts them to guide pixels
+		// and the model bridges guide and colour rasters from the subrects, so the
+		// model scale is deliberately not folded in (see neural-rendering.md).
 		const bool executed = NeuralRendering::Runtime::Instance().Execute(commandList,
 			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
-			colorWidth, colorHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
+			modelWidth, modelHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
 			static_cast<float>(guideWidth), static_cast<float>(guideHeight),
 			tuning, inputs.reset || resetPending);
 
@@ -583,6 +665,11 @@ struct NeuralRenderingBackend::State
 		lastActiveHeight = 0;
 		lastGuideWidth = 0;
 		lastGuideHeight = 0;
+		lastModelWidth = 0;
+		lastModelHeight = 0;
+		requestedModelWidth = 0;
+		requestedModelHeight = 0;
+		requestedModelStableFrames = 0;
 
 		loggedInvalidInputs = false;
 		loggedShaderFailure = false;

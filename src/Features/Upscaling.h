@@ -77,6 +77,10 @@ public:
 		float neuralRenderingLocalStructureStrength = 0.9f;
 		float neuralRenderingSkinStructureStrength = 0.9f;
 		bool neuralRenderingAutomaticMask = true;
+		uint neuralRenderingResolutionMode = 0;  // 0=Uniform scale, 1=Per-axis (experimental anamorphic) scale
+		float neuralRenderingResolutionScale = 1.0f;
+		float neuralRenderingResolutionScaleX = 1.0f;
+		float neuralRenderingResolutionScaleY = 1.0f;
 	};
 
 	Settings settings;
@@ -210,6 +214,14 @@ public:
 	int neuralRenderingCompareStep = 0;
 	bool neuralRenderingCompareUserSetting = false;
 	std::string neuralRenderingCompareStamp;
+
+	/**
+	 * @brief Builds the placement-independent Neural Rendering options from the current settings.
+	 *
+	 * Callers still set the guide extent and jitter offset, which depend on where
+	 * in the frame the pass runs.
+	 */
+	NeuralRendering::Options MakeNeuralRenderingOptions() const;
 
 	/** @brief Requests a Neural Rendering on/off comparison screenshot pair; captured over the next few rendered frames. */
 	void RequestNeuralRenderingComparisonCapture();

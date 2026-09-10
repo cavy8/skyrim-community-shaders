@@ -136,6 +136,52 @@ game target's padded native allocation. Before-upscale mode therefore creates
 Feature 18 at render resolution; after-upscale mode creates it at display
 resolution. Loading transitions request a one-frame history reset.
 
+## Model resolution
+
+The `Model Resolution` controls (ported from
+[DLSSNR-Cost-Scaler](https://github.com/xenmods/DLSSNR-Cost-Scaler)) run
+Feature 18 on a raster smaller (or larger) than the colour region it processes.
+`Uniform` applies one scale; `Per-Axis` is the proxy's experimental anamorphic
+mode and scales width and height independently (its suggested 0.65 x 0.85 cuts
+the neural workload by ~45%). Per axis the model extent is
+`round(active * scale) & ~1`, floored at 64, with scale 1 left exact so the
+native path is byte-for-byte the previous behaviour.
+
+The scaling lives entirely in the existing colour transfer:
+
+- The shared colour/output textures are allocated at the **model raster**
+  (`Backend.cpp`, `EnsureResources`); the depth/motion guides stay at the guide
+  extent. `TransferParams` carries `ActiveSize` and `WorkSize` so both passes know
+  the mapping.
+- `EncodeColorCS` dispatches over the model raster. Each model texel covers
+  scene position `(id + 0.5) * active / work` on the unjittered grid and is
+  resampled from `+ JitterOffset` with the same Catmull-Rom kernel the jitter
+  compensation already used. The kernel has a four-texel support, so down to half
+  resolution the model pixel's footprint stays inside it; below that the proxy
+  aliases mildly, which is tolerable because only a bounded edit ever returns to
+  the full-resolution frame.
+- `DecodeColorCS` dispatches over the active extent and samples the model answer
+  and the proxy at `(pixel + 0.5 - JitterOffset) / ActiveSize`, i.e. bilinearly
+  on the model raster. The luminance ratio and chroma are formed from that pair
+  and applied to the untouched full-resolution pixel, so native detail is kept -
+  this is the same "matched residual" idea as the proxy's `EnlargementMode = 1`,
+  expressed as a ratio rather than an additive delta. The proxy's alternative
+  direct (bilinear + RCAS) mode is not offered: it would need the model output
+  inverse-tonemapped, which *Colour domain* above explains was a dead end, and
+  DLSS sharpening already covers RCAS.
+
+Feature 18 is created at the model raster, so a scale change rebuilds it. The
+backend debounces the request (`SettleModelRaster`, 12 stable frames) so a
+slider drag does not drain the interop queue every frame; the previous raster
+keeps running until the value settles.
+
+**Motion-vector scale under scaling.** The proxy multiplies `DLSSNR.MVecScaleX/Y`
+by `work / native`. Community Shaders deliberately does not: the guide fix
+(commit `7310537a`) established empirically that the model derives the
+guide-to-colour ratio from the per-resource subrects, and folding a resolution
+ratio into the scale on top of that counted it twice. The scale therefore stays
+the guide resolution; only the colour/output subrects change.
+
 ## Model tuning parameters
 
 `DLSSNR.Intensity` / `Style` / `LocalToneStrength` / `LocalStructureStrength` /

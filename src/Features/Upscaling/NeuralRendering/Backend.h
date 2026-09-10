@@ -29,9 +29,11 @@ public:
 	 * @brief One frame of Neural Rendering work.
 	 *
 	 * @c width and @c height describe the *active* region only. The shared
-	 * textures are allocated at the active colour and guide extents. This keeps
-	 * Feature 18's creation dimensions identical to the raster it processes and
-	 * prevents padded/stale source margins from becoming temporal history.
+	 * colour/output textures are allocated at the model raster (the active colour
+	 * extent scaled by @c resolutionScaleX/Y) and the guides at the guide extent.
+	 * This keeps Feature 18's creation dimensions identical to the raster it
+	 * processes and prevents padded/stale source margins from becoming temporal
+	 * history.
 	 */
 	struct FrameInputs
 	{
@@ -50,6 +52,11 @@ public:
 		/// upscaled frame is unjittered and passes zero.
 		float jitterOffsetX = 0.0f;
 		float jitterOffsetY = 0.0f;
+		/// Model raster relative to the colour active region, per axis (0.25..2).
+		/// Below one the model runs on a downsampled proxy and only its bounded
+		/// edit returns to the full-resolution frame; above one it supersamples.
+		float resolutionScaleX = 1.0f;
+		float resolutionScaleY = 1.0f;
 		float intensity = 0.8f;
 		float colorStrength = 1.0f;
 		float localToneStrength = 0.75f;

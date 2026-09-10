@@ -5,6 +5,8 @@ cbuffer TransferParams : register(b0)
 	float2 JitterOffset;  // Sub-pixel projection offset of the original raster, in render pixels.
 	float ColorStrength;
 	float TransferParamsPadding;
+	uint2 ActiveSize;  // Valid region of OriginalColor and DestinationColor, in their texels.
+	uint2 WorkSize;    // Model raster; ModelColor and ProxyColor are allocated at this size.
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
@@ -18,27 +20,22 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
 	uint width;
 	uint height;
-	uint modelWidth;
-	uint modelHeight;
 	uint originalWidth;
 	uint originalHeight;
-	uint proxyWidth;
-	uint proxyHeight;
 	DestinationColor.GetDimensions(width, height);
-	ModelColor.GetDimensions(modelWidth, modelHeight);
 	OriginalColor.GetDimensions(originalWidth, originalHeight);
-	ProxyColor.GetDimensions(proxyWidth, proxyHeight);
-	uint2 active = min(min(uint2(width, height), uint2(modelWidth, modelHeight)),
-		min(uint2(originalWidth, originalHeight), uint2(proxyWidth, proxyHeight)));
-	if (any(dispatchThreadID.xy >= active))
+	uint2 active = min(ActiveSize, min(uint2(width, height), uint2(originalWidth, originalHeight)));
+	if (any(dispatchThreadID.xy >= active) || any(ActiveSize == 0))
 		return;
 
 	// The original pixel holds scene position (pixel - JitterOffset) on the
-	// unjittered grid the model saw. Sample the model's answer and the proxy it
-	// was given at that same position so the ratio between them is the edit for
-	// this exact scene point; the model and proxy textures are compact, so their
-	// size is the active region. With a zero offset this lands on the texel.
-	float2 uv = (float2(dispatchThreadID.xy) + 0.5 - JitterOffset) / float2(modelWidth, modelHeight);
+	// unjittered grid the model saw. The model and proxy textures span that same
+	// active region at the model raster, so normalising by the active size lands
+	// on the matching model position whatever the scale. Sample the model's
+	// answer and the proxy it was given there so the ratio between them is the
+	// edit for this exact scene point; at native scale with a zero offset this is
+	// the texel centre.
+	float2 uv = (float2(dispatchThreadID.xy) + 0.5 - JitterOffset) / float2(ActiveSize);
 	float4 model = ModelColor.SampleLevel(LinearClampSampler, uv, 0);
 	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, uv, 0);
 	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy,

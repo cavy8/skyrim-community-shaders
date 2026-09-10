@@ -46,6 +46,8 @@ bool NeuralRendering::Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut
 	inputs.guideHeight = options.guideHeight ? options.guideHeight : height;
 	inputs.jitterOffsetX = options.jitterOffsetX;
 	inputs.jitterOffsetY = options.jitterOffsetY;
+	inputs.resolutionScaleX = options.resolutionScaleX;
+	inputs.resolutionScaleY = options.resolutionScaleY;
 	inputs.intensity = options.intensity;
 	inputs.colorStrength = options.colorStrength;
 	inputs.localToneStrength = options.localToneStrength;
