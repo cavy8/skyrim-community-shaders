@@ -43,6 +43,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingPlacement,
 	neuralRenderingStyle,
 	neuralRenderingIntensity,
+	neuralRenderingColorStrength,
 	neuralRenderingLocalToneStrength,
 	neuralRenderingLocalStructureStrength,
 	neuralRenderingSkinStructureStrength,
@@ -359,6 +360,11 @@ void Upscaling::DrawSettings()
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_intensity_tooltip"), "Adjust the overall Neural Rendering intensity."));
 				}
+				ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"), &settings.neuralRenderingColorStrength, 0.0f, 1.0f, "%.2f");
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextUnformatted(T(TKEY("neural_rendering_color_strength_tooltip"),
+						"Blend the model's color changes independently of its bounded lighting and detail changes."));
+				}
 				ImGui::SliderFloat(T(TKEY("neural_rendering_local_tone"), "Local Tone Strength"), &settings.neuralRenderingLocalToneStrength, 0.0f, 2.0f, "%.2f");
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_local_tone_tooltip"), "Adjust local tone detail."));
@@ -608,6 +614,7 @@ void Upscaling::LoadSettings(json& o_json)
 		value = std::clamp(value, min, max);
 	};
 	sanitizeNeuralFloat(settings.neuralRenderingIntensity, 0.8f, 0.0f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingColorStrength, 1.0f, 0.0f, 1.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingLocalToneStrength, 0.75f, 0.0f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingLocalStructureStrength, 0.9f, 0.0f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingSkinStructureStrength, 0.9f, -1.0f, 2.0f);
@@ -1564,6 +1571,7 @@ void Upscaling::Upscale()
 				NeuralRendering::Options neuralOptions{};
 				neuralOptions.style = settings.neuralRenderingStyle;
 				neuralOptions.intensity = settings.neuralRenderingIntensity;
+				neuralOptions.colorStrength = settings.neuralRenderingColorStrength;
 				neuralOptions.localToneStrength = settings.neuralRenderingLocalToneStrength;
 				neuralOptions.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
 				neuralOptions.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
@@ -1612,6 +1620,7 @@ void Upscaling::PerformUpscaling()
 		NeuralRendering::Options neuralOptions{};
 		neuralOptions.style = settings.neuralRenderingStyle;
 		neuralOptions.intensity = settings.neuralRenderingIntensity;
+		neuralOptions.colorStrength = settings.neuralRenderingColorStrength;
 		neuralOptions.localToneStrength = settings.neuralRenderingLocalToneStrength;
 		neuralOptions.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
 		neuralOptions.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;

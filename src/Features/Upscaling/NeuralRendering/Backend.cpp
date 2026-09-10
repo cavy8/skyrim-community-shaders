@@ -19,6 +19,13 @@
 
 namespace
 {
+	struct alignas(16) ResolveParams
+	{
+		float colorStrength = 1.0f;
+		float padding[3]{};
+	};
+	static_assert(sizeof(ResolveParams) == 16);
+
 	constexpr const wchar_t* kEncodeColorPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\EncodeColorCS.hlsl";
 	constexpr const wchar_t* kDecodeColorPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\DecodeColorCS.hlsl";
 	constexpr const wchar_t* kCopyDepthGuidePath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\CopyDepthGuideCS.hlsl";
@@ -77,6 +84,7 @@ struct NeuralRenderingBackend::State
 	winrt::com_ptr<ID3D11ComputeShader> encodeColorCS;
 	winrt::com_ptr<ID3D11ComputeShader> decodeColorCS;
 	winrt::com_ptr<ID3D11ComputeShader> copyDepthGuideCS;
+	winrt::com_ptr<ID3D11Buffer> resolveParamsCB;
 	bool encodeColorAttempted = false;
 	bool decodeColorAttempted = false;
 	bool copyDepthGuideAttempted = false;
@@ -306,19 +314,22 @@ struct NeuralRenderingBackend::State
 	/// Runs a one- or two-SRV/single-UAV compute pass over the active region and unbinds afterwards.
 	static void DispatchTransfer(ID3D11DeviceContext* context, ID3D11ComputeShader* shader,
 		ID3D11ShaderResourceView* source, ID3D11ShaderResourceView* secondarySource,
-		ID3D11UnorderedAccessView* destination,
+		ID3D11UnorderedAccessView* destination, ID3D11Buffer* constants,
 		std::uint32_t width, std::uint32_t height)
 	{
 		context->CSSetShader(shader, nullptr, 0);
 		ID3D11ShaderResourceView* sources[2]{ source, secondarySource };
 		context->CSSetShaderResources(0, static_cast<UINT>(std::size(sources)), sources);
 		context->CSSetUnorderedAccessViews(0, 1, &destination, nullptr);
+		context->CSSetConstantBuffers(0, 1, &constants);
 		context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 
 		ID3D11ShaderResourceView* nullSRVs[2]{};
 		ID3D11UnorderedAccessView* nullUAV = nullptr;
+		ID3D11Buffer* nullCB = nullptr;
 		context->CSSetShaderResources(0, static_cast<UINT>(std::size(nullSRVs)), nullSRVs);
 		context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+		context->CSSetConstantBuffers(0, 1, &nullCB);
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
 
@@ -327,7 +338,8 @@ struct NeuralRenderingBackend::State
 		const bool distinct = inputs.colorIn != inputs.colorOut && inputs.colorIn != inputs.depth &&
 		                      inputs.colorIn != inputs.motionVectors && inputs.colorOut != inputs.depth &&
 		                      inputs.colorOut != inputs.motionVectors && inputs.depth != inputs.motionVectors;
-		const bool finite = std::isfinite(inputs.intensity) && std::isfinite(inputs.localToneStrength) &&
+		const bool finite = std::isfinite(inputs.intensity) && std::isfinite(inputs.colorStrength) &&
+		                    std::isfinite(inputs.localToneStrength) &&
 		                    std::isfinite(inputs.localStructureStrength) && std::isfinite(inputs.skinStructureStrength);
 		if (inputs.colorIn && inputs.colorOut && inputs.depth && inputs.depthSRV && inputs.motionVectors &&
 			distinct && finite && inputs.width && inputs.height)
@@ -384,11 +396,23 @@ struct NeuralRenderingBackend::State
 		if (!encodeShader || !decodeShader || !guideShader || !colorInView || !colorOutView ||
 			!color.uav11 || !depth.uav11 || !outputSRV)
 			return false;
+		if (!resolveParamsCB) {
+			D3D11_BUFFER_DESC desc{};
+			desc.ByteWidth = sizeof(ResolveParams);
+			desc.Usage = D3D11_USAGE_DEFAULT;
+			desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+			const auto result = device->CreateBuffer(&desc, nullptr, resolveParamsCB.put());
+			if (FAILED(result))
+				return LatchFailure("resolve constant-buffer creation", result);
+			Util::SetResourceName(resolveParamsCB.get(), "NeuralRendering::ResolveParams");
+		}
+		const ResolveParams resolveParams{ std::clamp(inputs.colorStrength, 0.0f, 1.0f) };
+		context->UpdateSubresource(resolveParamsCB.get(), 0, nullptr, &resolveParams, 0, 0);
 
 		// (b) Colour moves through compute passes rather than CopyResource so an
 		// encode/decode transform can be introduced later without restructuring.
-		DispatchTransfer(context, encodeShader, colorInView, nullptr, color.uav11.Get(), colorWidth, colorHeight);
-		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, depth.uav11.Get(), guideWidth, guideHeight);
+		DispatchTransfer(context, encodeShader, colorInView, nullptr, color.uav11.Get(), nullptr, colorWidth, colorHeight);
+		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, depth.uav11.Get(), nullptr, guideWidth, guideHeight);
 
 		const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
 		context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
@@ -440,10 +464,11 @@ struct NeuralRenderingBackend::State
 		if (!executed)
 			return LatchFailure("Feature 18 execution", static_cast<HRESULT>(NeuralRendering::Runtime::Instance().NgxResult()));
 
-		// Re-anchor the model's bounded luminance change to the untouched source.
-		// This avoids inverse-tonemap amplification and prevents the model from
-		// replacing stable renderer colour with independently varying RGB.
-		DispatchTransfer(context, decodeShader, outputSRV.get(), colorInView, colorOutView, colorWidth, colorHeight);
+		// Re-anchor the model's bounded luminance to the untouched source, then
+		// restore its chromaticity through the independently controlled colour pass.
+		// No inverse tonemap or temporal colour accumulator is involved.
+		DispatchTransfer(context, decodeShader, outputSRV.get(), colorInView, colorOutView,
+			resolveParamsCB.get(), colorWidth, colorHeight);
 
 		resetPending = false;
 		featureAvailable = true;
@@ -503,6 +528,7 @@ struct NeuralRenderingBackend::State
 		encodeColorCS = nullptr;
 		decodeColorCS = nullptr;
 		copyDepthGuideCS = nullptr;
+		resolveParamsCB = nullptr;
 		encodeColorAttempted = false;
 		decodeColorAttempted = false;
 		copyDepthGuideAttempted = false;

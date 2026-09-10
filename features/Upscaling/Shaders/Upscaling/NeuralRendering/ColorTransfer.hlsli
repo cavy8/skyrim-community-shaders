@@ -16,14 +16,22 @@
 // model's answer is deliberately not inverse-tonemapped.  The derivative of
 // inverse Reinhard is 1 / (1 - x)^2, so tiny frame-to-frame changes near white
 // used to become enormous scene-linear shading changes.  Instead the resolve
-// measures the model's bounded luminance change in proxy space and applies that
-// as a guarded scalar ratio to the untouched scene colour.  This preserves the
-// original hue and HDR headroom while re-anchoring every frame to deterministic
-// renderer output rather than to model history.
+// measures the model's bounded luminance change in proxy space, then restores
+// its full chromaticity at that guarded scene luminance. The proxy compression
+// uses one RGB scale so it does not distort hue before the model sees it. HDR
+// headroom remains renderer-owned and every frame is re-anchored to deterministic
+// scene colour rather than to model history.
 
 static const float3 kNeuralLuma = float3(0.2126, 0.7152, 0.0722);
 static const float kNeuralRatioFloor = 1.0 / 512.0;
 static const float kNeuralMaxRatio = 2.0;
+
+float3 EncodeNeuralProxy(float3 color)
+{
+	color = max(color, 0.0);
+	float peak = max(color.r, max(color.g, color.b));
+	return color / (1.0 + peak);  // Hue-preserving scalar Reinhard; every channel remains below one.
+}
 
 float3 NeuralLinearToSrgb(float3 v)
 {
@@ -42,9 +50,7 @@ float3 NeuralSrgbToLinear(float3 v)
  */
 float4 EncodeNeuralColor(float4 color)
 {
-	float3 linearColor = max(color.rgb, 0.0);
-	float3 tonemapped = linearColor / (1.0 + linearColor);  // per-channel Reinhard, maps [0, inf) -> [0, 1)
-	return float4(NeuralLinearToSrgb(tonemapped), color.a);
+	return float4(NeuralLinearToSrgb(EncodeNeuralProxy(color.rgb)), color.a);
 }
 
 /**
@@ -57,10 +63,10 @@ float4 EncodeNeuralColor(float4 color)
  * A two-sided guard limits both flashes and sudden collapses without clipping
  * individual RGB channels.
  */
-float4 ResolveNeuralColor(float4 modelColor, float4 originalColor)
+float4 ResolveNeuralColor(float4 modelColor, float4 originalColor, float colorStrength)
 {
 	float3 original = max(originalColor.rgb, 0.0);
-	float3 proxy = NeuralSrgbToLinear(EncodeNeuralColor(originalColor).rgb);
+	float3 proxy = EncodeNeuralProxy(original);
 	float3 model = NeuralSrgbToLinear(modelColor.rgb);
 
 	float proxyLuma = dot(proxy, kNeuralLuma);
@@ -74,7 +80,21 @@ float4 ResolveNeuralColor(float4 modelColor, float4 originalColor)
 	float ratio = (modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor);
 	ratio = clamp(ratio, 1.0 / kNeuralMaxRatio, kNeuralMaxRatio);
 
-	return float4(original * ratio, originalColor.a);
+	float3 luminanceResult = original * ratio;
+	float targetLuma = dot(luminanceResult, kNeuralLuma);
+
+	// One positive scale brings the model's complete RGB chromaticity to the
+	// guarded scene luminance. Because the encoded proxy is a scalar multiple of
+	// the original, model == proxy reconstructs the original exactly.
+	float3 fullColorResult = model * (targetLuma / max(modelLuma, 1e-5));
+
+	// Normalized colour is unreliable only near black. Fade the chroma there,
+	// while allowing the complete model palette everywhere with meaningful light.
+	float shadowConfidence = smoothstep(kNeuralRatioFloor, 4.0 * kNeuralRatioFloor,
+		min(proxyLuma, modelLuma));
+	float resolvedColorStrength = saturate(colorStrength) * shadowConfidence;
+
+	return float4(lerp(luminanceResult, fullColorResult, resolvedColorStrength), originalColor.a);
 }
 
 #endif

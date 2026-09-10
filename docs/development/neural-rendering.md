@@ -64,10 +64,13 @@ display-referred (tone-mapped + sRGB) domain the model was trained on. The model
 answer is **not** inverse-Reinhard decoded: that inverse has an unbounded slope
 near white and turned tiny output changes into severe HDR flicker. Instead the
 resolve compares model and proxy luminance, adds a shared `1/512` shadow floor,
-clamps the ratio to `0.5..2.0`, and applies that one scalar to the untouched scene
-colour. The original hue, HDR headroom, and alpha remain renderer-owned, while
-the model contributes bounded local shading/detail. No temporal accumulator or
-midpoint blend is involved; every frame is independently re-anchored.
+and clamps the ratio to `0.5..2.0`. A hue-preserving scalar Reinhard proxy then
+allows the model's complete RGB chromaticity to be rescaled onto that guarded
+scene luminance without recolouring a model no-op. `Color Strength` blends from
+stable renderer chroma at zero to the full model palette at one, fading only in
+near-black pixels where normalized colour is numerically ambiguous. HDR
+headroom and alpha remain renderer-owned. No temporal accumulator or midpoint
+blend is involved; every frame is independently re-anchored.
 
 Shared colour/output resources use the active colour extent rather than the
 game target's padded native allocation. Before-upscale mode therefore creates

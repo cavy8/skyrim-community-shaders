@@ -45,6 +45,7 @@ public:
 		std::uint32_t guideWidth = 0;                  ///< Depth/motion-vector active region width (render resolution).
 		std::uint32_t guideHeight = 0;                 ///< Depth/motion-vector active region height (render resolution).
 		float intensity = 0.8f;
+		float colorStrength = 1.0f;
 		float localToneStrength = 0.75f;
 		float localStructureStrength = 0.9f;
 		float skinStructureStrength = 0.9f;

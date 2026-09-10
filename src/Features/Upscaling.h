@@ -72,6 +72,7 @@ public:
 		uint neuralRenderingPlacement = 1;  // 0=Before Upscaling, 1=After Upscaling
 		uint neuralRenderingStyle = 3;  // 0=Default, 1=Natural, 2=Cinematic, 3=Style #3
 		float neuralRenderingIntensity = 0.8f;
+		float neuralRenderingColorStrength = 1.0f;
 		float neuralRenderingLocalToneStrength = 0.75f;
 		float neuralRenderingLocalStructureStrength = 0.9f;
 		float neuralRenderingSkinStructureStrength = 0.9f;

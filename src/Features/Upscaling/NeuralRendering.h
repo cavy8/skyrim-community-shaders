@@ -23,6 +23,7 @@ public:
 	{
 		uint32_t style = 3;
 		float intensity = 0.8f;
+		float colorStrength = 1.0f;
 		float localToneStrength = 0.75f;
 		float localStructureStrength = 0.9f;
 		float skinStructureStrength = 0.9f;
