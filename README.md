@@ -224,3 +224,4 @@ See LICENSE within each directory; if none, it's [Default](#default)
 
 - [dlssnr-vr fork of Open Shaders](https://github.com/YtzyFvra/skyrim-community-shaders/tree/feature/dlssnr-vr)
 - [OptiScaler DLSS-NR pre-SR multipass fork](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass)
+- [DLSSNR-Cost-Scaler](https://github.com/xenmods/DLSSNR-Cost-Scaler)
