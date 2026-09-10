@@ -403,6 +403,18 @@ void SettingsTabRenderer::RenderKeybindingsTab(
 			state.settingEffects11ToggleKey,
 			"Change##Effects11Toggle");
 
+		Util::InputComboWidget(
+			T("menu.settings.neural_rendering_toggle_key", "Neural Rendering Toggle Key:"),
+			settings.NeuralRenderingToggleKey,
+			state.settingNeuralRenderingToggleKey,
+			"Change##NeuralRenderingToggle");
+
+		Util::InputComboWidget(
+			T("menu.settings.neural_rendering_compare_key", "Neural Rendering Compare Screenshot Key:"),
+			settings.NeuralRenderingCompareKey,
+			state.settingNeuralRenderingCompareKey,
+			"Change##NeuralRenderingCompare");
+
 		ImGui::EndTabItem();
 	}
 }

@@ -177,6 +177,8 @@ public:
 	bool settingCSEditorToggleKey = false;  // CS Editor toggle key
 	bool settingScreenshotKey = false;           // Screenshot capture key
 	bool settingEffects11ToggleKey = false;      // Effects 11 toggle key
+	bool settingNeuralRenderingToggleKey = false;   // DLSS Neural Rendering toggle key
+	bool settingNeuralRenderingCompareKey = false;  // DLSS Neural Rendering comparison screenshot key
 
 	// Font caching (made public for ThemeManager and OverlayRenderer access)
 	// Marked mutable because they're cache fields that may be updated from const methods
@@ -468,6 +470,8 @@ public:
 		std::vector<InputCombo> CSEditorToggleKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_END) };  // CS Editor toggle key
 		std::vector<InputCombo> ScreenshotKey = { InputCombo::Keyboard(VK_SNAPSHOT) };                                    // Screenshot capture key
 		std::vector<InputCombo> Effects11ToggleKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_MULTIPLY) };  // Effects 11 toggle key
+		std::vector<InputCombo> NeuralRenderingToggleKey = { InputCombo::Keyboard(VK_F6) };                              // DLSS Neural Rendering toggle key
+		std::vector<InputCombo> NeuralRenderingCompareKey = {};                                                         // DLSS Neural Rendering A/B comparison screenshot key (unbound by default)
 		bool EnableShaderBlocking = false;                                                  // Enable shader blocking hotkeys for debugging
 		bool FirstTimeSetupCompleted = false;                                               // Track if first-time setup has been completed
 		bool SkipClearCacheConfirmation = false;                                            // Skip confirmation dialog when clearing shader cache

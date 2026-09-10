@@ -4,6 +4,7 @@
 #include "Deferred.h"
 #include "HDRDisplay.h"
 #include "Hooks.h"
+#include "ScreenshotFeature.h"
 #include "State.h"
 #include "Upscaling/DX12SwapChain.h"
 #include "Upscaling/FidelityFX.h"
@@ -323,6 +324,17 @@ void Upscaling::DrawSettings()
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_enabled_tooltip"),
 						"Applies DLSS 5 Neural Rendering to the upscaled image. A compatible user-supplied nvngx_dlssnr.dll is required."));
+				}
+
+				ImGui::BeginDisabled(!neuralRenderingBackendAvailable || GetUpscaleMethod() != UpscaleMethod::kDLSS);
+				if (ImGui::Button(T(TKEY("neural_rendering_compare_screenshot"), "Take Comparison Screenshot"))) {
+					RequestNeuralRenderingComparisonCapture();
+				}
+				ImGui::EndDisabled();
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextUnformatted(T(TKEY("neural_rendering_compare_screenshot_tooltip"),
+						"Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on "
+						"- with no UI, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off."));
 				}
 
 				const bool neuralRenderingControlsAvailable = settings.neuralRenderingEnabled && neuralRenderingBackendAvailable;
@@ -1611,6 +1623,11 @@ void Upscaling::Upscale()
 	}
 }
 
+void Upscaling::RequestNeuralRenderingComparisonCapture()
+{
+	neuralRenderingComparePending.store(true, std::memory_order_release);
+}
+
 void Upscaling::PerformUpscaling()
 {
 	ZoneScoped;
@@ -1883,6 +1900,86 @@ void Upscaling::MenuManagerDrawInterfaceStartHook::thunk(int64_t a1)
 	func(a1);
 }
 
+namespace
+{
+	// ShowHUDMessage must run on the game's main thread; Main_PostProcessing is the render thread.
+	void ShowHUDMessageDeferred(const char* a_message)
+	{
+		if (auto* task = SKSE::GetTaskInterface())
+			task->AddTask([msg = std::string(a_message)]() { RE::SendHUDMessage::ShowHUDMessage(msg.c_str(), nullptr, true); });
+		else
+			RE::SendHUDMessage::ShowHUDMessage(a_message, nullptr, true);
+	}
+}
+
+// Drives the Neural Rendering comparison capture from Main_PostProcessing. Called at the
+// very start of the thunk so the forced Neural Rendering state is in place before the
+// frame's upscaling pass runs, and again at the end to queue the matching screenshot /
+// advance the state machine. Four frames, symmetric so the pair is a fair A/B:
+//
+//   step 1: Neural Rendering OFF, DLSS history reset   -> warm-up, discarded
+//   step 2: Neural Rendering OFF, converged one frame  -> queue "_NR-off"
+//   step 3: Neural Rendering ON,  DLSS history reset    -> warm-up, discarded
+//   step 4: Neural Rendering ON,  converged one frame   -> queue "_NR-on", restore setting
+//
+// The warm-up frames matter because Feature 18 needs one successful evaluation before it
+// contributes and DLSS needs a frame to settle after a reset; without them the two halves
+// would be captured at different points of convergence.
+void Upscaling::ServiceNeuralRenderingComparison(UpscaleMethod a_upscaleMethod, bool a_framePhaseStart)
+{
+	if (a_framePhaseStart) {
+		if (neuralRenderingCompareStep == 0 && neuralRenderingComparePending.exchange(false, std::memory_order_acq_rel)) {
+			const bool canCompare = a_upscaleMethod == UpscaleMethod::kDLSS &&
+			                        !ShouldUseFrameGenerationThisFrame() &&
+			                        neuralRendering.IsAvailable() &&
+			                        globals::features::screenshotFeature.loaded;
+			if (!canCompare) {
+				ShowHUDMessageDeferred("Neural Rendering comparison needs DLSS active and Frame Generation off");
+				return;
+			}
+
+			SYSTEMTIME st;
+			GetLocalTime(&st);
+			neuralRenderingCompareStamp = std::format("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}_{:03}",
+				st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+			neuralRenderingCompareUserSetting = settings.neuralRenderingEnabled;
+
+			neuralRenderingCompareStep = 1;
+			settings.neuralRenderingEnabled = false;  // frame 1: OFF, warm-up
+			pendingDLSSReset.store(true, std::memory_order_release);
+		}
+		return;
+	}
+
+	// Frame phase end: the frame has been composited (still no UI). Queue its screenshot
+	// where applicable and set up the next step.
+	switch (neuralRenderingCompareStep) {
+	case 1:
+		neuralRenderingCompareStep = 2;
+		settings.neuralRenderingEnabled = false;  // frame 2: OFF, capture
+		break;
+	case 2:
+		globals::features::screenshotFeature.QueueNeuralRenderingComparisonShot(neuralRenderingCompareStamp, "_NR-off");
+		neuralRenderingCompareStep = 3;
+		settings.neuralRenderingEnabled = true;  // frame 3: ON, warm-up
+		pendingDLSSReset.store(true, std::memory_order_release);
+		break;
+	case 3:
+		neuralRenderingCompareStep = 4;
+		settings.neuralRenderingEnabled = true;  // frame 4: ON, capture
+		break;
+	case 4:
+		globals::features::screenshotFeature.QueueNeuralRenderingComparisonShot(neuralRenderingCompareStamp, "_NR-on");
+		settings.neuralRenderingEnabled = neuralRenderingCompareUserSetting;  // restore
+		pendingDLSSReset.store(true, std::memory_order_release);
+		neuralRenderingCompareStep = 0;
+		ShowHUDMessageDeferred("Saved Neural Rendering comparison to Data/DLSS 5 Screenshots");
+		break;
+	default:
+		break;
+	}
+}
+
 void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32_t a3, RE::RENDER_TARGET a_target, void* a_4, bool a_5)
 {
 	auto& upscaling = globals::features::upscaling;
@@ -1890,6 +1987,8 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 
 	if (upscaling.ShouldUseFrameGenerationThisFrame())
 		upscaling.CopySharedD3D12Resources();
+
+	upscaling.ServiceNeuralRenderingComparison(upscaleMethod, /*framePhaseStart=*/true);
 
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA)
 		upscaling.PerformUpscaling();
@@ -1912,6 +2011,8 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		globals::features::hdrDisplay.RestoreFramebuffer();
 
 	Util::SetTemporal(false);
+
+	upscaling.ServiceNeuralRenderingComparison(upscaleMethod, /*framePhaseStart=*/false);
 }
 
 void Upscaling::SetScissorRect::thunk(RE::BSGraphics::Renderer* This, int a_left, int a_top, int a_right, int a_bottom)

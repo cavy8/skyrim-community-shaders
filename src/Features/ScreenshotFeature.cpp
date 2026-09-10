@@ -766,6 +766,24 @@ void ScreenshotFeature::ProcessCaptureRequest()
 	if (captureRequested.exchange(false)) {
 		Capture();
 	}
+
+	std::vector<std::filesystem::path> overrides;
+	{
+		std::lock_guard<std::mutex> lock(overrideCaptureMutex);
+		overrides.swap(pendingOverrideCaptures);
+	}
+	for (auto& path : overrides) {
+		Capture(std::move(path));
+	}
+}
+
+void ScreenshotFeature::QueueNeuralRenderingComparisonShot(const std::string& timestamp, const char* suffix)
+{
+	// Extension is appended in Capture() once the capture format is known.
+	std::filesystem::path path =
+		std::filesystem::path("Data/DLSS 5 Screenshots") / ("CS_" + timestamp + suffix);
+	std::lock_guard<std::mutex> lock(overrideCaptureMutex);
+	pendingOverrideCaptures.push_back(std::move(path));
 }
 
 void ScreenshotFeature::EnsureWorkerThread()
@@ -870,7 +888,7 @@ void ScreenshotFeature::ShowInGameNotification(std::string message)
 	});
 }
 
-void ScreenshotFeature::Capture()
+void ScreenshotFeature::Capture(std::filesystem::path overridePath)
 {
 	auto device = globals::d3d::device;
 	auto context = globals::d3d::context;
@@ -951,8 +969,14 @@ void ScreenshotFeature::Capture()
 	screenshot.saveAsHdrPng = saveAsHdrPng;
 	screenshot.saveAsSdrPng = saveAsSdrPng;
 	screenshot.hdrPngBitDepth = static_cast<int>(hdrPngBitDepth);
-	screenshot.outputPath = BuildScreenshotPath(screenshotPath, saveAsHdrPng || saveAsSdrPng);
-	screenshot.copyToClipboard = copyToClipboard;
+	if (overridePath.empty()) {
+		screenshot.outputPath = BuildScreenshotPath(screenshotPath, saveAsHdrPng || saveAsSdrPng);
+		screenshot.copyToClipboard = copyToClipboard;
+	} else {
+		overridePath.replace_extension(saveAsHdrPng || saveAsSdrPng ? ".png" : ".bmp");
+		screenshot.outputPath = ResolveToAbsoluteGamePath(overridePath);
+		screenshot.copyToClipboard = false;
+	}
 	EnqueueScreenshot(std::move(screenshot));
 }
 #undef I18N_KEY_PREFIX

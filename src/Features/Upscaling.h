@@ -198,6 +198,28 @@ public:
 	 */
 	std::atomic<bool> pendingDLSSReset{ false };
 
+	/**
+	 * Set by the Neural Rendering comparison hotkey / menu button. Serviced by
+	 * Main_PostProcessing, which drives neuralRenderingCompareStep over four frames
+	 * (Neural Rendering forced off, then on, each with a warm-up frame) and grabs the
+	 * off/on frames through the normal (UI-free) screenshot path into Data/DLSS 5 Screenshots/.
+	 */
+	std::atomic<bool> neuralRenderingComparePending{ false };
+	// Render-thread only. 0 = idle; 1-4 = comparison capture frame (see ServiceNeuralRenderingComparison).
+	int neuralRenderingCompareStep = 0;
+	bool neuralRenderingCompareUserSetting = false;
+	std::string neuralRenderingCompareStamp;
+
+	/** @brief Requests a Neural Rendering on/off comparison screenshot pair; captured over the next few rendered frames. */
+	void RequestNeuralRenderingComparisonCapture();
+	/**
+	 * @brief Drives the two-frame Neural Rendering comparison capture from Main_PostProcessing.
+	 * @param a_upscaleMethod The upscale method resolved for this frame.
+	 * @param a_framePhaseStart True when called before the frame's upscaling pass (to force the
+	 *        Neural Rendering state), false when called after compositing (to queue the screenshot).
+	 */
+	void ServiceNeuralRenderingComparison(UpscaleMethod a_upscaleMethod, bool a_framePhaseStart);
+
 	void CopySharedD3D12Resources();
 	void PostDisplay();
 	void PerformUpscaling();
