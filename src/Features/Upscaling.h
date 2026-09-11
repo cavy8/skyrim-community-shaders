@@ -82,6 +82,14 @@ public:
 		float neuralRenderingResolutionScaleX = 1.0f;
 		float neuralRenderingResolutionScaleY = 1.0f;
 		float neuralRenderingTransferStrength = 1.0f;
+		bool neuralRenderingPerCategoryStrengths = false;
+		NeuralRendering::CategoryStrengths neuralRenderingEverythingElseStrengths;
+		NeuralRendering::CategoryStrengths neuralRenderingSkinStrengths;
+		NeuralRendering::CategoryStrengths neuralRenderingHairStrengths;
+		NeuralRendering::CategoryStrengths neuralRenderingEyesStrengths;
+		NeuralRendering::CategoryStrengths neuralRenderingFoliageStrengths;
+		NeuralRendering::CategoryStrengths neuralRenderingLandscapeStrengths;
+		NeuralRendering::CategoryStrengths neuralRenderingEquipmentStrengths;
 		bool neuralRenderingDepthAwareResolve = true;
 		bool neuralRenderingAlternateFrames = false;
 	};

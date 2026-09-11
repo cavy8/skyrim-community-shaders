@@ -6,6 +6,7 @@
 #include "Common/LodLandscape.hlsli"
 #include "Common/Math.hlsli"
 #include "Common/MotionBlur.hlsli"
+#include "Common/NeuralRenderingCategories.hlsli"
 #include "Common/Permutation.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/Shading.hlsli"
@@ -3125,7 +3126,21 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	// Stored as 1 - vertexAO so the cleared default (0) means no occlusion
 	// for pixels that do not write to this RT (sky, water, grass, effects).
-	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, psout.Diffuse.w);
+	uint neuralRenderingCategory = NeuralRenderingCategories::EverythingElse;
+#		if defined(FACEGEN) || defined(FACEGEN_RGB_TINT)
+	neuralRenderingCategory = NeuralRenderingCategories::Skin;
+#		elif defined(HAIR)
+	neuralRenderingCategory = NeuralRenderingCategories::Hair;
+#		elif defined(EYE)
+	neuralRenderingCategory = NeuralRenderingCategories::Eyes;
+#		elif defined(TREE_ANIM)
+	neuralRenderingCategory = NeuralRenderingCategories::Foliage;
+#		elif defined(LANDSCAPE) || defined(LODLANDSCAPE) || defined(LODLANDNOISE)
+	neuralRenderingCategory = NeuralRenderingCategories::Landscape;
+#		elif defined(SKINNED)
+	neuralRenderingCategory = NeuralRenderingCategories::Equipment;
+#		endif
+	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, neuralRenderingCategory), 0, 0, psout.Diffuse.w);
 
 	float stochasticBlend = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
 	psout.NormalGlossiness.w = stochasticBlend;

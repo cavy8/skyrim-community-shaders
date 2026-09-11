@@ -16,7 +16,8 @@ struct NeuralRendering::Impl
 namespace
 {
 	NeuralRenderingBackend::FrameInputs MakeFrameInputs(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
-		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV, ID3D11Resource* motionVectors,
+		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV, ID3D11ShaderResourceView* materialCategoriesSRV,
+		ID3D11Resource* motionVectors,
 		uint32_t width, uint32_t height, const NeuralRendering::Options& options)
 	{
 		NeuralRenderingBackend::FrameInputs inputs;
@@ -24,6 +25,7 @@ namespace
 		inputs.colorOut = colorOut;
 		inputs.depth = depth;
 		inputs.depthSRV = depthSRV;
+		inputs.materialCategoriesSRV = materialCategoriesSRV;
 		inputs.motionVectors = motionVectors;
 		inputs.width = width;
 		inputs.height = height;
@@ -36,6 +38,11 @@ namespace
 		inputs.intensity = options.intensity;
 		inputs.colorStrength = options.colorStrength;
 		inputs.transferStrength = options.transferStrength;
+		inputs.perCategoryStrengths = options.perCategoryStrengths;
+		for (std::size_t index = 0; index < options.categoryStrengths.size(); ++index) {
+			inputs.categoryColorStrengths[index] = options.categoryStrengths[index].colorStrength;
+			inputs.categoryTransferStrengths[index] = options.categoryStrengths[index].transferStrength;
+		}
 		inputs.depthAwareResolve = options.depthAwareResolve;
 		inputs.alternateFrames = options.alternateFrames;
 		inputs.localToneStrength = options.localToneStrength;
@@ -68,6 +75,7 @@ bool NeuralRendering::IsFeatureAvailable() const
 
 bool NeuralRendering::Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
 	ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
+	ID3D11ShaderResourceView* materialCategoriesSRV,
 	ID3D11Resource* motionVectors,
 	uint32_t width, uint32_t height, const Options& options)
 {
@@ -75,16 +83,17 @@ bool NeuralRendering::Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut
 	// display-resolution while the depth and motion guides retain the render
 	// resolution used by DLSS SR, so their extents are carried independently.
 	return impl->backend.Evaluate(MakeFrameInputs(colorIn, colorOut, depth, depthSRV,
-		motionVectors, width, height, options));
+		materialCategoriesSRV, motionVectors, width, height, options));
 }
 
 bool NeuralRendering::PrepareSeparateUpscaling(ID3D11Resource* colorIn, ID3D11Resource* editedColor,
 	ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
+	ID3D11ShaderResourceView* materialCategoriesSRV,
 	ID3D11Resource* motionVectors, ID3D11Resource* superResolutionMotionVectors,
 	uint32_t width, uint32_t height,
 	uint32_t outputWidth, uint32_t outputHeight, const Options& options)
 {
-	auto inputs = MakeFrameInputs(colorIn, editedColor, depth, depthSRV, motionVectors, width, height, options);
+	auto inputs = MakeFrameInputs(colorIn, editedColor, depth, depthSRV, materialCategoriesSRV, motionVectors, width, height, options);
 	inputs.superResolutionMotionVectors = superResolutionMotionVectors;
 	inputs.outputWidth = outputWidth;
 	inputs.outputHeight = outputHeight;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 
@@ -18,6 +19,29 @@ struct ID3D11ShaderResourceView;
 class NeuralRendering final
 {
 public:
+	/** @brief Per-material multipliers applied by the local colour resolve. */
+	struct CategoryStrengths
+	{
+		float colorStrength = 1.0f;
+		float transferStrength = 1.0f;
+	};
+
+	/** @brief Material categories encoded in the deferred Masks2 target. */
+	enum class MaterialCategory : std::uint32_t
+	{
+		kEverythingElse = 0,
+		kSkin,
+		kHair,
+		kEyes,
+		kFoliage,
+		kLandscape,
+		kEquipment,
+		kCount
+	};
+
+	static constexpr std::size_t kMaterialCategoryCount = static_cast<std::size_t>(MaterialCategory::kCount);
+	using CategoryStrengthArray = std::array<CategoryStrengths, kMaterialCategoryCount>;
+
 	/** @brief Settings passed to the Neural Rendering feature. */
 	struct Options
 	{
@@ -28,6 +52,10 @@ public:
 		/// frame untouched, one applies the model's change exactly, two doubles its
 		/// relative luminance change (still inside the resolve's ratio guard).
 		float transferStrength = 1.0f;
+		/// Enables per-material multipliers. The global strengths above are still
+		/// applied afterwards as the final adjustment layer.
+		bool perCategoryStrengths = false;
+		CategoryStrengthArray categoryStrengths{};
 		/// When the model runs below the colour resolution, fade its edit across
 		/// depth silhouettes so a bilinearly upsampled background edit does not
 		/// bleed into thin foreground geometry. No effect at native scale.
@@ -106,6 +134,7 @@ public:
 	 * @param colorOut Distinct output resource receiving the neural-rendered image; must be UAV-writable.
 	 * @param depth Depth resource.
 	 * @param depthSRV Shader resource view over @p depth, used by the depth-guide compute pass.
+	 * @param materialCategoriesSRV Packed material category and vertex-AO render target.
 	 * @param motionVectors Motion-vector resource.
 	 * @param width Active region width in pixels.
 	 * @param height Active region height in pixels.
@@ -114,6 +143,7 @@ public:
 	 */
 	bool Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
 		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
+		ID3D11ShaderResourceView* materialCategoriesSRV,
 		ID3D11Resource* motionVectors,
 		uint32_t width, uint32_t height, const Options& options);
 
@@ -125,6 +155,7 @@ public:
 	 */
 	bool PrepareSeparateUpscaling(ID3D11Resource* colorIn, ID3D11Resource* editedColor,
 		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
+		ID3D11ShaderResourceView* materialCategoriesSRV,
 		ID3D11Resource* motionVectors, ID3D11Resource* superResolutionMotionVectors,
 		uint32_t width, uint32_t height,
 		uint32_t outputWidth, uint32_t outputHeight, const Options& options);

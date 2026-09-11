@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 
@@ -37,16 +38,17 @@ public:
 	 */
 	struct FrameInputs
 	{
-		ID3D11Resource* colorIn = nullptr;             ///< Scene colour to enhance.
-		ID3D11Resource* colorOut = nullptr;            ///< Distinct destination for the result.
-		ID3D11Resource* depth = nullptr;               ///< Game depth buffer.
-		ID3D11ShaderResourceView* depthSRV = nullptr;  ///< SRV over @c depth, used by the guide pass.
-		ID3D11Resource* motionVectors = nullptr;       ///< Motion vectors matching @c depth.
-		ID3D11Resource* superResolutionMotionVectors = nullptr;  ///< Processed motion field used by main DLSS.
-		std::uint32_t width = 0;                       ///< Colour/output active region width in pixels.
-		std::uint32_t height = 0;                      ///< Colour/output active region height in pixels.
-		std::uint32_t guideWidth = 0;                  ///< Depth/motion-vector active region width (render resolution).
-		std::uint32_t guideHeight = 0;                 ///< Depth/motion-vector active region height (render resolution).
+		ID3D11Resource* colorIn = nullptr;                          ///< Scene colour to enhance.
+		ID3D11Resource* colorOut = nullptr;                         ///< Distinct destination for the result.
+		ID3D11Resource* depth = nullptr;                            ///< Game depth buffer.
+		ID3D11ShaderResourceView* depthSRV = nullptr;               ///< SRV over @c depth, used by the guide pass.
+		ID3D11ShaderResourceView* materialCategoriesSRV = nullptr;  ///< Packed Masks2 material categories.
+		ID3D11Resource* motionVectors = nullptr;                    ///< Motion vectors matching @c depth.
+		ID3D11Resource* superResolutionMotionVectors = nullptr;     ///< Processed motion field used by main DLSS.
+		std::uint32_t width = 0;                                    ///< Colour/output active region width in pixels.
+		std::uint32_t height = 0;                                   ///< Colour/output active region height in pixels.
+		std::uint32_t guideWidth = 0;                               ///< Depth/motion-vector active region width (render resolution).
+		std::uint32_t guideHeight = 0;                              ///< Depth/motion-vector active region height (render resolution).
 		/// Sub-pixel projection offset of @c colorIn in render pixels (Streamline
 		/// convention: a scene point at unjittered position u lands at u + offset).
 		/// Non-zero only when @c colorIn is the game's jittered render; the
@@ -62,6 +64,9 @@ public:
 		float colorStrength = 1.0f;
 		/// Overall weight of the model's edit (0..2); one applies it exactly.
 		float transferStrength = 1.0f;
+		bool perCategoryStrengths = false;
+		std::array<float, 7> categoryColorStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+		std::array<float, 7> categoryTransferStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		/// Fade the edit across depth silhouettes when the model runs below the
 		/// colour resolution; no effect at native scale.
 		bool depthAwareResolve = true;

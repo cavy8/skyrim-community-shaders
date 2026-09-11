@@ -30,8 +30,12 @@ namespace
 		std::uint32_t guideSize[2]{};         ///< Depth guide active region, in guide texels.
 		std::uint32_t depthAwareResolve = 0;  ///< Non-zero: fade the edit across depth silhouettes in the decode.
 		std::uint32_t skipFrame = 0;          ///< Non-zero: the model did not run; the decode re-applies its stale answer.
+		std::uint32_t perCategoryStrengths = 0;
+		std::uint32_t categoryPadding[3]{};
+		float categoryColorStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+		float categoryTransferStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 	};
-	static_assert(sizeof(TransferParams) == 48);
+	static_assert(sizeof(TransferParams) == 128);
 
 	constexpr float kMinimumResolutionScale = 0.25f;
 	constexpr float kMaximumResolutionScale = 2.0f;
@@ -515,23 +519,24 @@ struct NeuralRenderingBackend::State
 		return colorOutUAV.get();
 	}
 
-	/// Runs an up-to-four-SRV/single-UAV compute pass over the given extent and unbinds afterwards.
+	/// Runs an up-to-five-SRV/single-UAV compute pass over the given extent and unbinds afterwards.
 	static void DispatchTransfer(ID3D11DeviceContext* context, ID3D11ComputeShader* shader,
 		ID3D11ShaderResourceView* source, ID3D11ShaderResourceView* secondarySource,
 		ID3D11ShaderResourceView* tertiarySource, ID3D11ShaderResourceView* quaternarySource,
+		ID3D11ShaderResourceView* quinarySource,
 		ID3D11UnorderedAccessView* destination,
 		ID3D11Buffer* constants, ID3D11SamplerState* sampler,
 		std::uint32_t width, std::uint32_t height)
 	{
 		context->CSSetShader(shader, nullptr, 0);
-		ID3D11ShaderResourceView* sources[4]{ source, secondarySource, tertiarySource, quaternarySource };
+		ID3D11ShaderResourceView* sources[5]{ source, secondarySource, tertiarySource, quaternarySource, quinarySource };
 		context->CSSetShaderResources(0, static_cast<UINT>(std::size(sources)), sources);
 		context->CSSetUnorderedAccessViews(0, 1, &destination, nullptr);
 		context->CSSetConstantBuffers(0, 1, &constants);
 		context->CSSetSamplers(0, 1, &sampler);
 		context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 
-		ID3D11ShaderResourceView* nullSRVs[4]{};
+		ID3D11ShaderResourceView* nullSRVs[5]{};
 		ID3D11UnorderedAccessView* nullUAV = nullptr;
 		ID3D11Buffer* nullCB = nullptr;
 		ID3D11SamplerState* nullSampler = nullptr;
@@ -552,9 +557,12 @@ struct NeuralRenderingBackend::State
 		                    std::isfinite(inputs.jitterOffsetX) && std::isfinite(inputs.jitterOffsetY) &&
 		                    std::isfinite(inputs.resolutionScaleX) && std::isfinite(inputs.resolutionScaleY) &&
 		                    std::isfinite(inputs.localToneStrength) &&
-		                    std::isfinite(inputs.localStructureStrength) && std::isfinite(inputs.skinStructureStrength);
+		                    std::isfinite(inputs.localStructureStrength) && std::isfinite(inputs.skinStructureStrength) &&
+		                    std::ranges::all_of(inputs.categoryColorStrengths, [](float value) { return std::isfinite(value); }) &&
+		                    std::ranges::all_of(inputs.categoryTransferStrengths, [](float value) { return std::isfinite(value); });
+		const bool categoriesAvailable = !inputs.perCategoryStrengths || inputs.materialCategoriesSRV;
 		if (inputs.colorIn && inputs.colorOut && inputs.depth && inputs.depthSRV && inputs.motionVectors &&
-			distinct && finite && inputs.width && inputs.height)
+			distinct && finite && categoriesAvailable && inputs.width && inputs.height)
 			return true;
 
 		if (!loggedInvalidInputs) {
@@ -580,9 +588,9 @@ struct NeuralRenderingBackend::State
 		// raster so the model sees a stable framing; the decode later samples its
 		// answer back at each original pixel's jittered position at the active
 		// extent (see ColorTransfer.hlsli).
-		DispatchTransfer(context, encodeShader, colorInView, nullptr, nullptr, nullptr, color.uav11.Get(),
+		DispatchTransfer(context, encodeShader, colorInView, nullptr, nullptr, nullptr, nullptr, color.uav11.Get(),
 			transferParamsCB.get(), linearClampSampler.get(), modelWidth, modelHeight);
-		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, nullptr, nullptr, depth.uav11.Get(),
+		DispatchTransfer(context, guideShader, inputs.depthSRV, nullptr, nullptr, nullptr, nullptr, depth.uav11.Get(),
 			nullptr, nullptr, guideWidth, guideHeight);
 
 		const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
@@ -746,6 +754,11 @@ struct NeuralRenderingBackend::State
 		const bool modelBelowNative = modelWidth < colorWidth || modelHeight < colorHeight;
 		transferParams.depthAwareResolve = inputs.depthAwareResolve && modelBelowNative ? 1u : 0u;
 		transferParams.skipFrame = skipFrame ? 1u : 0u;
+		transferParams.perCategoryStrengths = inputs.perCategoryStrengths ? 1u : 0u;
+		for (std::size_t index = 0; index < inputs.categoryColorStrengths.size(); ++index) {
+			transferParams.categoryColorStrengths[index] = std::clamp(inputs.categoryColorStrengths[index], 0.0f, 1.0f);
+			transferParams.categoryTransferStrengths[index] = std::clamp(inputs.categoryTransferStrengths[index], 0.0f, 2.0f);
+		}
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		if (!skipFrame && !EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,
@@ -759,6 +772,7 @@ struct NeuralRenderingBackend::State
 		// colour accumulator is involved. The game depth rides along as the
 		// silhouette guide for the depth-aware resolve.
 		DispatchTransfer(context, decodeShader, outputSRV.get(), colorInView, colorSRV.get(), inputs.depthSRV,
+			inputs.perCategoryStrengths ? inputs.materialCategoriesSRV : nullptr,
 			colorOutView, transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight);
 
 		resetPending = false;
@@ -828,7 +842,7 @@ struct NeuralRenderingBackend::State
 
 		// Encode d=(NR-original) into 0.5 + 0.5*d/(1+abs(d)). The carrier is
 		// deliberately independent from both scene colour histories.
-		DispatchTransfer(context, encodeShader, originalView, editedView, nullptr, nullptr,
+		DispatchTransfer(context, encodeShader, originalView, editedView, nullptr, nullptr, nullptr,
 			residualInput.uav11.Get(), nullptr, nullptr, inputs.width, inputs.height);
 
 		// Feature 18 intentionally used the raw Skyrim vectors above. The private SR
@@ -912,7 +926,7 @@ struct NeuralRenderingBackend::State
 		ID3D11DepthStencilView* savedDSV = nullptr;
 		context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, &savedDSV);
 		context->OMSetRenderTargets(0, nullptr, nullptr);
-		DispatchTransfer(context, applyShader, cleanView, residualOutputSRV.get(), nullptr, nullptr,
+		DispatchTransfer(context, applyShader, cleanView, residualOutputSRV.get(), nullptr, nullptr, nullptr,
 			outputView, nullptr, nullptr, width, height);
 		context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, savedDSV);
 		for (auto*& rtv : savedRTVs) {

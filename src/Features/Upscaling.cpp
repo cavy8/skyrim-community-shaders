@@ -22,6 +22,11 @@
 #define I18N_KEY_PREFIX "feature.upscaling."
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	NeuralRendering::CategoryStrengths,
+	colorStrength,
+	transferStrength);
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Upscaling::Settings,
 	upscaleMethod,
 	upscaleMethodNoDLSS,
@@ -54,6 +59,14 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingResolutionScaleX,
 	neuralRenderingResolutionScaleY,
 	neuralRenderingTransferStrength,
+	neuralRenderingPerCategoryStrengths,
+	neuralRenderingEverythingElseStrengths,
+	neuralRenderingSkinStrengths,
+	neuralRenderingHairStrengths,
+	neuralRenderingEyesStrengths,
+	neuralRenderingFoliageStrengths,
+	neuralRenderingLandscapeStrengths,
+	neuralRenderingEquipmentStrengths,
 	neuralRenderingDepthAwareResolve,
 	neuralRenderingAlternateFrames);
 
@@ -439,6 +452,45 @@ void Upscaling::DrawSettings()
 						"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
 						"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
 				}
+
+				ImGui::Checkbox(T(TKEY("neural_rendering_per_category_strengths"), "Per-Category Strengths"),
+					&settings.neuralRenderingPerCategoryStrengths);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextUnformatted(T(TKEY("neural_rendering_per_category_strengths_tooltip"),
+						"Adjust color and transfer strength independently for each material category. The global sliders above remain the final adjustment layer."));
+				}
+
+				if (settings.neuralRenderingPerCategoryStrengths) {
+					const auto drawCategoryStrengths = [&](const char* id, const char* label,
+														   NeuralRendering::CategoryStrengths& strengths, const char* tooltip = nullptr) {
+						ImGui::PushID(id);
+						ImGui::TextUnformatted(label);
+						if (tooltip) {
+							if (auto _tt = Util::HoverTooltipWrapper())
+								ImGui::TextUnformatted(tooltip);
+						}
+						ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"),
+							&strengths.colorStrength, 0.0f, 1.0f, "%.2f");
+						ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"),
+							&strengths.transferStrength, 0.0f, 2.0f, "%.2f");
+						ImGui::PopID();
+					};
+
+					ImGui::Indent();
+					drawCategoryStrengths("Skin", T(TKEY("neural_rendering_category_skin"), "Skin"), settings.neuralRenderingSkinStrengths);
+					drawCategoryStrengths("Hair", T(TKEY("neural_rendering_category_hair"), "Hair"), settings.neuralRenderingHairStrengths);
+					drawCategoryStrengths("Eyes", T(TKEY("neural_rendering_category_eyes"), "Eyes"), settings.neuralRenderingEyesStrengths);
+					drawCategoryStrengths("Foliage", T(TKEY("neural_rendering_category_foliage"), "Foliage"), settings.neuralRenderingFoliageStrengths,
+						T(TKEY("neural_rendering_category_foliage_tooltip"), "Trees and grass."));
+					drawCategoryStrengths("Landscape", T(TKEY("neural_rendering_category_landscape"), "Landscape"), settings.neuralRenderingLandscapeStrengths);
+					drawCategoryStrengths("Equipment", T(TKEY("neural_rendering_category_equipment"), "Equipment"), settings.neuralRenderingEquipmentStrengths,
+						T(TKEY("neural_rendering_category_equipment_tooltip"), "Armor, clothing, and weapons worn or wielded by actors."));
+					drawCategoryStrengths("EverythingElse", T(TKEY("neural_rendering_category_everything_else"), "Everything Else"),
+						settings.neuralRenderingEverythingElseStrengths,
+						T(TKEY("neural_rendering_category_everything_else_tooltip"),
+							"Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above."));
+					ImGui::Unindent();
+				}
 				ImGui::SliderFloat(T(TKEY("neural_rendering_local_tone"), "Local Tone Strength"), &settings.neuralRenderingLocalToneStrength, 0.0f, 2.0f, "%.2f");
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_local_tone_tooltip"), "Adjust local tone detail."));
@@ -698,6 +750,17 @@ void Upscaling::LoadSettings(json& o_json)
 	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleX, 1.0f, 0.25f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleY, 1.0f, 0.25f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingTransferStrength, 1.0f, 0.0f, 2.0f);
+	const auto sanitizeCategoryStrengths = [&](NeuralRendering::CategoryStrengths& strengths) {
+		sanitizeNeuralFloat(strengths.colorStrength, 1.0f, 0.0f, 1.0f);
+		sanitizeNeuralFloat(strengths.transferStrength, 1.0f, 0.0f, 2.0f);
+	};
+	sanitizeCategoryStrengths(settings.neuralRenderingEverythingElseStrengths);
+	sanitizeCategoryStrengths(settings.neuralRenderingSkinStrengths);
+	sanitizeCategoryStrengths(settings.neuralRenderingHairStrengths);
+	sanitizeCategoryStrengths(settings.neuralRenderingEyesStrengths);
+	sanitizeCategoryStrengths(settings.neuralRenderingFoliageStrengths);
+	sanitizeCategoryStrengths(settings.neuralRenderingLandscapeStrengths);
+	sanitizeCategoryStrengths(settings.neuralRenderingEquipmentStrengths);
 	auto iniSettingCollection = globals::game::iniPrefSettingCollection;
 	if (iniSettingCollection) {
 		auto setting = iniSettingCollection->GetSetting("bUseTAA:Display");
@@ -1667,6 +1730,7 @@ void Upscaling::Upscale()
 				neuralOptions.jitterOffsetX = -jitter.x;
 				neuralOptions.jitterOffsetY = -jitter.y;
 				const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+				const auto& materialCategories = renderer->GetRuntimeData().renderTargets[MASKS2];
 				// Hand the model the game's raw motion-vector target, not the 5x5
 				// dilated ghosting-reduction copy Streamline gets below. That copy
 				// tags a two-texel rim of background with foreground motion, which
@@ -1678,6 +1742,7 @@ void Upscaling::Upscale()
 							neuralRenderingTexture->resource.get(),
 							depth.texture,
 							depth.depthSRV,
+							materialCategories.SRV,
 							motionVector.texture,
 							renderWidth,
 							renderHeight,
@@ -1691,6 +1756,7 @@ void Upscaling::Upscale()
 						neuralRenderingTexture->resource.get(),
 						depth.texture,
 						depth.depthSRV,
+						materialCategories.SRV,
 						motionVector.texture,
 						motionVectorCopyTexture->resource.get(),
 						renderWidth,
@@ -1717,6 +1783,18 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.intensity = settings.neuralRenderingIntensity;
 	options.colorStrength = settings.neuralRenderingColorStrength;
 	options.transferStrength = settings.neuralRenderingTransferStrength;
+	options.perCategoryStrengths = settings.neuralRenderingPerCategoryStrengths;
+	using MaterialCategory = NeuralRendering::MaterialCategory;
+	const auto setCategoryStrengths = [&](MaterialCategory category, const NeuralRendering::CategoryStrengths& strengths) {
+		options.categoryStrengths[static_cast<std::size_t>(category)] = strengths;
+	};
+	setCategoryStrengths(MaterialCategory::kEverythingElse, settings.neuralRenderingEverythingElseStrengths);
+	setCategoryStrengths(MaterialCategory::kSkin, settings.neuralRenderingSkinStrengths);
+	setCategoryStrengths(MaterialCategory::kHair, settings.neuralRenderingHairStrengths);
+	setCategoryStrengths(MaterialCategory::kEyes, settings.neuralRenderingEyesStrengths);
+	setCategoryStrengths(MaterialCategory::kFoliage, settings.neuralRenderingFoliageStrengths);
+	setCategoryStrengths(MaterialCategory::kLandscape, settings.neuralRenderingLandscapeStrengths);
+	setCategoryStrengths(MaterialCategory::kEquipment, settings.neuralRenderingEquipmentStrengths);
 	options.depthAwareResolve = settings.neuralRenderingDepthAwareResolve;
 	options.alternateFrames = settings.neuralRenderingAlternateFrames;
 	options.localToneStrength = settings.neuralRenderingLocalToneStrength;
@@ -1747,6 +1825,7 @@ void Upscaling::PerformUpscaling()
 		neuralRenderingResourcesActive = true;
 		auto renderer = globals::game::renderer;
 		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		auto& materialCategories = renderer->GetRuntimeData().renderTargets[MASKS2];
 		auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
 		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
@@ -1762,6 +1841,7 @@ void Upscaling::PerformUpscaling()
 			neuralRenderingTexture->resource.get(),
 			depth.texture,
 			depth.depthSRV,
+			materialCategories.SRV,
 			motionVector.texture,
 			nativeWidth,
 			nativeHeight,

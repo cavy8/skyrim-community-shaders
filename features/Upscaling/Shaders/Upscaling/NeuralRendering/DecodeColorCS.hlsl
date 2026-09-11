@@ -1,3 +1,4 @@
+#include "Common/NeuralRenderingCategories.hlsli"
 #include "Upscaling/NeuralRendering/ColorTransfer.hlsli"
 
 cbuffer TransferParams : register(b0)
@@ -10,12 +11,17 @@ cbuffer TransferParams : register(b0)
 	uint2 GuideSize;   // Valid region of GuideDepth (render resolution), in its texels.
 	uint DepthAwareResolve;  // Non-zero: fade the edit across depth silhouettes (see NeuralSilhouetteWeight).
 	uint SkipFrame;          // Non-zero: the model was not run this frame; ModelColor/ProxyColor are stale.
+	uint PerCategoryStrengths;
+	uint3 CategoryPadding;
+	float4 CategoryColorStrengths[2];
+	float4 CategoryTransferStrengths[2];
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
 Texture2D<float4> OriginalColor : register(t1);  // Untouched linear scene colour, jittered raster.
 Texture2D<float4> ProxyColor : register(t2);     // The exact proxy EncodeColorCS handed the model.
 Texture2D<float> GuideDepth : register(t3);      // Game depth at the guide resolution.
+Texture2D<float> MaterialCategories : register(t4);  // Masks2: category in the low three R16_UNORM bits.
 RWTexture2D<float4> DestinationColor : register(u0);
 SamplerState LinearClampSampler : register(s0);
 
@@ -44,7 +50,21 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, uv, 0);
 
 	float4 original = OriginalColor[dispatchThreadID.xy];
-	float editWeight = TransferStrength;
+	float categoryColorStrength = 1.0;
+	float categoryTransferStrength = 1.0;
+	if (PerCategoryStrengths != 0 && all(GuideSize > 0)) {
+		int2 categoryTexel = int2((float2(dispatchThreadID.xy) + 0.5) * float2(GuideSize) / float2(ActiveSize));
+		categoryTexel = clamp(categoryTexel, int2(0, 0), int2(GuideSize) - 1);
+		uint materialCategory = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(categoryTexel, 0)));
+		materialCategory = materialCategory < 7 ? materialCategory : NeuralRenderingCategories::EverythingElse;
+		categoryColorStrength = CategoryColorStrengths[materialCategory >> 2][materialCategory & 3];
+		categoryTransferStrength = CategoryTransferStrengths[materialCategory >> 2][materialCategory & 3];
+	}
+
+	// Category controls shape the local result first. The existing global sliders
+	// remain a final multiplier over every category.
+	float resolvedColorStrength = categoryColorStrength * ColorStrength;
+	float editWeight = categoryTransferStrength * TransferStrength;
 	// On an alternating skip frame the model's previous answer is re-applied to
 	// the fresh frame; fade it out wherever the content under the pixel changed.
 	if (SkipFrame != 0)
@@ -58,5 +78,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		editWeight *= NeuralSilhouetteWeight(GuideDepth, guideTexel, GuideSize);
 	}
 
-	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, ColorStrength, editWeight);
+	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, resolvedColorStrength, editWeight);
 }

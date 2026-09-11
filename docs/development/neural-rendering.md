@@ -223,6 +223,24 @@ therefore bit-exact with the previous behaviour, zero returns the untouched
 frame, and two exaggerates the model's relative change. Unlike the `DLSSNR.*`
 tuning parameters it is a per-frame constant, so it responds immediately.
 
+## Per-category colour and transfer strengths
+
+`Per-Category Strengths` adds neutral-by-default colour and transfer multipliers
+for Skin, Hair, Eyes, Foliage, Landscape, Equipment, and Everything Else. The
+category controls shape the local resolve first; the global `Color Strength` and
+`Transfer Strength` values multiply those results afterwards as the final layer
+of adjustment. Disabling the toggle bypasses category lookup and preserves the
+global-only path.
+
+Classification stays entirely inside Community Shaders and does not use a DLSS
+control-mask parameter. `Lighting.hlsl` and `RunGrass.hlsl` already know their
+material permutations, so they store the category in the low three bits of the
+existing `R16_UNORM` `Masks2` value. The upper thirteen bits continue to carry
+vertex AO, limiting the maximum AO representation change to `7/65535`. Untagged
+pixels resolve as Everything Else. `DecodeColorCS` reads `Masks2` at the guide
+(render) resolution, nearest-neighbour maps it to the active colour raster, and
+selects the category multipliers before calling `ResolveNeuralColor`.
+
 ## Depth-aware silhouette preservation
 
 With the model below the colour resolution its edit is bilinearly upsampled,
