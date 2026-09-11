@@ -676,6 +676,12 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumula
 		if (terrainBlending.loaded && terrainBlending.settings.Enabled) {
 			terrainBlending.RenderTerrainBlendingPasses();
 		}
+
+		// Snapshot Masks2's material categories now, before the blended decals
+		// below alpha-blend into it and corrupt the packed category bits.
+		auto& upscaling = globals::features::upscaling;
+		if (upscaling.loaded)
+			upscaling.CaptureNeuralRenderingCategories();
 	}
 
 	// Deferred blended decals

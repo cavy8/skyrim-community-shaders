@@ -925,6 +925,24 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 			neuralRenderingTexture->CreateSRV(srvDesc);
 			neuralRenderingTexture->CreateUAV(uavDesc);
 		}
+
+		// Snapshot of Masks2 taken right after opaque geometry, before blended
+		// decals can alpha-blend into it. Masks2 is deliberately blendable (vertex
+		// AO fades under translucent decals), but the packed material category in
+		// its low bits is a discrete value: blending it with whatever a decal
+		// writes produces a meaningless bit pattern, not "the nearer category".
+		// See NeuralRenderingCategories::Pack and CaptureNeuralRenderingCategories.
+		if (!materialCategoriesSnapshot) {
+			auto& masks2 = renderer->GetRuntimeData().renderTargets[MASKS2];
+			masks2.texture->GetDesc(&texDesc);
+			texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			srvDesc.Format = texDesc.Format;
+			srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+			srvDesc.Texture2D.MostDetailedMip = 0;
+			srvDesc.Texture2D.MipLevels = 1;
+			materialCategoriesSnapshot = new Texture2D(texDesc, "Upscaling::MaterialCategoriesSnapshot");
+			materialCategoriesSnapshot->CreateSRV(srvDesc);
+		}
 	}
 }
 
@@ -979,6 +997,13 @@ void Upscaling::DestroyUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 
 			delete neuralRenderingTexture;
 			neuralRenderingTexture = nullptr;
+		}
+		if (materialCategoriesSnapshot) {
+			materialCategoriesSnapshot->srv = nullptr;
+			materialCategoriesSnapshot->resource = nullptr;
+
+			delete materialCategoriesSnapshot;
+			materialCategoriesSnapshot = nullptr;
 		}
 	}
 }
@@ -1730,7 +1755,9 @@ void Upscaling::Upscale()
 				neuralOptions.jitterOffsetX = -jitter.x;
 				neuralOptions.jitterOffsetY = -jitter.y;
 				const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-				const auto& materialCategories = renderer->GetRuntimeData().renderTargets[MASKS2];
+				// The pre-blended-decals snapshot, not the live Masks2 - see
+				// CaptureNeuralRenderingCategories.
+				auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 				// Hand the model the game's raw motion-vector target, not the 5x5
 				// dilated ghosting-reduction copy Streamline gets below. That copy
 				// tags a two-texel rim of background with foreground motion, which
@@ -1742,7 +1769,7 @@ void Upscaling::Upscale()
 							neuralRenderingTexture->resource.get(),
 							depth.texture,
 							depth.depthSRV,
-							materialCategories.SRV,
+							materialCategoriesSRV,
 							motionVector.texture,
 							renderWidth,
 							renderHeight,
@@ -1756,7 +1783,7 @@ void Upscaling::Upscale()
 						neuralRenderingTexture->resource.get(),
 						depth.texture,
 						depth.depthSRV,
-						materialCategories.SRV,
+						materialCategoriesSRV,
 						motionVector.texture,
 						motionVectorCopyTexture->resource.get(),
 						renderWidth,
@@ -1774,6 +1801,21 @@ void Upscaling::Upscale()
 		state->EndPerfEvent();
 		globals::profiler->EndPass();
 	}
+}
+
+void Upscaling::CaptureNeuralRenderingCategories()
+{
+	// Only paid for when Neural Rendering can actually consume it: DLSS-only,
+	// and only when per-category strengths are in use (otherwise the decode
+	// shader never samples the category texture at all).
+	if (!settings.neuralRenderingEnabled || !settings.neuralRenderingPerCategoryStrengths)
+		return;
+	if (GetUpscaleMethod() != UpscaleMethod::kDLSS || !materialCategoriesSnapshot)
+		return;
+
+	auto renderer = globals::game::renderer;
+	auto& masks2 = renderer->GetRuntimeData().renderTargets[MASKS2];
+	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
 }
 
 NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
@@ -1825,7 +1867,8 @@ void Upscaling::PerformUpscaling()
 		neuralRenderingResourcesActive = true;
 		auto renderer = globals::game::renderer;
 		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-		auto& materialCategories = renderer->GetRuntimeData().renderTargets[MASKS2];
+		// The pre-blended-decals snapshot, not the live Masks2 - see CaptureNeuralRenderingCategories.
+		auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 		auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
 		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
@@ -1841,7 +1884,7 @@ void Upscaling::PerformUpscaling()
 			neuralRenderingTexture->resource.get(),
 			depth.texture,
 			depth.depthSRV,
-			materialCategories.SRV,
+			materialCategoriesSRV,
 			motionVector.texture,
 			nativeWidth,
 			nativeHeight,

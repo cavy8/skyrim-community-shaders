@@ -182,6 +182,13 @@ public:
 	Texture2D* motionVectorCopyTexture = nullptr;
 	Texture2D* sharpenerTexture = nullptr;
 	Texture2D* neuralRenderingTexture = nullptr;
+	/**
+	 * Masks2 copied right after opaque geometry, before blended decals can
+	 * alpha-blend into it and corrupt the packed material category bits.
+	 * Populated by CaptureNeuralRenderingCategories(); this is what every
+	 * Neural Rendering evaluation call reads instead of the live Masks2.
+	 */
+	Texture2D* materialCategoriesSnapshot = nullptr;
 	bool neuralRenderingResultValid = false;
 	bool neuralRenderingResourcesActive = false;
 	bool neuralRenderingResetThisFrame = false;
@@ -234,6 +241,16 @@ public:
 	 * in the frame the pass runs.
 	 */
 	NeuralRendering::Options MakeNeuralRenderingOptions() const;
+
+	/**
+	 * @brief Snapshots Masks2's packed material categories before blended decals can touch it.
+	 *
+	 * Masks2 is deliberately blendable (vertex AO fades under translucent decals), but the
+	 * material category packed into its low bits (NeuralRenderingCategories::Pack) is a discrete
+	 * value - alpha-blending it produces a meaningless bit pattern, not "the nearer category".
+	 * Called from Deferred's blended-decals hook, after opaque geometry but before decals draw.
+	 */
+	void CaptureNeuralRenderingCategories();
 
 	/** @brief Requests a Neural Rendering on/off comparison screenshot pair; captured over the next few rendered frames. */
 	void RequestNeuralRenderingComparisonCapture();
