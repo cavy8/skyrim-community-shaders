@@ -1807,6 +1807,49 @@ void Upscaling::Upscale()
 	}
 }
 
+namespace
+{
+	/**
+	 * @brief Finds which biped slot (if any) a piece of geometry is a descendant of and, if one
+	 *        matches, resolves whether that slot's equipped item is worn equipment rather than the
+	 *        actor's own bare skin.
+	 * @return true if a slot was matched (a_isWorn is meaningful); false if the geometry isn't a
+	 *         descendant of any of this biped's slot roots (try the actor's other biped, if any).
+	 */
+	bool ResolveWornEquipmentFromBiped(RE::Actor* a_actor, RE::BipedAnim* a_biped, RE::NiAVObject* a_geometry, bool& a_isWorn)
+	{
+		if (!a_biped)
+			return false;
+		// Slots 0..kEditorTotal-1 are body-armor slots and have a bare-skin
+		// counterpart (Actor::GetSkin); the item equipped there is worn
+		// equipment only when it differs from that skin. Weapon/shield/quiver
+		// slots (kEditorTotal..kTotal-1) have no such counterpart - anything
+		// found there is always worn.
+		for (uint32_t slot = 0; slot < RE::BIPED_OBJECTS::kTotal; ++slot) {
+			auto* part = a_biped->objects[slot].partClone.get();
+			if (!part)
+				continue;
+			bool matched = false;
+			for (auto* node = a_geometry; node; node = node->parent) {
+				if (node == part) {
+					matched = true;
+					break;
+				}
+			}
+			if (!matched)
+				continue;
+			if (slot < RE::BIPED_OBJECTS::kEditorTotal) {
+				auto bodySlot = static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(1u << slot);
+				a_isWorn = a_biped->objects[slot].item != a_actor->GetSkin(bodySlot);
+			} else {
+				a_isWorn = true;
+			}
+			return true;
+		}
+		return false;
+	}
+}
+
 void Upscaling::BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass)
 {
 	auto deferred = globals::deferred;
@@ -1819,36 +1862,15 @@ void Upscaling::BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass)
 		auto geometry = a_pass->geometry;
 		if (auto userData = geometry->GetUserData()) {
 			if (auto actor = userData->As<RE::Actor>()) {
-				if (auto biped = actor->GetActorRuntimeData().biped.get()) {
-					// Find which biped slot (if any) this geometry belongs to by
-					// walking up its ancestors against each slot's cloned 3D root -
-					// a leaf BSGeometry is a descendant of that root, not the root
-					// itself. Slots 0..kEditorTotal-1 are body-armor slots and have
-					// a bare-skin counterpart (Actor::GetSkin); the item equipped
-					// there is worn equipment only when it differs from that skin.
-					// Weapon/shield/quiver slots (kEditorTotal..kTotal-1) have no
-					// such counterpart - anything there is always worn.
-					for (uint32_t slot = 0; slot < RE::BIPED_OBJECTS::kTotal; ++slot) {
-						auto* part = biped->objects[slot].partClone.get();
-						if (!part)
-							continue;
-						bool matched = false;
-						for (auto* node = static_cast<RE::NiAVObject*>(geometry); node; node = node->parent) {
-							if (node == part) {
-								matched = true;
-								break;
-							}
-						}
-						if (!matched)
-							continue;
-						if (slot < RE::BIPED_OBJECTS::kEditorTotal) {
-							auto bodySlot = static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(1u << slot);
-							isWorn = biped->objects[slot].item != actor->GetSkin(bodySlot);
-						} else {
-							isWorn = true;
-						}
-						break;
-					}
+				bool matched = ResolveWornEquipmentFromBiped(actor, actor->GetActorRuntimeData().biped.get(), geometry, isWorn);
+				// PlayerCharacter keeps a second, separate biped for its
+				// third-person ("large") body - the regular biped above is
+				// the first-person arms/weapon rig and never matches the
+				// player's third-person geometry (vanilla third-person
+				// camera, or mods like SmoothCam).
+				if (!matched) {
+					if (auto player = actor->As<RE::PlayerCharacter>())
+						ResolveWornEquipmentFromBiped(actor, player->GetPlayerRuntimeData().largeBiped.get(), geometry, isWorn);
 				}
 			}
 		}
