@@ -53,12 +53,36 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float categoryColorStrength = 1.0;
 	float categoryTransferStrength = 1.0;
 	if (PerCategoryStrengths != 0 && all(GuideSize > 0)) {
-		int2 categoryTexel = int2((float2(dispatchThreadID.xy) + 0.5) * float2(GuideSize) / float2(ActiveSize));
-		categoryTexel = clamp(categoryTexel, int2(0, 0), int2(GuideSize) - 1);
-		uint materialCategory = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(categoryTexel, 0)));
-		materialCategory = materialCategory < 7 ? materialCategory : NeuralRenderingCategories::EverythingElse;
-		categoryColorStrength = CategoryColorStrengths[materialCategory >> 2][materialCategory & 3];
-		categoryTransferStrength = CategoryTransferStrengths[materialCategory >> 2][materialCategory & 3];
+		// Blend the four nearest guide texels' resolved category strengths
+		// bilinearly instead of switching on one nearest-neighbour category.
+		// A hard switch flips discretely right at a material boundary; under
+		// TAA jitter the boundary pixel picks a different neighbour every
+		// frame, and wherever the two categories' sliders differ that reads
+		// as shimmer. The blend is done on the resolved strength values, not
+		// the category id itself - an id is a discrete index and can't be
+		// meaningfully interpolated.
+		float2 guideCoord = (float2(dispatchThreadID.xy) + 0.5) * float2(GuideSize) / float2(ActiveSize) - 0.5;
+		float2 guideBase = floor(guideCoord);
+		float2 lerpWeight = guideCoord - guideBase;
+		int2 guideMax = int2(GuideSize) - 1;
+
+		const int2 taps[4] = { int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1) };
+		const float tapWeights[4] = {
+			(1.0 - lerpWeight.x) * (1.0 - lerpWeight.y),
+			lerpWeight.x * (1.0 - lerpWeight.y),
+			(1.0 - lerpWeight.x) * lerpWeight.y,
+			lerpWeight.x * lerpWeight.y
+		};
+
+		categoryColorStrength = 0.0;
+		categoryTransferStrength = 0.0;
+		for (int tap = 0; tap < 4; ++tap) {
+			int2 tapTexel = clamp(int2(guideBase) + taps[tap], int2(0, 0), guideMax);
+			uint tapCategory = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(tapTexel, 0)));
+			tapCategory = tapCategory < 7 ? tapCategory : NeuralRenderingCategories::EverythingElse;
+			categoryColorStrength += tapWeights[tap] * CategoryColorStrengths[tapCategory >> 2][tapCategory & 3];
+			categoryTransferStrength += tapWeights[tap] * CategoryTransferStrengths[tapCategory >> 2][tapCategory & 3];
+		}
 	}
 
 	// Category controls shape the local result first. The existing global sliders
