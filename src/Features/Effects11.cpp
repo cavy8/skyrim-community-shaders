@@ -12,12 +12,77 @@
 
 #include "CloudShadows.h"
 #include "Deferred.h"
+#include "Globals.h"
 #include "IBL.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "TerrainShadows.h"
 #include "Utils/D3D.h"
 #include "Utils/Game.h"
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	Effects11::Settings,
+	presetLocation)
+
+void Effects11::Initialize()
+{
+	auto& presetManager = PresetManager::GetSingleton();
+	presetManager.Rescan();
+
+	ResolveActivePresetLocation();
+}
+
+void Effects11::LoadSettings(json& o_json)
+{
+	settings = o_json;
+}
+
+void Effects11::SaveSettings(json& o_json)
+{
+	o_json = settings;
+}
+
+void Effects11::ResolveActivePresetLocation()
+{
+	auto& presetManager = PresetManager::GetSingleton();
+	const auto& locations = presetManager.GetDiscoveredLocations();
+
+	if (!settings.presetLocation.empty()) {
+		if (const auto* match = presetManager.FindByRelativeKey(settings.presetLocation))
+			presetManager.SetActiveLocation(match->root);
+		else
+			presetManager.SetActiveLocation({});
+		return;
+	}
+
+	const PresetLocation* dataRoot = nullptr;
+	const PresetLocation* gameRoot = nullptr;
+	std::vector<const PresetLocation*> dataSubfolders;
+
+	for (const auto& loc : locations) {
+		switch (loc.kind) {
+		case PresetLocationKind::DataRoot:
+			dataRoot = &loc;
+			break;
+		case PresetLocationKind::GameRoot:
+			gameRoot = &loc;
+			break;
+		case PresetLocationKind::DataSubfolder:
+			dataSubfolders.push_back(&loc);
+			break;
+		}
+	}
+
+	if (dataRoot) {
+		presetManager.SetActiveLocation(dataRoot->root);
+	} else if (gameRoot) {
+		presetManager.SetActiveLocation(gameRoot->root);
+	} else if (dataSubfolders.size() == 1) {
+		presetManager.SetActiveLocation(dataSubfolders.front()->root);
+	} else {
+		presetManager.SetActiveLocation({});
+	}
+}
 
 Effects11::PerFrame Effects11::GetCommonBufferData()
 {
@@ -184,6 +249,8 @@ void Effects11::LoadRaindropTexture()
 
 void Effects11::SetupResources()
 {
+	Initialize();
+
 	// Initialize() -> Apply() already loads the raindrop texture; do not load it again here.
 	EffectManager::GetSingleton().Initialize();
 }
