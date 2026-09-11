@@ -24,6 +24,8 @@ class Streamline
 {
 public:
 	static constexpr const wchar_t* PluginDir = L"Data\\Shaders\\Upscaling\\Streamline";
+	static constexpr const char* ProjectId = "f8776929-c969-43bd-ac2b-294b4de58aac";
+	static constexpr const char* EngineVersion = "1.0.0";
 
 	Streamline() = default;
 

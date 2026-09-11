@@ -350,14 +350,17 @@ void Upscaling::DrawSettings()
 
 				const char* placementLabels[] = {
 					T(TKEY("neural_rendering_placement_before"), "Before Upscaling"),
-					T(TKEY("neural_rendering_placement_after"), "After Upscaling")
+					T(TKEY("neural_rendering_placement_after"), "After Upscaling"),
+					T(TKEY("neural_rendering_placement_separate"), "Separate Upscaling (Experimental)")
 				};
 				int placement = static_cast<int>(settings.neuralRenderingPlacement);
 				if (ImGui::Combo(T(TKEY("neural_rendering_placement"), "Placement"), &placement, placementLabels, IM_ARRAYSIZE(placementLabels)))
-					settings.neuralRenderingPlacement = static_cast<uint>(std::clamp(placement, 0, 1));
+					settings.neuralRenderingPlacement = static_cast<uint>(std::clamp(placement, 0, 2));
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_placement_tooltip"),
-						"Run Neural Rendering before DLSS upscaling or after the upscaled image is produced."));
+						"Before Upscaling lets the game's DLSS reconstruct the NR-edited scene. After Upscaling runs NR at display resolution.\n"
+						"Separate Upscaling runs NR at render resolution, sends only its signed contribution through a second private DLSS history, "
+						"then applies it to the clean main-DLSS result. This experimental mode costs another DLSS evaluation and additional VRAM."));
 				}
 
 				const char* resolutionModeLabels[] = {
@@ -673,7 +676,7 @@ void Upscaling::LoadSettings(json& o_json)
 			clampedReflexFPSLimit);
 	}
 	settings.reflexFPSLimit = clampedReflexFPSLimit;
-	if (settings.neuralRenderingPlacement > 1) {
+	if (settings.neuralRenderingPlacement > 2) {
 		logger::warn("[Upscaling] Loaded neuralRenderingPlacement {} out of range, clamping to 1", settings.neuralRenderingPlacement);
 		settings.neuralRenderingPlacement = 1;
 	}
@@ -1569,9 +1572,17 @@ void Upscaling::Upscale()
 	auto upscaleMethod = GetUpscaleMethod();
 	neuralRenderingResultValid = false;
 	neuralRenderingResetThisFrame = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
+	if (settings.neuralRenderingEnabled && neuralRenderingActivePlacement != settings.neuralRenderingPlacement) {
+		if (neuralRenderingActivePlacement != UINT_MAX && neuralRenderingResourcesActive) {
+			neuralRendering.DestroyResources();
+			neuralRenderingResourcesActive = false;
+		}
+		neuralRenderingActivePlacement = settings.neuralRenderingPlacement;
+	}
 	if (!settings.neuralRenderingEnabled && neuralRenderingResourcesActive) {
 		neuralRendering.DestroyResources();
 		neuralRenderingResourcesActive = false;
+		neuralRenderingActivePlacement = UINT_MAX;
 	}
 
 	auto state = globals::state;
@@ -1643,7 +1654,9 @@ void Upscaling::Upscale()
 			uint32_t renderWidth = static_cast<uint32_t>(renderSize.x);
 			uint32_t renderHeight = static_cast<uint32_t>(renderSize.y);
 			ID3D11Resource* dlssInput = main.texture;
-			if (settings.neuralRenderingEnabled && settings.neuralRenderingPlacement == 0 && neuralRendering.IsAvailable() && neuralRenderingTexture) {
+			if (settings.neuralRenderingEnabled &&
+				(settings.neuralRenderingPlacement == 0 || settings.neuralRenderingPlacement == 2) &&
+				neuralRendering.IsAvailable() && neuralRenderingTexture) {
 				neuralRenderingResourcesActive = true;
 				NeuralRendering::Options neuralOptions = MakeNeuralRenderingOptions();
 				// Before the upscaler colour and guides are both at render resolution,
@@ -1660,15 +1673,31 @@ void Upscaling::Upscale()
 				// is a deliberate lie for DLSS's history rejection. The model feeds
 				// its own temporal state and was trained on plain per-pixel vectors,
 				// so the dilated rim reads as flicker or smear along moving edges.
-				if (neuralRendering.Evaluate(main.texture,
+				if (settings.neuralRenderingPlacement == 0) {
+					if (neuralRendering.Evaluate(main.texture,
+							neuralRenderingTexture->resource.get(),
+							depth.texture,
+							depth.depthSRV,
+							motionVector.texture,
+							renderWidth,
+							renderHeight,
+							neuralOptions)) {
+						dlssInput = neuralRenderingTexture->resource.get();
+					}
+				} else {
+					const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
+					const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
+					neuralRendering.PrepareSeparateUpscaling(main.texture,
 						neuralRenderingTexture->resource.get(),
 						depth.texture,
 						depth.depthSRV,
 						motionVector.texture,
+						motionVectorCopyTexture->resource.get(),
 						renderWidth,
 						renderHeight,
-						neuralOptions)) {
-					dlssInput = neuralRenderingTexture->resource.get();
+						nativeWidth,
+						nativeHeight,
+						neuralOptions);
 				}
 			}
 			streamline.Upscale(dlssInput, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get());
@@ -1698,6 +1727,8 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	const bool perAxis = settings.neuralRenderingResolutionMode == 1;
 	options.resolutionScaleX = perAxis ? settings.neuralRenderingResolutionScaleX : settings.neuralRenderingResolutionScale;
 	options.resolutionScaleY = perAxis ? settings.neuralRenderingResolutionScaleY : settings.neuralRenderingResolutionScale;
+	options.superResolutionQualityMode = settings.qualityMode;
+	options.superResolutionPreset = settings.presetDLSS;
 	return options;
 }
 
@@ -1735,6 +1766,12 @@ void Upscaling::PerformUpscaling()
 			nativeWidth,
 			nativeHeight,
 			neuralOptions);
+	} else if (GetUpscaleMethod() == UpscaleMethod::kDLSS && settings.neuralRenderingEnabled &&
+		settings.neuralRenderingPlacement == 2 && neuralRenderingTexture && sharpenerTexture) {
+		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
+		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
+		neuralRenderingResultValid = neuralRendering.ResolveSeparateUpscaling(
+			sharpenerTexture->resource.get(), neuralRenderingTexture->resource.get(), nativeWidth, nativeHeight);
 	}
 
 	// Neural Rendering consumes the same render-resolution depth and motion

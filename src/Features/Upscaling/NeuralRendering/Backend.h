@@ -42,6 +42,7 @@ public:
 		ID3D11Resource* depth = nullptr;               ///< Game depth buffer.
 		ID3D11ShaderResourceView* depthSRV = nullptr;  ///< SRV over @c depth, used by the guide pass.
 		ID3D11Resource* motionVectors = nullptr;       ///< Motion vectors matching @c depth.
+		ID3D11Resource* superResolutionMotionVectors = nullptr;  ///< Processed motion field used by main DLSS.
 		std::uint32_t width = 0;                       ///< Colour/output active region width in pixels.
 		std::uint32_t height = 0;                      ///< Colour/output active region height in pixels.
 		std::uint32_t guideWidth = 0;                  ///< Depth/motion-vector active region width (render resolution).
@@ -71,6 +72,10 @@ public:
 		float localStructureStrength = 0.9f;
 		float skinStructureStrength = 0.9f;
 		std::uint32_t style = 3;
+		std::uint32_t outputWidth = 0;   ///< Separate-upscaling output width; zero for ordinary Evaluate().
+		std::uint32_t outputHeight = 0;  ///< Separate-upscaling output height.
+		std::uint32_t superResolutionQualityMode = 1;
+		std::uint32_t superResolutionPreset = 0;
 		bool automaticMask = true;
 		bool reset = false;  ///< Force a history reset on this frame.
 	};
@@ -100,11 +105,18 @@ public:
 	 */
 	bool Evaluate(const FrameInputs& inputs);
 
+	/** @brief Prepare the private, temporally upscaled signed NR residual for this frame. */
+	bool PrepareSeparateUpscaling(const FrameInputs& inputs);
+
+	/** @brief Apply the prepared residual to the game's clean display-resolution DLSS output. */
+	bool ResolveSeparateUpscaling(ID3D11Resource* cleanColor, ID3D11Resource* colorOut,
+		std::uint32_t width, std::uint32_t height);
+
 	/**
-	 * @brief Releases every GPU resource, the NGX feature, the runtime, and the interop device.
+	 * @brief Releases shared GPU resources and private NGX feature histories.
 	 *
-	 * Also clears the failure latch, so toggling Neural Rendering off and on is
-	 * the supported way to retry after a hard failure.
+	 * The NGX runtime and interop device remain alive because placement changes can
+	 * invoke this on the render thread. Also clears the failure latch for retries.
 	 */
 	void DestroyResources();
 

@@ -3,6 +3,7 @@
 #include "../../../Utils/FileSystem.h"
 #include "../../../Utils/Format.h"
 #include "../../../Utils/WinApi.h"
+#include "../Streamline.h"
 
 #include <Windows.h>
 #include <Psapi.h>
@@ -32,7 +33,10 @@ namespace NeuralRendering
 		};
 
 		using GetUnsignedValue = unsigned int(NVSDK_CONV*)();
-		using InitD3D12 = NVSDK_NGX_Result(NVSDK_CONV*)(unsigned long long, const wchar_t*, ID3D12Device*, NVSDK_NGX_Version, const NVSDK_NGX_Parameter*);
+		using InitD3D12WithProjectId = NVSDK_NGX_Result(NVSDK_CONV*)(const char*, NVSDK_NGX_EngineType,
+			const char*, const wchar_t*, ID3D12Device*, NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo*);
+		using InitD3D12WithApplicationId = NVSDK_NGX_Result(NVSDK_CONV*)(unsigned long long, const wchar_t*,
+			ID3D12Device*, NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo*);
 		using ShutdownD3D12 = NVSDK_NGX_Result(NVSDK_CONV*)(ID3D12Device*);
 		using AllocateParameters = NVSDK_NGX_Result(NVSDK_CONV*)(NVSDK_NGX_Parameter**);
 		using DestroyParameters = NVSDK_NGX_Result(NVSDK_CONV*)(NVSDK_NGX_Parameter*);
@@ -177,6 +181,40 @@ namespace NeuralRendering
 			}
 			return {};
 		}
+
+		NVSDK_NGX_PerfQuality_Value ToPerfQuality(std::uint32_t qualityMode)
+		{
+			switch (qualityMode) {
+			case 0: return NVSDK_NGX_PerfQuality_Value_DLAA;
+			case 2: return NVSDK_NGX_PerfQuality_Value_Balanced;
+			case 3: return NVSDK_NGX_PerfQuality_Value_MaxPerf;
+			case 4: return NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+			default: return NVSDK_NGX_PerfQuality_Value_MaxQuality;
+			}
+		}
+
+		NVSDK_NGX_DLSS_Hint_Render_Preset ToRenderPreset(std::uint32_t preset)
+		{
+			switch (preset) {
+			case 1: return NVSDK_NGX_DLSS_Hint_Render_Preset_J;
+			case 2: return NVSDK_NGX_DLSS_Hint_Render_Preset_K;
+			case 3: return NVSDK_NGX_DLSS_Hint_Render_Preset_L;
+			case 4: return NVSDK_NGX_DLSS_Hint_Render_Preset_M;
+			default: return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
+			}
+		}
+
+		void SetRenderPreset(NVSDK_NGX_Parameter* parameters, std::uint32_t preset)
+		{
+			if (!parameters || preset == 0)
+				return;
+			const auto value = static_cast<unsigned int>(ToRenderPreset(preset));
+			parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, value);
+			parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, value);
+			parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, value);
+			parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, value);
+			parameters->Set(NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, value);
+		}
 	}
 
 	Runtime& Runtime::Instance()
@@ -249,7 +287,6 @@ namespace NeuralRendering
 		if (status_ == RuntimeStatus::Initialized && device_ == device)
 			return true;
 
-		auto initialize = reinterpret_cast<InitD3D12>(GetProcAddress(static_cast<HMODULE>(module_), "NVSDK_NGX_D3D12_Init_Ext"));
 		std::filesystem::path writablePath = dataPath;
 		if (writablePath.empty()) {
 			wchar_t tempPath[MAX_PATH]{};
@@ -258,31 +295,55 @@ namespace NeuralRendering
 		}
 		std::error_code error;
 		std::filesystem::create_directories(writablePath, error);
-		SignedRuntimePathScope scope(static_cast<HMODULE>(module_), path_.parent_path() / L"nvngx.dll");
-		if (!scope.IsInstalled()) {
-			status_ = RuntimeStatus::InitializationFailed;
-			detail_ = "failed to install signed-runtime path proxy";
-			return false;
-		}
-		ngxResult_ = static_cast<std::uint32_t>(initialize(applicationId_, writablePath.c_str(), device,
-			static_cast<NVSDK_NGX_Version>(apiVersion_), nullptr));
-		if (ngxResult_ != NVSDK_NGX_Result_Success) {
-			status_ = RuntimeStatus::InitializationFailed;
-			detail_ = std::format("NGX init failed 0x{:08X}, proxyHits={}", ngxResult_, scope.Hits());
-			return false;
-		}
-		device_ = device;
-		device_->AddRef();
-
 		HMODULE core = FindNgxCoreModule();
 		if (!core) {
 			status_ = RuntimeStatus::CoreUnavailable;
-			detail_ = "NGX parameter API module was not found";
-			Shutdown();
-			status_ = RuntimeStatus::CoreUnavailable;
-			detail_ = "NGX parameter API module was not found";
+			detail_ = "NGX core module was not found before D3D12 initialization";
 			return false;
 		}
+
+		// The NR snippet's Init_Ext accepts a parameter block, not the feature-search
+		// metadata used by the driver core. Initializing only through that entry point
+		// lets Feature 18 run but leaves this private D3D12 device unable to locate the
+		// DLSS-SR snippet. Mirror Streamline/the OptiScaler experiment: initialize the
+		// core directly with the same project identity and the directory containing
+		// nvngx_dlss.dll.
+		std::error_code absoluteError;
+		auto featureDirectory = std::filesystem::absolute(path_.parent_path(), absoluteError);
+		if (absoluteError)
+			featureDirectory = path_.parent_path();
+		const std::wstring featureDirectoryString = featureDirectory.wstring();
+		const wchar_t* featurePaths[]{ featureDirectoryString.c_str() };
+		NVSDK_NGX_FeatureCommonInfo featureInfo{};
+		featureInfo.PathListInfo.Path = featurePaths;
+		featureInfo.PathListInfo.Length = static_cast<unsigned int>(std::size(featurePaths));
+
+		auto initializeWithProjectId = reinterpret_cast<InitD3D12WithProjectId>(
+			GetProcAddress(core, "NVSDK_NGX_D3D12_Init_with_ProjectID"));
+		auto initializeWithApplicationId = reinterpret_cast<InitD3D12WithApplicationId>(
+			GetProcAddress(core, "NVSDK_NGX_D3D12_Init_Ext"));
+		if (initializeWithProjectId) {
+			ngxResult_ = static_cast<std::uint32_t>(initializeWithProjectId(Streamline::ProjectId,
+				NVSDK_NGX_ENGINE_TYPE_CUSTOM, Streamline::EngineVersion, writablePath.c_str(), device,
+				NVSDK_NGX_Version_API, &featureInfo));
+		} else if (initializeWithApplicationId) {
+			ngxResult_ = static_cast<std::uint32_t>(initializeWithApplicationId(applicationId_,
+				writablePath.c_str(), device, NVSDK_NGX_Version_API, &featureInfo));
+		} else {
+			status_ = RuntimeStatus::InitializationFailed;
+			detail_ = "NGX core is missing its D3D12 initialization entry points";
+			return false;
+		}
+		if (ngxResult_ != NVSDK_NGX_Result_Success) {
+			status_ = RuntimeStatus::InitializationFailed;
+			detail_ = std::format("NGX core D3D12 init failed 0x{:08X} featurePath={}",
+				ngxResult_, featureDirectory.string());
+			return false;
+		}
+		logger::info("[DLSSNR] NGX core D3D12 initialized featurePath={}", featureDirectory.string());
+		device_ = device;
+		device_->AddRef();
+
 		auto allocate = reinterpret_cast<AllocateParameters>(GetProcAddress(core, "NVSDK_NGX_D3D12_AllocateParameters"));
 		NVSDK_NGX_Parameter* parameters = nullptr;
 		ngxResult_ = static_cast<std::uint32_t>(allocate(&parameters));
@@ -413,8 +474,132 @@ namespace NeuralRendering
 		return true;
 	}
 
+	SuperResolutionResult Runtime::ExecuteSuperResolution(ID3D12GraphicsCommandList* commandList,
+		ID3D12Resource* color, ID3D12Resource* depth, ID3D12Resource* motionVectors,
+		ID3D12Resource* exposure, ID3D12Resource* output,
+		std::uint32_t inputWidth, std::uint32_t inputHeight,
+		std::uint32_t outputWidth, std::uint32_t outputHeight,
+		float jitterOffsetX, float jitterOffsetY,
+		float motionVectorScaleX, float motionVectorScaleY,
+		float frameTimeDeltaMilliseconds,
+		std::uint32_t qualityMode, std::uint32_t preset, bool reset)
+	{
+		if (status_ != RuntimeStatus::Initialized || !commandList || !color || !depth ||
+			!motionVectors || !exposure || !output || !inputWidth || !inputHeight ||
+			!outputWidth || !outputHeight)
+			return SuperResolutionResult::Failed;
+
+		HMODULE core = FindNgxCoreModule();
+		if (!core) {
+			detail_ = "NGX core module for private DLSS SR was not found";
+			return SuperResolutionResult::Failed;
+		}
+		auto allocate = reinterpret_cast<AllocateParameters>(GetProcAddress(core, "NVSDK_NGX_D3D12_AllocateParameters"));
+		auto create = reinterpret_cast<CreateFeature>(GetProcAddress(core, "NVSDK_NGX_D3D12_CreateFeature"));
+		auto evaluate = reinterpret_cast<EvaluateFeature>(GetProcAddress(core, "NVSDK_NGX_D3D12_EvaluateFeature"));
+		auto release = reinterpret_cast<ReleaseFeature>(GetProcAddress(core, "NVSDK_NGX_D3D12_ReleaseFeature"));
+		if (!allocate || !create || !evaluate || !release) {
+			detail_ = "NGX core is missing a private DLSS SR entry point";
+			return SuperResolutionResult::Failed;
+		}
+
+		const bool creationChanged =
+			superResolutionInputWidth_ != inputWidth || superResolutionInputHeight_ != inputHeight ||
+			superResolutionOutputWidth_ != outputWidth || superResolutionOutputHeight_ != outputHeight ||
+			superResolutionQualityMode_ != qualityMode || superResolutionPreset_ != preset;
+		if (superResolutionFeatureHandle_ && creationChanged) {
+			detail_ = "private DLSS SR creation settings changed without a fenced reset";
+			return SuperResolutionResult::Failed;
+		}
+
+		if (!superResolutionParameters_) {
+			NVSDK_NGX_Parameter* parameters = nullptr;
+			ngxResult_ = static_cast<std::uint32_t>(allocate(&parameters));
+			if (ngxResult_ != NVSDK_NGX_Result_Success || !parameters) {
+				detail_ = std::format("private DLSS SR parameter allocation failed 0x{:08X}", ngxResult_);
+				return SuperResolutionResult::Failed;
+			}
+			superResolutionParameters_ = parameters;
+		}
+
+		auto* parameters = static_cast<NVSDK_NGX_Parameter*>(superResolutionParameters_);
+		if (!superResolutionFeatureHandle_) {
+			parameters->Reset();
+			parameters->Set(NVSDK_NGX_Parameter_Width, inputWidth);
+			parameters->Set(NVSDK_NGX_Parameter_Height, inputHeight);
+			parameters->Set(NVSDK_NGX_Parameter_OutWidth, outputWidth);
+			parameters->Set(NVSDK_NGX_Parameter_OutHeight, outputHeight);
+			parameters->Set(NVSDK_NGX_Parameter_CreationNodeMask, 1u);
+			parameters->Set(NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
+			parameters->Set(NVSDK_NGX_Parameter_PerfQualityValue, static_cast<int>(ToPerfQuality(qualityMode)));
+			parameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+				static_cast<unsigned int>(NVSDK_NGX_DLSS_Feature_Flags_MVLowRes));
+			SetRenderPreset(parameters, preset);
+
+			NVSDK_NGX_Handle* handle = nullptr;
+			ngxResult_ = static_cast<std::uint32_t>(create(commandList,
+				NVSDK_NGX_Feature_SuperSampling, parameters, &handle));
+			if (ngxResult_ != NVSDK_NGX_Result_Success || !handle) {
+				detail_ = std::format("private DLSS SR create failed 0x{:08X}", ngxResult_);
+				return SuperResolutionResult::Failed;
+			}
+			superResolutionFeatureHandle_ = handle;
+			superResolutionInputWidth_ = inputWidth;
+			superResolutionInputHeight_ = inputHeight;
+			superResolutionOutputWidth_ = outputWidth;
+			superResolutionOutputHeight_ = outputHeight;
+			superResolutionQualityMode_ = qualityMode;
+			superResolutionPreset_ = preset;
+			return SuperResolutionResult::Created;
+		}
+
+		parameters->Reset();
+		parameters->Set(NVSDK_NGX_Parameter_Color, color);
+		parameters->Set(NVSDK_NGX_Parameter_Output, output);
+		parameters->Set(NVSDK_NGX_Parameter_Depth, depth);
+		parameters->Set(NVSDK_NGX_Parameter_MotionVectors, motionVectors);
+		parameters->Set(NVSDK_NGX_Parameter_ExposureTexture, exposure);
+		parameters->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, inputWidth);
+		parameters->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, inputHeight);
+		parameters->Set(NVSDK_NGX_Parameter_Reset, reset ? 1u : 0u);
+		parameters->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, jitterOffsetX);
+		parameters->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, jitterOffsetY);
+		parameters->Set(NVSDK_NGX_Parameter_MV_Scale_X, motionVectorScaleX);
+		parameters->Set(NVSDK_NGX_Parameter_MV_Scale_Y, motionVectorScaleY);
+		parameters->Set(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec,
+			std::clamp(std::isfinite(frameTimeDeltaMilliseconds) ? frameTimeDeltaMilliseconds : 16.6667f,
+				1.0f, 1000.0f));
+		parameters->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
+		parameters->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
+		parameters->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
+
+		ngxResult_ = static_cast<std::uint32_t>(evaluate(commandList,
+			static_cast<NVSDK_NGX_Handle*>(superResolutionFeatureHandle_), parameters, nullptr));
+		if (ngxResult_ != NVSDK_NGX_Result_Success) {
+			detail_ = std::format("private DLSS SR evaluate failed 0x{:08X}", ngxResult_);
+			return SuperResolutionResult::Failed;
+		}
+		return SuperResolutionResult::Evaluated;
+	}
+
+	void Runtime::ResetSuperResolutionFeature()
+	{
+		HMODULE core = FindNgxCoreModule();
+		auto release = core ? reinterpret_cast<ReleaseFeature>(GetProcAddress(core, "NVSDK_NGX_D3D12_ReleaseFeature")) : nullptr;
+		if (superResolutionFeatureHandle_ && release) {
+			const auto result = release(static_cast<NVSDK_NGX_Handle*>(superResolutionFeatureHandle_));
+			if (result != NVSDK_NGX_Result_Success)
+				logger::warn("[DLSSNR] Private DLSS SR release failed result=0x{:08X}", static_cast<std::uint32_t>(result));
+		}
+		superResolutionFeatureHandle_ = nullptr;
+		superResolutionInputWidth_ = superResolutionInputHeight_ = 0;
+		superResolutionOutputWidth_ = superResolutionOutputHeight_ = 0;
+		superResolutionQualityMode_ = superResolutionPreset_ = 0;
+	}
+
 	void Runtime::ResetFeature()
 	{
+		ResetSuperResolutionFeature();
 		if (!module_)
 			return;
 		SignedRuntimePathScope scope(static_cast<HMODULE>(module_), path_.parent_path() / L"nvngx.dll");
@@ -435,18 +620,20 @@ namespace NeuralRendering
 		if (device_ && module_) {
 			ResetFeature();
 			HMODULE core = FindNgxCoreModule();
-			if (parameters_ && core) {
+			if (core) {
 				auto destroy = reinterpret_cast<DestroyParameters>(GetProcAddress(core, "NVSDK_NGX_D3D12_DestroyParameters"));
-				if (destroy) destroy(static_cast<NVSDK_NGX_Parameter*>(parameters_));
+				if (destroy && parameters_) destroy(static_cast<NVSDK_NGX_Parameter*>(parameters_));
+				if (destroy && superResolutionParameters_)
+					destroy(static_cast<NVSDK_NGX_Parameter*>(superResolutionParameters_));
 			}
 			parameters_ = nullptr;
-			auto shutdown = reinterpret_cast<ShutdownD3D12>(GetProcAddress(static_cast<HMODULE>(module_), "NVSDK_NGX_D3D12_Shutdown1"));
-			SignedRuntimePathScope scope(static_cast<HMODULE>(module_), path_.parent_path() / L"nvngx.dll");
+			superResolutionParameters_ = nullptr;
+			auto shutdown = core ? reinterpret_cast<ShutdownD3D12>(GetProcAddress(core, "NVSDK_NGX_D3D12_Shutdown1")) : nullptr;
 			if (shutdown) {
 				const auto result = shutdown(device_);
 				if (result != NVSDK_NGX_Result_Success)
-					logger::warn("[DLSSNR] NGX shutdown failed result=0x{:08X} proxyInstalled={}",
-						static_cast<std::uint32_t>(result), scope.IsInstalled());
+					logger::warn("[DLSSNR] NGX core shutdown failed result=0x{:08X}",
+						static_cast<std::uint32_t>(result));
 			}
 			device_->Release();
 			device_ = nullptr;

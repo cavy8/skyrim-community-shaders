@@ -69,7 +69,7 @@ public:
 		bool reflexUseFPSLimit = false;
 		float reflexFPSLimit = 60.0f;
 		bool neuralRenderingEnabled = false;
-		uint neuralRenderingPlacement = 1;  // 0=Before Upscaling, 1=After Upscaling
+		uint neuralRenderingPlacement = 1;  // 0=Before Upscaling, 1=After Upscaling, 2=Separate Upscaling
 		uint neuralRenderingStyle = 2;      // 0=Default, 1=Natural, 2=Cinematic
 		float neuralRenderingIntensity = 0.8f;
 		float neuralRenderingColorStrength = 1.0f;
@@ -177,6 +177,7 @@ public:
 	bool neuralRenderingResultValid = false;
 	bool neuralRenderingResourcesActive = false;
 	bool neuralRenderingResetThisFrame = false;
+	uint neuralRenderingActivePlacement = UINT_MAX;
 
 	virtual void ClearShaderCache() override;
 

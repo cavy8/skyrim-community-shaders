@@ -27,6 +27,14 @@ namespace NeuralRendering
 		bool uiCorrection = false;
 	};
 
+	/** @brief Result of recording the private DLSS-SR residual pass. */
+	enum class SuperResolutionResult
+	{
+		Failed,
+		Created,
+		Evaluated,
+	};
+
 	/** @brief Lifecycle/diagnostic state of the nvngx_dlssnr.dll runtime. */
 	enum class RuntimeStatus
 	{
@@ -135,12 +143,33 @@ namespace NeuralRendering
 			float motionVectorScaleX, float motionVectorScaleY, const Tuning& tuning, bool reset);
 
 		/**
+		 * @brief Create/evaluate an independent DLSS Super Resolution feature for a signed residual carrier.
+		 *
+		 * The feature and parameter block are private to this runtime and never alias the game's
+		 * Streamline DLSS feature. Creation deliberately occupies one submission without evaluation;
+		 * the first residual is produced on a later frame so NGX can finish initializing its history.
+		 * The carrier is treated as LDR data with fixed unit exposure and no sharpening.
+		 */
+		SuperResolutionResult ExecuteSuperResolution(ID3D12GraphicsCommandList* commandList,
+			ID3D12Resource* color, ID3D12Resource* depth, ID3D12Resource* motionVectors,
+			ID3D12Resource* exposure, ID3D12Resource* output,
+			std::uint32_t inputWidth, std::uint32_t inputHeight,
+			std::uint32_t outputWidth, std::uint32_t outputHeight,
+			float jitterOffsetX, float jitterOffsetY,
+			float motionVectorScaleX, float motionVectorScaleY,
+			float frameTimeDeltaMilliseconds,
+			std::uint32_t qualityMode, std::uint32_t preset, bool reset);
+
+		/**
 		 * @brief Release the NGX feature handle and clear the cached extents.
 		 *
 		 * The next Execute() recreates the feature. The successful-frame counter is reset.
 		 * Safe to call when no feature has been created.
 		 */
 		void ResetFeature();
+
+		/** @brief Release only the private DLSS-SR feature and its cached creation state. */
+		void ResetSuperResolutionFeature();
 
 		/** @brief Release the feature, parameters, NGX instance and the loaded module. */
 		void Shutdown();
@@ -165,11 +194,19 @@ namespace NeuralRendering
 		void* module_ = nullptr;
 		void* parameters_ = nullptr;
 		void* featureHandle_ = nullptr;
+		void* superResolutionParameters_ = nullptr;
+		void* superResolutionFeatureHandle_ = nullptr;
 		// Output (native) extents the feature was built for. The active render
 		// region is passed per frame as an NGX subrect, not baked into the handle,
 		// so dynamic resolution and the Before/After placement toggle never rebuild.
 		std::uint32_t featureOutputWidth_ = 0;
 		std::uint32_t featureOutputHeight_ = 0;
+		std::uint32_t superResolutionInputWidth_ = 0;
+		std::uint32_t superResolutionInputHeight_ = 0;
+		std::uint32_t superResolutionOutputWidth_ = 0;
+		std::uint32_t superResolutionOutputHeight_ = 0;
+		std::uint32_t superResolutionQualityMode_ = 0;
+		std::uint32_t superResolutionPreset_ = 0;
 		ID3D12Device* device_ = nullptr;
 		RuntimeStatus status_ = RuntimeStatus::NotProbed;
 		std::filesystem::path path_;

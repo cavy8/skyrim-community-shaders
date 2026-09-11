@@ -61,6 +61,8 @@ namespace
 	constexpr const wchar_t* kEncodeColorPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\EncodeColorCS.hlsl";
 	constexpr const wchar_t* kDecodeColorPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\DecodeColorCS.hlsl";
 	constexpr const wchar_t* kCopyDepthGuidePath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\CopyDepthGuideCS.hlsl";
+	constexpr const wchar_t* kEncodeResidualPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\EncodeResidualCS.hlsl";
+	constexpr const wchar_t* kApplyResidualPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\ApplyResidualCS.hlsl";
 
 	bool GetTextureDesc(ID3D11Resource* resource, D3D11_TEXTURE2D_DESC& desc)
 	{
@@ -112,25 +114,41 @@ struct NeuralRenderingBackend::State
 	NeuralRendering::SharedTexture depth;
 	NeuralRendering::SharedTexture motionVectors;
 	NeuralRendering::SharedTexture output;
+	NeuralRendering::SharedTexture residualInput;
+	NeuralRendering::SharedTexture residualOutput;
+	NeuralRendering::SharedTexture residualExposure;
 
 	winrt::com_ptr<ID3D11ComputeShader> encodeColorCS;
 	winrt::com_ptr<ID3D11ComputeShader> decodeColorCS;
 	winrt::com_ptr<ID3D11ComputeShader> copyDepthGuideCS;
+	winrt::com_ptr<ID3D11ComputeShader> encodeResidualCS;
+	winrt::com_ptr<ID3D11ComputeShader> applyResidualCS;
 	winrt::com_ptr<ID3D11Buffer> transferParamsCB;
 	/// Linear clamp sampler for the jitter-compensating resample in both colour passes.
 	winrt::com_ptr<ID3D11SamplerState> linearClampSampler;
 	bool encodeColorAttempted = false;
 	bool decodeColorAttempted = false;
 	bool copyDepthGuideAttempted = false;
+	bool encodeResidualAttempted = false;
+	bool applyResidualAttempted = false;
 
 	/// SRV over the Feature 18 output, consumed by the colour decode pass.
 	winrt::com_ptr<ID3D11ShaderResourceView> outputSRV;
 	/// SRV over the encoded model input, so the decode pass compares the answer
 	/// against the exact proxy the model was given rather than a re-encode.
 	winrt::com_ptr<ID3D11ShaderResourceView> colorSRV;
+	/// SRV over the private DLSS-SR output carrier, consumed after the game's main SR pass.
+	winrt::com_ptr<ID3D11ShaderResourceView> residualOutputSRV;
+	/// SRV over the render-resolution NR result used to form the signed carrier.
+	winrt::com_ptr<ID3D11ShaderResourceView> editedColorSRV;
+	ID3D11Resource* editedColorSRVSource = nullptr;
 	/// SRV over the caller's colour input, cached against the resource it was created from.
 	winrt::com_ptr<ID3D11ShaderResourceView> colorInSRV;
 	ID3D11Resource* colorInSRVSource = nullptr;
+	/// SRV over the game's clean main-SR result. This is kept separate from colorInSRV
+	/// because Separate Upscaling reads both resources every frame.
+	winrt::com_ptr<ID3D11ShaderResourceView> cleanColorSRV;
+	ID3D11Resource* cleanColorSRVSource = nullptr;
 	/// UAV over the caller's colour destination, cached against the resource it was created from.
 	winrt::com_ptr<ID3D11UnorderedAccessView> colorOutUAV;
 	ID3D11Resource* colorOutUAVSource = nullptr;
@@ -143,6 +161,12 @@ struct NeuralRenderingBackend::State
 	bool failureLatched = false;
 	bool featureAvailable = false;
 	bool resetPending = true;
+	bool separateResetPending = true;
+	bool separateResidualReady = false;
+	std::uint32_t separateOutputWidth = 0;
+	std::uint32_t separateOutputHeight = 0;
+	std::uint32_t separateQualityMode = UINT_MAX;
+	std::uint32_t separatePreset = UINT_MAX;
 
 	/// Colour/output and guide (depth+motion) regions NGX last saw. A change in
 	/// either (dynamic resolution, or the Before/After placement toggle switching
@@ -302,6 +326,8 @@ struct NeuralRenderingBackend::State
 		if (!interop.WaitForIdle())
 			return false;
 		NeuralRendering::Runtime::Instance().ResetFeature();
+		separateResetPending = true;
+		separateResidualReady = false;
 		color = {};
 		depth = {};
 		motionVectors = {};
@@ -335,6 +361,57 @@ struct NeuralRenderingBackend::State
 		return true;
 	}
 
+	/** @brief Allocate the signed carrier, its private-SR output, and fixed unit exposure. */
+	bool EnsureSeparateResources(const FrameInputs& inputs)
+	{
+		D3D11_TEXTURE2D_DESC colorSource{};
+		if (!GetTextureDesc(inputs.colorIn, colorSource) || !inputs.outputWidth || !inputs.outputHeight)
+			return false;
+
+		constexpr UINT sharedFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+		const auto inputDesc = MakeSharedDesc(colorSource, DXGI_FORMAT_R16G16B16A16_FLOAT,
+			sharedFlags, inputs.width, inputs.height);
+		const auto outputDesc = MakeSharedDesc(colorSource, DXGI_FORMAT_R16G16B16A16_FLOAT,
+			sharedFlags, inputs.outputWidth, inputs.outputHeight);
+		const auto exposureDesc = MakeSharedDesc(colorSource, DXGI_FORMAT_R32_FLOAT, sharedFlags, 1, 1);
+		if (Matches(residualInput, inputDesc) && Matches(residualOutput, outputDesc) &&
+			Matches(residualExposure, exposureDesc) && residualOutputSRV)
+			return true;
+
+		if (!interop.WaitForIdle())
+			return false;
+		NeuralRendering::Runtime::Instance().ResetSuperResolutionFeature();
+		residualInput = {};
+		residualOutput = {};
+		residualExposure = {};
+		residualOutputSRV = nullptr;
+		separateResidualReady = false;
+
+		if (!interop.CreateSharedTexture(inputDesc, residualInput, "NeuralRendering::ResidualInput") ||
+			!interop.CreateSharedTexture(outputDesc, residualOutput, "NeuralRendering::ResidualOutput") ||
+			!interop.CreateSharedTexture(exposureDesc, residualExposure, "NeuralRendering::ResidualExposure"))
+			return false;
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = outputDesc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+		if (FAILED(globals::d3d::device->CreateShaderResourceView(
+				residualOutput.resource11.Get(), &srvDesc, residualOutputSRV.put())))
+			return false;
+		Util::SetResourceName(residualOutputSRV.get(), "NeuralRendering::ResidualOutput SRV");
+
+		const float unitExposure[4]{ 1.0f, 0.0f, 0.0f, 0.0f };
+		globals::d3d::context->ClearUnorderedAccessViewFloat(residualExposure.uav11.Get(), unitExposure);
+		separateResetPending = true;
+		separateOutputWidth = inputs.outputWidth;
+		separateOutputHeight = inputs.outputHeight;
+		logger::info("[NeuralRendering] Separate residual resources allocated {}x{} -> {}x{}",
+			inputs.width, inputs.height, inputs.outputWidth, inputs.outputHeight);
+		return true;
+	}
+
 	ID3D11ShaderResourceView* GetColorInSRV(ID3D11Device* device, ID3D11Resource* resource)
 	{
 		if (colorInSRV && colorInSRVSource == resource)
@@ -363,6 +440,50 @@ struct NeuralRenderingBackend::State
 		Util::SetResourceName(colorInSRV.get(), "NeuralRendering::ColorIn SRV");
 		colorInSRVSource = resource;
 		return colorInSRV.get();
+	}
+
+	ID3D11ShaderResourceView* GetEditedColorSRV(ID3D11Device* device, ID3D11Resource* resource)
+	{
+		if (editedColorSRV && editedColorSRVSource == resource)
+			return editedColorSRV.get();
+		editedColorSRV = nullptr;
+		editedColorSRVSource = nullptr;
+
+		D3D11_TEXTURE2D_DESC desc{};
+		if (!GetTextureDesc(resource, desc))
+			return nullptr;
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = desc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+		if (FAILED(device->CreateShaderResourceView(resource, &srvDesc, editedColorSRV.put())))
+			return nullptr;
+		Util::SetResourceName(editedColorSRV.get(), "NeuralRendering::EditedColor SRV");
+		editedColorSRVSource = resource;
+		return editedColorSRV.get();
+	}
+
+	ID3D11ShaderResourceView* GetCleanColorSRV(ID3D11Device* device, ID3D11Resource* resource)
+	{
+		if (cleanColorSRV && cleanColorSRVSource == resource)
+			return cleanColorSRV.get();
+		cleanColorSRV = nullptr;
+		cleanColorSRVSource = nullptr;
+
+		D3D11_TEXTURE2D_DESC desc{};
+		if (!GetTextureDesc(resource, desc))
+			return nullptr;
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = desc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+		if (FAILED(device->CreateShaderResourceView(resource, &srvDesc, cleanColorSRV.put())))
+			return nullptr;
+		Util::SetResourceName(cleanColorSRV.get(), "NeuralRendering::CleanColor SRV");
+		cleanColorSRVSource = resource;
+		return cleanColorSRV.get();
 	}
 
 	ID3D11UnorderedAccessView* GetColorOutUAV(ID3D11Device* device, ID3D11Resource* resource)
@@ -645,6 +766,164 @@ struct NeuralRenderingBackend::State
 		return true;
 	}
 
+	bool PrepareSeparate(const FrameInputs& inputs)
+	{
+		separateResidualReady = false;
+		if (!inputs.outputWidth || !inputs.outputHeight || inputs.outputWidth < inputs.width ||
+			inputs.outputHeight < inputs.height || !inputs.superResolutionMotionVectors)
+			return false;
+
+		// First produce the normal matched-residual NR result at render resolution.
+		// This writes only the caller-owned scratch texture; the game's main colour
+		// remains untouched and is therefore what its regular DLSS history sees.
+		if (!Evaluate(inputs))
+			return false;
+
+		auto* device = globals::d3d::device;
+		auto* context = globals::d3d::context;
+		if (!device || !context)
+			return false;
+
+		ID3D11RenderTargetView* savedRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+		ID3D11DepthStencilView* savedDSV = nullptr;
+		context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, &savedDSV);
+		context->OMSetRenderTargets(0, nullptr, nullptr);
+
+		const auto restoreTargets = [&]() {
+			context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, savedDSV);
+			for (auto*& rtv : savedRTVs) {
+				if (rtv)
+					rtv->Release();
+			}
+			if (savedDSV)
+				savedDSV->Release();
+		};
+
+		if (!EnsureSeparateResources(inputs)) {
+			restoreTargets();
+			return LatchFailure("separate residual resource creation", interop.LastError());
+		}
+		if (separateQualityMode != inputs.superResolutionQualityMode ||
+			separatePreset != inputs.superResolutionPreset) {
+			// NGX feature handles may still be referenced by earlier command lists.
+			// Drain before releasing/recreating the private history on a live setting change.
+			if (!interop.WaitForIdle()) {
+				restoreTargets();
+				return LatchFailure("private DLSS SR settings rebuild", interop.LastError());
+			}
+			NeuralRendering::Runtime::Instance().ResetSuperResolutionFeature();
+			separateQualityMode = inputs.superResolutionQualityMode;
+			separatePreset = inputs.superResolutionPreset;
+			separateResetPending = true;
+		}
+
+		auto* encodeShader = GetShader(encodeResidualCS, encodeResidualAttempted,
+			kEncodeResidualPath, "EncodeResidualCS");
+		auto* originalView = GetColorInSRV(device, inputs.colorIn);
+		auto* editedView = GetEditedColorSRV(device, inputs.colorOut);
+		if (!encodeShader || !originalView || !editedView || !residualInput.uav11) {
+			restoreTargets();
+			return false;
+		}
+
+		// Encode d=(NR-original) into 0.5 + 0.5*d/(1+abs(d)). The carrier is
+		// deliberately independent from both scene colour histories.
+		DispatchTransfer(context, encodeShader, originalView, editedView, nullptr, nullptr,
+			residualInput.uav11.Get(), nullptr, nullptr, inputs.width, inputs.height);
+
+		// Feature 18 intentionally used the raw Skyrim vectors above. The private SR
+		// history instead mirrors the game's DLSS contract: the depth-dilated motion
+		// field produced by EncodeTexturesCS, expressed with an NGX scale of one.
+		const D3D11_BOX motionBox{ 0, 0, 0, inputs.guideWidth, inputs.guideHeight, 1 };
+		context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0,
+			inputs.superResolutionMotionVectors, 0, &motionBox);
+
+		ID3D12GraphicsCommandList* commandList = nullptr;
+		if (!interop.BeginD3D12(&commandList) || !commandList) {
+			restoreTargets();
+			return LatchFailure("separate residual BeginD3D12", interop.LastError());
+		}
+
+		ID3D12Resource* resources[5]{
+			residualInput.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(),
+			residualExposure.resource12.Get(), residualOutput.resource12.Get()
+		};
+		D3D12_RESOURCE_BARRIER barriers[5]{};
+		for (std::size_t index = 0; index < std::size(barriers); ++index) {
+			barriers[index].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barriers[index].Transition.pResource = resources[index];
+			barriers[index].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			barriers[index].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+			barriers[index].Transition.StateAfter = index == 4 ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS :
+			                                                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+		}
+		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
+
+		const auto result = NeuralRendering::Runtime::Instance().ExecuteSuperResolution(commandList,
+			residualInput.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(),
+			residualExposure.resource12.Get(), residualOutput.resource12.Get(),
+			inputs.width, inputs.height, inputs.outputWidth, inputs.outputHeight,
+			inputs.jitterOffsetX, inputs.jitterOffsetY,
+			1.0f, 1.0f,
+			globals::game::deltaTime ? *globals::game::deltaTime * 1000.0f : 16.6667f,
+			inputs.superResolutionQualityMode, inputs.superResolutionPreset,
+			inputs.reset || separateResetPending);
+
+		for (auto& barrier : barriers)
+			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
+		const bool submitted = interop.EndD3D12();
+		restoreTargets();
+		if (!submitted)
+			return LatchFailure("separate residual EndD3D12", interop.LastError());
+		if (result == NeuralRendering::SuperResolutionResult::Failed)
+			return LatchFailure("private DLSS SR execution",
+				static_cast<HRESULT>(NeuralRendering::Runtime::Instance().NgxResult()));
+		if (result == NeuralRendering::SuperResolutionResult::Created) {
+			logger::info("[NeuralRendering] Private DLSS SR created; clean main-SR frame retained during initialization");
+			return false;
+		}
+
+		separateResetPending = false;
+		separateResidualReady = true;
+		return true;
+	}
+
+	bool ResolveSeparate(ID3D11Resource* cleanColor, ID3D11Resource* colorOut,
+		std::uint32_t width, std::uint32_t height)
+	{
+		if (!separateResidualReady || !cleanColor || !colorOut || cleanColor == colorOut ||
+			width != separateOutputWidth || height != separateOutputHeight || !residualOutputSRV)
+			return false;
+		separateResidualReady = false;  // The residual belongs to exactly one main-SR result.
+
+		auto* device = globals::d3d::device;
+		auto* context = globals::d3d::context;
+		if (!device || !context)
+			return false;
+		auto* applyShader = GetShader(applyResidualCS, applyResidualAttempted,
+			kApplyResidualPath, "ApplyResidualCS");
+		auto* cleanView = GetCleanColorSRV(device, cleanColor);
+		auto* outputView = GetColorOutUAV(device, colorOut);
+		if (!applyShader || !cleanView || !outputView)
+			return false;
+
+		ID3D11RenderTargetView* savedRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+		ID3D11DepthStencilView* savedDSV = nullptr;
+		context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, &savedDSV);
+		context->OMSetRenderTargets(0, nullptr, nullptr);
+		DispatchTransfer(context, applyShader, cleanView, residualOutputSRV.get(), nullptr, nullptr,
+			outputView, nullptr, nullptr, width, height);
+		context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, savedDSV);
+		for (auto*& rtv : savedRTVs) {
+			if (rtv)
+				rtv->Release();
+		}
+		if (savedDSV)
+			savedDSV->Release();
+		return true;
+	}
+
 	bool Evaluate(const FrameInputs& inputs)
 	{
 		ZoneScoped;
@@ -687,11 +966,19 @@ struct NeuralRenderingBackend::State
 		depth = {};
 		motionVectors = {};
 		output = {};
+		residualInput = {};
+		residualOutput = {};
+		residualExposure = {};
 
 		outputSRV = nullptr;
 		colorSRV = nullptr;
+		residualOutputSRV = nullptr;
+		editedColorSRV = nullptr;
+		editedColorSRVSource = nullptr;
 		colorInSRV = nullptr;
 		colorInSRVSource = nullptr;
+		cleanColorSRV = nullptr;
+		cleanColorSRVSource = nullptr;
 		colorOutUAV = nullptr;
 		colorOutUAVSource = nullptr;
 		lastColorInput = nullptr;
@@ -699,15 +986,25 @@ struct NeuralRenderingBackend::State
 		encodeColorCS = nullptr;
 		decodeColorCS = nullptr;
 		copyDepthGuideCS = nullptr;
+		encodeResidualCS = nullptr;
+		applyResidualCS = nullptr;
 		transferParamsCB = nullptr;
 		linearClampSampler = nullptr;
 		encodeColorAttempted = false;
 		decodeColorAttempted = false;
 		copyDepthGuideAttempted = false;
+		encodeResidualAttempted = false;
+		applyResidualAttempted = false;
 
 		failureLatched = false;
 		featureAvailable = false;
 		resetPending = true;
+		separateResetPending = true;
+		separateResidualReady = false;
+		separateOutputWidth = 0;
+		separateOutputHeight = 0;
+		separateQualityMode = UINT_MAX;
+		separatePreset = UINT_MAX;
 		lastActiveWidth = 0;
 		lastActiveHeight = 0;
 		lastGuideWidth = 0;
@@ -727,9 +1024,13 @@ struct NeuralRenderingBackend::State
 	void Destroy()
 	{
 		interop.WaitForIdle();
-		NeuralRendering::Runtime::Instance().Shutdown();
+		// Placement/upscaler changes happen while Streamline's process-wide NGX core
+		// is live. Shutting down our D3D12 NGX instance here can enter the shared
+		// core while the game is rendering (and has been observed to fault inside
+		// NVSDK_NGX_D3D12_Shutdown1). Retire only the two private feature histories;
+		// the runtime and interop device remain valid for the next placement.
+		NeuralRendering::Runtime::Instance().ResetFeature();
 		ReleaseGpuResources();
-		interop.Shutdown();
 	}
 };
 
@@ -752,6 +1053,17 @@ bool NeuralRenderingBackend::IsFeatureAvailable() const
 bool NeuralRenderingBackend::Evaluate(const FrameInputs& inputs)
 {
 	return state->Evaluate(inputs);
+}
+
+bool NeuralRenderingBackend::PrepareSeparateUpscaling(const FrameInputs& inputs)
+{
+	return state->PrepareSeparate(inputs);
+}
+
+bool NeuralRenderingBackend::ResolveSeparateUpscaling(ID3D11Resource* cleanColor, ID3D11Resource* colorOut,
+	std::uint32_t width, std::uint32_t height)
+{
+	return state->ResolveSeparate(cleanColor, colorOut, width, height);
 }
 
 void NeuralRenderingBackend::DestroyResources()

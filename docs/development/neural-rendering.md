@@ -40,11 +40,38 @@ sharpening / copy-back. Depth and motion therefore remain the exact
 render-resolution guides used for the colour upscale. The backend tracks the
 colour region and guide region separately (`FrameInputs::guideWidth/guideHeight`).
 
+### Separate Upscaling (`neuralRenderingPlacement == 2`, experimental)
+
+This follows the deferred residual experiment in
+[`wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass`](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/blob/main/docs/DEFERRED-NR-DLSS.md).
+It runs Feature 18 at render resolution without changing the colour passed to the
+game's normal DLSS feature. The backend forms the signed scene-linear difference
+between the matched-residual NR result and the untouched render raster, compresses
+it around neutral grey as `0.5 + 0.5*d/(1+abs(d))`, and passes that carrier through
+a second private DLSS Super Resolution feature with its own parameter block and
+temporal history. After the main DLSS evaluation, the full-resolution carrier is
+decoded and added to the clean main-SR result; alpha remains renderer-owned.
+
+Private DLSS creation is submitted one frame before its first evaluation. Until it
+is ready, and on any allocation/runtime/evaluation mismatch, the clean main-SR
+frame is retained. Resolution, placement, quality/preset, and loading-transition
+changes reset the private history. This mode requires the NVIDIA DLSS-SR runtime,
+adds another DLSS evaluation plus render/display-resolution FP16 carrier storage,
+and deliberately feeds DLSS biased residual data rather than natural imagery.
+The private D3D12 device is initialized through the resident NGX core with the
+same project identity as Streamline and the Streamline directory in its feature
+path; initializing only through the Feature 18 snippet cannot load DLSS-SR.
+
 ## Motion vectors
 
-Both placements pass the game's **raw** motion-vector target
+The Before and After placements pass the game's **raw** motion-vector target
 (`RE::RENDER_TARGETS::kMOTION_VECTOR`) to `NeuralRendering::Evaluate`, not the
 `motionVectorCopyTexture` that `EncodeTexturesCS` produces for DLSS.
+
+Separate Upscaling also gives raw vectors to Feature 18, but its private DLSS-SR
+history receives `motionVectorCopyTexture` with scale `(1, 1)`, exactly matching
+the main DLSS guide contract. This keeps the NR model's and DLSS reconstructor's
+different motion expectations isolated.
 
 That copy is a 5x5 *dilated* field: each pixel adopts a closer, faster-moving
 neighbour's vector, faded back toward its own vector for anything nearer than

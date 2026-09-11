@@ -131,8 +131,8 @@ void Streamline::LoadInterposer()
 	logger::info("[Streamline] Plugin search path: {}", pluginDirAbsolute.string());
 
 	pref.engine = sl::EngineType::eCustom;
-	pref.engineVersion = "1.0.0";
-	pref.projectId = "f8776929-c969-43bd-ac2b-294b4de58aac";
+	pref.engineVersion = EngineVersion;
+	pref.projectId = ProjectId;
 
 	pref.renderAPI = sl::RenderAPI::eD3D11;
 	pref.flags = sl::PreferenceFlags::eUseManualHooking;

@@ -70,6 +70,11 @@ public:
 		/// feature every frame.
 		float resolutionScaleX = 1.0f;
 		float resolutionScaleY = 1.0f;
+
+		/// DLSS-SR quality/preset selections mirrored from Upscaling settings when
+		/// Separate Upscaling is active. They are ignored by the other placements.
+		uint32_t superResolutionQualityMode = 1;
+		uint32_t superResolutionPreset = 0;
 	};
 
 	NeuralRendering();
@@ -113,10 +118,31 @@ public:
 		uint32_t width, uint32_t height, const Options& options);
 
 	/**
-	 * @brief Releases the NGX feature, the runtime, the D3D12 interop device and every shared resource.
+	 * @brief Runs NR at render resolution and temporally upscales only its signed contribution.
 	 *
-	 * Also clears the failure latch, so toggling Neural Rendering off and on is
-	 * the supported way to retry after a hard failure.
+	 * The original colour is left untouched for the game's normal DLSS pass. On success,
+	 * ResolveSeparateUpscaling() can apply the private full-resolution residual afterwards.
+	 */
+	bool PrepareSeparateUpscaling(ID3D11Resource* colorIn, ID3D11Resource* editedColor,
+		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
+		ID3D11Resource* motionVectors, ID3D11Resource* superResolutionMotionVectors,
+		uint32_t width, uint32_t height,
+		uint32_t outputWidth, uint32_t outputHeight, const Options& options);
+
+	/**
+	 * @brief Applies the prepared full-resolution residual to a clean main-DLSS result.
+	 * @return True only when a matching private DLSS evaluation completed this frame.
+	 */
+	bool ResolveSeparateUpscaling(ID3D11Resource* cleanColor, ID3D11Resource* colorOut,
+		uint32_t width, uint32_t height);
+
+	/**
+	 * @brief Retire private NGX histories and shared textures without shutting down
+	 *        the process-wide NGX runtime.
+	 *
+	 * Placement and upscaler changes call this from the render thread. The private
+	 * D3D12 interop/runtime instance is intentionally retained for safe reuse. This
+	 * also clears the failure latch so toggling Neural Rendering can retry a failure.
 	 */
 	void DestroyResources();
 
