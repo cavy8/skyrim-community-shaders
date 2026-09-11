@@ -3151,13 +3151,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	neuralRenderingCategory = NeuralRenderingCategories::Foliage;
 #		elif defined(LANDSCAPE) || defined(LODLANDSCAPE) || defined(LODLANDNOISE)
 	neuralRenderingCategory = NeuralRenderingCategories::Landscape;
-#		elif defined(SKINNED)
-	// SKINNED alone also matches the actor's own bare body (arms, torso - not
-	// FACEGEN, which is head only), not just worn armor/clothing/weapons.
-	// Permutation::ExtraFlags::IsWornEquipment (Upscaling::
-	// BSLightingShader_SetupNeuralCategory) distinguishes an equipped biped
-	// part from the base skin; bare skin falls back to Skin.
-	neuralRenderingCategory = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsWornEquipment) ? NeuralRenderingCategories::Equipment : NeuralRenderingCategories::Skin;
+#		else
+	// Everything on a humanoid actor that the branches above did not claim
+	// is Equipment: armor, clothing and wielded weapons. Bare skin (body as
+	// well as face) uses the skin-tint permutations and is already Skin by
+	// the time this runs. Permutation::ExtraFlags::IsHumanoidActor is set
+	// per pass by Upscaling::BSLightingShader_SetupNeuralCategory, so this
+	// also catches rigid (non-SKINNED) weapons, shields and helmets.
+	if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsHumanoidActor)
+		neuralRenderingCategory = NeuralRenderingCategories::Equipment;
+#			if defined(SKINNED)
+	else
+		neuralRenderingCategory = NeuralRenderingCategories::Skin;  // creature bodies
+#			endif
 #		endif
 	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, neuralRenderingCategory), 0, 0, psout.Diffuse.w);
 

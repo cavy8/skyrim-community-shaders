@@ -1697,7 +1697,7 @@
     "feature.upscaling.neural_rendering_available": "DLSS Neural Rendering is available.",
     "feature.upscaling.neural_rendering_backend_ready": "NGX backend ready; feature support will be tested when enabled.",
     "feature.upscaling.neural_rendering_category_equipment": "Equipment",
-    "feature.upscaling.neural_rendering_category_equipment_tooltip": "Armor, clothing, and weapons worn or wielded by actors.",
+    "feature.upscaling.neural_rendering_category_equipment_tooltip": "Armor, clothing, and weapons worn or wielded by humanoid actors. Bare skin counts as Skin.",
     "feature.upscaling.neural_rendering_category_everything_else": "Everything Else",
     "feature.upscaling.neural_rendering_category_everything_else_tooltip": "Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above.",
     "feature.upscaling.neural_rendering_category_eyes": "Eyes",

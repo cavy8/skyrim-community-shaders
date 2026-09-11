@@ -149,13 +149,14 @@ public:
 	UpscaleMethod GetUpscaleMethod() const;
 
 	/**
-	 * @brief Flags whether the render pass geometry is an equipped biped part rather than bare skin.
+	 * @brief Flags whether the render pass geometry belongs to a humanoid actor.
 	 *
-	 * Hooked onto BSLightingShader::SetupGeometry. SKINNED alone (Lighting.hlsl's category elif
-	 * chain) also matches the actor's own bare body, not just worn armor/clothing/weapons: this
-	 * walks the geometry's ancestors against the actor's BipedAnim::objects slots and compares the
-	 * matching slot's equipped item against Actor::GetSkin() to tell them apart, setting
-	 * State::ExtraShaderDescriptors::IsWornEquipment for NeuralRenderingCategories::Equipment.
+	 * Hooked onto BSLightingShader::SetupGeometry. Sets
+	 * State::ExtraShaderDescriptors::IsHumanoidActor when the geometry's owning reference is an
+	 * actor whose race carries the ActorTypeNPC keyword. Lighting.hlsl maps that flag to
+	 * NeuralRenderingCategories::Equipment for everything the skin, hair and eye permutations
+	 * did not already claim: armor, clothing and wielded weapons. Bare skin (body and face)
+	 * resolves to Skin before this flag is consulted.
 	 * @param a_pass The render pass being set up.
 	 */
 	void BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass);
@@ -201,6 +202,8 @@ public:
 	 * Neural Rendering evaluation call reads instead of the live Masks2.
 	 */
 	Texture2D* materialCategoriesSnapshot = nullptr;
+	/** Resolved once in DataLoaded(); identifies humanoid races for the Equipment category. */
+	RE::BGSKeyword* actorTypeNPCKeyword = nullptr;
 	bool neuralRenderingResultValid = false;
 	bool neuralRenderingResourcesActive = false;
 	bool neuralRenderingResetThisFrame = false;

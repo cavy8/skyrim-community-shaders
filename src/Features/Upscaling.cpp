@@ -484,7 +484,7 @@ void Upscaling::DrawSettings()
 						T(TKEY("neural_rendering_category_foliage_tooltip"), "Trees and grass."));
 					drawCategoryStrengths("Landscape", T(TKEY("neural_rendering_category_landscape"), "Landscape"), settings.neuralRenderingLandscapeStrengths);
 					drawCategoryStrengths("Equipment", T(TKEY("neural_rendering_category_equipment"), "Equipment"), settings.neuralRenderingEquipmentStrengths,
-						T(TKEY("neural_rendering_category_equipment_tooltip"), "Armor, clothing, and weapons worn or wielded by actors."));
+						T(TKEY("neural_rendering_category_equipment_tooltip"), "Armor, clothing, and weapons worn or wielded by humanoid actors. Bare skin counts as Skin."));
 					drawCategoryStrengths("EverythingElse", T(TKEY("neural_rendering_category_everything_else"), "Everything Else"),
 						settings.neuralRenderingEverythingElseStrengths,
 						T(TKEY("neural_rendering_category_everything_else_tooltip"),
@@ -783,6 +783,12 @@ void Upscaling::DataLoaded()
 	// The game defaults this to a non-zero value
 	static auto fDRClampOffset = RE::GetINISetting("fDRClampOffset:Display");
 	fDRClampOffset->data.f = 0.0f;
+
+	// Vanilla keyword on every playable/NPC race; creatures lack it.
+	if (auto form = RE::TESForm::LookupByEditorID("ActorTypeNPC"))
+		actorTypeNPCKeyword = form->As<RE::BGSKeyword>();
+	if (!actorTypeNPCKeyword)
+		logger::warn("[Upscaling] ActorTypeNPC keyword not found; Neural Rendering Equipment category will be empty");
 }
 
 void Upscaling::Load()
@@ -839,7 +845,7 @@ void Upscaling::PostPostLoad()
 	// Forces FXAA off
 	stl::detour_thunk<BSImageSpace_Init_FXAA>(REL::RelocationID(98974, 105626));
 
-	// Flags equipped biped geometry vs. the actor's own bare skin, for
+	// Flags geometry belonging to humanoid actors for
 	// NeuralRenderingCategories::Equipment (see BSLightingShader_SetupNeuralCategory).
 	stl::write_vfunc<0x6, BSLightingShader_SetupGeometry_NeuralCategory>(RE::VTABLE_BSLightingShader[0]);
 
@@ -1807,79 +1813,30 @@ void Upscaling::Upscale()
 	}
 }
 
-namespace
-{
-	/**
-	 * @brief Finds which biped slot (if any) a piece of geometry is a descendant of and, if one
-	 *        matches, resolves whether that slot's equipped item is worn equipment rather than the
-	 *        actor's own bare skin.
-	 * @return true if a slot was matched (a_isWorn is meaningful); false if the geometry isn't a
-	 *         descendant of any of this biped's slot roots (try the actor's other biped, if any).
-	 */
-	bool ResolveWornEquipmentFromBiped(RE::Actor* a_actor, RE::BipedAnim* a_biped, RE::NiAVObject* a_geometry, bool& a_isWorn)
-	{
-		if (!a_biped)
-			return false;
-		// Slots 0..kEditorTotal-1 are body-armor slots and have a bare-skin
-		// counterpart (Actor::GetSkin); the item equipped there is worn
-		// equipment only when it differs from that skin. Weapon/shield/quiver
-		// slots (kEditorTotal..kTotal-1) have no such counterpart - anything
-		// found there is always worn.
-		for (uint32_t slot = 0; slot < RE::BIPED_OBJECTS::kTotal; ++slot) {
-			auto* part = a_biped->objects[slot].partClone.get();
-			if (!part)
-				continue;
-			bool matched = false;
-			for (auto* node = a_geometry; node; node = node->parent) {
-				if (node == part) {
-					matched = true;
-					break;
-				}
-			}
-			if (!matched)
-				continue;
-			if (slot < RE::BIPED_OBJECTS::kEditorTotal) {
-				auto bodySlot = static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(1u << slot);
-				a_isWorn = a_biped->objects[slot].item != a_actor->GetSkin(bodySlot);
-			} else {
-				a_isWorn = true;
-			}
-			return true;
-		}
-		return false;
-	}
-}
-
 void Upscaling::BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass)
 {
 	auto deferred = globals::deferred;
 	auto state = globals::state;
-	constexpr auto wornFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsWornEquipment);
+	constexpr auto humanoidFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsHumanoidActor);
 
-	bool isWorn = false;
-	if (deferred->deferredPass && settings.neuralRenderingEnabled &&
-		a_pass->shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned)) {
-		auto geometry = a_pass->geometry;
-		if (auto userData = geometry->GetUserData()) {
+	bool isHumanoidActor = false;
+	if (deferred->deferredPass && settings.neuralRenderingEnabled && actorTypeNPCKeyword) {
+		// Any geometry owned by a humanoid actor - skinned armor/clothing as
+		// well as rigid weapons, shields and helmets attached to its skeleton.
+		// Skin (body and face), hair and eyes are claimed by their own material
+		// permutations before the shader consults this flag (see Lighting.hlsl).
+		if (auto userData = a_pass->geometry->GetUserData()) {
 			if (auto actor = userData->As<RE::Actor>()) {
-				bool matched = ResolveWornEquipmentFromBiped(actor, actor->GetActorRuntimeData().biped.get(), geometry, isWorn);
-				// PlayerCharacter keeps a second, separate biped for its
-				// third-person ("large") body - the regular biped above is
-				// the first-person arms/weapon rig and never matches the
-				// player's third-person geometry (vanilla third-person
-				// camera, or mods like SmoothCam).
-				if (!matched) {
-					if (auto player = actor->As<RE::PlayerCharacter>())
-						ResolveWornEquipmentFromBiped(actor, player->GetPlayerRuntimeData().largeBiped.get(), geometry, isWorn);
-				}
+				if (auto race = actor->GetRace())
+					isHumanoidActor = race->HasKeyword(actorTypeNPCKeyword);
 			}
 		}
 	}
 
-	if (isWorn)
-		state->permutationData.ExtraShaderDescriptor |= wornFlag;
+	if (isHumanoidActor)
+		state->permutationData.ExtraShaderDescriptor |= humanoidFlag;
 	else
-		state->permutationData.ExtraShaderDescriptor &= ~wornFlag;
+		state->permutationData.ExtraShaderDescriptor &= ~humanoidFlag;
 }
 
 void Upscaling::CaptureNeuralRenderingCategories()

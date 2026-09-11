@@ -250,9 +250,11 @@ public:
 		NoSnow = 1 << 7,
 		NoFoliageTint = 1 << 8,
 		// Set by Upscaling::BSLightingShader_SetupNeuralCategory when the drawn
-		// geometry is an equipped biped part (as opposed to the actor's own bare
-		// skin) - see NeuralRenderingCategories::Equipment.
-		IsWornEquipment = 1 << 9,
+		// geometry belongs to a humanoid (ActorTypeNPC) actor. Skin, hair and
+		// eyes are claimed by their own permutations first, so this only
+		// resolves to armor, clothing and weapons - see
+		// NeuralRenderingCategories::Equipment.
+		IsHumanoidActor = 1 << 9,
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		IsEye = 1u << 31
 	};

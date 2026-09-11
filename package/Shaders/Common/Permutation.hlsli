@@ -79,9 +79,9 @@ namespace Permutation
 		static const uint AdditiveLighting = (1 << 6);
 		static const uint NoSnow = (1 << 7);
 		static const uint NoFoliageTint = (1 << 8);
-		// Set on equipped biped parts (as opposed to the actor's own bare skin);
+		// Set on any geometry belonging to a humanoid (ActorTypeNPC) actor;
 		// see NeuralRenderingCategories::Equipment.
-		static const uint IsWornEquipment = (1 << 9);
+		static const uint IsHumanoidActor = (1 << 9);
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		static const uint IsEye = (1u << 31);
 	}

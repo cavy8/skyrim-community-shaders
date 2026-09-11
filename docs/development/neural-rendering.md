@@ -241,6 +241,16 @@ pixels resolve as Everything Else. `DecodeColorCS` reads `Masks2` at the guide
 (render) resolution, nearest-neighbour maps it to the active colour raster, and
 selects the category multipliers before calling `ResolveNeuralColor`.
 
+Equipment is the one category the shader cannot derive from its permutation
+alone. `Upscaling::BSLightingShader_SetupNeuralCategory` (hooked onto
+`BSLightingShader::SetupGeometry`) sets `ExtraFlags::IsHumanoidActor` for any
+pass whose geometry is owned by an actor whose race has the `ActorTypeNPC`
+keyword; `Lighting.hlsl` maps that to Equipment after the skin, hair, eye,
+foliage and landscape branches. Bare skin (body as well as face) goes through
+the skin-tint permutations and is Skin before the flag is consulted, so
+Equipment ends up as armor, clothing and wielded weapons, including rigid
+(non-skinned) weapons, shields and helmets. Creature bodies stay Skin.
+
 ## Depth-aware silhouette preservation
 
 With the model below the colour resolution its edit is bilinearly upsampled,
