@@ -941,23 +941,12 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 			neuralRenderingTexture->CreateUAV(uavDesc);
 		}
 
-		// Snapshot of Masks2 taken right after opaque geometry, before blended
-		// decals can alpha-blend into it. Masks2 is deliberately blendable (vertex
-		// AO fades under translucent decals), but the packed material category in
-		// its low bits is a discrete value: blending it with whatever a decal
-		// writes produces a meaningless bit pattern, not "the nearer category".
-		// See NeuralRenderingCategories::Pack and CaptureNeuralRenderingCategories.
-		if (!materialCategoriesSnapshot) {
-			auto& masks2 = renderer->GetRuntimeData().renderTargets[MASKS2];
-			masks2.texture->GetDesc(&texDesc);
-			texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-			srvDesc.Format = texDesc.Format;
-			srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-			srvDesc.Texture2D.MostDetailedMip = 0;
-			srvDesc.Texture2D.MipLevels = 1;
-			materialCategoriesSnapshot = new Texture2D(texDesc, "Upscaling::MaterialCategoriesSnapshot");
-			materialCategoriesSnapshot->CreateSRV(srvDesc);
-		}
+		// materialCategoriesSnapshot is deliberately NOT created here: this function
+		// runs from BSShaderRenderTargets_Create, during the game's own render-target
+		// (re)creation, and Masks2 (a repurposed native target - see MASKS2 in
+		// Deferred.h) is not guaranteed to exist yet at that point. It's created
+		// lazily in CaptureNeuralRenderingCategories() instead, which only ever runs
+		// mid-frame after Masks2 has genuinely been rendered into.
 	}
 }
 
@@ -1878,11 +1867,35 @@ void Upscaling::CaptureNeuralRenderingCategories()
 	// shader never samples the category texture at all).
 	if (!settings.neuralRenderingEnabled || !settings.neuralRenderingPerCategoryStrengths)
 		return;
-	if (GetUpscaleMethod() != UpscaleMethod::kDLSS || !materialCategoriesSnapshot)
+	if (GetUpscaleMethod() != UpscaleMethod::kDLSS)
 		return;
 
 	auto renderer = globals::game::renderer;
 	auto& masks2 = renderer->GetRuntimeData().renderTargets[MASKS2];
+	if (!masks2.texture)
+		return;
+
+	// Created lazily here rather than in CreateUpscalingTextureResources: this
+	// function only ever runs mid-frame (from Deferred's blended-decals hook),
+	// after Masks2 has genuinely been (re)created and rendered into.
+	// CreateUpscalingTextureResources runs during BSShaderRenderTargets_Create,
+	// the game's own render-target (re)creation, where Masks2 (a repurposed
+	// native target - see MASKS2 in Deferred.h) is not yet guaranteed to exist.
+	if (!materialCategoriesSnapshot) {
+		D3D11_TEXTURE2D_DESC texDesc{};
+		masks2.texture->GetDesc(&texDesc);
+		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = texDesc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+
+		materialCategoriesSnapshot = new Texture2D(texDesc, "Upscaling::MaterialCategoriesSnapshot");
+		materialCategoriesSnapshot->CreateSRV(srvDesc);
+	}
+
 	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
 }
 
