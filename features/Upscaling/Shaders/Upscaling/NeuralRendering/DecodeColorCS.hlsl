@@ -53,36 +53,44 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float categoryColorStrength = 1.0;
 	float categoryTransferStrength = 1.0;
 	if (PerCategoryStrengths != 0 && all(GuideSize > 0)) {
-		// Blend the four nearest guide texels' resolved category strengths
-		// bilinearly instead of switching on one nearest-neighbour category.
-		// A hard switch flips discretely right at a material boundary; under
-		// TAA jitter the boundary pixel picks a different neighbour every
-		// frame, and wherever the two categories' sliders differ that reads
-		// as shimmer. The blend is done on the resolved strength values, not
-		// the category id itself - an id is a discrete index and can't be
-		// meaningfully interpolated.
+		// Blend a 3x3 neighbourhood of guide texels' resolved category
+		// strengths with a tent (triangular) filter instead of switching on
+		// one nearest-neighbour category. A hard switch flips discretely
+		// right at a material boundary; under TAA jitter the boundary pixel
+		// picks a different neighbour every frame, and wherever the two
+		// categories' sliders differ that reads as shimmer. A 2-texel-wide
+		// (radius ~1 texel) bilinear blend still wasn't enough for very
+		// thin, high-frequency edges like individual hair strands, which can
+		// be only 1-2 guide texels wide and so sit "near a boundary" on both
+		// sides at almost every texel along their length; widen the radius
+		// to smooth those out too. The blend is done on the resolved
+		// strength values, not the category id itself - an id is a discrete
+		// index and can't be meaningfully interpolated.
 		float2 guideCoord = (float2(dispatchThreadID.xy) + 0.5) * float2(GuideSize) / float2(ActiveSize) - 0.5;
-		float2 guideBase = floor(guideCoord);
-		float2 lerpWeight = guideCoord - guideBase;
+		int2 guideCenter = (int2)round(guideCoord);
 		int2 guideMax = int2(GuideSize) - 1;
-
-		const int2 taps[4] = { int2(0, 0), int2(1, 0), int2(0, 1), int2(1, 1) };
-		const float tapWeights[4] = {
-			(1.0 - lerpWeight.x) * (1.0 - lerpWeight.y),
-			lerpWeight.x * (1.0 - lerpWeight.y),
-			(1.0 - lerpWeight.x) * lerpWeight.y,
-			lerpWeight.x * lerpWeight.y
-		};
 
 		categoryColorStrength = 0.0;
 		categoryTransferStrength = 0.0;
-		for (int tap = 0; tap < 4; ++tap) {
-			int2 tapTexel = clamp(int2(guideBase) + taps[tap], int2(0, 0), guideMax);
-			uint tapCategory = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(tapTexel, 0)));
-			tapCategory = tapCategory < 7 ? tapCategory : NeuralRenderingCategories::EverythingElse;
-			categoryColorStrength += tapWeights[tap] * CategoryColorStrengths[tapCategory >> 2][tapCategory & 3];
-			categoryTransferStrength += tapWeights[tap] * CategoryTransferStrengths[tapCategory >> 2][tapCategory & 3];
+		float totalTapWeight = 0.0;
+		[unroll]
+		for (int dy = -1; dy <= 1; ++dy) {
+			[unroll]
+			for (int dx = -1; dx <= 1; ++dx) {
+				int2 tapTexel = clamp(guideCenter + int2(dx, dy), int2(0, 0), guideMax);
+				float2 tapOffset = guideCoord - float2(tapTexel);
+				float tapWeight = max(0.0, 1.5 - abs(tapOffset.x)) * max(0.0, 1.5 - abs(tapOffset.y));
+				if (tapWeight <= 0.0)
+					continue;
+				uint tapCategory = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(tapTexel, 0)));
+				tapCategory = tapCategory < 7 ? tapCategory : NeuralRenderingCategories::EverythingElse;
+				categoryColorStrength += tapWeight * CategoryColorStrengths[tapCategory >> 2][tapCategory & 3];
+				categoryTransferStrength += tapWeight * CategoryTransferStrengths[tapCategory >> 2][tapCategory & 3];
+				totalTapWeight += tapWeight;
+			}
 		}
+		categoryColorStrength /= max(totalTapWeight, 1e-5);
+		categoryTransferStrength /= max(totalTapWeight, 1e-5);
 	}
 
 	// Category controls shape the local result first. The existing global sliders
