@@ -8,6 +8,7 @@
 ## Feature Internals
 
 -   **[Neural Rendering](./neural-rendering.md)** - DLSS NGX feature 18: source layout, placement modes, colour domain
+-   **[Upstream Port Tracking](./upstream-port-tracking.md)** - Features ported from other CS forks (Snow Cover, Cloud Relight, Foliage Lighting, Vanilla Fresnel): what to watch upstream and how to re-sync
 
 ## Quick Links
 
