@@ -22,6 +22,7 @@
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
 #include "Features/PerformanceOverlay.h"
+#include "Features/PostProcessing.h"
 #include "Features/RemoteControl.h"
 #include "Features/RenderDoc.h"
 #include "Features/ScreenSpaceGI.h"
@@ -105,6 +106,7 @@ namespace globals
 		CSEditor csEditor{};
 		ExponentialHeightFog exponentialHeightFog{};
 		TruePBR truePBR{};
+		PostProcessing postProcessing{};
 		Skin skin{};
 		SnowCover snowCover{};
 

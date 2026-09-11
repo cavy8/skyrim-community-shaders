@@ -266,6 +266,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::horizonFix,
 		&globals::features::exponentialHeightFog,
 		&globals::features::hdrDisplay,
+		&globals::features::postProcessing,
 		&globals::features::skin,
 		&globals::features::snowCover
 	};
@@ -348,6 +349,8 @@ std::string Feature::GetDisplayCategory() const
 		return T("feature.category.materials", "Materials");
 	if (category == FeatureCategories::kOther)
 		return T("feature.category.other", "Other");
+	if (category == FeatureCategories::kPostProcessing)
+		return T("feature.category.post_processing", "Post-Processing");
 	if (category == FeatureCategories::kSky)
 		return T("feature.category.sky", "Sky");
 	if (category == FeatureCategories::kUtility)
