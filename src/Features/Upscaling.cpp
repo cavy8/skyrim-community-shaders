@@ -802,6 +802,17 @@ struct BSImageSpace_Init_FXAA
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
+
+struct BSLightingShader_SetupGeometry_NeuralCategory
+{
+	static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
+	{
+		globals::features::upscaling.BSLightingShader_SetupNeuralCategory(Pass);
+		func(This, Pass, RenderFlags);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
 void Upscaling::PostPostLoad()
 {
 	bool isGOG = !GetModuleHandle(L"steam_api64.dll");
@@ -827,6 +838,10 @@ void Upscaling::PostPostLoad()
 
 	// Forces FXAA off
 	stl::detour_thunk<BSImageSpace_Init_FXAA>(REL::RelocationID(98974, 105626));
+
+	// Flags equipped biped geometry vs. the actor's own bare skin, for
+	// NeuralRenderingCategories::Equipment (see BSLightingShader_SetupNeuralCategory).
+	stl::write_vfunc<0x6, BSLightingShader_SetupGeometry_NeuralCategory>(RE::VTABLE_BSLightingShader[0]);
 
 	if (!MenuOpenCloseEventHandler::Register())
 		logger::warn("[Upscaling] MenuOpenCloseEventHandler registration failed; temporal history may survive loading transitions");
@@ -1801,6 +1816,59 @@ void Upscaling::Upscale()
 		state->EndPerfEvent();
 		globals::profiler->EndPass();
 	}
+}
+
+void Upscaling::BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass)
+{
+	auto deferred = globals::deferred;
+	auto state = globals::state;
+	constexpr auto wornFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsWornEquipment);
+
+	bool isWorn = false;
+	if (deferred->deferredPass && settings.neuralRenderingEnabled &&
+		a_pass->shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned)) {
+		auto geometry = a_pass->geometry;
+		if (auto userData = geometry->GetUserData()) {
+			if (auto actor = userData->As<RE::Actor>()) {
+				if (auto biped = actor->GetActorRuntimeData().biped.get()) {
+					// Find which biped slot (if any) this geometry belongs to by
+					// walking up its ancestors against each slot's cloned 3D root -
+					// a leaf BSGeometry is a descendant of that root, not the root
+					// itself. Slots 0..kEditorTotal-1 are body-armor slots and have
+					// a bare-skin counterpart (Actor::GetSkin); the item equipped
+					// there is worn equipment only when it differs from that skin.
+					// Weapon/shield/quiver slots (kEditorTotal..kTotal-1) have no
+					// such counterpart - anything there is always worn.
+					for (uint32_t slot = 0; slot < RE::BIPED_OBJECTS::kTotal; ++slot) {
+						auto* part = biped->objects[slot].partClone.get();
+						if (!part)
+							continue;
+						bool matched = false;
+						for (auto* node = static_cast<RE::NiAVObject*>(geometry); node; node = node->parent) {
+							if (node == part) {
+								matched = true;
+								break;
+							}
+						}
+						if (!matched)
+							continue;
+						if (slot < RE::BIPED_OBJECTS::kEditorTotal) {
+							auto bodySlot = static_cast<RE::BGSBipedObjectForm::BipedObjectSlot>(1u << slot);
+							isWorn = biped->objects[slot].item != actor->GetSkin(bodySlot);
+						} else {
+							isWorn = true;
+						}
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	if (isWorn)
+		state->permutationData.ExtraShaderDescriptor |= wornFlag;
+	else
+		state->permutationData.ExtraShaderDescriptor &= ~wornFlag;
 }
 
 void Upscaling::CaptureNeuralRenderingCategories()

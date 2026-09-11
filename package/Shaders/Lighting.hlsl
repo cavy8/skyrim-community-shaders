@@ -3138,7 +3138,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		elif defined(LANDSCAPE) || defined(LODLANDSCAPE) || defined(LODLANDNOISE)
 	neuralRenderingCategory = NeuralRenderingCategories::Landscape;
 #		elif defined(SKINNED)
-	neuralRenderingCategory = NeuralRenderingCategories::Equipment;
+	// SKINNED alone also matches the actor's own bare body (arms, torso - not
+	// FACEGEN, which is head only), not just worn armor/clothing/weapons.
+	// Permutation::ExtraFlags::IsWornEquipment (Upscaling::
+	// BSLightingShader_SetupNeuralCategory) distinguishes an equipped biped
+	// part from the base skin; bare skin falls back to Skin.
+	neuralRenderingCategory = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsWornEquipment) ? NeuralRenderingCategories::Equipment : NeuralRenderingCategories::Skin;
 #		endif
 	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, neuralRenderingCategory), 0, 0, psout.Diffuse.w);
 

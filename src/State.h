@@ -249,6 +249,10 @@ public:
 		AdditiveLighting = 1 << 6,
 		NoSnow = 1 << 7,
 		NoFoliageTint = 1 << 8,
+		// Set by Upscaling::BSLightingShader_SetupNeuralCategory when the drawn
+		// geometry is an equipped biped part (as opposed to the actor's own bare
+		// skin) - see NeuralRenderingCategories::Equipment.
+		IsWornEquipment = 1 << 9,
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		IsEye = 1u << 31
 	};

@@ -148,6 +148,18 @@ public:
 
 	UpscaleMethod GetUpscaleMethod() const;
 
+	/**
+	 * @brief Flags whether the render pass geometry is an equipped biped part rather than bare skin.
+	 *
+	 * Hooked onto BSLightingShader::SetupGeometry. SKINNED alone (Lighting.hlsl's category elif
+	 * chain) also matches the actor's own bare body, not just worn armor/clothing/weapons: this
+	 * walks the geometry's ancestors against the actor's BipedAnim::objects slots and compares the
+	 * matching slot's equipped item against Actor::GetSkin() to tell them apart, setting
+	 * State::ExtraShaderDescriptors::IsWornEquipment for NeuralRenderingCategories::Equipment.
+	 * @param a_pass The render pass being set up.
+	 */
+	void BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass);
+
 	void CheckResources(UpscaleMethod a_upscalemethod);
 	void CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod);
 	void DestroyUpscalingTextureResources(UpscaleMethod a_upscalemethod);
