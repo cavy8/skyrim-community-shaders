@@ -131,7 +131,10 @@ public:
 	void ModifySky(RE::BSRenderPass* Pass);
 	__declspec(noinline) void ModifyParticle(RE::BSRenderPass* Pass);
 	void ParticleShaderHacks();
-	bool HandleTonemapRender(RE::RENDER_TARGET a_input, RE::RENDER_TARGET a_output);
+	/** @brief Whether Effects11 wants to claim the HDR tonemap pass this frame (preset loaded, effect chain enabled). */
+	bool WantsTonemapOwnership();
+	/** @brief Renders the effect chain's tonemap pass. Only call when State::GetTonemapOwner() is kEffects11. */
+	bool RenderTonemap(RE::RENDER_TARGET a_input, RE::RENDER_TARGET a_output);
 	/** @brief True when the effect chain replaced ISHDR this frame, leaving an SDR scene for HDR Display to expand. */
 	bool ReplacedTonemapperThisFrame() const;
 
