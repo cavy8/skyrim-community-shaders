@@ -70,12 +70,12 @@ public:
 		float reflexFPSLimit = 60.0f;
 		bool neuralRenderingEnabled = false;
 		uint neuralRenderingPlacement = 1;  // 0=Before Upscaling, 1=After Upscaling, 2=Separate Upscaling
-		uint neuralRenderingStyle = 2;      // 0=Default, 1=Natural, 2=Cinematic
+		uint neuralRenderingStyle = 0;      // 0=Default, 1=Natural, 2=Cinematic
 		float neuralRenderingIntensity = 0.8f;
 		float neuralRenderingColorStrength = 1.0f;
-		float neuralRenderingLocalToneStrength = 0.75f;
-		float neuralRenderingLocalStructureStrength = 0.9f;
-		float neuralRenderingSkinStructureStrength = 0.9f;
+		float neuralRenderingLocalToneStrength = 1.0f;
+		float neuralRenderingLocalStructureStrength = 1.0f;
+		float neuralRenderingSkinStructureStrength = -1.0f;
 		bool neuralRenderingAutomaticMask = true;
 		uint neuralRenderingResolutionMode = 0;  // 0=Uniform scale, 1=Per-axis (experimental anamorphic) scale
 		float neuralRenderingResolutionScale = 1.0f;

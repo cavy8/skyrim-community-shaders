@@ -746,9 +746,9 @@ void Upscaling::LoadSettings(json& o_json)
 	};
 	sanitizeNeuralFloat(settings.neuralRenderingIntensity, 0.8f, 0.0f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingColorStrength, 1.0f, 0.0f, 1.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingLocalToneStrength, 0.75f, 0.0f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingLocalStructureStrength, 0.9f, 0.0f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingSkinStructureStrength, 0.9f, -1.0f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingLocalToneStrength, 1.0f, 0.0f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingLocalStructureStrength, 1.0f, 0.0f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingSkinStructureStrength, -1.0f, -1.0f, 2.0f);
 	if (settings.neuralRenderingResolutionMode > 1)
 		settings.neuralRenderingResolutionMode = 1;
 	sanitizeNeuralFloat(settings.neuralRenderingResolutionScale, 1.0f, 0.25f, 2.0f);

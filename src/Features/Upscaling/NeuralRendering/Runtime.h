@@ -14,14 +14,16 @@ namespace NeuralRendering
 	 * @brief User-tunable knobs forwarded to the DLSS Neural Rendering feature.
 	 *
 	 * These map directly onto the undocumented @c DLSSNR.* NGX parameters consumed
-	 * by Feature 18. Defaults match NVIDIA's reference tuning.
+	 * by Feature 18. Defaults are stock (unmodified 1.0 strength), with skin
+	 * structure disabled (-1); always overwritten from Upscaling::settings
+	 * before use.
 	 */
 	struct Tuning
 	{
 		float intensity = 0.8f;
-		float localToneStrength = 0.75f;
-		float localStructureStrength = 0.9f;
-		float skinStructureStrength = 0.9f;
+		float localToneStrength = 1.0f;
+		float localStructureStrength = 1.0f;
+		float skinStructureStrength = -1.0f;
 		std::uint32_t style = 3;
 		bool useAutoMask = true;
 		bool uiCorrection = false;

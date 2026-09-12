@@ -65,9 +65,9 @@ public:
 		/// content under a pixel changed. Halves the neural cost; the model's
 		/// own temporal state then sees every second frame.
 		bool alternateFrames = false;
-		float localToneStrength = 0.75f;
-		float localStructureStrength = 0.9f;
-		float skinStructureStrength = 0.9f;
+		float localToneStrength = 1.0f;
+		float localStructureStrength = 1.0f;
+		float skinStructureStrength = -1.0f;
 		bool automaticMask = true;
 		bool reset = false;
 

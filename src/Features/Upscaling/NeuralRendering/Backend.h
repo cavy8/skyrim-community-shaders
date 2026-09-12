@@ -73,9 +73,9 @@ public:
 		/// Run the model every other frame and re-apply its previous answer to the
 		/// fresh frame in between (experimental; halves the neural cost).
 		bool alternateFrames = false;
-		float localToneStrength = 0.75f;
-		float localStructureStrength = 0.9f;
-		float skinStructureStrength = 0.9f;
+		float localToneStrength = 1.0f;
+		float localStructureStrength = 1.0f;
+		float skinStructureStrength = -1.0f;
 		std::uint32_t style = 3;
 		std::uint32_t outputWidth = 0;   ///< Separate-upscaling output width; zero for ordinary Evaluate().
 		std::uint32_t outputHeight = 0;  ///< Separate-upscaling output height.
