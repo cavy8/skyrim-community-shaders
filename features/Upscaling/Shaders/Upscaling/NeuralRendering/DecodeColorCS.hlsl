@@ -105,9 +105,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		// The guide is at render resolution; after the upscaler the colour pixel
 		// is display resolution, so map through the active/guide ratio (unity
 		// before the upscaler). The guide is not jitter-shifted, matching what
-		// the model itself was given.
-		int2 guideTexel = int2((float2(dispatchThreadID.xy) + 0.5) * float2(GuideSize) / float2(ActiveSize));
-		editWeight *= NeuralSilhouetteWeight(GuideDepth, guideTexel, GuideSize);
+		// the model itself was given. Left fractional (not rounded to a texel) so
+		// NeuralSilhouetteWeight can bilinearly blend across the guide/active
+		// resolution mismatch instead of aliasing on thin silhouettes.
+		float2 guideTexel = (float2(dispatchThreadID.xy) + 0.5) * float2(GuideSize) / float2(ActiveSize);
+		editWeight *= NeuralSilhouetteWeight(GuideDepth, LinearClampSampler, guideTexel, GuideSize);
 	}
 
 	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, resolvedColorStrength, editWeight);

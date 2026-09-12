@@ -134,28 +134,51 @@ float3 SampleNeuralSourceCatmullRom(Texture2D<float4> source, SamplerState linea
  * When the model runs below the colour resolution its edit is upsampled
  * bilinearly, so at a geometric silhouette the background's edit bleeds a
  * texel or two into the thin foreground and vice versa. This measures the
- * relative depth range of the five-texel cross around the pixel's guide texel
- * and fades the edit towards a quarter across strong discontinuities, leaving
- * flat interiors untouched.
+ * relative depth range of the five-texel cross around the pixel's guide
+ * position and fades the edit towards a quarter across strong
+ * discontinuities, leaving flat interiors untouched.
+ *
+ * The cross is bilinearly sampled rather than loaded at one nearest guide
+ * texel. After the upscaler the guide is at render resolution while this
+ * runs at display resolution (see DecodeColorCS.hlsl), so several adjacent
+ * display pixels share the same nearest guide texel; a hard nearest lookup
+ * then holds one discontinuity reading over that whole block and flips it
+ * wholesale between guide texels as TAA jitter moves the silhouette, which
+ * reads as chunky shimmer on thin, high-frequency edges like individual hair
+ * strands - the same aliasing the per-category blend above widens a kernel
+ * for. Bilinear sampling instead varies continuously across that block, and
+ * lands exactly on the old nearest-texel reads when guide and colour share a
+ * resolution (Before/Separate Upscaling, where this never mattered).
  *
  * @param guideDepth Game depth (the guide the model received), any allocation.
- * @param guideTexel Guide texel this colour pixel maps to.
+ * @param linearClamp Bilinear, clamp-to-edge sampler.
+ * @param guideTexel Guide-space position this colour pixel maps to, texel
+ *                    centres at integer + 0.5 (may be fractional).
  * @param guideSize Valid guide region in texels.
  */
-float NeuralSilhouetteWeight(Texture2D<float> guideDepth, int2 guideTexel, uint2 guideSize)
+float NeuralSilhouetteWeight(Texture2D<float> guideDepth, SamplerState linearClamp, float2 guideTexel, uint2 guideSize)
 {
 	uint allocationWidth;
 	uint allocationHeight;
 	guideDepth.GetDimensions(allocationWidth, allocationHeight);
-	int2 maxTexel = int2(min(guideSize, uint2(allocationWidth, allocationHeight))) - 1;
-	if (any(maxTexel < 0))
+	float2 validSize = min(float2(guideSize), float2(allocationWidth, allocationHeight));
+	if (any(validSize < 1.0))
 		return 1.0;
-	int2 centre = clamp(guideTexel, int2(0, 0), maxTexel);
-	float depthCentre = guideDepth.Load(int3(centre, 0));
-	float depthEast = guideDepth.Load(int3(min(centre.x + 1, maxTexel.x), centre.y, 0));
-	float depthWest = guideDepth.Load(int3(max(centre.x - 1, 0), centre.y, 0));
-	float depthSouth = guideDepth.Load(int3(centre.x, min(centre.y + 1, maxTexel.y), 0));
-	float depthNorth = guideDepth.Load(int3(centre.x, max(centre.y - 1, 0), 0));
+	float2 allocationSize = float2(allocationWidth, allocationHeight);
+
+	float2 lo = 0.5;
+	float2 hi = validSize - 0.5;
+	float2 centre = clamp(guideTexel, lo, hi);
+	float2 east = clamp(float2(centre.x + 1.0, centre.y), lo, hi);
+	float2 west = clamp(float2(centre.x - 1.0, centre.y), lo, hi);
+	float2 south = clamp(float2(centre.x, centre.y + 1.0), lo, hi);
+	float2 north = clamp(float2(centre.x, centre.y - 1.0), lo, hi);
+
+	float depthCentre = guideDepth.SampleLevel(linearClamp, centre / allocationSize, 0);
+	float depthEast = guideDepth.SampleLevel(linearClamp, east / allocationSize, 0);
+	float depthWest = guideDepth.SampleLevel(linearClamp, west / allocationSize, 0);
+	float depthSouth = guideDepth.SampleLevel(linearClamp, south / allocationSize, 0);
+	float depthNorth = guideDepth.SampleLevel(linearClamp, north / allocationSize, 0);
 
 	float minDepth = min(depthCentre, min(min(depthEast, depthWest), min(depthSouth, depthNorth)));
 	float maxDepth = max(depthCentre, max(max(depthEast, depthWest), max(depthSouth, depthNorth)));
