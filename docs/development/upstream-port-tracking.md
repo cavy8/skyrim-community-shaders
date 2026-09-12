@@ -13,6 +13,7 @@ Ported so far:
 | Cloud Relight | `alandtse/open-shaders` | `dev` | `f18e9543f` |
 | Foliage Lighting | `alandtse/open-shaders` | `dev` | `f18e9543f` |
 | Vanilla Fresnel | `alandtse/open-shaders` | `dev` | `f18e9543f` |
+| Post Processing | `jiayev/skyrim-community-shaders` | `compendium-clean` | `10d2eba1b` |
 
 > The port commits did **not** record the exact upstream SHA they were taken
 > from. Baselines *observed on 2026-09-10* (use as an approximate "since" point,
@@ -20,18 +21,24 @@ Ported so far:
 > - `alandtse/open-shaders@dev` — `7d5622f8d53268c7ce3a95912f07fa6aa8bde5bc`
 > - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `cb9a1fb` (Snow Cover
 >   itself landed upstream in `a661e44` "feat: snow", 2026-09-03)
+> - `jiayev/skyrim-community-shaders@compendium-clean` — not yet pinned; the port
+>   commit (`10d2eba1b`, "port jiayev's Post Processing feature") didn't record the
+>   source SHA. Pin on first re-sync. Not in the README's
+>   [Branch-Specific Credits](../../README.md#branch-specific-credits) — add it there too.
 
 ---
 
 ## 1. Watch targets
 
-### 1a. The two source forks
+### 1a. The three source forks
 
 ```bash
 git remote add open-shaders   https://github.com/alandtse/open-shaders.git
 git remote add bottle         https://github.com/InTheBottle/skyrim-community-shaders.git
+git remote add jiayev         https://github.com/jiayev/skyrim-community-shaders.git
 git fetch open-shaders dev
 git fetch bottle Bottle-Compendium
+git fetch jiayev compendium-clean
 ```
 
 Check for movement since the last sync (record the SHA you synced to in this
@@ -57,12 +64,20 @@ git log <LAST_SYNCED_SHA>..bottle/Bottle-Compendium --oneline -- \
   "package/Shaders/Lighting.hlsl" "package/Shaders/RunGrass.hlsl" "package/Shaders/DistantTree.hlsl" \
   "package/Shaders/Common/SharedData.hlsli" "package/Shaders/Common/Permutation.hlsli" \
   "package/Shaders/Common/Color.hlsli"
+
+git log <LAST_SYNCED_SHA>..jiayev/compendium-clean --oneline -- \
+  "features/Post Processing" "src/Features/PostProcessing.cpp" "src/Features/PostProcessing.h" \
+  "package/Shaders/ISHDR.hlsl" "features/HDR Display/Shaders/HDRDisplay/HDROutputCS.hlsl" \
+  "src/ShaderCache.cpp" "src/ShaderCache.h" "src/Utils/D3D.h" "src/Utils/D3D.cpp" \
+  "src/Features/Effects11.cpp" "src/State.h" \
+  "package/Shaders/Common/SharedData.hlsli"
 ```
 
 GitHub compare URLs (paste the synced SHA in for a quick browser diff):
 
 - `https://github.com/alandtse/open-shaders/compare/<SHA>...dev`
 - `https://github.com/InTheBottle/skyrim-community-shaders/compare/<SHA>...Bottle-Compendium`
+- `https://github.com/jiayev/skyrim-community-shaders/compare/<SHA>...compendium-clean`
 
 Also watch the `snow-rework` branch on the Bottle fork — Snow Cover is actively
 being reworked there and may supersede the `Bottle-Compendium` version.
@@ -201,21 +216,59 @@ enums is load-bearing.
 - `shader-validation.yaml` has no `VANILLA_FRESNEL` define — force-compile `Lighting.hlsl` and `RunGrass.hlsl` (PS included) by hand with `fxc /D VANILLA_FRESNEL=1`.
 - i18n keys added.
 
+### Post Processing  (`jiayev/skyrim-community-shaders@compendium-clean`)
+
+**Upstream source paths (per port commit `10d2eba1b`)**
+
+- `features/Post Processing/**` — full feature folder (DoF, Vignette, Local Exposure,
+  Histogram Auto Exposure, COD Bloom, Lens Flare, Physical Glare, Motion Blur, Colour
+  Grading incl. 17 tonemappers + OpenDRT, LUT, Camera, Border, Composite)
+- `src/Features/PostProcessing.cpp`, `src/Features/PostProcessing.h`
+- `src/Features/PostProcessing/ColorSpace.h` (local adaptation layer, see below)
+
+**Shared-file injection points to re-diff**
+
+| File | Region |
+| --- | --- |
+| `package/Shaders/ISHDR.hlsl` | `POSTPROCESS` passthrough branch (vanilla tonemap bypass when Post Processing owns the frame) |
+| `features/HDR Display/Shaders/HDRDisplay/HDROutputCS.hlsl` | branch that treats a Post-Processing-owned frame as already linear / already in the output gamut — skips gamma-decode and the BT.2020 conversion |
+| `src/State.h` / tonemap ownership | `GetTonemapOwner()` (FrameChecker-cached) arbitrating Effects11 vs. Post Processing — Effects11 wins ties |
+| `src/Features/Effects11.cpp` (`HandleTonemapRender`) | split into `WantsTonemapOwnership()` and `RenderTonemap()`; menu warning when Effects11 takes the pass from Post Processing |
+| `src/ShaderCache.*` | `EnqueueStandaloneShaderCompile` / `EnqueueComputeShaderCompile` / `ClearStandaloneComputeCache`, `TryTakeNext` over a shared dispatch budget (replaces `WaitTake`) |
+| `src/Utils/D3D.h` | `Util::CustomInclude` (moved here from `D3D.cpp` so every HLSL compile site shares it) |
+| `package/Shaders/Common/SharedData.hlsli` / `src/FeatureBuffer.cpp` | `postProcessingSettings` appended as the **last** `FeatureData` b6 slot — every existing offset stays put |
+
+**Local adaptations that must survive a re-sync**
+
+- FontAwesome stripped (this repo doesn't ship the font); `JiayeStatement` dropped.
+- No `enableACEScg` mode in this repo's Linear Lighting — the six call sites that would
+  branch on it instead go through `SceneUsesWideGamutWorkingSpace()` in
+  `src/Features/PostProcessing/ColorSpace.h`.
+- `FeatureBuffer` wires `GetCommonBufferData()` rather than reading settings directly, so
+  `DisableVanillaTonemapping` is masked when Post Processing doesn't own the frame.
+- LUT/bokeh textures renamed for RenderDoc debuggability; unused upstream `textures/` dropped.
+- `shader-validation.yaml` has no Post Processing–specific defines beyond what CI already
+  exercises (149 PP permutations + 9 ISHDR permutations were fxc-validated at port time,
+  not by hlslkit) — force-compile with `fxc` rather than trusting a green hlslkit run alone.
+- Marked alpha at port time — confirm current release stage in
+  `features/Post Processing/Shaders/Features/PostProcessing.ini` before assuming defaults.
+
 ---
 
 ## 4. Re-sync checklist
 
-1. `git fetch` both fork remotes; run the `git log` range filters in §1a against the last synced SHA recorded here.
+1. `git fetch` all three fork remotes; run the `git log` range filters in §1a against the last synced SHA recorded here.
 2. For each feature with upstream movement, diff the **upstream** self-contained files against the local copies (`features/<F>/…`, `src/Features/<F>.*`) — these usually apply near-verbatim.
 3. Re-derive the shared-file hunks from the upstream diff, not by copying whole files. Re-apply into the regions in §3, respecting:
    - flag bits at 7/8 (not the fork's numbering),
-   - cbuffer append order == `FeatureBuffer.cpp` order,
+   - cbuffer append order == `FeatureBuffer.cpp` order (Post Processing's `postProcessingSettings` stays **last**),
    - RunGrass PS hunks inserted in **both** `#ifdef GRASS_LIGHTING` branches,
    - `GetFeatureList()` vector entry present.
-4. Re-apply local adaptations listed per feature (i18n routing, `SafePow`, `kGrass`/`kLighting`, no `SupportsVR`, Color HSV block, placeholder-texture fallback).
-5. Build `BuildDevFast.bat`; then force-compile every touched base shader with the feature define set (`Lighting.hlsl`, `RunGrass.hlsl` incl. PS, `Sky.hlsl`, `DistantTree.hlsl`) — CI's hlslkit config does not define these features.
+4. Re-apply local adaptations listed per feature (i18n routing, `SafePow`, `kGrass`/`kLighting`, no `SupportsVR`, Color HSV block, placeholder-texture fallback, Post Processing's `ColorSpace.h` ACEScg substitute).
+5. Build `BuildDevFast.bat`; then force-compile every touched base shader with the feature define set (`Lighting.hlsl`, `RunGrass.hlsl` incl. PS, `Sky.hlsl`, `DistantTree.hlsl`, `ISHDR.hlsl`, `HDRDisplay/HDROutputCS.hlsl`) — CI's hlslkit config does not define these features.
 6. `python tools/extract-i18n.py --check && python tools/extract-i18n.py --orphans && python tools/sort-i18n.py --check`.
-7. Update the "Baselines" note and the per-feature port commit references at the top of this file with the new synced SHAs.
+7. Check the neural-rendering (DLSS-NR) forks in §6 for changes touching the same tonemap-ownership / upscaling seams Post Processing and Effects11 share.
+8. Update the "Baselines" note and the per-feature port commit references at the top of this file with the new synced SHAs.
 
 ## 5. Cadence
 
@@ -223,3 +276,38 @@ Both forks are moving fast (multiple commits/day in early Sept 2026). A monthly
 check against the compare URLs in §1a is enough unless a bug traced to one of
 these features points at an upstream fix. Mainline-CS merges into `Personal`
 should trigger an immediate re-verify of the §2 hot files.
+
+---
+
+## 6. Also watch: neural-rendering (DLSS-NR) forks
+
+These forks aren't sources for any port in §3 — none of the ported features
+(Snow Cover, Cloud Relight, Foliage Lighting, Vanilla Fresnel, Post Processing)
+were taken from them. They're listed in the README's
+[Branch-Specific Credits](../../README.md#branch-specific-credits) because they
+do independent DLSS Ray/Neural-Reconstruction (DLSS-NR) work that lands in the
+**same** upscaling/tonemap seams the ports touch — most notably Post
+Processing's and Effects11's tonemap-ownership arbitration (`ISHDR.hlsl`,
+`HDRDisplay/HDROutputCS.hlsl`, `State::GetTonemapOwner()`, §3 "Post Processing").
+A fix or regression in one of these forks' DLSS-NR handling can be relevant to
+that code even though it never flows in as a port.
+
+| Fork | Repo | Branch |
+| --- | --- | --- |
+| dlssnr-vr (Open Shaders fork) | `YtzyFvra/skyrim-community-shaders` | `feature/dlssnr-vr` |
+| OptiScaler DLSS-NR pre-SR multipass | `wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass` | `main` |
+| DLSSNR-Cost-Scaler | `xenmods/DLSSNR-Cost-Scaler` | `main` |
+
+```bash
+git remote add ytzy-dlssnr https://github.com/YtzyFvra/skyrim-community-shaders.git   # already added as `ytzy` locally
+git remote add optiscaler-dlssnr https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass.git
+git remote add dlssnr-cost-scaler https://github.com/xenmods/DLSSNR-Cost-Scaler.git
+git fetch ytzy-dlssnr feature/dlssnr-vr
+git fetch optiscaler-dlssnr main
+git fetch dlssnr-cost-scaler main
+```
+
+Unlike §1a, there's no shared feature-path filter to `git log` against — these
+forks aren't laid out like this codebase. Skim commit subjects/PR titles for
+tonemap, HDR-output, gamut, or frame-generation changes near a release, rather
+than diffing full trees on a schedule. Fold into the monthly check in §5.
