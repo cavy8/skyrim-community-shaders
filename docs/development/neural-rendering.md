@@ -217,13 +217,31 @@ display-referred (tone-mapped + sRGB) domain the model was trained on. The model
 answer is **not** inverse-Reinhard decoded: that inverse has an unbounded slope
 near white and turned tiny output changes into severe HDR flicker. Instead the
 resolve compares model and proxy luminance, adds a shared `1/512` shadow floor,
-and clamps the ratio to `0.5..2.0`. A hue-preserving scalar Reinhard proxy then
-allows the model's complete RGB chromaticity to be rescaled onto that guarded
-scene luminance without recolouring a model no-op. `Color Strength` blends from
-stable renderer chroma at zero to the full model palette at one, fading only in
-near-black pixels where normalized colour is numerically ambiguous. HDR
-headroom and alpha remain renderer-owned. No temporal accumulator or midpoint
-blend is involved; every frame is independently re-anchored.
+and clamps the ratio to `0.5..2.0`. Chroma is carried over the same way, as the
+model's change *relative to the proxy it saw*: both are expressed as
+luma-normalised colour, the per-channel ratio between them (guarded to
+`0.25..4`) is applied to the original's normalised colour, and the result is
+rescaled onto the guarded scene luminance. With a hue-preserving scalar proxy
+this is exactly the model's own palette, and a model no-op reproduces the
+original whatever the proxy's colour was.
+
+That transferred chroma is then **hue-guarded** against the original
+(`kNeuralHueGuardStart..End` in `ColorTransfer.hlsli`, on the luma-weighted
+magnitude of the original's chroma offset from neutral). Where the original is
+near neutral the model may only move chroma along the original's own hue axis -
+more or less saturated, never rotated and never past neutral - so a small,
+consistent bias in the model's palette cannot tint whole shaded surfaces: a grey
+stays grey. The lock releases smoothly as the original carries more chroma of
+its own (a bluish shadow or pale skin sits around 0.1 in this metric, saturated
+foliage around 0.3), so intentional recolouring of clearly coloured materials
+survives. This is what stops the model's green cast on neutral shading, which was
+most visible in the low-contrast Finished Image placement.
+
+`Color Strength` blends from stable renderer chroma at zero to that guarded
+model chroma at one, fading only in near-black pixels where normalized colour is
+numerically ambiguous. HDR headroom and alpha remain renderer-owned. No temporal
+accumulator or midpoint blend is involved; every frame is independently
+re-anchored.
 
 ## Jitter
 

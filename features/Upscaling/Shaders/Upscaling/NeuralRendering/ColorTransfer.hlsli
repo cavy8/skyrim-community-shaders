@@ -16,11 +16,13 @@
 // model's answer is deliberately not inverse-tonemapped.  The derivative of
 // inverse Reinhard is 1 / (1 - x)^2, so tiny frame-to-frame changes near white
 // used to become enormous scene-linear shading changes.  Instead the resolve
-// measures the model's bounded luminance change in proxy space, then restores
-// its full chromaticity at that guarded scene luminance. The proxy compression
-// uses one RGB scale so it does not distort hue before the model sees it. HDR
-// headroom remains renderer-owned and every frame is re-anchored to deterministic
-// scene colour rather than to model history.
+// measures the model's bounded luminance change in proxy space, then carries its
+// chroma change - relative to the proxy, and hue-guarded on near-neutral pixels
+// so a model colour cast cannot tint renderer-neutral shading - onto that guarded
+// scene luminance. The proxy compression uses one RGB scale so it does not
+// distort hue before the model sees it. HDR headroom remains renderer-owned and
+// every frame is re-anchored to deterministic scene colour rather than to model
+// history.
 //
 // Colour domain. Everything above describes kNeuralColorDomainSceneLinear, the
 // pre-tonemap placements. Finished Image runs after the tonemap instead, on a
@@ -59,6 +61,15 @@
 static const float3 kNeuralLuma = float3(0.2126, 0.7152, 0.0722);
 static const float kNeuralRatioFloor = 1.0 / 512.0;
 static const float kNeuralMaxRatio = 2.0;
+// Per-channel guard on the model's chroma change relative to the proxy (see ResolveNeuralColor).
+static const float kNeuralChromaRatioMin = 0.25;
+static const float kNeuralChromaRatioMax = 4.0;
+// Luma-weighted chroma magnitude of the *original* pixel below which the model may not
+// rotate its hue: a renderer-neutral pixel stays neutral, and the lock releases smoothly
+// as the original carries more chroma of its own. A bluish shadow or pale skin measures
+// ~0.1 in this metric, saturated foliage ~0.3, a pure grey exactly 0.
+static const float kNeuralHueGuardStart = 0.03;
+static const float kNeuralHueGuardEnd = 0.2;
 
 // TransferParams.ColorDomain values; keep in sync with NeuralRendering::ColorDomain.
 static const uint kNeuralColorDomainSceneLinear = 0;   // Linear, open-ended HDR scene colour (pre-tonemap placements).
@@ -411,6 +422,29 @@ float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor, uint domain
 }
 
 /**
+ * Luma-weighted magnitude of a chroma offset from neutral (see NeuralChromaOffset).
+ *
+ * The weighting uses the same Rec. 709 coefficients as the luminance, so a
+ * deviation in a channel that carries little luminance (blue) is not counted as
+ * a large colour just because it is numerically large once luma-normalised.
+ */
+float NeuralChromaMagnitude(float3 chroma)
+{
+	return sqrt(dot(chroma * chroma, kNeuralLuma));
+}
+
+/**
+ * Chroma of @p color as an offset from neutral: the colour divided by its own
+ * luminance, minus one. A grey is exactly zero, and the offset is orthogonal to
+ * kNeuralLuma by construction, so adding it back to one never changes luminance.
+ */
+float3 NeuralChromaOffset(float3 color)
+{
+	float luma = dot(color, kNeuralLuma);
+	return luma > 1e-5 ? color / luma - 1.0 : 0.0;
+}
+
+/**
  * Compose the Feature 18 answer onto the untouched scene colour.
  *
  * @p modelColor and @p proxyColor are the model's answer and the exact proxy it
@@ -421,6 +455,26 @@ float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor, uint domain
  * change would otherwise become an unbounded relative change. A two-sided guard
  * limits both flashes and sudden collapses without clipping individual RGB
  * channels.
+ *
+ * Chroma is transferred the same way: as the model's change *relative to the
+ * proxy*, applied to the original. Both are expressed as luma-normalised colour,
+ * so the edit is a per-channel ratio (guarded to kNeuralChromaRatioMin..Max) and
+ * a model no-op reproduces the original's chroma exactly whatever the proxy's
+ * own colour was. While the proxy is a plain scalar multiple of the original the
+ * result is the model's complete palette, as before; a proxy that carries its
+ * own grading (saturation, tint) no longer has that grading read back as a model
+ * edit and applied a second time.
+ *
+ * The transferred chroma is then hue-guarded against the original. Where the
+ * original is near neutral (kNeuralHueGuardStart..End on its luma-weighted chroma
+ * magnitude) any hue the model emits is arbitrary - there is no renderer hue for
+ * it to be a change *of* - and a small, consistent bias there reads as a colour
+ * cast over whole shaded surfaces. So on such pixels the model may only move the
+ * chroma along the original's own hue axis: more or less saturated, never rotated,
+ * and never past neutral onto the complementary hue. A pure grey therefore stays
+ * grey however the model recolours it. Pixels with clear chroma of their own
+ * take the model's full chroma change, so intentional recolouring of skin,
+ * foliage and materials survives.
  *
  * @p editWeight scales the edit as a whole (the proxy's "transfer strength"):
  * the luminance ratio is raised to it, so zero is the untouched frame, one is
@@ -453,10 +507,37 @@ float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalC
 	float3 luminanceResult = original * ratio;
 	float targetLuma = dot(luminanceResult, kNeuralLuma);
 
-	// One positive scale brings the model's complete RGB chromaticity to the
-	// guarded scene luminance. Because the proxy is a scalar multiple of the
-	// original, model == proxy reconstructs the original exactly.
-	float3 fullColorResult = model * (targetLuma / max(modelLuma, 1e-5));
+	// Luma-normalised colour: a neutral is exactly one in every channel.
+	float3 originalChroma = NeuralChromaOffset(original);
+	float3 normalizedOriginal = 1.0 + originalChroma;
+	float3 normalizedProxy = 1.0 + NeuralChromaOffset(proxy);
+	float3 normalizedModel = 1.0 + NeuralChromaOffset(model);
+
+	// The model's chroma change relative to the proxy it actually saw, carried
+	// onto the original. Equal to the model's own chroma whenever the proxy is a
+	// scalar multiple of the original; a no-op reproduces the original exactly.
+	float3 chromaRatio = clamp(normalizedModel / max(normalizedProxy, 1e-3), kNeuralChromaRatioMin, kNeuralChromaRatioMax);
+	float3 normalizedTarget = normalizedOriginal * chromaRatio;
+	normalizedTarget /= max(dot(normalizedTarget, kNeuralLuma), 1e-5);
+	float3 targetChroma = normalizedTarget - 1.0;
+
+	// Hue guard: on a near-neutral original, keep only the component of the
+	// model's chroma that lies along the original's own hue axis (a saturation
+	// change), and not past neutral. Released smoothly as the original's own
+	// chroma grows, so genuinely coloured pixels take the model's full palette.
+	float originalChromaMagnitude = NeuralChromaMagnitude(originalChroma);
+	float3 lockedChroma = 0.0;
+	if (originalChromaMagnitude > 1e-4) {
+		float3 axis = originalChroma / originalChromaMagnitude;
+		float along = max(dot(targetChroma * axis, kNeuralLuma), 0.0);
+		lockedChroma = axis * along;
+	}
+	float hueLock = 1.0 - smoothstep(kNeuralHueGuardStart, kNeuralHueGuardEnd, originalChromaMagnitude);
+	float3 normalizedResult = max(1.0 + lerp(targetChroma, lockedChroma, hueLock), 0.0);
+	normalizedResult /= max(dot(normalizedResult, kNeuralLuma), 1e-5);
+
+	// One positive scale brings the resolved chromaticity to the guarded scene luminance.
+	float3 fullColorResult = normalizedResult * targetLuma;
 
 	// Normalized colour is unreliable only near black. Fade the chroma there,
 	// while allowing the complete model palette everywhere with meaningful light.
