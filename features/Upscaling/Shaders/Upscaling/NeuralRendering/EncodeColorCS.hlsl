@@ -10,6 +10,9 @@ cbuffer TransferParams : register(b0)
 	uint2 GuideSize;   // Unused here; keeps the layout shared with DecodeColorCS.
 	uint DepthAwareResolve;
 	uint SkipFrame;
+	uint PerCategoryStrengths;  // Unused here; layout shared with DecodeColorCS.
+	float2 GuideJitterOffset;   // Unused here; layout shared with DecodeColorCS.
+	uint ColorDomain;           // kNeuralColorDomain* - how SourceColor is encoded.
 };
 
 Texture2D<float4> SourceColor : register(t0);
@@ -55,5 +58,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		: SampleNeuralSourceCatmullRom(SourceColor, LinearClampSampler, position, float2(active), float2(sourceWidth, sourceHeight));
 	uint2 nearest = min(uint2(scenePosition), active - 1);
 	float alpha = SourceColor[nearest].a;
-	DestinationColor[dispatchThreadID.xy] = EncodeNeuralColor(float4(color, alpha));
+	DestinationColor[dispatchThreadID.xy] = EncodeNeuralColor(float4(color, alpha), ColorDomain);
 }

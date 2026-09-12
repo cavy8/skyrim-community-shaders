@@ -69,6 +69,9 @@ public:
 		/// edit returns to the full-resolution frame; above one it supersamples.
 		float resolutionScaleX = 1.0f;
 		float resolutionScaleY = 1.0f;
+		/// How @c colorIn is encoded: 0 = linear open-ended HDR scene colour, 1 = finished
+		/// gamma-2.2 display-referred frame (NeuralRendering::ColorDomain).
+		std::uint32_t colorDomain = 0;
 		float intensity = 0.8f;
 		float colorStrength = 1.0f;
 		/// Overall weight of the model's edit (0..2); one applies it exactly.

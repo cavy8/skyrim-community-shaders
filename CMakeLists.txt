@@ -650,6 +650,11 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
     # Exclude test files from production packages
     list(FILTER _package_shaders EXCLUDE REGEX "/Tests/")
     set(_shader_copy_cmds)
+    # Everything this command actually copies (.hlsl/.hlsli included, but also
+    # .ini and anything else living under a feature's Shaders/ folder) - see
+    # the DEPENDS note below for why this, and not HLSL_FILES alone, drives
+    # the stamp's staleness check.
+    set(_all_shader_folder_files ${_package_shaders})
 
     set(_feature_shader_paths_file "${CMAKE_CURRENT_BINARY_DIR}/feature_shader_paths.txt")
     file(WRITE "${_feature_shader_paths_file}" "")
@@ -683,6 +688,7 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
             )
             list(FILTER _feat_shaders EXCLUDE REGEX "/Tests/")
             append_copy_if_different(_shader_copy_cmds _feat_shaders "${_fpath}/Shaders" "${AIO_DIR}/Shaders")
+            list(APPEND _all_shader_folder_files ${_feat_shaders})
         endif()
     endforeach()
 
@@ -693,7 +699,12 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
             ${_shader_copy_cmds}
         COMMAND ${CMAKE_COMMAND} -E touch copy_shaders.stamp
         DEPENDS
-            ${HLSL_FILES}
+            # The full set of files this command copies, not just HLSL_FILES
+            # (*.hlsl/*.hlsli only) - a feature's Shaders/Features/*.ini (e.g.
+            # a version bump) previously copied fine in the command body but
+            # never invalidated the stamp, so a rebuild silently kept serving
+            # the old .ini from the AIO/dist output.
+            ${_all_shader_folder_files}
             ${CMAKE_SOURCE_DIR}/cmake/CleanupStaleEntries.cmake
         COMMENT "Copying changed shaders into AIO/Shaders"
     )

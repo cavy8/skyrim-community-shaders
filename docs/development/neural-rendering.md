@@ -62,6 +62,85 @@ The private D3D12 device is initialized through the resident NGX core with the
 same project identity as Streamline and the Streamline directory in its feature
 path; initializing only through the Feature 18 snippet cannot load DLSS-SR.
 
+### Finished Image (`neuralRenderingPlacement == 3`, experimental)
+
+Runs from `PostProcessingExtensions::Main_HDRTonemapBlendCinematic_Render` (`src/Hooks.cpp`),
+the single hook point that sees every path the frame's tonemap can take: right after
+`State::HandlePostProcessing()` when Effects11 replaces the pass outright and owns the tonemap
+itself, and right after the vanilla tonemap/passthrough call otherwise - which covers Post
+Processing owning the tonemap too, since in that case the vanilla call just takes its
+passthrough branch over Post Processing's already-finished result (see
+`PostProcessing::PreProcess()`'s own comment). Either way, by the time
+`Upscaling::ApplyNeuralRenderingFinishedImage()` runs, the game render target it's given
+(`output` - `kFRAMEBUFFER`, or HDR Display's float16 texture while it redirects that slot
+around ISHDR; never `kMAIN`) holds a genuinely finished, display-referred frame -
+not the linear HDR scene colour the Before/After Upscaling placements have to approximate with
+a Reinhard proxy (see *Colour domain*). Unlike every other placement, Finished Image does not
+depend on any one feature owning the tonemap.
+
+By this point the colour is display resolution and resolved onto the unjittered grid, but the
+guides are **not**: `UpscaleDepth()` expands only `kMAIN` depth (plus refraction normals, SAO
+camera Z and the underwater mask) to display resolution, while motion vectors
+(`RE::RENDER_TARGETS::kMOTION_VECTOR`) and the material-category snapshot stay at render
+resolution in the top-left of their allocations, carrying the frame's TAA jitter. An earlier
+version treated all three as native and unjittered, which misscaled the model's motion vectors
+and every guide lookup below native and swung them with the jitter phase - flicker plus edits
+landing offset from the silhouettes they belonged to. So
+`Upscaling::CaptureNeuralRenderingFinishedImageGuides()` runs in `PerformUpscaling()` just before
+`UpscaleDepth()`: it copies `kMAIN` depth into a private snapshot while it is still on the
+motion-vector raster and records that render-resolution extent (before
+`dynamicResolutionLock = 1`). `Upscaling::EvaluateNeuralRenderingFinishedImage()` then passes the
+snapshot as depth and sets the guide extent and guide jitter exactly as the After Upscaling
+placement does. The captured guides are consumed on use, so the model runs at most once per
+upscaled frame: a second tonemap-pass call with a different colour target would otherwise reset
+its temporal history every frame. It reads the colour's active resolution from `globals::game::graphicsState->screenWidth/Height`
+(the same authoritative source every other Neural Rendering call site uses), not from
+`GetDesc()` on any of the individual resources - those can legitimately be a larger,
+differently-padded allocation than the frame's active region, so comparing them against each
+other for a "do these agree" fail-closed check is a false alarm waiting to happen (an earlier
+version of this placement did exactly that and silently no-op'd every frame as a result).
+
+The output resource is **not** the `neuralRenderingTexture` the After Upscaling and Separate
+Upscaling placements use: that one matches `kMAIN`, whose format differs from `kFRAMEBUFFER`
+(UNORM in SDR) and from HDR Display's float16 redirect, and `CopyResource` between mismatched
+formats is silently dropped by D3D11 - a second earlier version of this placement ran the model
+every frame and discarded the result exactly that way. Instead
+`Upscaling::EnsureNeuralRenderingFinishedImageTexture()` lazily allocates
+`neuralRenderingFinishedImageTexture` to match `output`'s own width, height, format and sample
+count (recreated when any change), and `ApplyNeuralRenderingFinishedImage()` copies it back into
+`output` in place on success. When `kFRAMEBUFFER`'s slot has a null texture pointer (it can alias
+the swap-chain backbuffer through its views alone), the texture is recovered from its SRV. A
+target that cannot take a typed UAV write - sRGB, typeless or multisampled - fails closed with a
+one-time warning naming the format.
+
+**Fails closed.** `EvaluateNeuralRenderingFinishedImage()` returns false - leaving the caller's
+buffer untouched - unless Finished Image is the active placement, the backend is available, and
+the depth/motion guides exist. `ApplyNeuralRenderingFinishedImage()` additionally skips while a
+main menu or loading screen is open, matching every pipeline pass's own
+`DisableInMainLoadingMenu()`-style guard.
+
+#### Why not literally before blur
+
+This placement is inspired by the "Present Enhanced" idea from other DLSS Neural Rendering
+injector projects: run last, on the final presented image, carrying a matched guide bundle
+tagged to that exact frame, and fail closed if it cannot prove the guides correspond. Those
+projects are generic injectors sitting at `Present`, where a game's blur/DOF effects have
+already been baked into the frame by the time they see it - so "last, before Present" is also
+"after any blur."
+
+Community Shaders is not a generic injector. Its own Post Processing pipeline
+(`PostProcessing::FeaturePipelineIndex`) deliberately runs Depth of Field and Motion Blur
+*before* Composite/Colour Grading/LUT, in linear HDR space, for physically correct blur -
+tonemapping and grading are the pipeline's last stages, not its first. There is consequently no
+point in this pipeline that is "after grading, before blur": blur is the earliest thing that
+happens, not the latest. Finished Image therefore runs at the latest point Community Shaders'
+hook architecture actually exposes - right after the frame's tonemap, whoever performed it -
+which satisfies "after most everything" without literally preceding a blur stage that, here,
+already ran first. A user
+relying on vanilla's own late, post-tonemap Depth of Field/Motion Blur (Community Shaders'
+replacements disabled) is not covered by this guarantee; extending it would need a new hook
+inside vanilla's own image-space effect chain, which does not exist today.
+
 ## Motion vectors
 
 The Before and After placements pass the game's **raw** motion-vector target
@@ -118,6 +197,20 @@ OptiScaler's "inside the bridge" call site - so "Before Upscaling" *is* the
 inside-the-bridge position in OptiScaler's taxonomy.
 
 ## Colour domain
+
+Evaluation carries a `NeuralRendering::ColorDomain` (`TransferParams.ColorDomain`, the slot
+that used to be `CategoryPadding`, so the constant-buffer layout is unchanged). Before, After and
+Separate Upscaling pass `kSceneLinear` and get exactly the behaviour described below. Finished
+Image runs after the tonemap, where `kFRAMEBUFFER` holds a gamma-2.2 display-referred frame, so
+it passes `kDisplayGamma` instead: the encode decodes with the 2.2 curve HDR Display uses
+(`Color::GammaToLinearSafe`), scales down only pixels whose linear peak exceeds one (a single
+hue-preserving factor, so an SDR frame reaches the model unchanged), and re-encodes with the same
+curve; the resolve decodes original, proxy and model with that curve, applies the edit in linear
+light and re-encodes. Treating the finished frame as scene-linear - what an earlier version did -
+Reinhard-compressed and re-encoded an already-encoded image, handing the model a washed-out,
+over-bright proxy. The one exception is HDR Display's float16 redirect when the scene reaching it
+is linear (Linear Lighting, or Post Processing owning the tonemap) - the same test `HDROutputCS`
+applies - which keeps `kSceneLinear`.
 
 `ColorTransfer.hlsli` maps the linear open-ended HDR scene colour into the
 display-referred (tone-mapped + sRGB) domain the model was trained on. The model

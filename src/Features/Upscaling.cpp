@@ -4,6 +4,7 @@
 #include "Deferred.h"
 #include "HDRDisplay.h"
 #include "Hooks.h"
+#include "LinearLighting.h"
 #include "PostProcessing.h"
 #include "ScreenshotFeature.h"
 #include "State.h"
@@ -365,16 +366,21 @@ void Upscaling::DrawSettings()
 				const char* placementLabels[] = {
 					T(TKEY("neural_rendering_placement_before"), "Before Upscaling"),
 					T(TKEY("neural_rendering_placement_after"), "After Upscaling"),
-					T(TKEY("neural_rendering_placement_separate"), "Separate Upscaling (Experimental)")
+					T(TKEY("neural_rendering_placement_separate"), "Separate Upscaling (Experimental)"),
+					T(TKEY("neural_rendering_placement_finished_image"), "Finished Image (Experimental)")
 				};
 				int placement = static_cast<int>(settings.neuralRenderingPlacement);
 				if (ImGui::Combo(T(TKEY("neural_rendering_placement"), "Placement"), &placement, placementLabels, IM_ARRAYSIZE(placementLabels)))
-					settings.neuralRenderingPlacement = static_cast<uint>(std::clamp(placement, 0, 2));
+					settings.neuralRenderingPlacement = static_cast<uint>(std::clamp(placement, 0, 3));
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_placement_tooltip"),
 						"Before Upscaling lets the game's DLSS reconstruct the NR-edited scene. After Upscaling runs NR at display resolution.\n"
 						"Separate Upscaling runs NR at render resolution, sends only its signed contribution through a second private DLSS history, "
-						"then applies it to the clean main-DLSS result. This experimental mode costs another DLSS evaluation and additional VRAM."));
+						"then applies it to the clean main-DLSS result. This experimental mode costs another DLSS evaluation and additional VRAM.\n"
+						"Finished Image runs NR last, after the frame's tonemap - Effects11's, Post Processing's, or vanilla's, whichever owned "
+						"it - instead of the linear HDR scene the other placements approximate with a proxy. Depth of Field and Motion Blur "
+						"already ran earlier in Post Processing's own pipeline (it tonemaps last, not them), so this does not run before them. "
+						"Disabled over the main menu and loading screens."));
 				}
 
 				const char* resolutionModeLabels[] = {
@@ -733,7 +739,7 @@ void Upscaling::LoadSettings(json& o_json)
 			clampedReflexFPSLimit);
 	}
 	settings.reflexFPSLimit = clampedReflexFPSLimit;
-	if (settings.neuralRenderingPlacement > 2) {
+	if (settings.neuralRenderingPlacement > 3) {
 		logger::warn("[Upscaling] Loaded neuralRenderingPlacement {} out of range, clamping to 1", settings.neuralRenderingPlacement);
 		settings.neuralRenderingPlacement = 1;
 	}
@@ -1010,6 +1016,20 @@ void Upscaling::DestroyUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 			delete neuralRenderingTexture;
 			neuralRenderingTexture = nullptr;
 		}
+		if (neuralRenderingFinishedImageTexture) {
+			neuralRenderingFinishedImageTexture->resource = nullptr;
+
+			delete neuralRenderingFinishedImageTexture;
+			neuralRenderingFinishedImageTexture = nullptr;
+		}
+		if (neuralRenderingFinishedImageDepthSnapshot) {
+			neuralRenderingFinishedImageDepthSnapshot->srv = nullptr;
+			neuralRenderingFinishedImageDepthSnapshot->resource = nullptr;
+
+			delete neuralRenderingFinishedImageDepthSnapshot;
+			neuralRenderingFinishedImageDepthSnapshot = nullptr;
+		}
+		neuralRenderingFinishedImageGuidesReady = false;
 		if (materialCategoriesSnapshot) {
 			materialCategoriesSnapshot->srv = nullptr;
 			materialCategoriesSnapshot->resource = nullptr;
@@ -1913,6 +1933,253 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	return options;
 }
 
+bool Upscaling::EvaluateNeuralRenderingFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11ShaderResourceView* a_colorInSRV,
+	ID3D11Texture2D* a_colorOut)
+{
+	if (!settings.neuralRenderingEnabled || settings.neuralRenderingPlacement != 3)
+		return false;
+
+	// Past this point the user has clearly opted into this placement, so every remaining
+	// early-out is logged at debug level - this placement is new and the fail-closed checks
+	// below are silent by design, which otherwise looks identical to "doing nothing".
+	if (GetUpscaleMethod() != UpscaleMethod::kDLSS) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: upscale method is not DLSS");
+		return false;
+	}
+	if (!neuralRendering.IsAvailable()) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: backend unavailable");
+		return false;
+	}
+	if (!a_colorIn || !a_colorInSRV || !a_colorOut) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: missing colour input or output texture");
+		return false;
+	}
+	if (!neuralRenderingTexture) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: neuralRenderingTexture not created (DLSS not yet active?)");
+		return false;
+	}
+
+	auto renderer = globals::game::renderer;
+	// Guides captured for this upscaled frame by CaptureNeuralRenderingFinishedImageGuides().
+	// Consuming them means a later tonemap-pass call this frame (a different colour target)
+	// cannot re-run the model, which would reset its temporal history every frame.
+	if (!neuralRenderingFinishedImageGuidesReady || !neuralRenderingFinishedImageDepthSnapshot) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: no guides captured for this frame");
+		return false;
+	}
+	neuralRenderingFinishedImageGuidesReady = false;
+
+	auto* depthTexture = neuralRenderingFinishedImageDepthSnapshot->resource.get();
+	auto* depthSRV = neuralRenderingFinishedImageDepthSnapshot->srv.get();
+	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+	if (!depthTexture || !depthSRV || !motionVector.texture || !motionVector.SRV) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: depth or motion-vector guide missing "
+					  "(depthSnapshot={} depthSnapshotSRV={} motionVector.texture={} motionVector.SRV={})",
+			(void*)depthTexture, (void*)depthSRV, (void*)motionVector.texture, (void*)motionVector.SRV);
+		return false;
+	}
+
+	// The authoritative active resolution, same as every other Neural Rendering call site
+	// (e.g. the After Upscaling placement above) - not each resource's own GetDesc(), which can
+	// legitimately be a larger, differently-padded allocation than the frame's active region.
+	// This is the colour extent only; the guides' render-resolution extent was captured with them.
+	const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
+	const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
+	if (!nativeWidth || !nativeHeight) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: zero screen size ({}x{})", nativeWidth, nativeHeight);
+		return false;
+	}
+
+	// The pre-blended-decals snapshot, not the live Masks2 - see CaptureNeuralRenderingCategories.
+	auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
+
+	// Same guide contract as the After Upscaling placement: the colour is display resolution and
+	// already resolved onto the unjittered grid, while depth (the pre-UpscaleDepth snapshot),
+	// motion vectors and the category snapshot are render resolution and still carry this
+	// frame's TAA jitter. Without these the model's motion vectors and every guide lookup are
+	// misscaled below native and swing with the jitter phase every frame.
+	NeuralRendering::Options options = MakeNeuralRenderingOptions();
+	options.guideWidth = neuralRenderingFinishedImageGuideWidth;
+	options.guideHeight = neuralRenderingFinishedImageGuideHeight;
+	options.guideJitterOffsetX = -jitter.x;
+	options.guideJitterOffsetY = -jitter.y;
+
+	// The tonemap output is gamma-encoded display colour, except when HDR Display has redirected
+	// kFRAMEBUFFER to its float16 texture and the scene arriving there is linear - the same test
+	// HDROutputCS applies (isSceneLinear || postProcessOutput). Post Processing owning the tonemap
+	// is its effective DisableVanillaTonemapping (see PostProcessing::GetCommonBufferData()).
+	const auto& hdrDisplay = globals::features::hdrDisplay;
+	const bool sceneLinear = hdrDisplay.loaded && hdrDisplay.framebufferRedirected &&
+	                         (globals::features::linearLighting.settings.enableLinearLighting ||
+								 globals::state->GetTonemapOwner() == State::TonemapOwner::kPostProcessing);
+	options.colorDomain = sceneLinear ? NeuralRendering::ColorDomain::kSceneLinear : NeuralRendering::ColorDomain::kDisplayGamma;
+
+	if (!neuralRendering.Evaluate(a_colorIn, a_colorOut,
+			depthTexture, depthSRV, materialCategoriesSRV, motionVector.texture,
+			nativeWidth, nativeHeight, options)) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: Evaluate() returned false "
+					  "(see preceding [NeuralRendering] log lines for the reason)");
+		return false;
+	}
+
+	neuralRenderingResourcesActive = true;
+	return true;
+}
+
+void Upscaling::CaptureNeuralRenderingFinishedImageGuides()
+{
+	neuralRenderingFinishedImageGuidesReady = false;
+	if (GetUpscaleMethod() != UpscaleMethod::kDLSS || !settings.neuralRenderingEnabled || settings.neuralRenderingPlacement != 3)
+		return;
+
+	auto& depth = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	if (!depth.texture || !depth.depthSRV)
+		return;
+
+	D3D11_TEXTURE2D_DESC depthDesc{};
+	depth.texture->GetDesc(&depthDesc);
+	auto*& snapshot = neuralRenderingFinishedImageDepthSnapshot;
+	if (snapshot && (snapshot->desc.Width != depthDesc.Width || snapshot->desc.Height != depthDesc.Height ||
+						snapshot->desc.Format != depthDesc.Format)) {
+		snapshot->srv = nullptr;
+		snapshot->resource = nullptr;
+		delete snapshot;
+		snapshot = nullptr;
+	}
+	if (!snapshot) {
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		depth.depthSRV->GetDesc(&srvDesc);
+		try {
+			// The source's own description, bind flags included, the same way kMAIN_COPY's depth
+			// mirrors kMAIN's, so the whole-resource copy below is valid for a depth-stencil source.
+			snapshot = new Texture2D(depthDesc, "Upscaling::NeuralRenderingFinishedImageDepth");
+			snapshot->CreateSRV(srvDesc);
+		} catch (const std::exception& e) {
+			static bool loggedFailure = false;
+			if (!loggedFailure) {
+				loggedFailure = true;
+				logger::warn("[Upscaling] Finished Image Neural Rendering disabled: depth snapshot creation failed ({})", e.what());
+			}
+			delete snapshot;
+			snapshot = nullptr;
+			return;
+		}
+	}
+
+	globals::d3d::context->CopyResource(snapshot->resource.get(), depth.texture);
+
+	// The same render-resolution extent the After Upscaling placement passes, computed at the
+	// same point in the frame - before dynamicResolutionLock turns dynamic resolution off.
+	const auto guideSize = Util::ConvertToDynamic(float2{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
+	neuralRenderingFinishedImageGuideWidth = static_cast<uint32_t>(guideSize.x);
+	neuralRenderingFinishedImageGuideHeight = static_cast<uint32_t>(guideSize.y);
+	neuralRenderingFinishedImageGuidesReady = true;
+}
+
+Texture2D* Upscaling::EnsureNeuralRenderingFinishedImageTexture(const D3D11_TEXTURE2D_DESC& a_targetDesc)
+{
+	auto*& texture = neuralRenderingFinishedImageTexture;
+	if (texture && texture->desc.Width == a_targetDesc.Width && texture->desc.Height == a_targetDesc.Height &&
+		texture->desc.Format == a_targetDesc.Format && texture->desc.SampleDesc.Count == a_targetDesc.SampleDesc.Count)
+		return texture;
+
+	if (texture) {
+		texture->resource = nullptr;
+		delete texture;
+		texture = nullptr;
+	}
+
+	// The backend writes the edit through a typed UAV and the caller copies it back with
+	// CopyResource, which needs a matching single-sample texture. sRGB, typeless and
+	// multisampled targets can't do both, so fail closed rather than write wrong colours.
+	auto device = globals::d3d::device;
+	D3D11_FEATURE_DATA_FORMAT_SUPPORT2 support2{ a_targetDesc.Format, 0 };
+	const bool uavCapable = SUCCEEDED(device->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &support2, sizeof(support2))) &&
+	                        (support2.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+	if (!uavCapable || a_targetDesc.SampleDesc.Count != 1) {
+		if (neuralRenderingFinishedImageRejectedFormat != a_targetDesc.Format) {
+			neuralRenderingFinishedImageRejectedFormat = a_targetDesc.Format;
+			logger::warn("[Upscaling] Finished Image Neural Rendering disabled: tonemap output format {} (samples {}) "
+						 "cannot be written through a UAV",
+				static_cast<int>(a_targetDesc.Format), a_targetDesc.SampleDesc.Count);
+		}
+		return nullptr;
+	}
+
+	D3D11_TEXTURE2D_DESC desc{};
+	desc.Width = a_targetDesc.Width;
+	desc.Height = a_targetDesc.Height;
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = a_targetDesc.Format;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+	try {
+		// Only the resource is needed: the backend creates and caches its own UAV over it.
+		texture = new Texture2D(desc, "Upscaling::NeuralRenderingFinishedImageTexture");
+	} catch (const std::exception& e) {
+		logger::warn("[Upscaling] Finished Image Neural Rendering disabled: output texture creation failed ({})", e.what());
+		texture = nullptr;
+		return nullptr;
+	}
+
+	logger::debug("[Upscaling] Finished Image Neural Rendering output allocated {}x{} format {}",
+		desc.Width, desc.Height, static_cast<int>(desc.Format));
+	return texture;
+}
+
+void Upscaling::ApplyNeuralRenderingFinishedImage(RE::RENDER_TARGET a_target)
+{
+	if (!settings.neuralRenderingEnabled || settings.neuralRenderingPlacement != 3)
+		return;
+	// Matches every pipeline pass's own DisableInMainLoadingMenu()-style guard - nothing should
+	// be editing the main menu background or a loading screen.
+	if (globals::state->IsMainOrLoadingMenuOpen()) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: main menu or loading screen open");
+		return;
+	}
+
+	auto& targetRT = globals::game::renderer->GetRuntimeData().renderTargets[a_target];
+	if (!targetRT.SRV) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: render target {} has no SRV",
+			static_cast<int>(a_target));
+		return;
+	}
+
+	// kFRAMEBUFFER on flat can alias the swap-chain backbuffer through its views alone, with a
+	// null texture pointer (see ScreenshotFeature's ResolveSlotTexture); recover it from the SRV.
+	winrt::com_ptr<ID3D11Texture2D> targetTextureHolder;
+	ID3D11Texture2D* targetTexture = targetRT.texture;
+	if (!targetTexture) {
+		winrt::com_ptr<ID3D11Resource> resource;
+		targetRT.SRV->GetResource(resource.put());
+		if (resource)
+			targetTextureHolder = resource.try_as<ID3D11Texture2D>();
+		targetTexture = targetTextureHolder.get();
+	}
+	if (!targetTexture) {
+		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: render target {} has no 2D texture",
+			static_cast<int>(a_target));
+		return;
+	}
+
+	// The tonemap output is kFRAMEBUFFER (or HDR Display's float16 redirect of it), whose format
+	// differs from kMAIN. CopyResource between mismatched formats is silently dropped, so the
+	// edit goes into a texture matching this target exactly rather than neuralRenderingTexture.
+	D3D11_TEXTURE2D_DESC targetDesc{};
+	targetTexture->GetDesc(&targetDesc);
+	auto* finishedImageTexture = EnsureNeuralRenderingFinishedImageTexture(targetDesc);
+	if (!finishedImageTexture)
+		return;
+
+	if (!EvaluateNeuralRenderingFinishedImage(targetTexture, targetRT.SRV, finishedImageTexture->resource.get()))
+		return;
+
+	globals::d3d::context->CopyResource(targetTexture, finishedImageTexture->resource.get());
+}
+
 void Upscaling::RequestNeuralRenderingComparisonCapture()
 {
 	neuralRenderingComparePending.store(true, std::memory_order_release);
@@ -1968,6 +2235,10 @@ void Upscaling::PerformUpscaling()
 		neuralRenderingResultValid = neuralRendering.ResolveSeparateUpscaling(
 			sharpenerTexture->resource.get(), neuralRenderingTexture->resource.get(), nativeWidth, nativeHeight);
 	}
+
+	// Finished Image evaluates later, at the tonemap, so it snapshots depth now
+	// for the same reason After Upscaling evaluates before the expansion below.
+	CaptureNeuralRenderingFinishedImageGuides();
 
 	// Neural Rendering consumes the same render-resolution depth and motion
 	// guides that produced the DLSS frame. Expand depth only after NR has read

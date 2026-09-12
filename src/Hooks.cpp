@@ -363,8 +363,11 @@ namespace PostProcessingExtensions
 
 			// Effects11 replaces the pass outright; when it does, the vanilla call is skipped
 			// and HandlePostProcessing fixes up the render-target state the pass would have set.
-			if (state->HandlePostProcessing(input, output))
+			if (state->HandlePostProcessing(input, output)) {
+				// Effects11 already wrote its finished, tonemapped frame into `output`.
+				globals::features::upscaling.ApplyNeuralRenderingFinishedImage(output);
 				return;
+			}
 
 			// Post Processing runs its pipeline into kMAIN/kMAIN_COPY, then lets the vanilla
 			// pass run so ISHDR can take its POSTPROCESS passthrough branch. It also runs when
@@ -374,6 +377,12 @@ namespace PostProcessingExtensions
 				postProcessing.PreProcess(input);
 
 			func(a1, a2, a3, a4, a5);
+
+			// `output` now holds the frame's finished, tonemapped colour regardless of who did
+			// the tonemapping - Post Processing (the vanilla call above just took its passthrough
+			// branch) or vanilla ISHDR itself. Unlike the Before/After/Separate Upscaling
+			// placements, Finished Image does not depend on any one feature owning the tonemap.
+			globals::features::upscaling.ApplyNeuralRenderingFinishedImage(output);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

@@ -31,8 +31,8 @@ namespace
 		std::uint32_t depthAwareResolve = 0;  ///< Non-zero: fade the edit across depth silhouettes in the decode.
 		std::uint32_t skipFrame = 0;          ///< Non-zero: the model did not run; the decode re-applies its stale answer.
 		std::uint32_t perCategoryStrengths = 0;
-		float guideJitterOffset[2]{};  ///< Projection offset of the guide rasters relative to the colour raster, in guide texels.
-		std::uint32_t categoryPadding = 0;
+		float guideJitterOffset[2]{};   ///< Projection offset of the guide rasters relative to the colour raster, in guide texels.
+		std::uint32_t colorDomain = 0;  ///< NeuralRendering::ColorDomain: how the colour input is encoded.
 		float categoryColorStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		float categoryTransferStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 	};
@@ -763,6 +763,9 @@ struct NeuralRenderingBackend::State
 		transferParams.depthAwareResolve = inputs.depthAwareResolve && modelBelowNative ? 1u : 0u;
 		transferParams.skipFrame = skipFrame ? 1u : 0u;
 		transferParams.perCategoryStrengths = inputs.perCategoryStrengths ? 1u : 0u;
+		// Only 0 (scene linear) and 1 (display gamma) exist; anything else falls back to the
+		// original scene-linear behaviour rather than an undefined shader branch.
+		transferParams.colorDomain = inputs.colorDomain <= 1u ? inputs.colorDomain : 0u;
 		for (std::size_t index = 0; index < inputs.categoryColorStrengths.size(); ++index) {
 			transferParams.categoryColorStrengths[index] = std::clamp(inputs.categoryColorStrengths[index], 0.0f, 1.0f);
 			transferParams.categoryTransferStrengths[index] = std::clamp(inputs.categoryTransferStrengths[index], 0.0f, 2.0f);

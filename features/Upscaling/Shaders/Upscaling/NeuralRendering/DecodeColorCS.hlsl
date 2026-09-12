@@ -13,7 +13,7 @@ cbuffer TransferParams : register(b0)
 	uint SkipFrame;          // Non-zero: the model was not run this frame; ModelColor/ProxyColor are stale.
 	uint PerCategoryStrengths;
 	float2 GuideJitterOffset;  // Projection offset of the guide rasters relative to the colour raster, in guide texels.
-	uint CategoryPadding;
+	uint ColorDomain;          // kNeuralColorDomain* - how OriginalColor and DestinationColor are encoded.
 	float4 CategoryColorStrengths[2];
 	float4 CategoryTransferStrengths[2];
 };
@@ -103,7 +103,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	// On an alternating skip frame the model's previous answer is re-applied to
 	// the fresh frame; fade it out wherever the content under the pixel changed.
 	if (SkipFrame != 0)
-		editWeight *= NeuralStaleEditWeight(proxy, original);
+		editWeight *= NeuralStaleEditWeight(proxy, original, ColorDomain);
 	if (DepthAwareResolve != 0 && all(GuideSize > 0)) {
 		// Left fractional (not rounded to a texel) so NeuralSilhouetteWeight can
 		// bilinearly blend across the guide/active resolution mismatch instead of
@@ -112,5 +112,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		editWeight *= NeuralSilhouetteWeight(GuideDepth, LinearClampSampler, guideTexel, GuideSize);
 	}
 
-	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, resolvedColorStrength, editWeight);
+	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, resolvedColorStrength, editWeight, ColorDomain);
 }

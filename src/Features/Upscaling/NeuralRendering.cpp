@@ -37,6 +37,7 @@ namespace
 		inputs.guideJitterOffsetY = options.guideJitterOffsetY;
 		inputs.resolutionScaleX = options.resolutionScaleX;
 		inputs.resolutionScaleY = options.resolutionScaleY;
+		inputs.colorDomain = static_cast<std::uint32_t>(options.colorDomain);
 		inputs.intensity = options.intensity;
 		inputs.colorStrength = options.colorStrength;
 		inputs.transferStrength = options.transferStrength;

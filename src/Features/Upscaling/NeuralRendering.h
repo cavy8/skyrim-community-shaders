@@ -42,6 +42,13 @@ public:
 	static constexpr std::size_t kMaterialCategoryCount = static_cast<std::size_t>(MaterialCategory::kCount);
 	using CategoryStrengthArray = std::array<CategoryStrengths, kMaterialCategoryCount>;
 
+	/** @brief How the colour handed to Evaluate() is encoded; mirrored by ColorTransfer.hlsli. */
+	enum class ColorDomain : uint32_t
+	{
+		kSceneLinear = 0,   ///< Linear, open-ended HDR scene colour (every pre-tonemap placement).
+		kDisplayGamma = 1,  ///< Finished gamma-2.2 display-referred frame, 0-1 in SDR (Finished Image).
+	};
+
 	/** @brief Settings passed to the Neural Rendering feature. */
 	struct Options
 	{
@@ -108,6 +115,12 @@ public:
 		/// feature every frame.
 		float resolutionScaleX = 1.0f;
 		float resolutionScaleY = 1.0f;
+
+		/// How the colour input is encoded. Scene linear compresses it with a Reinhard
+		/// proxy before the model sees it; display gamma hands an already-tonemapped
+		/// frame through unchanged (only HDR over-range pixels are scaled down) and
+		/// applies the edit in linear light decoded with the same 2.2 curve.
+		ColorDomain colorDomain = ColorDomain::kSceneLinear;
 
 		/// DLSS-SR quality/preset selections mirrored from Upscaling settings when
 		/// Separate Upscaling is active. They are ignored by the other placements.

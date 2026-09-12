@@ -69,7 +69,7 @@ public:
 		bool reflexUseFPSLimit = false;
 		float reflexFPSLimit = 60.0f;
 		bool neuralRenderingEnabled = false;
-		uint neuralRenderingPlacement = 1;  // 0=Before Upscaling, 1=After Upscaling, 2=Separate Upscaling
+		uint neuralRenderingPlacement = 1;  // 0=Before Upscaling, 1=After Upscaling, 2=Separate Upscaling, 3=Finished Image
 		uint neuralRenderingStyle = 0;      // 0=Default, 1=Natural, 2=Cinematic
 		float neuralRenderingIntensity = 0.8f;
 		float neuralRenderingColorStrength = 1.0f;
@@ -189,12 +189,48 @@ public:
 	void ConfigureUpscaling(RE::BSGraphics::State* a_state);
 	void Upscale();
 
+	/**
+	 * @brief Returns a Finished Image output texture whose size, format and sample count match
+	 * @p a_targetDesc, (re)creating it when they change.
+	 * @return nullptr (logged once per format) when the target cannot back a UAV write plus a
+	 * CopyResource back into it, e.g. an sRGB, typeless or multisampled target.
+	 */
+	Texture2D* EnsureNeuralRenderingFinishedImageTexture(const D3D11_TEXTURE2D_DESC& a_targetDesc);
+
+	/**
+	 * @brief Snapshots Finished Image's render-resolution guides for this frame.
+	 *
+	 * Called from PerformUpscaling() before UpscaleDepth(): copies kMAIN depth while it is still
+	 * on the same render-resolution, jittered raster as kMOTION_VECTOR and the material-category
+	 * snapshot, and records that raster's extent. A no-op unless Finished Image is active on DLSS.
+	 */
+	void CaptureNeuralRenderingFinishedImageGuides();
+
 	// D3D11 textures
 	Texture2D* reactiveMaskTexture = nullptr;
 	Texture2D* transparencyCompositionMaskTexture = nullptr;
 	Texture2D* motionVectorCopyTexture = nullptr;
 	Texture2D* sharpenerTexture = nullptr;
 	Texture2D* neuralRenderingTexture = nullptr;
+	/**
+	 * Finished Image Neural Rendering output. Allocated lazily to match the tonemap pass's
+	 * output target (kFRAMEBUFFER, or HDR Display's float16 redirect of it) exactly - not kMAIN,
+	 * whose format differs, which would make the copy back a silent D3D11 no-op.
+	 */
+	Texture2D* neuralRenderingFinishedImageTexture = nullptr;
+	/** Last target format rejected for Finished Image, so the warning logs once rather than per frame. */
+	DXGI_FORMAT neuralRenderingFinishedImageRejectedFormat = DXGI_FORMAT_UNKNOWN;
+	/**
+	 * kMAIN depth copied by CaptureNeuralRenderingFinishedImageGuides() before UpscaleDepth()
+	 * expands it to display resolution. Motion vectors and materialCategoriesSnapshot are never
+	 * expanded, so Finished Image needs depth on that same render-resolution, jittered raster.
+	 */
+	Texture2D* neuralRenderingFinishedImageDepthSnapshot = nullptr;
+	/** Render-resolution extent of the captured guides (dynamic resolution is locked off afterwards). */
+	uint32_t neuralRenderingFinishedImageGuideWidth = 0;
+	uint32_t neuralRenderingFinishedImageGuideHeight = 0;
+	/** Set by the capture, consumed by the next Finished Image evaluation - one evaluation per upscaled frame. */
+	bool neuralRenderingFinishedImageGuidesReady = false;
 	/**
 	 * Masks2 copied right after opaque geometry, before blended decals can
 	 * alpha-blend into it and corrupt the packed material category bits.
@@ -256,6 +292,61 @@ public:
 	 * in the frame the pass runs.
 	 */
 	NeuralRendering::Options MakeNeuralRenderingOptions() const;
+
+	/**
+	 * @brief Evaluates Finished Image Neural Rendering on another feature's composited output.
+	 *
+	 * Called (via ApplyNeuralRenderingFinishedImage()) after the frame's tonemap has run -
+	 * Effects11's, Post Processing's own, or vanilla ISHDR's, whichever owned it that frame - so
+	 * the colour this sees is a genuinely finished, display-referred frame rather than the
+	 * linear HDR scene colour the Before/After Upscaling placements have to approximate with a
+	 * Reinhard proxy. The guides are not on @p a_colorIn's display-resolution, unjittered grid:
+	 * motion vectors and the category snapshot stay at render resolution with the frame's TAA
+	 * jitter, so depth is the matching snapshot CaptureNeuralRenderingFinishedImageGuides() took
+	 * before UpscaleDepth() expanded kMAIN depth, and the guide extent and guide jitter are set
+	 * exactly as the After Upscaling placement sets them. The guides are consumed on use, so
+	 * the model runs at most once per upscaled frame. The active resolution is read from the same authoritative
+	 * globals::game::graphicsState->screenWidth/Height every other Neural Rendering call site
+	 * uses - not @p a_colorIn's own GetDesc(), which can legitimately be a larger,
+	 * differently-padded allocation than the frame's active region.
+	 *
+	 * Fails closed: returns false and leaves @p a_colorIn untouched whenever Finished Image is
+	 * not the active placement, the backend is unavailable, or a required resource/guide is
+	 * missing.
+	 *
+	 * @param a_colorIn Caller's finished colour for this frame; must be shader-readable.
+	 * @param a_colorInSRV SRV over @p a_colorIn.
+	 * @param a_colorOut Receives the edited frame; must be UAV-capable and distinct from
+	 * @p a_colorIn. Use a texture matching @p a_colorIn's own format so the caller can copy it back.
+	 * @return True when the evaluation ran and @p a_colorOut was written.
+	 */
+	bool EvaluateNeuralRenderingFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11ShaderResourceView* a_colorInSRV,
+		ID3D11Texture2D* a_colorOut);
+
+	/**
+	 * @brief Applies Finished Image Neural Rendering in place to a game render target.
+	 *
+	 * Called from PostProcessingExtensions::Main_HDRTonemapBlendCinematic_Render (Hooks.cpp), at
+	 * every point that hands the frame's tonemapped colour onward - right after
+	 * State::HandlePostProcessing() when Effects11 owns the tonemap, and right after the vanilla
+	 * tonemap/passthrough call otherwise (which covers Post Processing owning the tonemap too:
+	 * by then the vanilla call has already taken its passthrough branch over Post Processing's
+	 * result). Unlike the Before/After/Separate Upscaling placements, Finished Image therefore
+	 * does not depend on any one feature owning the tonemap.
+	 *
+	 * @p a_target is the tonemap pass's output - kFRAMEBUFFER (UNORM in SDR), or HDR Display's
+	 * float16 texture while it redirects that slot - never kMAIN, so the edit is written to
+	 * neuralRenderingFinishedImageTexture, sized and formatted to match @p a_target, rather
+	 * than the kMAIN-format neuralRenderingTexture the other placements use.
+	 *
+	 * Delegates to EvaluateNeuralRenderingFinishedImage() and, on success, copies the edited
+	 * result back into @p a_target so every caller downstream (HUD, menu, Present) sees it
+	 * without needing to know Neural Rendering ran. A no-op whenever that call fails closed, or
+	 * while a main menu/loading screen is open.
+	 *
+	 * @param a_target Game render target holding this frame's finished colour.
+	 */
+	void ApplyNeuralRenderingFinishedImage(RE::RENDER_TARGET a_target);
 
 	/**
 	 * @brief Snapshots Masks2's packed material categories before blended decals can touch it.
