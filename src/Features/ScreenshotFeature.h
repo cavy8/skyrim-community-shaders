@@ -41,7 +41,10 @@ struct ScreenshotFeature : public Feature
 	 *        game UI is drawn for the frame - only the Neural Rendering comparison capture does.
 	 */
 	void Capture(std::filesystem::path overridePath = {}, bool forceCleanNoUI = false);
-	/** @brief Checks for a pending capture request and executes Capture() if one is pending. Called after HDR Present processing. */
+	/**
+	 * @brief Checks for a pending capture request and executes Capture() if one is pending.
+	 * Called after HDR Present processing, and must run before the wrapped buffers are cleared.
+	 */
 	void ProcessCaptureRequest();
 
 	/**
