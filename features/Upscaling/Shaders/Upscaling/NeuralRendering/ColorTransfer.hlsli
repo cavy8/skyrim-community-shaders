@@ -35,6 +35,11 @@
 // keeps the sharp, correctly-jittered input it expects. After the upscaler the
 // offset is zero and both samples land exactly on texel centres.
 //
+// The depth, motion and material-category guides are the game's render-resolution
+// targets in every placement, so they always carry that same jitter. After the
+// upscaler that makes them jittered relative to the resolved colour, which is the
+// one case where a guide lookup needs correcting; NeuralGuidePosition applies it.
+//
 // JitterOffset follows the Streamline convention: it is the sub-pixel offset
 // (in render pixels) the projection applied, so a scene point that projects to
 // unjittered pixel position u lands in the raster at u + JitterOffset.
@@ -125,6 +130,34 @@ float3 SampleNeuralSourceCatmullRom(Texture2D<float4> source, SamplerState linea
 	float3 neighbourhoodMin = min(min(c00, c10), min(c01, c11));
 	float3 neighbourhoodMax = max(max(c00, c10), max(c01, c11));
 	return clamp(result, neighbourhoodMin, neighbourhoodMax);
+}
+
+/**
+ * Guide-raster position a colour pixel's scene point occupies.
+ *
+ * The depth, motion and material-category guides are always the game's render-
+ * resolution targets, rendered with the frame's sub-pixel TAA jitter. Before
+ * the upscaler the colour is that same jittered raster at that same resolution,
+ * so the mapping is the identity and @p guideJitterOffset is zero. After the
+ * upscaler the colour is display resolution and already resolved onto the
+ * unjittered grid, so the pixel's scene point is first scaled into guide space
+ * and then shifted by the jitter the guides still carry.
+ *
+ * Leaving that shift out does not blur a guide lookup, it misplaces it by up to
+ * half a guide texel in a direction that changes every frame with the jitter
+ * phase - so a boundary pixel reads the wrong side of the boundary on some
+ * frames and the right side on others. The result is kept fractional; callers
+ * filter around it rather than snapping to one texel.
+ *
+ * @param colorPixel Colour/output pixel index.
+ * @param guideSize Valid guide region in texels.
+ * @param activeSize Valid colour region in texels.
+ * @param guideJitterOffset Projection offset of the guides, in guide texels.
+ * @return Guide-space position, texel centres at integer + 0.5.
+ */
+float2 NeuralGuidePosition(uint2 colorPixel, uint2 guideSize, uint2 activeSize, float2 guideJitterOffset)
+{
+	return (float2(colorPixel) + 0.5) * float2(guideSize) / float2(activeSize) + guideJitterOffset;
 }
 
 /**

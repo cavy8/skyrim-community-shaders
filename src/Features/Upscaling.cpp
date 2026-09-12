@@ -1939,6 +1939,17 @@ void Upscaling::PerformUpscaling()
 		NeuralRendering::Options neuralOptions = MakeNeuralRenderingOptions();
 		neuralOptions.guideWidth = static_cast<uint32_t>(guideSize.x);
 		neuralOptions.guideHeight = static_cast<uint32_t>(guideSize.y);
+		// Those guides are also still jittered, while the colour here is the frame
+		// DLSS has already resolved onto the unjittered grid. Uncorrected, a guide
+		// lookup indexes the unjittered grid but reads a texel whose sample sits up
+		// to half a texel away, and that error swings coherently across the image
+		// every frame as the jitter phase advances - flickering the per-category
+		// strength and the silhouette fade along every category and depth boundary,
+		// worst where the two sides' strengths differ most (the hairline, and thin
+		// strands, which are boundary along their whole length). Before the upscaler
+		// colour and guides are jittered alike, so that path leaves this zero.
+		neuralOptions.guideJitterOffsetX = -jitter.x;
+		neuralOptions.guideJitterOffsetY = -jitter.y;
 		// Raw game motion-vector target, not the dilated ghosting-reduction copy
 		// DLSS consumes; see the matching note in Upscale() for the reasoning.
 		neuralRenderingResultValid = neuralRendering.Evaluate(sharpenerTexture->resource.get(),

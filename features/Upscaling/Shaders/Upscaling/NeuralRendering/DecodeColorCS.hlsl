@@ -12,7 +12,8 @@ cbuffer TransferParams : register(b0)
 	uint DepthAwareResolve;  // Non-zero: fade the edit across depth silhouettes (see NeuralSilhouetteWeight).
 	uint SkipFrame;          // Non-zero: the model was not run this frame; ModelColor/ProxyColor are stale.
 	uint PerCategoryStrengths;
-	uint3 CategoryPadding;
+	float2 GuideJitterOffset;  // Projection offset of the guide rasters relative to the colour raster, in guide texels.
+	uint CategoryPadding;
 	float4 CategoryColorStrengths[2];
 	float4 CategoryTransferStrengths[2];
 };
@@ -66,7 +67,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		// to smooth those out too. The blend is done on the resolved
 		// strength values, not the category id itself - an id is a discrete
 		// index and can't be meaningfully interpolated.
-		float2 guideCoord = (float2(dispatchThreadID.xy) + 0.5) * float2(GuideSize) / float2(ActiveSize) - 0.5;
+		// Texel-index space (integer = texel centre) for the tent weights; the
+		// jitter the guides carry is already folded in by NeuralGuidePosition.
+		float2 guideCoord = NeuralGuidePosition(dispatchThreadID.xy, GuideSize, ActiveSize, GuideJitterOffset) - 0.5;
 		int2 guideCenter = (int2)round(guideCoord);
 		int2 guideMax = int2(GuideSize) - 1;
 
@@ -102,13 +105,10 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	if (SkipFrame != 0)
 		editWeight *= NeuralStaleEditWeight(proxy, original);
 	if (DepthAwareResolve != 0 && all(GuideSize > 0)) {
-		// The guide is at render resolution; after the upscaler the colour pixel
-		// is display resolution, so map through the active/guide ratio (unity
-		// before the upscaler). The guide is not jitter-shifted, matching what
-		// the model itself was given. Left fractional (not rounded to a texel) so
-		// NeuralSilhouetteWeight can bilinearly blend across the guide/active
-		// resolution mismatch instead of aliasing on thin silhouettes.
-		float2 guideTexel = (float2(dispatchThreadID.xy) + 0.5) * float2(GuideSize) / float2(ActiveSize);
+		// Left fractional (not rounded to a texel) so NeuralSilhouetteWeight can
+		// bilinearly blend across the guide/active resolution mismatch instead of
+		// aliasing on thin silhouettes.
+		float2 guideTexel = NeuralGuidePosition(dispatchThreadID.xy, GuideSize, ActiveSize, GuideJitterOffset);
 		editWeight *= NeuralSilhouetteWeight(GuideDepth, LinearClampSampler, guideTexel, GuideSize);
 	}
 

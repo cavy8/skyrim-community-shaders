@@ -89,6 +89,16 @@ public:
 		float jitterOffsetX = 0.0f;
 		float jitterOffsetY = 0.0f;
 
+		/// Sub-pixel TAA jitter of the depth/motion/category guides in guide
+		/// pixels, same convention. It is what the decode has to undo to line a
+		/// guide lookup up with the colour pixel asking for it, so it is the
+		/// guides' jitter *relative to the colour raster*, not their absolute
+		/// jitter: zero whenever the colour input is the game's jittered render,
+		/// which is jittered alike. Set it only after the upscaler, where the
+		/// colour is the resolved unjittered frame and the guides are not.
+		float guideJitterOffsetX = 0.0f;
+		float guideJitterOffsetY = 0.0f;
+
 		/// Resolution the model runs at relative to the colour region it
 		/// processes, per axis (0.25..2). Below one the model sees a downsampled
 		/// proxy and only its bounded luminance/colour edit is applied to the

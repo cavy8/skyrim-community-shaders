@@ -31,7 +31,8 @@ namespace
 		std::uint32_t depthAwareResolve = 0;  ///< Non-zero: fade the edit across depth silhouettes in the decode.
 		std::uint32_t skipFrame = 0;          ///< Non-zero: the model did not run; the decode re-applies its stale answer.
 		std::uint32_t perCategoryStrengths = 0;
-		std::uint32_t categoryPadding[3]{};
+		float guideJitterOffset[2]{};  ///< Projection offset of the guide rasters relative to the colour raster, in guide texels.
+		std::uint32_t categoryPadding = 0;
 		float categoryColorStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		float categoryTransferStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 	};
@@ -740,6 +741,13 @@ struct NeuralRenderingBackend::State
 		TransferParams transferParams;
 		transferParams.jitterOffset[0] = std::abs(inputs.jitterOffsetX) <= 1.0f ? inputs.jitterOffsetX : 0.0f;
 		transferParams.jitterOffset[1] = std::abs(inputs.jitterOffsetY) <= 1.0f ? inputs.jitterOffsetY : 0.0f;
+		// The guides are the game's jittered render targets whatever the colour
+		// raster is, so the decode offsets its guide lookups by this before
+		// reading them. Zero (the colour is jittered alike) everywhere but after
+		// the upscaler. The same one-pixel sanity bound applies; it also rejects
+		// a NaN, which fails the comparison.
+		transferParams.guideJitterOffset[0] = std::abs(inputs.guideJitterOffsetX) <= 1.0f ? inputs.guideJitterOffsetX : 0.0f;
+		transferParams.guideJitterOffset[1] = std::abs(inputs.guideJitterOffsetY) <= 1.0f ? inputs.guideJitterOffsetY : 0.0f;
 		transferParams.colorStrength = std::clamp(inputs.colorStrength, 0.0f, 1.0f);
 		transferParams.transferStrength = std::clamp(inputs.transferStrength, 0.0f, 2.0f);
 		transferParams.activeSize[0] = colorWidth;

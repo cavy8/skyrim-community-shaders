@@ -33,6 +33,8 @@ namespace
 		inputs.guideHeight = options.guideHeight ? options.guideHeight : height;
 		inputs.jitterOffsetX = options.jitterOffsetX;
 		inputs.jitterOffsetY = options.jitterOffsetY;
+		inputs.guideJitterOffsetX = options.guideJitterOffsetX;
+		inputs.guideJitterOffsetY = options.guideJitterOffsetY;
 		inputs.resolutionScaleX = options.resolutionScaleX;
 		inputs.resolutionScaleY = options.resolutionScaleY;
 		inputs.intensity = options.intensity;

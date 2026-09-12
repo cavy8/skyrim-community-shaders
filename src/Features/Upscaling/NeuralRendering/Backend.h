@@ -55,6 +55,15 @@ public:
 		/// upscaled frame is unjittered and passes zero.
 		float jitterOffsetX = 0.0f;
 		float jitterOffsetY = 0.0f;
+		/// Sub-pixel projection offset of the guide rasters (@c depth,
+		/// @c motionVectors and @c materialCategoriesSRV) in guide texels, same
+		/// convention. The guides are always the game's jittered render targets,
+		/// so this is zero whenever @c colorIn is that same jittered raster. After
+		/// the upscaler the colour is the resolved, unjittered frame while the
+		/// guides still carry the frame's jitter, and the decode must undo it
+		/// before reading them.
+		float guideJitterOffsetX = 0.0f;
+		float guideJitterOffsetY = 0.0f;
 		/// Model raster relative to the colour active region, per axis (0.25..2).
 		/// Below one the model runs on a downsampled proxy and only its bounded
 		/// edit returns to the full-resolution frame; above one it supersamples.
