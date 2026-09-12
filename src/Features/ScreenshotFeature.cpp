@@ -181,11 +181,16 @@ namespace
 			TonemapHdrToSrgb(sourceImage);
 		}
 
+		// _SRGB (not plain UNORM) so DirectXTex's WIC PNG writer emits the correct
+		// sRGB chunk instead of an incorrect gAMA=1.0 (linear) chunk - the latter
+		// causes gamma-aware PNG viewers to re-apply an sRGB encode on top of
+		// already-encoded data, washing out the image. BMP has no such metadata
+		// and is unaffected either way. X8 (not A8) still discards alpha on write.
 		if (SUCCEEDED(DirectX::Convert(
 				sourceImage.GetImages(),
 				sourceImage.GetImageCount(),
 				sourceImage.GetMetadata(),
-				DXGI_FORMAT_B8G8R8X8_UNORM,
+				DXGI_FORMAT_B8G8R8X8_UNORM_SRGB,
 				DirectX::TEX_FILTER_DEFAULT,
 				0.0f,
 				convertedImage))) {
