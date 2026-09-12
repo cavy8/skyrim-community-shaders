@@ -133,6 +133,128 @@ float3 SampleNeuralSourceCatmullRom(Texture2D<float4> source, SamplerState linea
 }
 
 /**
+ * Catmull-Rom weights/indices for one axis, as four raw taps (no hardware
+ * bilinear collapsing) so this axis can be combined with a differently-shaped
+ * filter on the other axis. Matches the weights in SampleNeuralSourceCatmullRom
+ * exactly; only the tap layout differs. Slots 4 and 5 are unused zero-weight
+ * pads so the array shares a size with NeuralBoxAxis.
+ *
+ * @param coord Texel-space sample position on this axis (centres at n + 0.5).
+ */
+void NeuralCubicAxis(float coord, out float weight[6], out int index[6])
+{
+	float base = floor(coord - 0.5);
+	float f = coord - 0.5 - base;
+
+	weight[0] = f * (-0.5 + f * (1.0 - 0.5 * f));
+	weight[1] = 1.0 + f * f * (-2.5 + 1.5 * f);
+	weight[2] = f * (0.5 + f * (2.0 - 1.5 * f));
+	weight[3] = f * f * (-0.5 + 0.5 * f);
+	weight[4] = 0.0;
+	weight[5] = 0.0;
+
+	int b = (int)base;
+	index[0] = b - 1;
+	index[1] = b;
+	index[2] = b + 1;
+	index[3] = b + 2;
+	index[4] = b + 2;
+	index[5] = b + 2;
+}
+
+/**
+ * Exact-area box weights/indices for one axis: the fraction of each source
+ * texel covered by the destination texel's footprint, so the axis is
+ * integrated rather than reconstructed at one point. Six taps comfortably
+ * covers the largest footprint the model resolution slider allows (4 source
+ * texels at the 0.25x minimum) plus the fractional slop `ScaledExtent`'s
+ * round-to-even can introduce.
+ *
+ * @param coord Texel-space centre of the footprint on this axis.
+ * @param footprint Source texels this destination texel covers on this axis (> 1).
+ */
+void NeuralBoxAxis(float coord, float footprint, out float weight[6], out int index[6])
+{
+	float lo = coord - footprint * 0.5;
+	float hi = coord + footprint * 0.5;
+	int i0 = (int)floor(lo);
+	float invFootprint = 1.0 / footprint;
+
+	[unroll]
+	for (int k = 0; k < 6; ++k) {
+		int i = i0 + k;
+		float overlap = max(0.0, min(hi, (float)(i + 1)) - max(lo, (float)i));
+		weight[k] = overlap * invFootprint;
+		index[k] = i;
+	}
+}
+
+/**
+ * Resamples the source at a fractional position where at least one axis is
+ * shrinking (a footprint of more than one source texel per destination
+ * texel), integrating that axis with an exact-area box instead of
+ * reconstructing it with Catmull-Rom.
+ *
+ * Catmull-Rom (and any other point-sample reconstruction filter) answers "what
+ * is the signal at this one point", which is the right question when the
+ * destination is at or above source resolution. When the destination is
+ * coarser, the question a model texel actually needs answered is "what is the
+ * average of the source over the region this texel represents" - the two only
+ * coincide at native scale. Left unanswered, source frequencies above the
+ * model's new, lower Nyquist limit alias into the proxy; as the camera moves
+ * the aliasing changes phase and the resolve reads it as neural shimmer. This
+ * is the box downsample OptiScaler's DLSSNR fork uses below native
+ * (https://github.com/Dagherbou/OptiScaler_DLSSNR/discussions/2).
+ *
+ * Each axis is filtered independently: an axis whose footprint is still one
+ * texel or less (native scale, or that axis is being supersampled) keeps
+ * Catmull-Rom reconstruction instead, so an anisotropic scale like 0.65 x 0.85
+ * only integrates the axis that is actually shrinking. The combined result is
+ * clamped to the range of every texel actually sampled, which is a no-op for
+ * the (always non-negative) box weights and only bites on a Catmull-Rom axis's
+ * negative lobes - the same HDR ringing guard SampleNeuralSourceCatmullRom
+ * applies, generalised to whichever taps this call used.
+ *
+ * @param position Texel-space sample position (pixel centres sit at n + 0.5).
+ * @param footprint Source texels one destination texel covers, per axis.
+ * @param activeSize Valid region of @p source in texels.
+ */
+float3 SampleNeuralSourceAreaMinify(Texture2D<float4> source, float2 position, float2 footprint, float2 activeSize)
+{
+	float weightX[6], weightY[6];
+	int indexX[6], indexY[6];
+	if (footprint.x > 1.0)
+		NeuralBoxAxis(position.x, footprint.x, weightX, indexX);
+	else
+		NeuralCubicAxis(position.x, weightX, indexX);
+	if (footprint.y > 1.0)
+		NeuralBoxAxis(position.y, footprint.y, weightY, indexY);
+	else
+		NeuralCubicAxis(position.y, weightY, indexY);
+
+	int2 maxIndex = int2(activeSize) - 1;
+	// First tap seeds the neighbourhood range; every tap (including the
+	// zero-weight pads, which only duplicate an already-sampled texel) folds
+	// into it unconditionally below, so no sentinel infinity literal is needed.
+	float3 result = 0.0;
+	float3 neighbourhoodMin = source.Load(int3(clamp(indexX[0], 0, maxIndex.x), clamp(indexY[0], 0, maxIndex.y), 0)).rgb;
+	float3 neighbourhoodMax = neighbourhoodMin;
+	[unroll]
+	for (int j = 0; j < 6; ++j) {
+		int y = clamp(indexY[j], 0, maxIndex.y);
+		[unroll]
+		for (int i = 0; i < 6; ++i) {
+			int x = clamp(indexX[i], 0, maxIndex.x);
+			float3 tap = source.Load(int3(x, y, 0)).rgb;
+			result += tap * weightX[i] * weightY[j];
+			neighbourhoodMin = min(neighbourhoodMin, tap);
+			neighbourhoodMax = max(neighbourhoodMax, tap);
+		}
+	}
+	return clamp(result, neighbourhoodMin, neighbourhoodMax);
+}
+
+/**
  * Guide-raster position a colour pixel's scene point occupies.
  *
  * The depth, motion and material-category guides are always the game's render-

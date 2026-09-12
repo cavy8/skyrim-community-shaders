@@ -37,15 +37,22 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	// position at + JitterOffset, so resample it from there. At native scale with
 	// a zero offset this is exactly the source texel itself.
 	//
-	// The same Catmull-Rom kernel serves every scale. It has a four-texel support
-	// on the source grid, so down to half resolution the model pixel's footprint
-	// stays inside the kernel; below that the proxy aliases mildly, which the
-	// resolve tolerates because only a bounded luminance ratio and chroma ever
-	// return to the full-resolution frame.
-	float2 scenePosition = (float2(dispatchThreadID.xy) + 0.5) * float2(active) / float2(work);
+	// footprint is the source-texel extent, per axis, that one destination texel
+	// represents. An axis at or above source resolution (footprint <= 1: native
+	// scale, or that axis is being supersampled) keeps the Catmull-Rom
+	// reconstruction the jitter compensation already needed. An axis below
+	// source resolution (footprint > 1) switches to an exact-area box average
+	// instead, because reconstructing a single point there leaves source
+	// frequencies above the model's new Nyquist limit free to alias into the
+	// proxy as neural shimmer - see SampleNeuralSourceAreaMinify. Filtering is
+	// per axis so an anisotropic scale (e.g. 0.65 x 0.85) only boxes the axis
+	// that is actually shrinking.
+	float2 footprint = float2(active) / float2(work);
+	float2 scenePosition = (float2(dispatchThreadID.xy) + 0.5) * footprint;
 	float2 position = scenePosition + JitterOffset;
-	float3 color = SampleNeuralSourceCatmullRom(SourceColor, LinearClampSampler, position,
-		float2(active), float2(sourceWidth, sourceHeight));
+	float3 color = any(footprint > 1.0)
+		? SampleNeuralSourceAreaMinify(SourceColor, position, footprint, float2(active))
+		: SampleNeuralSourceCatmullRom(SourceColor, LinearClampSampler, position, float2(active), float2(sourceWidth, sourceHeight));
 	uint2 nearest = min(uint2(scenePosition), active - 1);
 	float alpha = SourceColor[nearest].a;
 	DestinationColor[dispatchThreadID.xy] = EncodeNeuralColor(float4(color, alpha));

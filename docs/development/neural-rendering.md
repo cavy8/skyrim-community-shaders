@@ -181,12 +181,21 @@ The scaling lives entirely in the existing colour transfer:
   extent. `TransferParams` carries `ActiveSize` and `WorkSize` so both passes know
   the mapping.
 - `EncodeColorCS` dispatches over the model raster. Each model texel covers
-  scene position `(id + 0.5) * active / work` on the unjittered grid and is
-  resampled from `+ JitterOffset` with the same Catmull-Rom kernel the jitter
-  compensation already used. The kernel has a four-texel support, so down to half
-  resolution the model pixel's footprint stays inside it; below that the proxy
-  aliases mildly, which is tolerable because only a bounded edit ever returns to
-  the full-resolution frame.
+  scene position `(id + 0.5) * active / work` on the unjittered grid, resampled
+  from `+ JitterOffset`. The per-axis footprint (`active / work` on that axis)
+  decides the kernel: at or above native resolution on that axis (footprint
+  <= 1) it keeps the same Catmull-Rom kernel the jitter compensation already
+  used; below native resolution (footprint > 1) it instead exact-area box
+  averages that axis (`SampleNeuralSourceAreaMinify`), since reconstructing a
+  single point instead of integrating the region a shrunk model texel actually
+  covers leaves source frequencies above the model's new Nyquist limit free to
+  alias into the proxy - and because that aliasing changes phase as the camera
+  moves, the resolve reads it as neural shimmer. This is the box downsample
+  [OptiScaler's DLSSNR fork](https://github.com/Dagherbou/OptiScaler_DLSSNR/discussions/2)
+  uses below native. Filtering per axis means an anisotropic scale like
+  0.65 x 0.85 only boxes the axis that is actually shrinking; the box's largest
+  footprint is 4 source texels at the 0.25x minimum scale, so a direct
+  exact-area implementation is cheap.
 - `DecodeColorCS` dispatches over the active extent and samples the model answer
   and the proxy at `(pixel + 0.5 - JitterOffset) / ActiveSize`, i.e. bilinearly
   on the model raster. The luminance ratio and chroma are formed from that pair
