@@ -286,6 +286,10 @@ public:
 		// resolves to armor, clothing and weapons - see
 		// NeuralRenderingCategories::Equipment.
 		IsHumanoidActor = 1 << 9,
+		// Set on opaque character/held-weapon geometry classified for character
+		// rain drops; see CharacterRainSurfaces.
+		IsCharacterRainSurface = 1 << 10,
+		IsHeldWeapon = 1 << 11,
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		IsEye = 1u << 31
 	};
