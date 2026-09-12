@@ -2658,6 +2658,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		lightOffset = LightLimitFix::lightGrid[clusterIndex].offset;
 	}
 
+	const float3 worldPositionWS = input.WorldPosition.xyz +
+	                               (LightLimitFix::FirstPerson ? LightLimitFix::WorldEyePosition.xyz : FrameBuffer::CameraPosAdjust.xyz);
+	const float2x2 localShadowRotation = LightLimitFix::GetShadowRotationMatrix(screenNoise);
+#			if defined(DEFERRED)
+	const uint contactShadowSteps = LightLimitFix::GetContactShadowSteps(viewPosition.z);
+#			endif
+
 	[loop] for (uint lightIndex = 0; lightIndex < totalLightCount; lightIndex++)
 	{
 		LightLimitFix::Light light;
@@ -2690,7 +2697,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		float lightShadow = 1.0;
 
 		float shadowComponent = 1.0;
-		if (Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow) {
+		[branch] if (light.lightFlags & LightLimitFix::LightFlags::LocalShadow) {
+			shadowComponent = LightLimitFix::GetLocalShadow(LinearSampler, light.localShadowIndex, worldPositionWS, localShadowRotation);
+			lightShadow *= shadowComponent;
+		} else if (Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow) {
 			if (light.lightFlags & LightLimitFix::LightFlags::Shadow) {
 				shadowComponent = shadowColor[light.shadowLightIndex];
 				lightShadow *= shadowComponent;
@@ -2699,6 +2709,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 		float3 normalizedLightDirection = normalize(lightDirection);
 		float lightAngle = dot(worldNormal.xyz, normalizedLightDirection.xyz);
+
+#			if defined(DEFERRED)
+		[branch] if (contactShadowSteps > 0 && shadowComponent > 0.0 && lightAngle > 0.0 && !(light.lightFlags & LightLimitFix::LightFlags::Simple))
+		{
+			float3 lightPositionVS = mul(FrameBuffer::CameraView, float4(light.positionWS.xyz, 1)).xyz;
+			float3 lightDirectionVS = normalize(lightPositionVS - viewPosition);
+			float contactShadow = LightLimitFix::ContactShadows(viewPosition, screenNoise, lightDirectionVS, contactShadowSteps);
+			shadowComponent *= contactShadow;
+			lightShadow *= contactShadow;
+		}
+#			endif
 
 		float3 refractedLightDirection = normalizedLightDirection;
 #			if defined(TRUE_PBR) && !defined(LANDSCAPE) && !defined(LODLANDSCAPE)
