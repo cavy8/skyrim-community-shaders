@@ -477,7 +477,13 @@ bool DoF::GetTargetLockEnabled()
 
 bool DoF::GetInDialogue()
 {
-	return RE::MenuTopicManager::GetSingleton()->speaker || RE::MenuTopicManager::GetSingleton()->lastSpeaker;
+	// lastSpeaker stays populated after the dialogue menu is backed out of (e.g.
+	// via Tab) for as long as the NPC's current line keeps playing - it exists so
+	// camera/subtitle code can keep referencing the speaker through that tail.
+	// Gating on menuOpen (which drops the instant the menu is actually closed)
+	// keeps target-focus from lingering on that stale speaker.
+	auto* menuTopicManager = RE::MenuTopicManager::GetSingleton();
+	return menuTopicManager->menuOpen && (menuTopicManager->speaker || menuTopicManager->lastSpeaker);
 }
 
 float DoF::GetDistanceToReference(RE::TESObjectREFR* a_ref)
