@@ -20,6 +20,8 @@ cbuffer TransferParams : register(b0)
 	float4 DisplayCinematic;  // ISHDR Cinematic: x saturation, z contrast, w brightness.
 	float4 DisplayTint;       // ISHDR Tint: xyz colour, w amount.
 	float4 DisplayExposure;   // x: apply Post Processing auto exposure, y: 0.18 * compensation, zw: adaptation range.
+	uint HueGuard;            // Non-zero: hue-guard the model's chroma change on near-neutral pixels (see ResolveNeuralColor).
+	float3 HueGuardPad;       // Unused; keeps the cbuffer a whole number of float4s.
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
@@ -123,5 +125,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		editWeight *= NeuralSilhouetteWeight(GuideDepth, LinearClampSampler, guideTexel, GuideSize);
 	}
 
-	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, resolvedColorStrength, editWeight, ColorDomain);
+	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, resolvedColorStrength, editWeight, ColorDomain, HueGuard != 0);
 }

@@ -62,6 +62,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingResolutionScaleX,
 	neuralRenderingResolutionScaleY,
 	neuralRenderingTransferStrength,
+	neuralRenderingHueGuard,
 	neuralRenderingPerCategoryStrengths,
 	neuralRenderingEverythingElseStrengths,
 	neuralRenderingSkinStrengths,
@@ -459,6 +460,13 @@ void Upscaling::DrawSettings()
 					ImGui::TextUnformatted(T(TKEY("neural_rendering_transfer_strength_tooltip"),
 						"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
 						"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
+				}
+				ImGui::Checkbox(T(TKEY("neural_rendering_hue_guard"), "Neutral Colour Guard"), &settings.neuralRenderingHueGuard);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextUnformatted(T(TKEY("neural_rendering_hue_guard_tooltip"),
+						"Stops the model from tinting renderer-neutral shading (grey, or near-grey shadows) with its "
+						"own colour bias. On surfaces the model already recolours, its full palette is unaffected. "
+						"Disable to let the model's colour changes apply everywhere, including on neutral surfaces."));
 				}
 
 				ImGui::Checkbox(T(TKEY("neural_rendering_per_category_strengths"), "Per-Category Strengths"),
@@ -1909,6 +1917,7 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.intensity = settings.neuralRenderingIntensity;
 	options.colorStrength = settings.neuralRenderingColorStrength;
 	options.transferStrength = settings.neuralRenderingTransferStrength;
+	options.hueGuard = settings.neuralRenderingHueGuard;
 	options.perCategoryStrengths = settings.neuralRenderingPerCategoryStrengths;
 	using MaterialCategory = NeuralRendering::MaterialCategory;
 	const auto setCategoryStrengths = [&](MaterialCategory category, const NeuralRendering::CategoryStrengths& strengths) {

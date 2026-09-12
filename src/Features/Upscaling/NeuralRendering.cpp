@@ -52,6 +52,7 @@ namespace
 		inputs.intensity = options.intensity;
 		inputs.colorStrength = options.colorStrength;
 		inputs.transferStrength = options.transferStrength;
+		inputs.hueGuard = options.hueGuard;
 		inputs.perCategoryStrengths = options.perCategoryStrengths;
 		for (std::size_t index = 0; index < options.categoryStrengths.size(); ++index) {
 			inputs.categoryColorStrengths[index] = options.categoryStrengths[index].colorStrength;

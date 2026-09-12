@@ -100,6 +100,9 @@ public:
 		float colorStrength = 1.0f;
 		/// Overall weight of the model's edit (0..2); one applies it exactly.
 		float transferStrength = 1.0f;
+		/// Restrict the model's chroma change to a saturation change on near-neutral pixels
+		/// (see ColorTransfer.hlsli, ResolveNeuralColor).
+		bool hueGuard = true;
 		bool perCategoryStrengths = false;
 		std::array<float, 7> categoryColorStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		std::array<float, 7> categoryTransferStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };

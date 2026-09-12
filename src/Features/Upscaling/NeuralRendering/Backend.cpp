@@ -43,8 +43,10 @@ namespace
 		float displayCinematic[4]{ 1.0f, 0.0f, 1.0f, 1.0f };  ///< ISHDR Cinematic.
 		float displayTint[4]{ 1.0f, 1.0f, 1.0f, 0.0f };       ///< ISHDR Tint.
 		float displayExposure[4]{ 0.0f, 0.18f, 0.0f, 1.0f };  ///< x Post Processing exposure on/off, y scale, zw range.
+		std::uint32_t hueGuard = 1;  ///< Non-zero: hue-guard the model's chroma change on near-neutral pixels (ResolveNeuralColor).
+		float hueGuardPad[3]{};      ///< Unused; keeps the cbuffer a whole number of float4s.
 	};
-	static_assert(sizeof(TransferParams) == 192);
+	static_assert(sizeof(TransferParams) == 208);
 
 	constexpr float kMinimumResolutionScale = 0.25f;
 	constexpr float kMaximumResolutionScale = 2.0f;
@@ -796,6 +798,7 @@ struct NeuralRenderingBackend::State
 		transferParams.displayExposure[1] = display.postProcessExposureScale;
 		transferParams.displayExposure[2] = display.postProcessAdaptationRange[0];
 		transferParams.displayExposure[3] = display.postProcessAdaptationRange[1];
+		transferParams.hueGuard = inputs.hueGuard ? 1u : 0u;
 		for (std::size_t index = 0; index < inputs.categoryColorStrengths.size(); ++index) {
 			transferParams.categoryColorStrengths[index] = std::clamp(inputs.categoryColorStrengths[index], 0.0f, 1.0f);
 			transferParams.categoryTransferStrengths[index] = std::clamp(inputs.categoryTransferStrengths[index], 0.0f, 2.0f);

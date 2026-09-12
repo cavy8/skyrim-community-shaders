@@ -81,6 +81,12 @@ public:
 		/// frame untouched, one applies the model's change exactly, two doubles its
 		/// relative luminance change (still inside the resolve's ratio guard).
 		float transferStrength = 1.0f;
+		/// Restricts the model's chroma change to a saturation change (never a hue rotation,
+		/// never past neutral) on renderer-neutral pixels, so a consistent colour bias in the
+		/// model's palette cannot tint neutral shading. Released smoothly as the original pixel
+		/// carries more chroma of its own; disabling it lets the model's colour changes apply
+		/// everywhere, including on neutral surfaces (see ColorTransfer.hlsli, ResolveNeuralColor).
+		bool hueGuard = true;
 		/// Enables per-material multipliers. The global strengths above are still
 		/// applied afterwards as the final adjustment layer.
 		bool perCategoryStrengths = false;

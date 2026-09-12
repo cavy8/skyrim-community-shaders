@@ -2303,6 +2303,8 @@
     "feature.upscaling.neural_rendering_depth_aware_resolve_tooltip": "When the model runs below full resolution, fades its edit across depth edges so background changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0.",
     "feature.upscaling.neural_rendering_enabled": "Enable Neural Rendering",
     "feature.upscaling.neural_rendering_enabled_tooltip": "Applies DLSS 5 Neural Rendering to the upscaled image. A compatible user-supplied nvngx_dlssnr.dll is required.",
+    "feature.upscaling.neural_rendering_hue_guard": "Neutral Colour Guard",
+    "feature.upscaling.neural_rendering_hue_guard_tooltip": "Stops the model from tinting renderer-neutral shading (grey, or near-grey shadows) with its own colour bias. On surfaces the model already recolours, its full palette is unaffected. Disable to let the model's colour changes apply everywhere, including on neutral surfaces.",
     "feature.upscaling.neural_rendering_intensity": "NR Intensity",
     "feature.upscaling.neural_rendering_intensity_tooltip": "Adjust the overall Neural Rendering intensity.",
     "feature.upscaling.neural_rendering_local_structure": "Local Skin Structure Strength",

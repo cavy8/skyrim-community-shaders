@@ -82,6 +82,7 @@ public:
 		float neuralRenderingResolutionScaleX = 1.0f;
 		float neuralRenderingResolutionScaleY = 1.0f;
 		float neuralRenderingTransferStrength = 1.0f;
+		bool neuralRenderingHueGuard = true;
 		bool neuralRenderingPerCategoryStrengths = false;
 		NeuralRendering::CategoryStrengths neuralRenderingEverythingElseStrengths;
 		NeuralRendering::CategoryStrengths neuralRenderingSkinStrengths;
