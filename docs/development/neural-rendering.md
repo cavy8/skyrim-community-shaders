@@ -75,7 +75,7 @@ passthrough branch over Post Processing's already-finished result (see
 (`output` - `kFRAMEBUFFER`, or HDR Display's float16 texture while it redirects that slot
 around ISHDR; never `kMAIN`) holds a genuinely finished, display-referred frame -
 not the linear HDR scene colour the Before/After Upscaling placements have to approximate with
-a Reinhard proxy (see *Colour domain*). Unlike every other placement, Finished Image does not
+a display-matched proxy (see *Colour domain*). Unlike every other placement, Finished Image does not
 depend on any one feature owning the tonemap.
 
 By this point the colour is display resolution and resolved onto the unjittered grid, but the
@@ -213,7 +213,10 @@ is linear (Linear Lighting, or Post Processing owning the tonemap) - the same te
 applies - which keeps `kSceneLinear`.
 
 `ColorTransfer.hlsli` maps the linear open-ended HDR scene colour into the
-display-referred (tone-mapped + sRGB) domain the model was trained on. The model
+display-referred (tone-mapped + sRGB) domain the model was trained on - and it
+does so through the display transform the frame is actually about to receive,
+so the model sees the frame the way the user will (see *Display-matched proxy*
+below). The model
 answer is **not** inverse-Reinhard decoded: that inverse has an unbounded slope
 near white and turned tiny output changes into severe HDR flicker. Instead the
 resolve compares model and proxy luminance, adds a shared `1/512` shadow floor,
@@ -242,6 +245,69 @@ model chroma at one, fading only in near-black pixels where normalized colour is
 numerically ambiguous. HDR headroom and alpha remain renderer-owned. No temporal
 accumulator or midpoint blend is involved; every frame is independently
 re-anchored.
+
+### Display-matched proxy
+
+An earlier version built the scene-linear proxy as a plain hue-preserving
+Reinhard of the raw linear scene: no exposure, no grading. That is not the frame
+the user sees. The game's eye adaptation alone moves the frame by several stops
+between an interior and a sunlit exterior, and ISHDR then applies a white point,
+saturation, tint, brightness and a contrast curve on top. Shown a frame that was
+far darker or flatter than the displayed one, the model pushed local tone and
+contrast hard to "fix" it, and the game's adaptation and contrast then amplified
+that edit again on the way to the screen - neural shading stacked on top of game
+shading. Finished Image did not suffer from this because it runs on the finished
+frame, which is why the Before/After/Separate Upscaling placements looked
+noticeably more contrasty than it.
+
+The pre-tonemap placements therefore pass a `NeuralRendering::DisplayTransform`
+(`Options::display`) that `EncodeColorCS` applies to the scene-linear colour
+before the sRGB encode (`ApplyNeuralDisplayTransform`, `ColorTransfer.hlsli`):
+
+- **Exposure.** The game's adaptation, `AvgTex.y / AvgTex.x` exactly as ISHDR's
+  BLEND pass applies it, multiplied by Post Processing's Histogram Auto Exposure
+  (`0.18 * 2^compensation / clamp(adapted, range)`, the Composite pass's
+  formula) when that feature is active. Both are GPU values, so the encode and
+  decode bind the adaptation texture / buffer themselves (`t1`/`t2` and
+  `t5`/`t6`) and resolve the transform per pixel from the `TransferParams`
+  constants plus those two reads.
+- **Vanilla grading.** When the vanilla tonemap owns the frame
+  (`State::GetTonemapOwner() == kVanilla`) the proxy replicates ISHDR.hlsl's SDR
+  path stage for stage: the luminance-driven Reinhard with white point (or the
+  Hejl-Burgess-Dawson curve when `Param.z` selects it), saturation / tint /
+  brightness, and the shadow-aware contrast around the adapted luminance. Bloom,
+  the fade overlay and the HDR display mapping are omitted.
+
+Only the model's *view* changes. The edit is still a luminance ratio and a
+relative chroma change measured against the proxy and applied to the untouched
+linear colour; the exposure cancels out of that ratio, and the relative chroma
+transfer (above) is what keeps the proxy's baked-in saturation and tint from
+being read back as a model edit and applied a second time.
+
+**Where the inputs come from.** `Upscaling::CaptureNeuralRenderingDisplayTransform()`
+runs from the `Main_HDRTonemapBlendCinematic_Render` hook right after the vanilla
+pass: it reads `Param`, `Cinematic` and `Tint` from the pass's
+`ImageSpaceShaderParam::pixelConstantGroup` (float4 slots c2-c4 of ISHDR's
+`PerGeometry`, i.e. floats 8, 12 and 16) and takes the adaptation texture from
+pixel-shader slot 2, which the pass leaves bound; a target larger than 64 texels
+on a side is rejected as not being the adaptation. Values outside what an
+imagespace can express (or a non-vanilla tonemap owner, or Effects11 replacing
+the pass) invalidate the capture and the proxy falls back to the previous
+exposure-less Reinhard. The capture is consumed by the *next* frame's
+pre-tonemap placements, one frame of latency on values that are temporally
+smoothed anyway. The first successful capture is logged once
+(`[Upscaling] Neural Rendering display transform captured: ...`); compare its
+saturation / contrast / brightness / white against Post Processing's
+*Debug -> Game ImageSpace Values* panel to confirm the constant layout on a new
+game build.
+
+**Known approximations.** Under the Post Processing tonemap owner only the
+exposure is replicated; its tonemapper and grading are not, so the proxy is an
+exposed classic Reinhard. Under Effects11 nothing is captured and the proxy is
+the plain Reinhard. The luminance edit is applied in scene-linear light and then
+passes through the real tonemap and contrast, so its final magnitude is still
+reshaped by them (a contrast of 1.2 makes a mid-tone edit ~20% stronger in log
+space); `Transfer Strength` remains the knob for that residual.
 
 ## Jitter
 

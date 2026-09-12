@@ -13,9 +13,19 @@ cbuffer TransferParams : register(b0)
 	uint PerCategoryStrengths;  // Unused here; layout shared with DecodeColorCS.
 	float2 GuideJitterOffset;   // Unused here; layout shared with DecodeColorCS.
 	uint ColorDomain;           // kNeuralColorDomain* - how SourceColor is encoded.
+	float4 CategoryColorStrengths[2];     // Unused here; layout shared with DecodeColorCS.
+	float4 CategoryTransferStrengths[2];  // Unused here; layout shared with DecodeColorCS.
+	float4 DisplayParam;      // x: replicate the vanilla tonemap, y: ISHDR Param.y (white point), z: ISHDR Param.z (Hejl-Burgess-Dawson).
+	float4 DisplayCinematic;  // ISHDR Cinematic: x saturation, z contrast, w brightness.
+	float4 DisplayTint;       // ISHDR Tint: xyz colour, w amount.
+	float4 DisplayExposure;   // x: apply Post Processing auto exposure, y: 0.18 * compensation, zw: adaptation range.
 };
 
 Texture2D<float4> SourceColor : register(t0);
+// ISHDR's AvgTex from the previous frame's tonemap pass: x adapted luminance, y target luminance.
+Texture2D<float2> VanillaAdaptation : register(t1);
+// Post Processing's Histogram Auto Exposure adapted luminance (a single float).
+StructuredBuffer<float> PostProcessAdaptation : register(t2);
 RWTexture2D<float4> DestinationColor : register(u0);
 SamplerState LinearClampSampler : register(s0);
 
@@ -58,5 +68,13 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		: SampleNeuralSourceCatmullRom(SourceColor, LinearClampSampler, position, float2(active), float2(sourceWidth, sourceHeight));
 	uint2 nearest = min(uint2(scenePosition), active - 1);
 	float alpha = SourceColor[nearest].a;
-	DestinationColor[dispatchThreadID.xy] = EncodeNeuralColor(float4(color, alpha), ColorDomain);
+
+	// The display transform the frame will go through after this placement, so
+	// the scene-linear proxy the model sees is exposed and graded like the frame
+	// the user will see (see ApplyNeuralDisplayTransform). The adaptation values
+	// are uniform, so the texture centre stands for the whole target; an unbound
+	// input reads zero and drops out of the transform.
+	NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
+		VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0]);
+	DestinationColor[dispatchThreadID.xy] = EncodeNeuralColor(float4(color, alpha), ColorDomain, display);
 }

@@ -4,15 +4,27 @@
 // Colour transfer used to move scene colour into and out of the DLSS Neural
 // Rendering (NGX Feature 18) shared textures.
 //
-// Both Community Shaders placements run Neural Rendering *before* the game's
-// tonemapper, so the colour handed in is linear and open-ended - routinely well
-// above 1.0 on skies, speculars and emissives. Feature 18 is created without an
-// HDR flag and was trained on ordinary display-referred (tone-mapped, sRGB) SDR
-// frames. Handing it raw linear HDR leaves it re-deciding those out-of-range
-// pixels every frame with nothing anchoring them, which reads as shimmer and
-// flicker on exactly the bright regions.
+// The Before/After/Separate Upscaling placements run Neural Rendering *before*
+// the game's tonemapper, so the colour handed in is linear and open-ended -
+// routinely well above 1.0 on skies, speculars and emissives. Feature 18 is
+// created without an HDR flag and was trained on ordinary display-referred
+// (tone-mapped, sRGB) SDR frames. Handing it raw linear HDR leaves it re-deciding
+// those out-of-range pixels every frame with nothing anchoring them, which reads
+// as shimmer and flicker on exactly the bright regions.
 //
-// EncodeNeuralColor brings the frame into that display-referred domain. The
+// EncodeNeuralColor brings the frame into that display-referred domain, and it
+// does so through the display transform the frame is actually about to receive
+// (NeuralDisplayTransform): the game's eye adaptation (and Post Processing's auto
+// exposure when active) and, under the vanilla tonemap, ISHDR's own white point,
+// saturation, tint, brightness and contrast stages. A plain unexposed Reinhard of
+// the linear scene - what an earlier version handed over - showed the model a
+// frame that was far darker (interiors) or flatter (exteriors) than the one the
+// user sees, so it pushed local tone and contrast hard to "fix" it, and the
+// game's adaptation and contrast then amplified that edit again on the way to
+// the screen: neural shading stacked on top of game shading. Matching the proxy
+// to the display transform means the model asks for the same edit it would ask
+// for on the finished frame. Only the *view* changes: the edit is still a ratio
+// against the proxy and is still applied to the untouched linear colour. The
 // model's answer is deliberately not inverse-tonemapped.  The derivative of
 // inverse Reinhard is 1 / (1 - x)^2, so tiny frame-to-frame changes near white
 // used to become enormous scene-linear shading changes.  Instead the resolve
@@ -87,6 +99,81 @@ float3 NeuralSrgbToLinear(float3 v)
 	return lerp(v / 12.92, pow((v + 0.055) / 1.055, 2.4), step(0.04045, v));
 }
 
+/**
+ * Display transform the pre-tonemap placements approximate when building the
+ * scene-linear proxy, so the model sees the frame the way the user will (see
+ * the file comment). Built per pixel by MakeNeuralDisplayTransform from the
+ * TransferParams constants and the two adaptation inputs; every field is
+ * uniform over the frame.
+ */
+struct NeuralDisplayTransform
+{
+	float exposure;          // Scalar exposure the frame will receive: vanilla adaptation x Post Processing auto exposure.
+	bool vanillaGrading;     // Replicate ISHDR's tonemap, cinematic and contrast stages (vanilla tonemap owner).
+	float adaptedLuminance;  // ISHDR's adapted average luminance (AvgTex.x); the pivot of its contrast stage.
+	float whitePoint;        // ISHDR Param.y.
+	bool hejlBurgessDawson;  // ISHDR Param.z: filmic curve instead of Reinhard.
+	float saturation;        // ISHDR Cinematic.x.
+	float contrast;          // ISHDR Cinematic.z.
+	float brightness;        // ISHDR Cinematic.w.
+	float3 tintColor;        // ISHDR Tint.xyz.
+	float tintAmount;        // ISHDR Tint.w.
+};
+
+/** No exposure and no grading: the plain hue-preserving Reinhard proxy. */
+NeuralDisplayTransform NeuralIdentityDisplayTransform()
+{
+	NeuralDisplayTransform display;
+	display.exposure = 1.0;
+	display.vanillaGrading = false;
+	display.adaptedLuminance = 0.0;
+	display.whitePoint = 0.0;
+	display.hejlBurgessDawson = false;
+	display.saturation = 1.0;
+	display.contrast = 1.0;
+	display.brightness = 1.0;
+	display.tintColor = 1.0;
+	display.tintAmount = 0.0;
+	return display;
+}
+
+/**
+ * Resolves the display transform from the TransferParams constants and the two
+ * adaptation inputs. Either input may be unbound (reads as zero) and then drops
+ * out; with neither bound and no vanilla constants this is the identity.
+ *
+ * @param displayParam x > 0.5: the vanilla tonemap owns the frame and its constants
+ *                     were captured; y/z: ISHDR Param.y/.z.
+ * @param displayCinematic ISHDR Cinematic (x saturation, z contrast, w brightness).
+ * @param displayTint ISHDR Tint (xyz colour, w amount).
+ * @param displayExposure x > 0.5: Post Processing auto exposure is active; y its
+ *                        0.18 * compensation factor, zw its adaptation range.
+ * @param vanillaAdaptation ISHDR AvgTex: x adapted luminance, y target luminance.
+ * @param postProcessAdaptedLuminance Post Processing's adapted luminance.
+ */
+NeuralDisplayTransform MakeNeuralDisplayTransform(float4 displayParam, float4 displayCinematic, float4 displayTint,
+	float4 displayExposure, float2 vanillaAdaptation, float postProcessAdaptedLuminance)
+{
+	NeuralDisplayTransform display = NeuralIdentityDisplayTransform();
+	// ISHDR: if (avgValue.x != 0 && avgValue.y != 0) inputColor *= avgValue.y / avgValue.x;
+	const bool vanillaValid = displayParam.x > 0.5 && vanillaAdaptation.x > 0.0 && vanillaAdaptation.y > 0.0;
+	if (vanillaValid)
+		display.exposure *= vanillaAdaptation.y / vanillaAdaptation.x;
+	// Post Processing Composite: 0.18 * ExposureCompensation / clamp(avgLuma, AdaptationRange).
+	if (displayExposure.x > 0.5 && postProcessAdaptedLuminance > 0.0)
+		display.exposure *= displayExposure.y / clamp(postProcessAdaptedLuminance, displayExposure.z, displayExposure.w);
+	display.vanillaGrading = vanillaValid;
+	display.adaptedLuminance = vanillaAdaptation.x;
+	display.whitePoint = displayParam.y;
+	display.hejlBurgessDawson = displayParam.z > 0.5;
+	display.saturation = displayCinematic.x;
+	display.contrast = displayCinematic.z;
+	display.brightness = displayCinematic.w;
+	display.tintColor = displayTint.xyz;
+	display.tintAmount = displayTint.w;
+	return display;
+}
+
 /** Linear light of a colour stored in @p domain (open-ended; negatives clamp to zero). */
 float3 NeuralDomainToLinear(float3 color, uint domain)
 {
@@ -113,25 +200,75 @@ float3 NeuralLinearToModel(float3 v, uint domain)
 	return domain == kNeuralColorDomainDisplayGamma ? pow(saturate(v), 1.0 / 2.2) : NeuralLinearToSrgb(v);
 }
 
+/** ISHDR's Hejl-Burgess-Dawson curve on one luminance value, linear out (GetTonemapFactorHejlBurgessDawson). */
+float NeuralHejlBurgessDawson(float luminance, float whitePoint)
+{
+	float tmp = max(0.0, luminance - 0.004);
+	float encoded = ((tmp * 6.2 + 0.5) * tmp) / (tmp * (tmp * 6.2 + 1.7) + 0.06);
+	return whitePoint * NeuralSrgbToLinear(encoded.xxx).x;
+}
+
 /**
- * Linear-light proxy of @p color: always a single positive scale of its linear light,
- * with every channel at or below one.
+ * Display-linear proxy of scene-linear @p linearColor under @p display.
+ *
+ * Without vanilla grading this is the exposed colour through the hue-preserving
+ * scalar Reinhard the resolve was designed around. With it, it replicates the
+ * SDR path of ISHDR.hlsl's BLEND pass stage for stage - exposure, the
+ * luminance-driven Reinhard (white point) or Hejl-Burgess-Dawson curve,
+ * saturation / tint / brightness, and the shadow-aware contrast around the
+ * adapted luminance - omitting only bloom, the fade overlay and the HDR display
+ * mapping. The output is clamped to 0..1 like the frame it stands for.
  */
-float3 EncodeNeuralProxy(float3 color, uint domain)
+float3 ApplyNeuralDisplayTransform(float3 linearColor, NeuralDisplayTransform display)
+{
+	float3 color = max(linearColor, 0.0) * display.exposure;
+	if (!display.vanillaGrading) {
+		float peak = max(color.r, max(color.g, color.b));
+		return color / (1.0 + peak);
+	}
+
+	float luminance = dot(color, kNeuralLuma);
+	float mapped = display.hejlBurgessDawson ?
+	                   NeuralHejlBurgessDawson(luminance, display.whitePoint) :
+	                   (luminance * (luminance * display.whitePoint + 1.0)) / (luminance + 1.0);
+	color *= mapped / max(luminance, 1e-5);
+
+	float blendedLuminance = dot(color, kNeuralLuma);
+	float3 tinted = display.brightness *
+	                lerp(lerp(blendedLuminance.xxx, color, display.saturation), blendedLuminance * display.tintColor, display.tintAmount);
+
+	float3 contrasted = lerp(display.adaptedLuminance.xxx, tinted, display.contrast);
+	float safeAverage = max(display.adaptedLuminance, 1e-5);
+	float3 contrastedModified = pow(max(0.0, abs(tinted) / safeAverage), display.contrast) * safeAverage * sign(tinted);
+	contrasted = lerp(contrastedModified, contrasted, saturate(contrastedModified / 0.1));
+	return saturate(contrasted);
+}
+
+/**
+ * Linear-light proxy of @p color with every channel at or below one.
+ *
+ * Display gamma: the frame is already tonemapped, so only genuinely over-range
+ * (HDR) pixels are scaled down by one hue-preserving factor and an SDR frame
+ * passes through unchanged. Scene linear: the colour goes through @p display
+ * (see ApplyNeuralDisplayTransform); with the identity transform that is the
+ * hue-preserving scalar Reinhard, a single positive scale of the linear light.
+ */
+float3 EncodeNeuralProxy(float3 color, uint domain, NeuralDisplayTransform display)
 {
 	float3 linearColor = NeuralDomainToLinear(color, domain);
-	float peak = max(linearColor.r, max(linearColor.g, linearColor.b));
-	// Scene linear: hue-preserving scalar Reinhard. Display gamma: already tonemapped, so only
-	// genuinely over-range (HDR) pixels are scaled down; an SDR frame passes through unchanged.
-	return domain == kNeuralColorDomainDisplayGamma ? linearColor / max(peak, 1.0) : linearColor / (1.0 + peak);
+	if (domain == kNeuralColorDomainDisplayGamma) {
+		float peak = max(linearColor.r, max(linearColor.g, linearColor.b));
+		return linearColor / max(peak, 1.0);
+	}
+	return ApplyNeuralDisplayTransform(linearColor, display);
 }
 
 /**
  * Transform colour stored in @p domain into the display-referred proxy the model sees.
  */
-float4 EncodeNeuralColor(float4 color, uint domain)
+float4 EncodeNeuralColor(float4 color, uint domain, NeuralDisplayTransform display)
 {
-	return float4(NeuralLinearToModel(EncodeNeuralProxy(color.rgb, domain), domain), color.a);
+	return float4(NeuralLinearToModel(EncodeNeuralProxy(color.rgb, domain, display), domain), color.a);
 }
 
 /**
@@ -408,15 +545,17 @@ float NeuralSilhouetteWeight(Texture2D<float> guideDepth, SamplerState linearCla
  * belongs to this pixel (alternating-frame mode, the proxy's "VRNR").
  *
  * Compares the luminance of the stale proxy the model actually saw against the
- * fresh frame encoded into the same domain. Where they differ the scene moved
+ * fresh frame encoded into the same domain through the same display transform
+ * (a changed exposure alone would otherwise register as motion). Where they
+ * differ the scene moved
  * under this pixel and the stale edit fades towards no edit, so the pixel shows
  * the clean current frame rather than a misplaced ratio. Constants match the
  * proxy's skip-frame guard.
  */
-float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor, uint domain)
+float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor, uint domain, NeuralDisplayTransform display)
 {
 	float staleLuma = dot(NeuralModelToLinear(proxyColor.rgb, domain), kNeuralLuma);
-	float freshLuma = dot(EncodeNeuralProxy(originalColor.rgb, domain), kNeuralLuma);
+	float freshLuma = dot(EncodeNeuralProxy(originalColor.rgb, domain, display), kNeuralLuma);
 	float difference = abs(staleLuma - freshLuma);
 	return saturate(1.0 - (difference * 2.5) / (staleLuma + freshLuma + 0.05));
 }

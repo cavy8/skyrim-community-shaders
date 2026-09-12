@@ -206,6 +206,27 @@ public:
 	 */
 	void CaptureNeuralRenderingFinishedImageGuides();
 
+	/**
+	 * @brief Captures what the vanilla tonemap pass just applied, for the pre-tonemap placements' proxy.
+	 *
+	 * Called from the HDRTonemapBlendCinematic hook right after the vanilla pass ran. Reads
+	 * ISHDR's Param / Cinematic / Tint constants from the pass's pixel constant group and the
+	 * adaptation texture (AvgTex) the pass sampled at pixel-shader slot 2. Only valid while the
+	 * vanilla tonemap owns the frame; pass null (or another owner) to invalidate the capture.
+	 * Consumed one frame later by MakeNeuralRenderingDisplayTransform().
+	 * @param a_param The pass's shader parameters, or null when the vanilla pass did not run.
+	 */
+	void CaptureNeuralRenderingDisplayTransform(RE::ImageSpaceShaderParam* a_param);
+
+	/**
+	 * @brief Builds the display transform the scene-linear proxy should replicate this frame.
+	 *
+	 * Combines the last vanilla capture (exposure and grading, when the vanilla tonemap owns the
+	 * frame) with Post Processing's Histogram Auto Exposure (when active). Identity when neither
+	 * applies, e.g. under Effects11, which keeps the previous plain-Reinhard proxy.
+	 */
+	NeuralRendering::DisplayTransform MakeNeuralRenderingDisplayTransform() const;
+
 	// D3D11 textures
 	Texture2D* reactiveMaskTexture = nullptr;
 	Texture2D* transparencyCompositionMaskTexture = nullptr;
@@ -231,6 +252,17 @@ public:
 	uint32_t neuralRenderingFinishedImageGuideHeight = 0;
 	/** Set by the capture, consumed by the next Finished Image evaluation - one evaluation per upscaled frame. */
 	bool neuralRenderingFinishedImageGuidesReady = false;
+	/** Last vanilla tonemap pass inputs captured by CaptureNeuralRenderingDisplayTransform(). */
+	struct NeuralRenderingDisplayCapture
+	{
+		bool valid = false;
+		winrt::com_ptr<ID3D11ShaderResourceView> adaptationSRV;  ///< ISHDR AvgTex (x adapted, y target luminance).
+		float param[4]{};                                        ///< ISHDR Param.
+		float cinematic[4]{};                                    ///< ISHDR Cinematic.
+		float tint[4]{};                                         ///< ISHDR Tint.
+	} neuralRenderingDisplayCapture;
+	/** The first successful capture is logged once so its values can be checked against the game's imagespace. */
+	bool neuralRenderingDisplayCaptureLogged = false;
 	/**
 	 * Masks2 copied right after opaque geometry, before blended decals can
 	 * alpha-blend into it and corrupt the packed material category bits.

@@ -27,6 +27,28 @@ class NeuralRenderingBackend final
 {
 public:
 	/**
+	 * @brief Display transform the pre-tonemap placements' proxy replicates, so the model
+	 *        sees the frame the way the user will (see ColorTransfer.hlsli, NeuralDisplayTransform).
+	 *
+	 * Default-constructed it is the identity: no exposure and the plain hue-preserving Reinhard
+	 * proxy. Ignored for the display-gamma colour domain, which is already a finished frame.
+	 */
+	struct DisplayTransform
+	{
+		bool vanillaGrading = false;  ///< The vanilla tonemap owns the frame and the ISHDR constants below are valid.
+		float param[4]{};             ///< ISHDR Param: y white point, z Hejl-Burgess-Dawson.
+		float cinematic[4]{};         ///< ISHDR Cinematic: x saturation, z contrast, w brightness.
+		float tint[4]{};              ///< ISHDR Tint: xyz colour, w amount.
+		/// ISHDR's AvgTex from the previous tonemap pass: x adapted luminance, y target luminance.
+		ID3D11ShaderResourceView* vanillaAdaptationSRV = nullptr;
+		bool postProcessExposure = false;  ///< Post Processing's Histogram Auto Exposure is active downstream.
+		/// Post Processing's adapted-luminance buffer (a single float).
+		ID3D11ShaderResourceView* postProcessAdaptationSRV = nullptr;
+		float postProcessExposureScale = 0.18f;               ///< 0.18 * exp2(exposure compensation).
+		float postProcessAdaptationRange[2]{ 0.0f, 1.0f };  ///< Linear clamp range of the adapted luminance.
+	};
+
+	/**
 	 * @brief One frame of Neural Rendering work.
 	 *
 	 * @c width and @c height describe the *active* region only. The shared
@@ -72,6 +94,8 @@ public:
 		/// How @c colorIn is encoded: 0 = linear open-ended HDR scene colour, 1 = finished
 		/// gamma-2.2 display-referred frame (NeuralRendering::ColorDomain).
 		std::uint32_t colorDomain = 0;
+		/// Display transform the scene-linear proxy replicates (identity by default).
+		DisplayTransform display{};
 		float intensity = 0.8f;
 		float colorStrength = 1.0f;
 		/// Overall weight of the model's edit (0..2); one applies it exactly.

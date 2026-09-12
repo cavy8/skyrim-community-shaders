@@ -49,6 +49,28 @@ public:
 		kDisplayGamma = 1,  ///< Finished gamma-2.2 display-referred frame, 0-1 in SDR (Finished Image).
 	};
 
+	/**
+	 * @brief Display transform the pre-tonemap placements' proxy replicates, so the model
+	 *        sees the frame the way the user will (see ColorTransfer.hlsli, NeuralDisplayTransform).
+	 *
+	 * Default-constructed it is the identity: no exposure and the plain hue-preserving Reinhard
+	 * proxy. Ignored for the display-gamma colour domain, which is already a finished frame.
+	 */
+	struct DisplayTransform
+	{
+		bool vanillaGrading = false;  ///< The vanilla tonemap owns the frame and the ISHDR constants below are valid.
+		float param[4]{};             ///< ISHDR Param: y white point, z Hejl-Burgess-Dawson.
+		float cinematic[4]{};         ///< ISHDR Cinematic: x saturation, z contrast, w brightness.
+		float tint[4]{};              ///< ISHDR Tint: xyz colour, w amount.
+		/// ISHDR's AvgTex from the previous tonemap pass: x adapted luminance, y target luminance.
+		ID3D11ShaderResourceView* vanillaAdaptationSRV = nullptr;
+		bool postProcessExposure = false;  ///< Post Processing's Histogram Auto Exposure is active downstream.
+		/// Post Processing's adapted-luminance buffer (a single float).
+		ID3D11ShaderResourceView* postProcessAdaptationSRV = nullptr;
+		float postProcessExposureScale = 0.18f;               ///< 0.18 * exp2(exposure compensation).
+		float postProcessAdaptationRange[2]{ 0.0f, 1.0f };  ///< Linear clamp range of the adapted luminance.
+	};
+
 	/** @brief Settings passed to the Neural Rendering feature. */
 	struct Options
 	{
@@ -121,6 +143,12 @@ public:
 		/// frame through unchanged (only HDR over-range pixels are scaled down) and
 		/// applies the edit in linear light decoded with the same 2.2 curve.
 		ColorDomain colorDomain = ColorDomain::kSceneLinear;
+
+		/// Display transform the scene-linear proxy replicates so the model sees the frame
+		/// the way the user will. Set by the pre-tonemap placements (Upscaling builds it
+		/// from the captured ISHDR pass and Post Processing's auto exposure); left at the
+		/// identity by Finished Image, which already runs on the finished frame.
+		DisplayTransform display{};
 
 		/// DLSS-SR quality/preset selections mirrored from Upscaling settings when
 		/// Separate Upscaling is active. They are ignored by the other placements.

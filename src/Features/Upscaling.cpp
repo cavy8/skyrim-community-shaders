@@ -6,6 +6,7 @@
 #include "Hooks.h"
 #include "LinearLighting.h"
 #include "PostProcessing.h"
+#include "PostProcessing/HistogramAutoExposure.h"
 #include "ScreenshotFeature.h"
 #include "State.h"
 #include "Upscaling/DX12SwapChain.h"
@@ -1785,6 +1786,8 @@ void Upscaling::Upscale()
 				neuralOptions.guideHeight = renderHeight;
 				neuralOptions.jitterOffsetX = -jitter.x;
 				neuralOptions.jitterOffsetY = -jitter.y;
+				// Pre-tonemap: show the model the frame exposed and graded as it will be displayed.
+				neuralOptions.display = MakeNeuralRenderingDisplayTransform();
 				const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 				// The pre-blended-decals snapshot, not the live Masks2 - see
 				// CaptureNeuralRenderingCategories.
@@ -1931,6 +1934,108 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.superResolutionQualityMode = settings.qualityMode;
 	options.superResolutionPreset = settings.presetDLSS;
 	return options;
+}
+
+void Upscaling::CaptureNeuralRenderingDisplayTransform(RE::ImageSpaceShaderParam* a_param)
+{
+	auto& capture = neuralRenderingDisplayCapture;
+	capture.valid = false;
+	capture.adaptationSRV = nullptr;
+	if (!settings.neuralRenderingEnabled || !a_param || !globals::d3d::context ||
+		globals::state->GetTonemapOwner() != State::TonemapOwner::kVanilla)
+		return;
+
+	// ISHDR.hlsl's PerGeometry constants, as float4 slots of the pass's pixel constant group:
+	// Flags c0, TimingData c1, Param c2, Cinematic c3, Tint c4 (Fade and the blur data follow).
+	constexpr std::uint32_t kParamOffset = 8;
+	constexpr std::uint32_t kCinematicOffset = 12;
+	constexpr std::uint32_t kTintOffset = 16;
+	constexpr std::uint32_t kRequiredFloats = kTintOffset + 4;
+	if (!a_param->pixelConstantGroup || a_param->pixelConstantGroupSize < kRequiredFloats)
+		return;
+	std::copy_n(a_param->pixelConstantGroup + kParamOffset, 4, capture.param);
+	std::copy_n(a_param->pixelConstantGroup + kCinematicOffset, 4, capture.cinematic);
+	std::copy_n(a_param->pixelConstantGroup + kTintOffset, 4, capture.tint);
+
+	// Values outside what an imagespace can express mean the layout above is not what this
+	// pass carries; fall back to the plain proxy rather than grade the model's view with noise.
+	const auto within = [](float value, float low, float high) {
+		return std::isfinite(value) && value >= low && value <= high;
+	};
+	const bool plausible = within(capture.param[1], 0.0f, 1000.0f) &&
+	                       within(capture.cinematic[0], 0.0f, 4.0f) &&
+	                       within(capture.cinematic[2], 0.1f, 4.0f) &&
+	                       within(capture.cinematic[3], 0.1f, 4.0f) &&
+	                       within(capture.tint[0], 0.0f, 4.0f) && within(capture.tint[1], 0.0f, 4.0f) &&
+	                       within(capture.tint[2], 0.0f, 4.0f) && within(capture.tint[3], 0.0f, 1.0f);
+	if (!plausible) {
+		if (!neuralRenderingDisplayCaptureLogged) {
+			neuralRenderingDisplayCaptureLogged = true;
+			logger::warn("[Upscaling] Neural Rendering display transform: implausible ISHDR constants "
+						 "(white {:.3f}, saturation {:.3f}, contrast {:.3f}, brightness {:.3f}, tint amount {:.3f}); "
+						 "using the plain proxy",
+				capture.param[1], capture.cinematic[0], capture.cinematic[2], capture.cinematic[3], capture.tint[3]);
+		}
+		return;
+	}
+
+	// The vanilla pass samples its adaptation texture (AvgTex) at pixel-shader slot 2 and leaves
+	// it bound. It is a tiny, uniform target; anything larger is not the adaptation.
+	winrt::com_ptr<ID3D11ShaderResourceView> adaptationSRV;
+	globals::d3d::context->PSGetShaderResources(2, 1, adaptationSRV.put());
+	if (!adaptationSRV)
+		return;
+	winrt::com_ptr<ID3D11Resource> resource;
+	adaptationSRV->GetResource(resource.put());
+	const auto texture = resource ? resource.try_as<ID3D11Texture2D>() : nullptr;
+	if (!texture)
+		return;
+	D3D11_TEXTURE2D_DESC desc{};
+	texture->GetDesc(&desc);
+	constexpr UINT kMaxAdaptationExtent = 64;
+	if (!desc.Width || !desc.Height || desc.Width > kMaxAdaptationExtent || desc.Height > kMaxAdaptationExtent)
+		return;
+
+	capture.adaptationSRV = adaptationSRV;
+	capture.valid = true;
+	if (!neuralRenderingDisplayCaptureLogged) {
+		neuralRenderingDisplayCaptureLogged = true;
+		logger::info("[Upscaling] Neural Rendering display transform captured: adaptation {}x{} format {}, "
+					 "white {:.3f} filmic {:.0f}, saturation {:.3f} contrast {:.3f} brightness {:.3f}, "
+					 "tint ({:.3f}, {:.3f}, {:.3f}) x {:.3f}",
+			desc.Width, desc.Height, static_cast<int>(desc.Format),
+			capture.param[1], capture.param[2], capture.cinematic[0], capture.cinematic[2], capture.cinematic[3],
+			capture.tint[0], capture.tint[1], capture.tint[2], capture.tint[3]);
+	}
+}
+
+NeuralRendering::DisplayTransform Upscaling::MakeNeuralRenderingDisplayTransform() const
+{
+	NeuralRendering::DisplayTransform display{};
+
+	const auto& capture = neuralRenderingDisplayCapture;
+	if (capture.valid && capture.adaptationSRV) {
+		display.vanillaGrading = true;
+		display.vanillaAdaptationSRV = capture.adaptationSRV.get();
+		std::copy_n(capture.param, 4, display.param);
+		std::copy_n(capture.cinematic, 4, display.cinematic);
+		std::copy_n(capture.tint, 4, display.tint);
+	}
+
+	// Post Processing's Composite applies its auto exposure downstream of every pre-tonemap
+	// placement whether or not it owns the tonemap; mirror its formula (composite.ps.hlsl).
+	auto& postProcessing = globals::features::postProcessing;
+	if (postProcessing.loaded && !postProcessing.bypass && !postProcessing.IsTonemapOwnedByEffects11()) {
+		auto* autoExposure = postProcessing.GetPipelineFeature<HistogramAutoExposure>(PostProcessing::FeaturePipelineIndex::AutoExposure);
+		if (autoExposure && autoExposure->enabled && autoExposure->GetAdaptationSRV()) {
+			display.postProcessExposure = true;
+			display.postProcessAdaptationSRV = autoExposure->GetAdaptationSRV();
+			display.postProcessExposureScale = 0.18f * std::exp2(autoExposure->settings.ExposureCompensation);
+			display.postProcessAdaptationRange[0] = std::exp2(autoExposure->settings.AdaptationRange.x - 3.0f);
+			display.postProcessAdaptationRange[1] = std::exp2(autoExposure->settings.AdaptationRange.y - 3.0f);
+		}
+	}
+	return display;
 }
 
 bool Upscaling::EvaluateNeuralRenderingFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11ShaderResourceView* a_colorInSRV,
@@ -2217,6 +2322,8 @@ void Upscaling::PerformUpscaling()
 		// colour and guides are jittered alike, so that path leaves this zero.
 		neuralOptions.guideJitterOffsetX = -jitter.x;
 		neuralOptions.guideJitterOffsetY = -jitter.y;
+		// Pre-tonemap: show the model the frame exposed and graded as it will be displayed.
+		neuralOptions.display = MakeNeuralRenderingDisplayTransform();
 		// Raw game motion-vector target, not the dilated ghosting-reduction copy
 		// DLSS consumes; see the matching note in Upscale() for the reasoning.
 		neuralRenderingResultValid = neuralRendering.Evaluate(sharpenerTexture->resource.get(),

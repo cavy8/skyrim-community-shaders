@@ -364,6 +364,8 @@ namespace PostProcessingExtensions
 			// Effects11 replaces the pass outright; when it does, the vanilla call is skipped
 			// and HandlePostProcessing fixes up the render-target state the pass would have set.
 			if (state->HandlePostProcessing(input, output)) {
+				// The vanilla pass did not run, so there is no ISHDR exposure/grading to replicate.
+				globals::features::upscaling.CaptureNeuralRenderingDisplayTransform(nullptr);
 				// Effects11 already wrote its finished, tonemapped frame into `output`.
 				globals::features::upscaling.ApplyNeuralRenderingFinishedImage(output);
 				return;
@@ -377,6 +379,11 @@ namespace PostProcessingExtensions
 				postProcessing.PreProcess(input);
 
 			func(a1, a2, a3, a4, a5);
+
+			// Record the exposure and grading the vanilla pass just applied (a no-op unless the
+			// vanilla tonemap owns the frame) so next frame's pre-tonemap Neural Rendering
+			// placements can show the model the frame the way it will be displayed.
+			globals::features::upscaling.CaptureNeuralRenderingDisplayTransform(a5);
 
 			// `output` now holds the frame's finished, tonemapped colour regardless of who did
 			// the tonemapping - Post Processing (the vanilla call above just took its passthrough

@@ -2,6 +2,8 @@
 
 #include "NeuralRendering/Backend.h"
 
+#include <algorithm>
+
 // This translation unit deliberately holds nothing but the adapter between the
 // public `NeuralRendering` class and `NeuralRenderingBackend`. The transport
 // layer lives in a `NeuralRendering` *namespace*, which cannot coexist with a
@@ -38,6 +40,15 @@ namespace
 		inputs.resolutionScaleX = options.resolutionScaleX;
 		inputs.resolutionScaleY = options.resolutionScaleY;
 		inputs.colorDomain = static_cast<std::uint32_t>(options.colorDomain);
+		inputs.display.vanillaGrading = options.display.vanillaGrading;
+		std::copy_n(options.display.param, 4, inputs.display.param);
+		std::copy_n(options.display.cinematic, 4, inputs.display.cinematic);
+		std::copy_n(options.display.tint, 4, inputs.display.tint);
+		inputs.display.vanillaAdaptationSRV = options.display.vanillaAdaptationSRV;
+		inputs.display.postProcessExposure = options.display.postProcessExposure;
+		inputs.display.postProcessAdaptationSRV = options.display.postProcessAdaptationSRV;
+		inputs.display.postProcessExposureScale = options.display.postProcessExposureScale;
+		std::copy_n(options.display.postProcessAdaptationRange, 2, inputs.display.postProcessAdaptationRange);
 		inputs.intensity = options.intensity;
 		inputs.colorStrength = options.colorStrength;
 		inputs.transferStrength = options.transferStrength;

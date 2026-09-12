@@ -16,6 +16,10 @@ cbuffer TransferParams : register(b0)
 	uint ColorDomain;          // kNeuralColorDomain* - how OriginalColor and DestinationColor are encoded.
 	float4 CategoryColorStrengths[2];
 	float4 CategoryTransferStrengths[2];
+	float4 DisplayParam;      // x: replicate the vanilla tonemap, y: ISHDR Param.y (white point), z: ISHDR Param.z (Hejl-Burgess-Dawson).
+	float4 DisplayCinematic;  // ISHDR Cinematic: x saturation, z contrast, w brightness.
+	float4 DisplayTint;       // ISHDR Tint: xyz colour, w amount.
+	float4 DisplayExposure;   // x: apply Post Processing auto exposure, y: 0.18 * compensation, zw: adaptation range.
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
@@ -23,6 +27,8 @@ Texture2D<float4> OriginalColor : register(t1);  // Untouched linear scene colou
 Texture2D<float4> ProxyColor : register(t2);     // The exact proxy EncodeColorCS handed the model.
 Texture2D<float> GuideDepth : register(t3);      // Game depth at the guide resolution.
 Texture2D<float> MaterialCategories : register(t4);  // Masks2: category in the low three R16_UNORM bits.
+Texture2D<float2> VanillaAdaptation : register(t5);            // Same inputs EncodeColorCS used for the display transform,
+StructuredBuffer<float> PostProcessAdaptation : register(t6);  // so a stale proxy can be compared with a fresh encode.
 RWTexture2D<float4> DestinationColor : register(u0);
 SamplerState LinearClampSampler : register(s0);
 
@@ -102,8 +108,13 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float editWeight = categoryTransferStrength * TransferStrength;
 	// On an alternating skip frame the model's previous answer is re-applied to
 	// the fresh frame; fade it out wherever the content under the pixel changed.
-	if (SkipFrame != 0)
-		editWeight *= NeuralStaleEditWeight(proxy, original, ColorDomain);
+	// The fresh frame is encoded with the same display transform the stale proxy
+	// received, so only genuine content changes register.
+	if (SkipFrame != 0) {
+		NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
+			VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0]);
+		editWeight *= NeuralStaleEditWeight(proxy, original, ColorDomain, display);
+	}
 	if (DepthAwareResolve != 0 && all(GuideSize > 0)) {
 		// Left fractional (not rounded to a texel) so NeuralSilhouetteWeight can
 		// bilinearly blend across the guide/active resolution mismatch instead of
