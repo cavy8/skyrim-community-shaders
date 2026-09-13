@@ -68,6 +68,7 @@ namespace
 		inputs.superResolutionQualityMode = options.superResolutionQualityMode;
 		inputs.superResolutionPreset = options.superResolutionPreset;
 		inputs.automaticMask = options.automaticMask;
+		inputs.debugCategoryView = options.debugCategoryView;
 		inputs.reset = options.reset;
 		return inputs;
 	}

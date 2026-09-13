@@ -434,6 +434,12 @@ void Deferred::EndDeferred()
 
 	DeferredPasses();  // Perform deferred passes and composite forward buffers
 
+	// Forward lighting draws still tag Neural Rendering categories into Masks2
+	// (see Upscaling::RestoreNeuralRenderingCategories); hand it back clean now
+	// that the composite has consumed the decal-blended AO.
+	if (globals::features::upscaling.loaded)
+		globals::features::upscaling.RestoreNeuralRenderingCategories();
+
 	stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);  // Run OMSetRenderTargets again
 
 	deferredPass = false;

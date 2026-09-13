@@ -290,6 +290,11 @@ public:
 		// rain drops; see CharacterRainSurfaces.
 		IsCharacterRainSurface = 1 << 10,
 		IsHeldWeapon = 1 << 11,
+		// Set by Upscaling::BSLightingShader_SetupNeuralCategory when the drawn
+		// geometry belongs to a hair or facial-hair head part of its actor,
+		// whatever shader type the piece was authored with - see
+		// NeuralRenderingCategories::Hair.
+		IsHair = 1 << 12,
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		IsEye = 1u << 31
 	};

@@ -73,7 +73,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingLandscapeStrengths,
 	neuralRenderingEquipmentStrengths,
 	neuralRenderingDepthAwareResolve,
-	neuralRenderingAlternateFrames);
+	neuralRenderingAlternateFrames,
+	neuralRenderingDebugCategoryView);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
 
@@ -743,6 +744,19 @@ void Upscaling::DrawNeuralRenderingSettings()
 		T(TKEY("neural_rendering_category_everything_else_tooltip"),
 			"Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above."));
 
+	// --- Debug: inspect the category classification itself ---
+	ImGui::Separator();
+	ImGui::TextUnformatted(T(TKEY("neural_rendering_debug"), "Debug"));
+
+	ImGui::Checkbox(T(TKEY("neural_rendering_debug_category_view"), "Show Material Categories"), &settings.neuralRenderingDebugCategoryView);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_debug_category_view_tooltip"),
+			"Replaces the frame with a flat colour per classified material category (red Skin, orange Hair, "
+			"yellow Eyes, green Foliage, cyan Landscape, purple Equipment, near-black Everything Else). Shows "
+			"the raw per-pixel classification, not the per-category strengths above. Neural Rendering still "
+			"evaluates normally underneath, so this costs the same as leaving it off."));
+	}
+
 	if (!neuralRenderingControlsAvailable)
 		ImGui::EndDisabled();
 }
@@ -916,6 +930,11 @@ void Upscaling::PostPostLoad()
 	// Flags geometry belonging to humanoid actors for
 	// NeuralRenderingCategories::Equipment (see BSLightingShader_SetupNeuralCategory).
 	stl::write_vfunc<0x6, BSLightingShader_SetupGeometry_NeuralCategory>(RE::VTABLE_BSLightingShader[0]);
+
+	// Lets forward (post-deferred) lighting draws - sorted alpha geometry such as
+	// hair, and the first-person view - write their Neural Rendering category
+	// (see RestoreNeuralRenderingCategories).
+	stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
 
 	if (!MenuOpenCloseEventHandler::Register())
 		logger::warn("[Upscaling] MenuOpenCloseEventHandler registration failed; temporal history may survive loading transitions");
@@ -1896,34 +1915,120 @@ void Upscaling::Upscale()
 	}
 }
 
+namespace
+{
+	bool IsHairHeadPart(const RE::BGSHeadPart* a_part)
+	{
+		using HeadPartType = RE::BGSHeadPart::HeadPartType;
+		return a_part && (a_part->type == HeadPartType::kHair || a_part->type == HeadPartType::kFacialHair);
+	}
+
+	// Whether any of a_parts, or one of their extra parts (hairlines ride along
+	// as extra parts of their hair), is a hair head part named a_partName.
+	bool MatchesHairHeadPart(RE::BGSHeadPart** a_parts, std::uint32_t a_count, const RE::BSFixedString& a_partName)
+	{
+		if (!a_parts)
+			return false;
+		for (std::uint32_t i = 0; i < a_count; ++i) {
+			const auto* part = a_parts[i];
+			if (!IsHairHeadPart(part))
+				continue;
+			if (part->formEditorID == a_partName)
+				return true;
+			for (const auto* extra : part->extraParts) {
+				if (extra && extra->formEditorID == a_partName)
+					return true;
+			}
+		}
+		return false;
+	}
+
+	// Hair by shader authoring: the hair-tint material (which the HAIR technique
+	// already covers) or the hair soft-lighting property flag on any other
+	// material. This is what identifies wigs and other hair worn as equipment,
+	// which have no head part to match.
+	bool IsHairTintShader(const RE::BSRenderPass* a_pass)
+	{
+		if (!a_pass->shaderProperty || a_pass->shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
+			return false;
+		const auto* lightingProperty = static_cast<const RE::BSLightingShaderProperty*>(a_pass->shaderProperty);
+		return (lightingProperty->material && lightingProperty->material->GetFeature() == RE::BSShaderMaterial::Feature::kHairTint) ||
+		       lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kHairTint);
+	}
+
+	// Head parts hang directly under the actor's skinned face node, each as a
+	// child named by the part's editor ID (what Actor::GetHeadPartObject looks
+	// up), so the head part a geometry belongs to is its ancestor sitting right
+	// under that node. Classifying hair from the NPC record rather than the
+	// material catches the hairlines, braids and loose strands that hair mods
+	// author with the default or skin-tint shader type instead of hair tint.
+	bool IsHairHeadPartGeometry(RE::Actor* a_actor, const RE::BSGeometry* a_geometry)
+	{
+		const auto* faceNode = a_actor->GetFaceNodeSkinned();
+		if (!faceNode)
+			return false;
+
+		const RE::NiAVObject* partRoot = a_geometry;
+		while (partRoot && partRoot->parent != faceNode)
+			partRoot = partRoot->parent;
+		if (!partRoot)
+			return false;
+
+		auto* npc = a_actor->GetActorBase();
+		if (!npc)
+			return false;
+		if (npc->HasOverlays() && MatchesHairHeadPart(npc->GetBaseOverlays(), npc->GetNumBaseOverlays(), partRoot->name))
+			return true;
+		return MatchesHairHeadPart(npc->headParts, static_cast<std::uint32_t>(std::max<std::int8_t>(npc->numHeadParts, 0)), partRoot->name);
+	}
+}
+
 void Upscaling::BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass)
 {
 	auto deferred = globals::deferred;
 	auto state = globals::state;
 	constexpr auto humanoidFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsHumanoidActor);
+	constexpr auto hairFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsHair);
+
+	// Every lighting draw that writes Masks2: the deferred pass and the forward
+	// draws between RestoreNeuralRenderingCategories and
+	// FinishNeuralRenderingCategoryCapture. A forward draw seen with cleared
+	// flags would land skinned armor in Skin and rigid armor in Everything Else.
+	const bool writesCategories = deferred->deferredPass || neuralRenderingForwardCaptureActive;
 
 	bool isHumanoidActor = false;
-	if (deferred->deferredPass && settings.neuralRenderingEnabled && actorTypeNPCKeyword) {
-		// Any geometry owned by a humanoid actor - skinned armor/clothing as
-		// well as rigid weapons, shields and helmets attached to its skeleton.
-		// Skin (body and face), hair and eyes are claimed by their own material
-		// permutations before the shader consults this flag (see Lighting.hlsl).
+	bool isHair = false;
+	if (writesCategories && settings.neuralRenderingEnabled && actorTypeNPCKeyword && a_pass->geometry) {
+		// Hair by shader authoring (wigs) or by head part (hairlines, braids and
+		// strands authored with other shader types); see Lighting.hlsl.
+		isHair = IsHairTintShader(a_pass);
 		if (auto userData = a_pass->geometry->GetUserData()) {
 			if (auto actor = userData->As<RE::Actor>()) {
+				// Any geometry owned by a humanoid actor - skinned armor/clothing
+				// as well as rigid weapons, shields and helmets attached to its
+				// skeleton. Skin (body and face) and eyes are claimed by their own
+				// material permutations before the shader consults this flag.
 				if (auto race = actor->GetRace())
 					isHumanoidActor = race->HasKeyword(actorTypeNPCKeyword);
+				isHair = isHair || IsHairHeadPartGeometry(actor, a_pass->geometry);
 			}
 		}
 	}
 
+	auto& descriptor = state->permutationData.ExtraShaderDescriptor;
+	descriptor &= ~(humanoidFlag | hairFlag);
 	if (isHumanoidActor)
-		state->permutationData.ExtraShaderDescriptor |= humanoidFlag;
-	else
-		state->permutationData.ExtraShaderDescriptor &= ~humanoidFlag;
+		descriptor |= humanoidFlag;
+	if (isHair)
+		descriptor |= hairFlag;
 }
 
 void Upscaling::CaptureNeuralRenderingCategories()
 {
+	// A new frame's opaque categories supersede any forward capture still armed
+	// from a frame that never reached Main_PostProcessing.
+	neuralRenderingForwardCaptureActive = false;
+
 	// Only paid for when Neural Rendering can actually consume it: DLSS-only.
 	// The decode shader always samples the category texture now, since each
 	// category's hue guard toggle needs to know which material a pixel is.
@@ -1961,6 +2066,68 @@ void Upscaling::CaptureNeuralRenderingCategories()
 	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
 }
 
+void Upscaling::RestoreNeuralRenderingCategories()
+{
+	neuralRenderingForwardCaptureActive = false;
+	if (!materialCategoriesSnapshot || !settings.neuralRenderingEnabled || GetUpscaleMethod() != UpscaleMethod::kDLSS)
+		return;
+
+	auto& masks2 = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
+	if (!masks2.texture)
+		return;
+
+	// Masks2 is unbound here (EndDeferred cleared the OM before DeferredPasses),
+	// and the composite has already read the decal-blended AO it held.
+	globals::d3d::context->CopyResource(masks2.texture, materialCategoriesSnapshot->resource.get());
+	neuralRenderingForwardCaptureActive = true;
+}
+
+void Upscaling::FinishNeuralRenderingCategoryCapture()
+{
+	if (!neuralRenderingForwardCaptureActive)
+		return;
+	neuralRenderingForwardCaptureActive = false;
+
+	auto& masks2 = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
+	if (!materialCategoriesSnapshot || !masks2.texture)
+		return;
+
+	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
+}
+
+void Upscaling::BSBatchRenderer_RenderPassImmediately::thunk(RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags)
+{
+	auto& upscaling = globals::features::upscaling;
+	auto* deferred = globals::deferred;
+	auto* state = globals::state;
+	auto& runtimeData = globals::game::shadowState->GetRuntimeData();
+
+	// Only the forward lighting draws of the main world view, into the same
+	// full-resolution colour target the deferred pass restored: a cubemap
+	// face or reflection target in slot 0 would fail OMSetRenderTargets
+	// against a render-resolution Masks2.
+	const bool bindCategories = upscaling.neuralRenderingForwardCaptureActive &&
+	                            !deferred->deferredPass && state->inWorld &&
+	                            a_pass && a_pass->shader &&
+	                            a_pass->shader->shaderType.get() == RE::BSShader::Type::Lighting &&
+	                            !(state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) &&
+	                            runtimeData.renderTargets[0] == deferred->forwardRenderTargets[0];
+
+	if (!bindCategories) {
+		func(a_pass, a_technique, a_alphaTest, a_renderFlags);
+		return;
+	}
+
+	runtimeData.renderTargets[7] = MASKS2;
+	runtimeData.setRenderTargetMode[7] = RE::BSGraphics::SetRenderTargetMode::SRTM_NO_CLEAR;
+	runtimeData.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+
+	func(a_pass, a_technique, a_alphaTest, a_renderFlags);
+
+	runtimeData.renderTargets[7] = RE::RENDER_TARGET::kNONE;
+	runtimeData.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+}
+
 NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 {
 	NeuralRendering::Options options{};
@@ -1986,6 +2153,7 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
 	options.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
 	options.automaticMask = settings.neuralRenderingAutomaticMask;
+	options.debugCategoryView = settings.neuralRenderingDebugCategoryView;
 	options.reset = neuralRenderingResetThisFrame;
 	const bool perAxis = settings.neuralRenderingResolutionMode == 1;
 	options.resolutionScaleX = perAxis ? settings.neuralRenderingResolutionScaleX : settings.neuralRenderingResolutionScale;
@@ -2154,7 +2322,7 @@ bool Upscaling::EvaluateNeuralRenderingFinishedImage(ID3D11Texture2D* a_colorIn,
 		return false;
 	}
 
-	// The pre-blended-decals snapshot, not the live Masks2 - see CaptureNeuralRenderingCategories.
+	// The category snapshot (opaque categories captured before decals, forward categories added after), not the live Masks2 - see CaptureNeuralRenderingCategories.
 	auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 
 	// Same guide contract as the After Upscaling placement: the colour is display resolution and
@@ -2359,7 +2527,7 @@ void Upscaling::PerformUpscaling()
 		neuralRenderingResourcesActive = true;
 		auto renderer = globals::game::renderer;
 		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-		// The pre-blended-decals snapshot, not the live Masks2 - see CaptureNeuralRenderingCategories.
+		// The category snapshot (opaque categories captured before decals, forward categories added after), not the live Masks2 - see CaptureNeuralRenderingCategories.
 		auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 		auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
@@ -2727,6 +2895,10 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 {
 	auto& upscaling = globals::features::upscaling;
 	auto upscaleMethod = upscaling.GetUpscaleMethod();
+
+	// World and first-person geometry are done; take the categories the forward
+	// lighting draws added before anything below reads the snapshot.
+	upscaling.FinishNeuralRenderingCategoryCapture();
 
 	if (upscaling.ShouldUseFrameGenerationThisFrame()) {
 		auto& postProcessing = globals::features::postProcessing;

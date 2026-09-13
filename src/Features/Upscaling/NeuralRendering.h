@@ -114,6 +114,12 @@ public:
 		float localStructureStrength = 1.0f;
 		float skinStructureStrength = -1.0f;
 		bool automaticMask = true;
+		/// Debug view: DecodeColorCS renders each pixel's classified material category
+		/// (NeuralRenderingCategories::DebugColor) instead of blending the model's edit.
+		/// The model still evaluates normally; only the final decode is replaced, so this
+		/// carries the full Neural Rendering cost - it is for tuning category boundaries,
+		/// not a lightweight preview.
+		bool debugCategoryView = false;
 		bool reset = false;
 
 		/// Valid region of @p depth and @p motionVectors, i.e. the game's render

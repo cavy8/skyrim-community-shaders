@@ -86,6 +86,10 @@ namespace Permutation
 		// rain drops; see CharacterRainSurfaces.
 		static const uint IsCharacterRainSurface = (1 << 10);
 		static const uint IsHeldWeapon = (1 << 11);
+		// Set on geometry belonging to a hair or facial-hair head part of its
+		// actor, whatever shader type it was authored with; see
+		// NeuralRenderingCategories::Hair.
+		static const uint IsHair = (1 << 12);
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		static const uint IsEye = (1u << 31);
 	}

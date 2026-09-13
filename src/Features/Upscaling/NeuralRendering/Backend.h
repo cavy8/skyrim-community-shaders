@@ -124,6 +124,9 @@ public:
 		std::uint32_t superResolutionQualityMode = 1;
 		std::uint32_t superResolutionPreset = 0;
 		bool automaticMask = true;
+		/// Debug view: the decode renders each pixel's classified material category as a flat
+		/// colour instead of blending the model's edit; see NeuralRendering::Options::debugCategoryView.
+		bool debugCategoryView = false;
 		bool reset = false;  ///< Force a history reset on this frame.
 	};
 

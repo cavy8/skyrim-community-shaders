@@ -450,19 +450,83 @@ control-mask parameter. `Lighting.hlsl` and `RunGrass.hlsl` already know their
 material permutations, so they store the category in the low three bits of the
 existing `R16_UNORM` `Masks2` value. The upper thirteen bits continue to carry
 vertex AO, limiting the maximum AO representation change to `7/65535`. Untagged
-pixels resolve as Everything Else. `DecodeColorCS` reads `Masks2` at the guide
-(render) resolution, nearest-neighbour maps it to the active colour raster, and
-selects the category multipliers before calling `ResolveNeuralColor`.
+pixels resolve as Everything Else. `Masks2` inherits each material's alpha
+blend state, so `Lighting.hlsl` writes it with the same stochastic 0/1 coverage
+the normals use rather than the material alpha: a lerp of two packed values
+scrambles the discrete category, turning a blended hairline strand at alpha
+below 0.5 over the face into Skin, or into an arbitrary category once the two
+surfaces' AO bits differ. Each pixel therefore holds one surface's exact AO and
+category; the dither is temporal (`FrameCount`-seeded), so the AO lerp is
+recovered in expectation under DLSS/TAA, and only blended materials with a
+vertex AO below 1 see any change at all.
 
-Equipment is the one category the shader cannot derive from its permutation
-alone. `Upscaling::BSLightingShader_SetupNeuralCategory` (hooked onto
-`BSLightingShader::SetupGeometry`) sets `ExtraFlags::IsHumanoidActor` for any
-pass whose geometry is owned by an actor whose race has the `ActorTypeNPC`
-keyword; `Lighting.hlsl` maps that to Equipment after the skin, hair, eye,
-foliage and landscape branches. Bare skin (body as well as face) goes through
-the skin-tint permutations and is Skin before the flag is consulted, so
-Equipment ends up as armor, clothing and wielded weapons, including rigid
-(non-skinned) weapons, shields and helmets. Creature bodies stay Skin.
+Alpha-blended lighting geometry is not part of the deferred pass at all: the
+engine sorts it and draws it after `Deferred::EndDeferred`, through the forward
+`Lighting.hlsl` permutation, with the deferred targets unbound. Hair strands and
+hairline scalps live there, which is why a deferred-only capture showed the
+face's Skin under the roots and the background's Everything Else under the
+blended mid-section while only the alpha-tested core read as Hair. The capture
+is therefore three steps, all in `Upscaling`:
+
+1. `CaptureNeuralRenderingCategories` (Deferred's blended-decals hook) copies
+   the opaque categories out of `Masks2` before decals alpha-blend into it.
+2. `RestoreNeuralRenderingCategories` (end of `Deferred::EndDeferred`, after
+   `DeferredPasses` has consumed the decal-blended vertex AO) copies that
+   snapshot back into `Masks2` and arms the forward capture. From here
+   `BSBatchRenderer_RenderPassImmediately` binds `Masks2` to `SV_Target7` around
+   each forward lighting draw of the main world view (reflection and cubemap
+   passes are skipped, as is any draw whose slot-0 target is not the one the
+   deferred pass restored, since a mismatched size would fail
+   `OMSetRenderTargets`), and the forward `PS_OUTPUT` carries the same packed
+   category write with the same 0/1 coverage.
+3. `FinishNeuralRenderingCategoryCapture` (start of `Main_PostProcessing`)
+   re-snapshots `Masks2` so every Neural Rendering evaluation keeps reading the
+   snapshot texture, now with both the opaque and the forward categories.
+
+`DecodeColorCS` reads that snapshot at the guide (render) resolution,
+nearest-neighbour maps it to the active colour raster, and selects the category
+multipliers before calling `ResolveNeuralColor`.
+
+**Debug view.** The Neural Rendering settings tab's Debug section has a "Show
+Material Categories" checkbox (`Upscaling::Settings::neuralRenderingDebugCategoryView`,
+threaded through `NeuralRendering::Options::debugCategoryView` and
+`NeuralRenderingBackend::FrameInputs::debugCategoryView` into the `TransferParams`
+cbuffer's `DebugCategoryView` flag). When set, `DecodeColorCS` skips the resolve
+entirely and writes a fixed, maximally-distinguishable colour per pixel's nearest-
+neighbour category (`NeuralRenderingCategories::DebugColor`) instead - the raw
+classification, not the tent-filtered strengths above, since a resolved strength
+can't be mapped back to a category id. This is for tuning category boundaries
+(e.g. checking a hairline isn't reading as Skin); the model still evaluates
+normally underneath, so it carries the full Neural Rendering cost rather than
+being a cheap preview.
+
+Two categories cannot be derived from the shader permutation alone, and
+`Upscaling::BSLightingShader_SetupNeuralCategory` (hooked onto
+`BSLightingShader::SetupGeometry`, for every lighting draw that writes `Masks2`:
+the deferred pass and the forward draws described above) resolves them per pass
+from the geometry's owning actor:
+
+- `ExtraFlags::IsHumanoidActor` is set when the actor's race has the
+  `ActorTypeNPC` keyword; `Lighting.hlsl` maps that to Equipment after the
+  skin, hair, eye, foliage and landscape branches. Bare skin (body as well as
+  face) goes through the skin-tint permutations and is Skin before the flag is
+  consulted, so Equipment ends up as armor, clothing and wielded weapons,
+  including rigid (non-skinned) weapons, shields and helmets. Creature bodies
+  stay Skin.
+- `ExtraFlags::IsHair` is set from either of two signals. The pass's material
+  is hair tint or its shader property carries the hair soft-lighting flag,
+  which covers wigs and other hair worn as equipment. Or the geometry belongs
+  to one of the actor's hair or facial-hair head parts (or their extra parts,
+  which is how hairlines attach): head parts hang under the actor's skinned
+  face node as children named by the part's editor ID, so the hook walks up
+  from the geometry to the child of that node and matches its name against the
+  NPC's head parts. The `HAIR` technique only covers pieces authored with the
+  hair-tint shader type, and hair mods commonly author hairlines, braids and
+  loose strands with the default or skin-tint type instead; those compiled as
+  Equipment (humanoid), Skin (skin-tint, or skinned with the humanoid flag
+  cleared) or Everything Else, which is what the category debug view showed
+  along the hairline and braid. `IsHair` overrides the technique-derived
+  category in every permutation except `HAIR` itself.
 
 ## Depth-aware silhouette preservation
 

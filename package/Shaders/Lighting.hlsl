@@ -315,6 +315,9 @@ struct PS_OUTPUT
 	float4 Diffuse: SV_Target0;
 	float4 MotionVectors: SV_Target1;
 	float4 NormalGlossiness: SV_Target2;
+	// Neural Rendering material category. Only bound (by Upscaling) for the
+	// forward lighting draws that follow the deferred pass; unbound otherwise.
+	float4 Masks2: SV_Target7;
 };
 #endif
 
@@ -3344,20 +3347,30 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.Masks = float4(0, 0, masksZ, psout.Diffuse.w);
 #		endif
 
-	// Stored as 1 - vertexAO so the cleared default (0) means no occlusion
-	// for pixels that do not write to this RT (sky, water, grass, effects).
+	float stochasticBlend = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
+	psout.NormalGlossiness.w = stochasticBlend;
+#	endif  // defined(DEFERRED)
+
+	// Neural Rendering material category, packed into the low bits of Masks2
+	// next to vertex AO (stored as 1 - vertexAO so the cleared default of 0
+	// means no occlusion for pixels that never write this target). This runs
+	// for every lighting draw, not only the deferred ones: alpha-blended
+	// geometry such as hair strands and hairline scalps is sorted and drawn
+	// forward after the deferred pass, and Upscaling binds Masks2 back to
+	// SV_Target7 for exactly those draws (BSBatchRenderer_RenderPassImmediately)
+	// so hair reads as Hair instead of exposing the face or background beneath.
 	uint neuralRenderingCategory = NeuralRenderingCategories::EverythingElse;
-#		if defined(FACEGEN) || defined(FACEGEN_RGB_TINT)
+#	if defined(FACEGEN) || defined(FACEGEN_RGB_TINT)
 	neuralRenderingCategory = NeuralRenderingCategories::Skin;
-#		elif defined(HAIR)
+#	elif defined(HAIR)
 	neuralRenderingCategory = NeuralRenderingCategories::Hair;
-#		elif defined(EYE)
+#	elif defined(EYE)
 	neuralRenderingCategory = NeuralRenderingCategories::Eyes;
-#		elif defined(TREE_ANIM)
+#	elif defined(TREE_ANIM)
 	neuralRenderingCategory = NeuralRenderingCategories::Foliage;
-#		elif defined(LANDSCAPE) || defined(LODLANDSCAPE) || defined(LODLANDNOISE)
+#	elif defined(LANDSCAPE) || defined(LODLANDSCAPE) || defined(LODLANDNOISE)
 	neuralRenderingCategory = NeuralRenderingCategories::Landscape;
-#		else
+#	else
 	// Most eyes never compile the EYE technique above: vanilla renders their
 	// shine through the ENVMAP technique instead, distinguished only by the
 	// material's kEnvironmentMap feature plus an "eye" geometry name. That
@@ -3378,17 +3391,35 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// also catches rigid (non-SKINNED) weapons, shields and helmets.
 		neuralRenderingCategory = NeuralRenderingCategories::Equipment;
 	}
-#			if defined(SKINNED)
+#		if defined(SKINNED)
 	else {
 		neuralRenderingCategory = NeuralRenderingCategories::Skin;  // creature bodies
 	}
-#			endif
 #		endif
-	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, neuralRenderingCategory), 0, 0, psout.Diffuse.w);
-
-	float stochasticBlend = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
-	psout.NormalGlossiness.w = stochasticBlend;
 #	endif
+#	if !defined(HAIR)
+	// Hair pieces are often not authored with the hair-tint shader type:
+	// hairlines, braids and loose strands commonly use the default or skin-tint
+	// type, so the HAIR technique alone leaves them as Equipment, Skin or
+	// Everything Else, while wigs worn as equipment carry hair-tint authoring
+	// without any head part. Upscaling resolves both at runtime
+	// (BSLightingShader_SetupNeuralCategory) and that wins over the
+	// technique-derived classification above.
+	if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsHair)
+		neuralRenderingCategory = NeuralRenderingCategories::Hair;
+#	endif
+	// Masks2 takes the draw's own alpha blend state (Deferred::OverrideBlendStates
+	// mirrors RT0 onto every deferred target; the game's forward blend states do
+	// the same), and a lerp of two packed values scrambles the discrete category
+	// in the low bits: a hairline strand at alpha < 0.5 over the face rounds back
+	// to Skin, and any AO difference between the two surfaces leaves an arbitrary
+	// category behind. Blend it with the same stochastic 0/1 coverage the normals
+	// use, so a pixel holds one surface's exact AO and category; the per-frame
+	// dither still averages to the old AO lerp under DLSS/TAA, and DecodeColorCS's
+	// tent filter turns it back into a coverage-weighted mix of the category
+	// strengths.
+	float masks2Coverage = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
+	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, neuralRenderingCategory), 0, 0, masks2Coverage);
 
 #	if !defined(HDR_OUTPUT)  // Do not apply gamma correction before we pass to ISHDR.
 	if ((!inWorld && !inReflection) && SharedData::linearLightingSettings.enableLinearLighting && !(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow)) {

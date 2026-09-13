@@ -22,7 +22,8 @@ cbuffer TransferParams : register(b0)
 	float4 DisplayTint;       // ISHDR Tint: xyz colour, w amount.
 	float4 DisplayExposure;   // x: apply Post Processing auto exposure, y: 0.18 * compensation, zw: adaptation range.
 	float LuminosityStrength;  // Overall multiplier on the model's luminance change alone (see ResolveNeuralColor).
-	float3 HueGuardPad;        // Unused; keeps the cbuffer a whole number of float4s.
+	uint DebugCategoryView;    // Non-zero: render the classified category (NeuralRenderingCategories::DebugColor) instead of the model's edit.
+	float2 HueGuardPad;        // Unused; keeps the cbuffer a whole number of float4s.
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
@@ -47,6 +48,23 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	uint2 active = min(ActiveSize, min(uint2(width, height), uint2(originalWidth, originalHeight)));
 	if (any(dispatchThreadID.xy >= active) || any(ActiveSize == 0))
 		return;
+
+	// "Show Material Categories" debug view: render the classification itself, nearest-neighbour,
+	// instead of blending the model's edit. This skips the resolve entirely rather than reusing the
+	// tent-filtered strengths below - those are resolved *strengths*, not a category id, and can't be
+	// mapped back to one; a nearest lookup also shows the raw per-pixel classification the tent filter
+	// exists to soften. Left GuideSize == 0 (guide not yet configured for this placement) as EverythingElse.
+	if (DebugCategoryView != 0) {
+		uint category = NeuralRenderingCategories::EverythingElse;
+		if (all(GuideSize > 0)) {
+			float2 guideCoord = NeuralGuidePosition(dispatchThreadID.xy, GuideSize, ActiveSize, GuideJitterOffset) - 0.5;
+			int2 guideTexel = clamp((int2)round(guideCoord), int2(0, 0), int2(GuideSize) - 1);
+			category = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(guideTexel, 0)));
+			category = category < 7 ? category : NeuralRenderingCategories::EverythingElse;
+		}
+		DestinationColor[dispatchThreadID.xy] = float4(NeuralRenderingCategories::DebugColor(category), 1.0);
+		return;
+	}
 
 	// The original pixel holds scene position (pixel - JitterOffset) on the
 	// unjittered grid the model saw. The model and proxy textures span that same

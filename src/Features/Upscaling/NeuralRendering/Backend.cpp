@@ -45,7 +45,8 @@ namespace
 		float displayTint[4]{ 1.0f, 1.0f, 1.0f, 0.0f };       ///< ISHDR Tint.
 		float displayExposure[4]{ 0.0f, 0.18f, 0.0f, 1.0f };  ///< x Post Processing exposure on/off, y scale, zw range.
 		float luminosityStrength = 1.0f;  ///< Overall multiplier on the model's luminance change alone.
-		float hueGuardPad[3]{};           ///< Unused; keeps the cbuffer a whole number of float4s.
+		std::uint32_t debugCategoryView = 0;  ///< Non-zero: the decode renders the classified category, not the model's edit.
+		float hueGuardPad[2]{};                ///< Unused; keeps the cbuffer a whole number of float4s.
 	};
 	static_assert(sizeof(TransferParams) == 240);
 
@@ -810,6 +811,7 @@ struct NeuralRenderingBackend::State
 				hueGuardMask |= (1u << index);
 		}
 		transferParams.hueGuardMask = hueGuardMask;
+		transferParams.debugCategoryView = inputs.debugCategoryView ? 1u : 0u;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		if (!skipFrame && !EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,
