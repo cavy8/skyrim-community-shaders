@@ -82,11 +82,11 @@ public:
 		float neuralRenderingResolutionScaleX = 1.0f;
 		float neuralRenderingResolutionScaleY = 1.0f;
 		float neuralRenderingTransferStrength = 1.0f;
-		bool neuralRenderingHueGuard = true;
-		bool neuralRenderingPerCategoryStrengths = false;
+		float neuralRenderingLuminosityStrength = 1.0f;
 		NeuralRendering::CategoryStrengths neuralRenderingEverythingElseStrengths;
 		NeuralRendering::CategoryStrengths neuralRenderingSkinStrengths;
-		NeuralRendering::CategoryStrengths neuralRenderingHairStrengths;
+		// Hair is the only category that hue-guards its chroma change by default.
+		NeuralRendering::CategoryStrengths neuralRenderingHairStrengths{ 1.0f, 1.0f, 1.0f, true };
 		NeuralRendering::CategoryStrengths neuralRenderingEyesStrengths;
 		NeuralRendering::CategoryStrengths neuralRenderingFoliageStrengths;
 		NeuralRendering::CategoryStrengths neuralRenderingLandscapeStrengths;
@@ -137,6 +137,11 @@ public:
 	virtual void LoadSettings(json& o_json) override;
 	virtual void RestoreDefaultSettings() override;
 	virtual void DataLoaded() override;
+
+	/** @brief Draws the upstream upscaling/frame-generation/Reflex settings tab. */
+	void DrawUpscalingSettings();
+	/** @brief Draws the DLSS Neural Rendering settings tab. */
+	void DrawNeuralRenderingSettings();
 
 	/**
 	 * @brief Installs Direct3D-related hooks for device and factory creation.

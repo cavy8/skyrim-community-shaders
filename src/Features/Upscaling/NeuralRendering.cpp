@@ -52,11 +52,12 @@ namespace
 		inputs.intensity = options.intensity;
 		inputs.colorStrength = options.colorStrength;
 		inputs.transferStrength = options.transferStrength;
-		inputs.hueGuard = options.hueGuard;
-		inputs.perCategoryStrengths = options.perCategoryStrengths;
+		inputs.luminosityStrength = options.luminosityStrength;
 		for (std::size_t index = 0; index < options.categoryStrengths.size(); ++index) {
 			inputs.categoryColorStrengths[index] = options.categoryStrengths[index].colorStrength;
 			inputs.categoryTransferStrengths[index] = options.categoryStrengths[index].transferStrength;
+			inputs.categoryLuminosityStrengths[index] = options.categoryStrengths[index].luminosityStrength;
+			inputs.categoryHueGuard[index] = options.categoryStrengths[index].hueGuard;
 		}
 		inputs.depthAwareResolve = options.depthAwareResolve;
 		inputs.alternateFrames = options.alternateFrames;

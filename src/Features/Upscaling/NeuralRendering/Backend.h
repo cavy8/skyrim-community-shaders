@@ -100,12 +100,15 @@ public:
 		float colorStrength = 1.0f;
 		/// Overall weight of the model's edit (0..2); one applies it exactly.
 		float transferStrength = 1.0f;
-		/// Restrict the model's chroma change to a saturation change on near-neutral pixels
-		/// (see ColorTransfer.hlsli, ResolveNeuralColor).
-		bool hueGuard = true;
-		bool perCategoryStrengths = false;
+		/// Additional multiplier on the model's luminance change alone; see
+		/// NeuralRendering::Options::luminosityStrength.
+		float luminosityStrength = 1.0f;
 		std::array<float, 7> categoryColorStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		std::array<float, 7> categoryTransferStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+		std::array<float, 7> categoryLuminosityStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+		/// Per-category hue guard (see ColorTransfer.hlsli, ResolveNeuralColor). Indexed by
+		/// NeuralRendering::MaterialCategory; only Hair (index 2) defaults on.
+		std::array<bool, 7> categoryHueGuard{ false, false, true, false, false, false, false };
 		/// Fade the edit across depth silhouettes when the model runs below the
 		/// colour resolution; no effect at native scale.
 		bool depthAwareResolve = true;

@@ -621,14 +621,21 @@ float3 NeuralChromaOffset(float3 color)
  * two-sided guard clamps after scaling so a weight above one cannot escape it.
  * Chroma follows the same weight, saturated, on top of @p colorStrength.
  *
- * @p hueGuard toggles the hue guard above; false lets the transferred chroma
- * apply unguarded everywhere, including on near-neutral pixels.
+ * @p luminosityStrength further scales only the luminance exponent, on top of
+ * @p editWeight: one reproduces the plain @p editWeight behaviour above exactly,
+ * below one damps the light/dark change (useful when a strong transfer reads as
+ * overly contrasty) without touching the chroma edit, and above one exaggerates
+ * it further. Zero freezes luminance at the original regardless of @p editWeight.
+ *
+ * @p hueGuardAmount blends the hue guard above in (1) or out (0); a fractional
+ * value - as produced by blending several categories' toggles across a material
+ * boundary - partially releases the lock rather than switching it discretely.
  *
  * @p originalColor is stored in @p domain, and so is the result: the edit itself is
  * always applied in linear light, decoded with that domain's curve.
  */
 float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalColor, float colorStrength,
-	float editWeight, uint domain, bool hueGuard)
+	float editWeight, float luminosityStrength, uint domain, float hueGuardAmount)
 {
 	float3 original = NeuralDomainToLinear(originalColor.rgb, domain);
 	float3 proxy = NeuralModelToLinear(proxyColor.rgb, domain);
@@ -643,8 +650,9 @@ float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalC
 		return float4(NeuralLinearToDomain(original, domain), originalColor.a);
 
 	editWeight = max(editWeight, 0.0);
+	float lumaExponent = max(editWeight * max(luminosityStrength, 0.0), 0.0);
 	float ratio = (modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor);
-	ratio = clamp(pow(ratio, editWeight), 1.0 / kNeuralMaxRatio, kNeuralMaxRatio);
+	ratio = clamp(pow(ratio, lumaExponent), 1.0 / kNeuralMaxRatio, kNeuralMaxRatio);
 
 	float3 luminanceResult = original * ratio;
 	float targetLuma = dot(luminanceResult, kNeuralLuma);
@@ -667,16 +675,16 @@ float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalC
 	// model's chroma that lies along the original's own hue axis (a saturation
 	// change), and not past neutral. Released smoothly as the original's own
 	// chroma grows, so genuinely coloured pixels take the model's full palette.
-	// Disabling @p hueGuard forces the lock fully open, applying the transferred
-	// chroma everywhere unguarded.
+	// @p hueGuardAmount at 0 forces the lock fully open, applying the transferred
+	// chroma everywhere unguarded; a fractional amount partially releases it.
 	float originalChromaMagnitude = NeuralChromaMagnitude(originalChroma);
 	float3 lockedChroma = 0.0;
-	if (hueGuard && originalChromaMagnitude > 1e-4) {
+	if (hueGuardAmount > 0.0 && originalChromaMagnitude > 1e-4) {
 		float3 axis = originalChroma / originalChromaMagnitude;
 		float along = max(dot(targetChroma * axis, kNeuralLuma), 0.0);
 		lockedChroma = axis * along;
 	}
-	float hueLock = hueGuard ? 1.0 - smoothstep(kNeuralHueGuardStart, kNeuralHueGuardEnd, originalChromaMagnitude) : 0.0;
+	float hueLock = hueGuardAmount * (1.0 - smoothstep(kNeuralHueGuardStart, kNeuralHueGuardEnd, originalChromaMagnitude));
 	float3 normalizedResult = max(1.0 + lerp(targetChroma, lockedChroma, hueLock), 0.0);
 	normalizedResult /= max(dot(normalizedResult, kNeuralLuma), 1e-5);
 

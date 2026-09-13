@@ -10,17 +10,18 @@ cbuffer TransferParams : register(b0)
 	uint2 GuideSize;   // Unused here; keeps the layout shared with DecodeColorCS.
 	uint DepthAwareResolve;
 	uint SkipFrame;
-	uint PerCategoryStrengths;  // Unused here; layout shared with DecodeColorCS.
+	uint HueGuardMask;          // Unused here; layout shared with DecodeColorCS.
 	float2 GuideJitterOffset;   // Unused here; layout shared with DecodeColorCS.
 	uint ColorDomain;           // kNeuralColorDomain* - how SourceColor is encoded.
-	float4 CategoryColorStrengths[2];     // Unused here; layout shared with DecodeColorCS.
-	float4 CategoryTransferStrengths[2];  // Unused here; layout shared with DecodeColorCS.
+	float4 CategoryColorStrengths[2];       // Unused here; layout shared with DecodeColorCS.
+	float4 CategoryTransferStrengths[2];    // Unused here; layout shared with DecodeColorCS.
+	float4 CategoryLuminosityStrengths[2];  // Unused here; layout shared with DecodeColorCS.
 	float4 DisplayParam;      // x: replicate the vanilla tonemap, y: ISHDR Param.y (white point), z: ISHDR Param.z (Hejl-Burgess-Dawson).
 	float4 DisplayCinematic;  // ISHDR Cinematic: x saturation, z contrast, w brightness.
 	float4 DisplayTint;       // ISHDR Tint: xyz colour, w amount.
 	float4 DisplayExposure;   // x: apply Post Processing auto exposure, y: 0.18 * compensation, zw: adaptation range.
-	uint HueGuard;            // Unused here; layout shared with DecodeColorCS.
-	float3 HueGuardPad;       // Unused; keeps the cbuffer layout matching DecodeColorCS.
+	float LuminosityStrength;  // Unused here; layout shared with DecodeColorCS.
+	float3 HueGuardPad;        // Unused; keeps the cbuffer layout matching DecodeColorCS.
 };
 
 Texture2D<float4> SourceColor : register(t0);

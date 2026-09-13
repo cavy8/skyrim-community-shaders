@@ -33,20 +33,21 @@ namespace
 		std::uint32_t guideSize[2]{};         ///< Depth guide active region, in guide texels.
 		std::uint32_t depthAwareResolve = 0;  ///< Non-zero: fade the edit across depth silhouettes in the decode.
 		std::uint32_t skipFrame = 0;          ///< Non-zero: the model did not run; the decode re-applies its stale answer.
-		std::uint32_t perCategoryStrengths = 0;
+		std::uint32_t hueGuardMask = 0;  ///< Bit i set: category i (NeuralRendering::MaterialCategory) hue-guards its chroma change.
 		float guideJitterOffset[2]{};   ///< Projection offset of the guide rasters relative to the colour raster, in guide texels.
 		std::uint32_t colorDomain = 0;  ///< NeuralRendering::ColorDomain: how the colour input is encoded.
 		float categoryColorStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		float categoryTransferStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+		float categoryLuminosityStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		// Display transform of the scene-linear proxy (ColorTransfer.hlsli, MakeNeuralDisplayTransform).
 		float displayParam[4]{};                      ///< x vanilla grading on/off, y ISHDR Param.y, z ISHDR Param.z.
 		float displayCinematic[4]{ 1.0f, 0.0f, 1.0f, 1.0f };  ///< ISHDR Cinematic.
 		float displayTint[4]{ 1.0f, 1.0f, 1.0f, 0.0f };       ///< ISHDR Tint.
 		float displayExposure[4]{ 0.0f, 0.18f, 0.0f, 1.0f };  ///< x Post Processing exposure on/off, y scale, zw range.
-		std::uint32_t hueGuard = 1;  ///< Non-zero: hue-guard the model's chroma change on near-neutral pixels (ResolveNeuralColor).
-		float hueGuardPad[3]{};      ///< Unused; keeps the cbuffer a whole number of float4s.
+		float luminosityStrength = 1.0f;  ///< Overall multiplier on the model's luminance change alone.
+		float hueGuardPad[3]{};           ///< Unused; keeps the cbuffer a whole number of float4s.
 	};
-	static_assert(sizeof(TransferParams) == 208);
+	static_assert(sizeof(TransferParams) == 240);
 
 	constexpr float kMinimumResolutionScale = 0.25f;
 	constexpr float kMaximumResolutionScale = 2.0f;
@@ -566,21 +567,23 @@ struct NeuralRenderingBackend::State
 		                      inputs.colorIn != inputs.motionVectors && inputs.colorOut != inputs.depth &&
 		                      inputs.colorOut != inputs.motionVectors && inputs.depth != inputs.motionVectors;
 		const bool finite = std::isfinite(inputs.intensity) && std::isfinite(inputs.colorStrength) &&
-		                    std::isfinite(inputs.transferStrength) &&
+		                    std::isfinite(inputs.transferStrength) && std::isfinite(inputs.luminosityStrength) &&
 		                    std::isfinite(inputs.jitterOffsetX) && std::isfinite(inputs.jitterOffsetY) &&
 		                    std::isfinite(inputs.resolutionScaleX) && std::isfinite(inputs.resolutionScaleY) &&
 		                    std::isfinite(inputs.localToneStrength) &&
 		                    std::isfinite(inputs.localStructureStrength) && std::isfinite(inputs.skinStructureStrength) &&
 		                    std::ranges::all_of(inputs.categoryColorStrengths, [](float value) { return std::isfinite(value); }) &&
 		                    std::ranges::all_of(inputs.categoryTransferStrengths, [](float value) { return std::isfinite(value); }) &&
+		                    std::ranges::all_of(inputs.categoryLuminosityStrengths, [](float value) { return std::isfinite(value); }) &&
 		                    std::ranges::all_of(inputs.display.param, [](float value) { return std::isfinite(value); }) &&
 		                    std::ranges::all_of(inputs.display.cinematic, [](float value) { return std::isfinite(value); }) &&
 		                    std::ranges::all_of(inputs.display.tint, [](float value) { return std::isfinite(value); }) &&
 		                    std::isfinite(inputs.display.postProcessExposureScale) &&
 		                    std::ranges::all_of(inputs.display.postProcessAdaptationRange, [](float value) { return std::isfinite(value); });
-		const bool categoriesAvailable = !inputs.perCategoryStrengths || inputs.materialCategoriesSRV;
+		// Per-category hue guard needs the material category on every pixel, so unlike the
+		// old opt-in per-category strengths this guide is now unconditionally required.
 		if (inputs.colorIn && inputs.colorOut && inputs.depth && inputs.depthSRV && inputs.motionVectors &&
-			distinct && finite && categoriesAvailable && inputs.width && inputs.height)
+			inputs.materialCategoriesSRV && distinct && finite && inputs.width && inputs.height)
 			return true;
 
 		if (!loggedInvalidInputs) {
@@ -781,7 +784,6 @@ struct NeuralRenderingBackend::State
 		const bool modelBelowNative = modelWidth < colorWidth || modelHeight < colorHeight;
 		transferParams.depthAwareResolve = inputs.depthAwareResolve && modelBelowNative ? 1u : 0u;
 		transferParams.skipFrame = skipFrame ? 1u : 0u;
-		transferParams.perCategoryStrengths = inputs.perCategoryStrengths ? 1u : 0u;
 		// Only 0 (scene linear) and 1 (display gamma) exist; anything else falls back to the
 		// original scene-linear behaviour rather than an undefined shader branch.
 		transferParams.colorDomain = inputs.colorDomain <= 1u ? inputs.colorDomain : 0u;
@@ -798,11 +800,16 @@ struct NeuralRenderingBackend::State
 		transferParams.displayExposure[1] = display.postProcessExposureScale;
 		transferParams.displayExposure[2] = display.postProcessAdaptationRange[0];
 		transferParams.displayExposure[3] = display.postProcessAdaptationRange[1];
-		transferParams.hueGuard = inputs.hueGuard ? 1u : 0u;
+		transferParams.luminosityStrength = std::clamp(inputs.luminosityStrength, 0.0f, 2.0f);
+		std::uint32_t hueGuardMask = 0;
 		for (std::size_t index = 0; index < inputs.categoryColorStrengths.size(); ++index) {
 			transferParams.categoryColorStrengths[index] = std::clamp(inputs.categoryColorStrengths[index], 0.0f, 1.0f);
 			transferParams.categoryTransferStrengths[index] = std::clamp(inputs.categoryTransferStrengths[index], 0.0f, 2.0f);
+			transferParams.categoryLuminosityStrengths[index] = std::clamp(inputs.categoryLuminosityStrengths[index], 0.0f, 2.0f);
+			if (inputs.categoryHueGuard[index])
+				hueGuardMask |= (1u << index);
 		}
+		transferParams.hueGuardMask = hueGuardMask;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		if (!skipFrame && !EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,
@@ -816,8 +823,7 @@ struct NeuralRenderingBackend::State
 		// colour accumulator is involved. The game depth rides along as the
 		// silhouette guide for the depth-aware resolve.
 		DispatchTransfer(context, decodeShader,
-			{ outputSRV.get(), colorInView, colorSRV.get(), inputs.depthSRV,
-				inputs.perCategoryStrengths ? inputs.materialCategoriesSRV : nullptr,
+			{ outputSRV.get(), colorInView, colorSRV.get(), inputs.depthSRV, inputs.materialCategoriesSRV,
 				inputs.display.vanillaAdaptationSRV, inputs.display.postProcessAdaptationSRV },
 			colorOutView, transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight);
 

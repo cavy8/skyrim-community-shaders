@@ -19,11 +19,19 @@ struct ID3D11ShaderResourceView;
 class NeuralRendering final
 {
 public:
-	/** @brief Per-material multipliers applied by the local colour resolve. */
+	/** @brief Per-material multipliers and toggles applied by the local colour resolve. */
 	struct CategoryStrengths
 	{
 		float colorStrength = 1.0f;
 		float transferStrength = 1.0f;
+		/// Independent multiplier on the model's light/dark (luminance) change for this
+		/// category; lower values keep the category's own colour and detail transfer
+		/// while damping contrast swings. See Options::luminosityStrength.
+		float luminosityStrength = 1.0f;
+		/// Restrict this category's chroma change to a saturation change on
+		/// renderer-neutral pixels (see ColorTransfer.hlsli, ResolveNeuralColor).
+		/// Off by default; Hair defaults this on (see Upscaling::Settings).
+		bool hueGuard = false;
 	};
 
 	/** @brief Material categories encoded in the deferred Masks2 target. */
@@ -81,15 +89,17 @@ public:
 		/// frame untouched, one applies the model's change exactly, two doubles its
 		/// relative luminance change (still inside the resolve's ratio guard).
 		float transferStrength = 1.0f;
-		/// Restricts the model's chroma change to a saturation change (never a hue rotation,
-		/// never past neutral) on renderer-neutral pixels, so a consistent colour bias in the
-		/// model's palette cannot tint neutral shading. Released smoothly as the original pixel
-		/// carries more chroma of its own; disabling it lets the model's colour changes apply
-		/// everywhere, including on neutral surfaces (see ColorTransfer.hlsli, ResolveNeuralColor).
-		bool hueGuard = true;
-		/// Enables per-material multipliers. The global strengths above are still
-		/// applied afterwards as the final adjustment layer.
-		bool perCategoryStrengths = false;
+		/// Additional multiplier on top of Transfer Strength applied only to the
+		/// model's light/dark (luminance) change; the chroma transfer gated by
+		/// Color Strength is unaffected. Lower values keep the model's colour and
+		/// detail edit while damping the contrast swings that drive it. Zero
+		/// leaves luminance untouched (still subject to Transfer Strength being
+		/// non-zero); one matches the pre-luminosity-strength behaviour exactly.
+		float luminosityStrength = 1.0f;
+		/// Per-material multipliers and hue-guard toggles; always in effect. The
+		/// global strengths above are still applied afterwards as the final
+		/// adjustment layer, and each category's own hue guard toggle replaces a
+		/// single master switch (see CategoryStrengths::hueGuard).
 		CategoryStrengthArray categoryStrengths{};
 		/// When the model runs below the colour resolution, fade its edit across
 		/// depth silhouettes so a bilinearly upsampled background edit does not

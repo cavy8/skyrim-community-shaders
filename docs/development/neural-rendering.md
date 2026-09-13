@@ -409,14 +409,41 @@ therefore bit-exact with the previous behaviour, zero returns the untouched
 frame, and two exaggerates the model's relative change. Unlike the `DLSSNR.*`
 tuning parameters it is a per-frame constant, so it responds immediately.
 
-## Per-category colour and transfer strengths
+## Luminosity strength
 
-`Per-Category Strengths` adds neutral-by-default colour and transfer multipliers
-for Skin, Hair, Eyes, Foliage, Landscape, Equipment, and Everything Else. The
-category controls shape the local resolve first; the global `Color Strength` and
-`Transfer Strength` values multiply those results afterwards as the final layer
-of adjustment. Disabling the toggle bypasses category lookup and preserves the
-global-only path.
+`Luminosity Strength` (0..2, default 1) is a second exponent applied on top of
+`Transfer Strength`, but only to the luminance ratio - `ResolveNeuralColor`
+raises the model/proxy ratio to `editWeight * luminosityStrength` instead of
+`editWeight` alone. The chroma blend (`Color Strength`) is untouched, so lowering
+it damps the light/dark swings a strong transfer can read as overly contrasty
+while keeping the model's colour and detail edit at whatever strength the other
+sliders already give it. One reproduces the pre-luminosity-strength behaviour
+exactly; zero freezes luminance at the original regardless of `Transfer
+Strength`.
+
+## Per-category colour, transfer, luminosity strengths and hue guard
+
+Skin, Hair, Eyes, Foliage, Landscape, Equipment, and Everything Else each carry
+their own colour, transfer, and luminosity multipliers plus their own hue guard
+toggle (`NeuralRendering::CategoryStrengths`). The category controls shape the
+local resolve first; the global `Color Strength`, `Transfer Strength`, and
+`Luminosity Strength` values multiply those results afterwards as the final
+layer of adjustment. Unlike the old opt-in `Per-Category Strengths` checkbox,
+category lookup is unconditional now: each category's hue guard needs to know
+which material a pixel is on every pixel, so `materialCategoriesSRV` is a hard
+requirement of `ValidateInputs` rather than only when per-category strengths
+were enabled, and `CaptureNeuralRenderingCategories` runs whenever Neural
+Rendering is enabled rather than only when that checkbox was set.
+
+Only Hair hue-guards by default (`CategoryStrengths::hueGuard`); the other six
+categories default off, matching the general observation that a colour bias is
+most objectionable on hair's near-neutral shading and least useful to clamp on
+categories users are more likely to want fully recoloured. `DecodeColorCS`
+blends each category's hue-guard toggle through the same tent filter as the
+strengths - as a continuous 0..1 "amount" rather than switching discretely - so
+a material boundary softens the guard instead of flipping it outright, and
+`ResolveNeuralColor` takes that blended amount (`hueGuardAmount`) instead of a
+plain bool.
 
 Classification stays entirely inside Community Shaders and does not use a DLSS
 control-mask parameter. `Lighting.hlsl` and `RunGrass.hlsl` already know their

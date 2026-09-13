@@ -27,7 +27,9 @@
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	NeuralRendering::CategoryStrengths,
 	colorStrength,
-	transferStrength);
+	transferStrength,
+	luminosityStrength,
+	hueGuard);
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Upscaling::Settings,
@@ -62,8 +64,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingResolutionScaleX,
 	neuralRenderingResolutionScaleY,
 	neuralRenderingTransferStrength,
-	neuralRenderingHueGuard,
-	neuralRenderingPerCategoryStrengths,
+	neuralRenderingLuminosityStrength,
 	neuralRenderingEverythingElseStrengths,
 	neuralRenderingSkinStrengths,
 	neuralRenderingHairStrengths,
@@ -216,6 +217,24 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 
 void Upscaling::DrawSettings()
 {
+	if (!ImGui::BeginTabBar("##UpscalingSettingsTabs"))
+		return;
+
+	if (ImGui::BeginTabItem(T(TKEY("tab_upscaling"), "Upscaling"))) {
+		DrawUpscalingSettings();
+		ImGui::EndTabItem();
+	}
+
+	if (ImGui::BeginTabItem(T(TKEY("tab_neural_rendering"), "Neural Rendering"))) {
+		DrawNeuralRenderingSettings();
+		ImGui::EndTabItem();
+	}
+
+	ImGui::EndTabBar();
+}
+
+void Upscaling::DrawUpscalingSettings()
+{
 	// Display upscaling options in the UI
 	std::vector<std::string> upscaleModes = {
 		T(TKEY("method_none"), "None"),
@@ -329,206 +348,6 @@ void Upscaling::DrawSettings()
 								  "Each model offers different visual quality, performance, and motion stability.\n"
 								  "Set to 'Default' for automatic selection based on your Upscale Preset and hardware.\n"
 								  "Changing this setting requires a restart to take effect."));
-			}
-
-			if (ImGui::TreeNodeEx(T(TKEY("neural_rendering"), "DLSS Neural Rendering"), ImGuiTreeNodeFlags_DefaultOpen)) {
-				const bool neuralRenderingBackendAvailable = neuralRendering.IsAvailable();
-				const bool neuralRenderingFeatureAvailable = neuralRendering.IsFeatureAvailable();
-				if (!neuralRenderingBackendAvailable) {
-					ImGui::TextDisabled("%s", T(TKEY("neural_rendering_unavailable"),
-						"DLSS Neural Rendering is unavailable. Install a compatible user-supplied nvngx_dlssnr.dll."));
-				} else if (neuralRenderingFeatureAvailable) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_available"), "DLSS Neural Rendering is available."));
-				} else {
-					ImGui::TextDisabled("%s", T(TKEY("neural_rendering_backend_ready"),
-						"NGX backend ready; feature support will be tested when enabled."));
-				}
-
-				ImGui::Checkbox(T(TKEY("neural_rendering_enabled"), "Enable Neural Rendering"), &settings.neuralRenderingEnabled);
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_enabled_tooltip"),
-						"Applies DLSS 5 Neural Rendering to the upscaled image. A compatible user-supplied nvngx_dlssnr.dll is required."));
-				}
-
-				ImGui::BeginDisabled(!neuralRenderingBackendAvailable || GetUpscaleMethod() != UpscaleMethod::kDLSS);
-				if (ImGui::Button(T(TKEY("neural_rendering_compare_screenshot"), "Take Comparison Screenshot"))) {
-					RequestNeuralRenderingComparisonCapture();
-				}
-				ImGui::EndDisabled();
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_compare_screenshot_tooltip"),
-						"Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on "
-						"- with no HUD or menu, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off."));
-				}
-
-				const bool neuralRenderingControlsAvailable = settings.neuralRenderingEnabled && neuralRenderingBackendAvailable;
-				if (!neuralRenderingControlsAvailable)
-					ImGui::BeginDisabled();
-
-				const char* placementLabels[] = {
-					T(TKEY("neural_rendering_placement_before"), "Before Upscaling"),
-					T(TKEY("neural_rendering_placement_after"), "After Upscaling"),
-					T(TKEY("neural_rendering_placement_separate"), "Separate Upscaling (Experimental)"),
-					T(TKEY("neural_rendering_placement_finished_image"), "Finished Image (Experimental)")
-				};
-				int placement = static_cast<int>(settings.neuralRenderingPlacement);
-				if (ImGui::Combo(T(TKEY("neural_rendering_placement"), "Placement"), &placement, placementLabels, IM_ARRAYSIZE(placementLabels)))
-					settings.neuralRenderingPlacement = static_cast<uint>(std::clamp(placement, 0, 3));
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_placement_tooltip"),
-						"Before Upscaling lets the game's DLSS reconstruct the NR-edited scene. After Upscaling runs NR at display resolution.\n"
-						"Separate Upscaling runs NR at render resolution, sends only its signed contribution through a second private DLSS history, "
-						"then applies it to the clean main-DLSS result. This experimental mode costs another DLSS evaluation and additional VRAM.\n"
-						"Finished Image runs NR last, after the frame's tonemap - Effects11's, Post Processing's, or vanilla's, whichever owned "
-						"it - instead of the linear HDR scene the other placements approximate with a proxy. Depth of Field and Motion Blur "
-						"already ran earlier in Post Processing's own pipeline (it tonemaps last, not them), so this does not run before them. "
-						"Disabled over the main menu and loading screens."));
-				}
-
-				const char* resolutionModeLabels[] = {
-					T(TKEY("neural_rendering_resolution_mode_uniform"), "Uniform"),
-					T(TKEY("neural_rendering_resolution_mode_per_axis"), "Per-Axis (Experimental)")
-				};
-				int resolutionMode = static_cast<int>(settings.neuralRenderingResolutionMode);
-				if (ImGui::Combo(T(TKEY("neural_rendering_resolution_mode"), "Model Resolution"), &resolutionMode, resolutionModeLabels, IM_ARRAYSIZE(resolutionModeLabels)))
-					settings.neuralRenderingResolutionMode = static_cast<uint>(std::clamp(resolutionMode, 0, 1));
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_mode_tooltip"),
-						"Uniform runs the model at one scale of the frame it processes.\n"
-						"Per-Axis scales width and height independently (for example 0.65 x 0.85), trading a little "
-						"horizontal detail for a larger reduction of the neural workload."));
-				}
-				if (settings.neuralRenderingResolutionMode == 0) {
-					ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale"), "Resolution Scale"), &settings.neuralRenderingResolutionScale, 0.25f, 2.0f, "%.2f");
-					if (auto _tt = Util::HoverTooltipWrapper()) {
-						ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_tooltip"),
-							"Resolution the model runs at, relative to the frame it processes.\n"
-							"Below 1.0 the model works on a downsampled copy and only its lighting and colour edit is applied "
-							"to the full-resolution frame, so fine detail is kept; 0.75-0.85 cuts the neural cost by roughly a "
-							"third with little visible loss. Above 1.0 supersamples the model input.\n"
-							"Changes apply once the slider settles."));
-					}
-				} else {
-					ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale_x"), "Horizontal Scale"), &settings.neuralRenderingResolutionScaleX, 0.25f, 2.0f, "%.2f");
-					if (auto _tt = Util::HoverTooltipWrapper()) {
-						ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_x_tooltip"),
-							"Model width relative to the frame width. Changes apply once the slider settles."));
-					}
-					ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale_y"), "Vertical Scale"), &settings.neuralRenderingResolutionScaleY, 0.25f, 2.0f, "%.2f");
-					if (auto _tt = Util::HoverTooltipWrapper()) {
-						ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_y_tooltip"),
-							"Model height relative to the frame height. Changes apply once the slider settles."));
-					}
-				}
-				ImGui::Checkbox(T(TKEY("neural_rendering_depth_aware_resolve"), "Depth-Aware Silhouette Preservation"), &settings.neuralRenderingDepthAwareResolve);
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_depth_aware_resolve_tooltip"),
-						"When the model runs below full resolution, fades its edit across depth edges so background "
-						"changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0."));
-				}
-				ImGui::Checkbox(T(TKEY("neural_rendering_alternate_frames"), "Alternate Frames (Experimental)"), &settings.neuralRenderingAlternateFrames);
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_alternate_frames_tooltip"),
-						"Runs the model every other frame and re-applies its previous result to the frames in between, "
-						"fading it wherever the image changed. Halves the neural cost, but fast motion may show a "
-						"one-frame lag in the model's lighting and detail changes."));
-				}
-
-				const char* neuralStyles[] = {
-					T(TKEY("neural_rendering_style_default"), "Default"),
-					T(TKEY("neural_rendering_style_natural"), "Natural"),
-					T(TKEY("neural_rendering_style_cinematic"), "Cinematic")
-				};
-				int neuralStyle = static_cast<int>(settings.neuralRenderingStyle);
-				if (ImGui::Combo(T(TKEY("neural_rendering_style"), "NR Style"), &neuralStyle, neuralStyles, IM_ARRAYSIZE(neuralStyles)))
-					settings.neuralRenderingStyle = static_cast<uint>(std::clamp(neuralStyle, 0, 2));
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_style_tooltip"), "Choose the Neural Rendering visual style."));
-				}
-
-				ImGui::SliderFloat(T(TKEY("neural_rendering_intensity"), "NR Intensity"), &settings.neuralRenderingIntensity, 0.0f, 2.0f, "%.2f");
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_intensity_tooltip"), "Adjust the overall Neural Rendering intensity."));
-				}
-				ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"), &settings.neuralRenderingColorStrength, 0.0f, 1.0f, "%.2f");
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_color_strength_tooltip"),
-						"Blend the model's color changes independently of its bounded lighting and detail changes."));
-				}
-				ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"), &settings.neuralRenderingTransferStrength, 0.0f, 2.0f, "%.2f");
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_transfer_strength_tooltip"),
-						"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
-						"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
-				}
-				ImGui::Checkbox(T(TKEY("neural_rendering_hue_guard"), "Neutral Colour Guard"), &settings.neuralRenderingHueGuard);
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_hue_guard_tooltip"),
-						"Stops the model from tinting renderer-neutral shading (grey, or near-grey shadows) with its "
-						"own colour bias. On surfaces the model already recolours, its full palette is unaffected. "
-						"Disable to let the model's colour changes apply everywhere, including on neutral surfaces."));
-				}
-
-				ImGui::Checkbox(T(TKEY("neural_rendering_per_category_strengths"), "Per-Category Strengths"),
-					&settings.neuralRenderingPerCategoryStrengths);
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_per_category_strengths_tooltip"),
-						"Adjust color and transfer strength independently for each material category. The global sliders above remain the final adjustment layer."));
-				}
-
-				if (settings.neuralRenderingPerCategoryStrengths) {
-					const auto drawCategoryStrengths = [&](const char* id, const char* label,
-														   NeuralRendering::CategoryStrengths& strengths, const char* tooltip = nullptr) {
-						ImGui::PushID(id);
-						ImGui::TextUnformatted(label);
-						if (tooltip) {
-							if (auto _tt = Util::HoverTooltipWrapper())
-								ImGui::TextUnformatted(tooltip);
-						}
-						ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"),
-							&strengths.colorStrength, 0.0f, 1.0f, "%.2f");
-						ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"),
-							&strengths.transferStrength, 0.0f, 2.0f, "%.2f");
-						ImGui::PopID();
-					};
-
-					ImGui::Indent();
-					drawCategoryStrengths("Skin", T(TKEY("neural_rendering_category_skin"), "Skin"), settings.neuralRenderingSkinStrengths);
-					drawCategoryStrengths("Hair", T(TKEY("neural_rendering_category_hair"), "Hair"), settings.neuralRenderingHairStrengths);
-					drawCategoryStrengths("Eyes", T(TKEY("neural_rendering_category_eyes"), "Eyes"), settings.neuralRenderingEyesStrengths);
-					drawCategoryStrengths("Foliage", T(TKEY("neural_rendering_category_foliage"), "Foliage"), settings.neuralRenderingFoliageStrengths,
-						T(TKEY("neural_rendering_category_foliage_tooltip"), "Trees and grass."));
-					drawCategoryStrengths("Landscape", T(TKEY("neural_rendering_category_landscape"), "Landscape"), settings.neuralRenderingLandscapeStrengths);
-					drawCategoryStrengths("Equipment", T(TKEY("neural_rendering_category_equipment"), "Equipment"), settings.neuralRenderingEquipmentStrengths,
-						T(TKEY("neural_rendering_category_equipment_tooltip"), "Armor, clothing, and weapons worn or wielded by humanoid actors. Bare skin counts as Skin."));
-					drawCategoryStrengths("EverythingElse", T(TKEY("neural_rendering_category_everything_else"), "Everything Else"),
-						settings.neuralRenderingEverythingElseStrengths,
-						T(TKEY("neural_rendering_category_everything_else_tooltip"),
-							"Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above."));
-					ImGui::Unindent();
-				}
-				ImGui::SliderFloat(T(TKEY("neural_rendering_local_tone"), "Local Tone Strength"), &settings.neuralRenderingLocalToneStrength, 0.0f, 2.0f, "%.2f");
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_local_tone_tooltip"), "Adjust local tone detail."));
-				}
-				ImGui::SliderFloat(T(TKEY("neural_rendering_local_structure"), "Local Skin Structure Strength"), &settings.neuralRenderingLocalStructureStrength, 0.0f, 2.0f, "%.2f");
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_local_structure_tooltip"), "Adjust local skin structure detail."));
-				}
-				ImGui::SliderFloat(T(TKEY("neural_rendering_skin_structure"), "Skin Structure Strength"), &settings.neuralRenderingSkinStructureStrength, -1.0f, 2.0f, "%.2f");
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_skin_structure_tooltip"), "Adjust skin structure detail. -1 disables this control."));
-				}
-
-				ImGui::Checkbox(T(TKEY("neural_rendering_automatic_mask"), "Automatic Mask"), &settings.neuralRenderingAutomaticMask);
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted(T(TKEY("neural_rendering_automatic_mask_tooltip"), "Generates the skin mask automatically."));
-				}
-
-				if (!neuralRenderingControlsAvailable)
-					ImGui::EndDisabled();
-
-				ImGui::TreePop();
 			}
 		}
 	}
@@ -698,6 +517,236 @@ void Upscaling::DrawSettings()
 	}
 }
 
+void Upscaling::DrawNeuralRenderingSettings()
+{
+	if (GetUpscaleMethod() != UpscaleMethod::kDLSS) {
+		ImGui::TextDisabled("%s", T(TKEY("neural_rendering_requires_dlss"),
+			"DLSS Neural Rendering requires the DLSS upscaling method. Select DLSS on the Upscaling tab first."));
+		return;
+	}
+
+	const bool neuralRenderingBackendAvailable = neuralRendering.IsAvailable();
+	const bool neuralRenderingFeatureAvailable = neuralRendering.IsFeatureAvailable();
+	if (!neuralRenderingBackendAvailable) {
+		ImGui::TextDisabled("%s", T(TKEY("neural_rendering_unavailable"),
+			"DLSS Neural Rendering is unavailable. Install a compatible user-supplied nvngx_dlssnr.dll."));
+	} else if (neuralRenderingFeatureAvailable) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_available"), "DLSS Neural Rendering is available."));
+	} else {
+		ImGui::TextDisabled("%s", T(TKEY("neural_rendering_backend_ready"),
+			"NGX backend ready; feature support will be tested when enabled."));
+	}
+
+	ImGui::Checkbox(T(TKEY("neural_rendering_enabled"), "Enable Neural Rendering"), &settings.neuralRenderingEnabled);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_enabled_tooltip"),
+			"Applies DLSS 5 Neural Rendering to the upscaled image. A compatible user-supplied nvngx_dlssnr.dll is required."));
+	}
+
+	ImGui::BeginDisabled(!neuralRenderingBackendAvailable);
+	if (ImGui::Button(T(TKEY("neural_rendering_compare_screenshot"), "Take Comparison Screenshot"))) {
+		RequestNeuralRenderingComparisonCapture();
+	}
+	ImGui::EndDisabled();
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_compare_screenshot_tooltip"),
+			"Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on "
+			"- with no HUD or menu, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off."));
+	}
+
+	const bool neuralRenderingControlsAvailable = settings.neuralRenderingEnabled && neuralRenderingBackendAvailable;
+	if (!neuralRenderingControlsAvailable)
+		ImGui::BeginDisabled();
+
+	// --- Pipeline: where, and at what resolution, Neural Rendering runs ---
+	const char* placementLabels[] = {
+		T(TKEY("neural_rendering_placement_before"), "Before Upscaling"),
+		T(TKEY("neural_rendering_placement_after"), "After Upscaling"),
+		T(TKEY("neural_rendering_placement_separate"), "Separate Upscaling (Experimental)"),
+		T(TKEY("neural_rendering_placement_finished_image"), "Finished Image (Experimental)")
+	};
+	int placement = static_cast<int>(settings.neuralRenderingPlacement);
+	if (ImGui::Combo(T(TKEY("neural_rendering_placement"), "Placement"), &placement, placementLabels, IM_ARRAYSIZE(placementLabels)))
+		settings.neuralRenderingPlacement = static_cast<uint>(std::clamp(placement, 0, 3));
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_placement_tooltip"),
+			"Before Upscaling lets the game's DLSS reconstruct the NR-edited scene. After Upscaling runs NR at display resolution.\n"
+			"Separate Upscaling runs NR at render resolution, sends only its signed contribution through a second private DLSS history, "
+			"then applies it to the clean main-DLSS result. This experimental mode costs another DLSS evaluation and additional VRAM.\n"
+			"Finished Image runs NR last, after the frame's tonemap - Effects11's, Post Processing's, or vanilla's, whichever owned "
+			"it - instead of the linear HDR scene the other placements approximate with a proxy. Depth of Field and Motion Blur "
+			"already ran earlier in Post Processing's own pipeline (it tonemaps last, not them), so this does not run before them. "
+			"Disabled over the main menu and loading screens."));
+	}
+
+	const char* resolutionModeLabels[] = {
+		T(TKEY("neural_rendering_resolution_mode_uniform"), "Uniform"),
+		T(TKEY("neural_rendering_resolution_mode_per_axis"), "Per-Axis (Experimental)")
+	};
+	int resolutionMode = static_cast<int>(settings.neuralRenderingResolutionMode);
+	if (ImGui::Combo(T(TKEY("neural_rendering_resolution_mode"), "Model Resolution"), &resolutionMode, resolutionModeLabels, IM_ARRAYSIZE(resolutionModeLabels)))
+		settings.neuralRenderingResolutionMode = static_cast<uint>(std::clamp(resolutionMode, 0, 1));
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_mode_tooltip"),
+			"Uniform runs the model at one scale of the frame it processes.\n"
+			"Per-Axis scales width and height independently (for example 0.65 x 0.85), trading a little "
+			"horizontal detail for a larger reduction of the neural workload."));
+	}
+	if (settings.neuralRenderingResolutionMode == 0) {
+		ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale"), "Resolution Scale"), &settings.neuralRenderingResolutionScale, 0.25f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_tooltip"),
+				"Resolution the model runs at, relative to the frame it processes.\n"
+				"Below 1.0 the model works on a downsampled copy and only its lighting and colour edit is applied "
+				"to the full-resolution frame, so fine detail is kept; 0.75-0.85 cuts the neural cost by roughly a "
+				"third with little visible loss. Above 1.0 supersamples the model input.\n"
+				"Changes apply once the slider settles."));
+		}
+	} else {
+		ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale_x"), "Horizontal Scale"), &settings.neuralRenderingResolutionScaleX, 0.25f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_x_tooltip"),
+				"Model width relative to the frame width. Changes apply once the slider settles."));
+		}
+		ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale_y"), "Vertical Scale"), &settings.neuralRenderingResolutionScaleY, 0.25f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_y_tooltip"),
+				"Model height relative to the frame height. Changes apply once the slider settles."));
+		}
+	}
+	ImGui::Checkbox(T(TKEY("neural_rendering_depth_aware_resolve"), "Depth-Aware Silhouette Preservation"), &settings.neuralRenderingDepthAwareResolve);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_depth_aware_resolve_tooltip"),
+			"When the model runs below full resolution, fades its edit across depth edges so background "
+			"changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0."));
+	}
+	ImGui::Checkbox(T(TKEY("neural_rendering_alternate_frames"), "Alternate Frames (Experimental)"), &settings.neuralRenderingAlternateFrames);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_alternate_frames_tooltip"),
+			"Runs the model every other frame and re-applies its previous result to the frames in between, "
+			"fading it wherever the image changed. Halves the neural cost, but fast motion may show a "
+			"one-frame lag in the model's lighting and detail changes."));
+	}
+
+	// --- Model tuning: information handed to the DLSS Neural Rendering model itself ---
+	ImGui::Separator();
+	ImGui::TextUnformatted(T(TKEY("neural_rendering_model_inputs"), "Model Tuning"));
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_model_inputs_tooltip"),
+			"These are handed to the DLSS Neural Rendering model itself, guiding what it does to the frame. "
+			"The strengths further down control how much of its answer Community Shaders actually applies."));
+	}
+
+	const char* neuralStyles[] = {
+		T(TKEY("neural_rendering_style_default"), "Default"),
+		T(TKEY("neural_rendering_style_natural"), "Natural"),
+		T(TKEY("neural_rendering_style_cinematic"), "Cinematic")
+	};
+	int neuralStyle = static_cast<int>(settings.neuralRenderingStyle);
+	if (ImGui::Combo(T(TKEY("neural_rendering_style"), "NR Style"), &neuralStyle, neuralStyles, IM_ARRAYSIZE(neuralStyles)))
+		settings.neuralRenderingStyle = static_cast<uint>(std::clamp(neuralStyle, 0, 2));
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_style_tooltip"), "Choose the Neural Rendering visual style."));
+	}
+
+	ImGui::SliderFloat(T(TKEY("neural_rendering_intensity"), "NR Intensity"), &settings.neuralRenderingIntensity, 0.0f, 2.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_intensity_tooltip"), "Adjust the overall Neural Rendering intensity."));
+	}
+	ImGui::SliderFloat(T(TKEY("neural_rendering_local_tone"), "Local Tone Strength"), &settings.neuralRenderingLocalToneStrength, 0.0f, 2.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_local_tone_tooltip"), "Adjust local tone detail."));
+	}
+	ImGui::SliderFloat(T(TKEY("neural_rendering_local_structure"), "Local Structure Strength"), &settings.neuralRenderingLocalStructureStrength, 0.0f, 2.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_local_structure_tooltip"), "Adjust local structure detail."));
+	}
+	ImGui::SliderFloat(T(TKEY("neural_rendering_skin_structure"), "Skin Structure Strength"), &settings.neuralRenderingSkinStructureStrength, -1.0f, 2.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_skin_structure_tooltip"), "Adjust skin structure detail. -1 disables this control."));
+	}
+	ImGui::Checkbox(T(TKEY("neural_rendering_automatic_mask"), "Automatic Mask"), &settings.neuralRenderingAutomaticMask);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_automatic_mask_tooltip"), "Generates the skin mask automatically."));
+	}
+
+	// --- Strengths: how much of the model's answer Community Shaders applies ---
+	ImGui::Separator();
+	ImGui::TextUnformatted(T(TKEY("neural_rendering_strengths"), "Strengths"));
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_strengths_tooltip"),
+			"How much of the model's answer is actually applied to the frame. The per-category overrides "
+			"below multiply on top of these as a final adjustment layer."));
+	}
+
+	ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"), &settings.neuralRenderingColorStrength, 0.0f, 1.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_color_strength_tooltip"),
+			"Blend the model's color changes independently of its bounded lighting and detail changes."));
+	}
+	ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"), &settings.neuralRenderingTransferStrength, 0.0f, 2.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_transfer_strength_tooltip"),
+			"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
+			"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
+	}
+	ImGui::SliderFloat(T(TKEY("neural_rendering_luminosity_strength"), "Luminosity Strength"), &settings.neuralRenderingLuminosityStrength, 0.0f, 2.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_luminosity_strength_tooltip"),
+			"Scales only the model's light/dark change, on top of Transfer Strength; its color and detail edit "
+			"are unaffected. Lower it if Neural Rendering reads as too contrasty without giving up its color work."));
+	}
+
+	// --- Per-category overrides, each with its own hue guard ---
+	ImGui::Separator();
+	ImGui::TextUnformatted(T(TKEY("neural_rendering_category_overrides"), "Per-Category Overrides"));
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_category_overrides_tooltip"),
+			"Override the strengths above, and toggle hue guard, independently for each material category. "
+			"The strengths above still apply afterwards as a final multiplier over every category."));
+	}
+
+	const auto drawCategoryStrengths = [&](const char* id, const char* label,
+										   NeuralRendering::CategoryStrengths& strengths, const char* tooltip = nullptr) {
+		if (!ImGui::TreeNodeEx(id, ImGuiTreeNodeFlags_None, "%s", label))
+			return;
+		if (tooltip) {
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextUnformatted(tooltip);
+		}
+		ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"),
+			&strengths.colorStrength, 0.0f, 1.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"),
+			&strengths.transferStrength, 0.0f, 2.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("neural_rendering_luminosity_strength"), "Luminosity Strength"),
+			&strengths.luminosityStrength, 0.0f, 2.0f, "%.2f");
+		ImGui::Checkbox(T(TKEY("neural_rendering_hue_guard"), "Neutral Colour Guard"), &strengths.hueGuard);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("neural_rendering_hue_guard_tooltip"),
+				"Stops the model from tinting this category's renderer-neutral shading (grey, or near-grey "
+				"shadows) with its own colour bias. Surfaces the model already recolours are unaffected. "
+				"Only Hair guards by default."));
+		}
+		ImGui::TreePop();
+	};
+
+	drawCategoryStrengths("Skin", T(TKEY("neural_rendering_category_skin"), "Skin"), settings.neuralRenderingSkinStrengths);
+	drawCategoryStrengths("Hair", T(TKEY("neural_rendering_category_hair"), "Hair"), settings.neuralRenderingHairStrengths);
+	drawCategoryStrengths("Eyes", T(TKEY("neural_rendering_category_eyes"), "Eyes"), settings.neuralRenderingEyesStrengths);
+	drawCategoryStrengths("Foliage", T(TKEY("neural_rendering_category_foliage"), "Foliage"), settings.neuralRenderingFoliageStrengths,
+		T(TKEY("neural_rendering_category_foliage_tooltip"), "Trees and grass."));
+	drawCategoryStrengths("Landscape", T(TKEY("neural_rendering_category_landscape"), "Landscape"), settings.neuralRenderingLandscapeStrengths);
+	drawCategoryStrengths("Equipment", T(TKEY("neural_rendering_category_equipment"), "Equipment"), settings.neuralRenderingEquipmentStrengths,
+		T(TKEY("neural_rendering_category_equipment_tooltip"), "Armor, clothing, and weapons worn or wielded by humanoid actors. Bare skin counts as Skin."));
+	drawCategoryStrengths("EverythingElse", T(TKEY("neural_rendering_category_everything_else"), "Everything Else"),
+		settings.neuralRenderingEverythingElseStrengths,
+		T(TKEY("neural_rendering_category_everything_else_tooltip"),
+			"Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above."));
+
+	if (!neuralRenderingControlsAvailable)
+		ImGui::EndDisabled();
+}
+
 void Upscaling::SaveSettings(json& o_json)
 {
 	o_json = settings;
@@ -770,9 +819,11 @@ void Upscaling::LoadSettings(json& o_json)
 	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleX, 1.0f, 0.25f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleY, 1.0f, 0.25f, 2.0f);
 	sanitizeNeuralFloat(settings.neuralRenderingTransferStrength, 1.0f, 0.0f, 2.0f);
+	sanitizeNeuralFloat(settings.neuralRenderingLuminosityStrength, 1.0f, 0.0f, 2.0f);
 	const auto sanitizeCategoryStrengths = [&](NeuralRendering::CategoryStrengths& strengths) {
 		sanitizeNeuralFloat(strengths.colorStrength, 1.0f, 0.0f, 1.0f);
 		sanitizeNeuralFloat(strengths.transferStrength, 1.0f, 0.0f, 2.0f);
+		sanitizeNeuralFloat(strengths.luminosityStrength, 1.0f, 0.0f, 2.0f);
 	};
 	sanitizeCategoryStrengths(settings.neuralRenderingEverythingElseStrengths);
 	sanitizeCategoryStrengths(settings.neuralRenderingSkinStrengths);
@@ -1873,10 +1924,10 @@ void Upscaling::BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass)
 
 void Upscaling::CaptureNeuralRenderingCategories()
 {
-	// Only paid for when Neural Rendering can actually consume it: DLSS-only,
-	// and only when per-category strengths are in use (otherwise the decode
-	// shader never samples the category texture at all).
-	if (!settings.neuralRenderingEnabled || !settings.neuralRenderingPerCategoryStrengths)
+	// Only paid for when Neural Rendering can actually consume it: DLSS-only.
+	// The decode shader always samples the category texture now, since each
+	// category's hue guard toggle needs to know which material a pixel is.
+	if (!settings.neuralRenderingEnabled)
 		return;
 	if (GetUpscaleMethod() != UpscaleMethod::kDLSS)
 		return;
@@ -1917,8 +1968,7 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.intensity = settings.neuralRenderingIntensity;
 	options.colorStrength = settings.neuralRenderingColorStrength;
 	options.transferStrength = settings.neuralRenderingTransferStrength;
-	options.hueGuard = settings.neuralRenderingHueGuard;
-	options.perCategoryStrengths = settings.neuralRenderingPerCategoryStrengths;
+	options.luminosityStrength = settings.neuralRenderingLuminosityStrength;
 	using MaterialCategory = NeuralRendering::MaterialCategory;
 	const auto setCategoryStrengths = [&](MaterialCategory category, const NeuralRendering::CategoryStrengths& strengths) {
 		options.categoryStrengths[static_cast<std::size_t>(category)] = strengths;
