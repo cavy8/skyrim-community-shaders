@@ -17,9 +17,19 @@ namespace NativeMenu::Vendor::SystemMenuHook
 		constexpr const char* kMenuRootPath = "_root.QuestJournalFader.Menu_mc";
 		constexpr const char* kSystemPageMember = "__cs_systemPage";
 		constexpr int kInjectionRetryTicks = 150;
+		// A freshly-opened menu's display list can still be under construction on the
+		// first tick or two; letting it settle before the BFS walks it structurally
+		// avoids reading a movie clip mid-attach.
+		constexpr int kInjectionSettleTicks = 2;
 
 		std::atomic<bool> g_injected{ false };
 		std::atomic<int>  g_injectTicks{ 0 };
+		// Set once a walk of the menu's Flash tree raises a hardware exception (a stale
+		// GFxValue reached through a modded or half-built object graph). This hook is a
+		// nice-to-have layered on top of vanilla, not something worth crashing the game
+		// over, so the whole feature is switched off for the rest of the session rather
+		// than risking a repeat on the very next tick.
+		std::atomic<bool> g_disabled{ false };
 
 		bool IsSystemPage(const RE::GFxValue& a_value)
 		{
@@ -66,9 +76,12 @@ namespace NativeMenu::Vendor::SystemMenuHook
 			auto* view = a_this->uiMovie.get();
 
 			if (!g_injected.load()) {
-				if (g_injectTicks.load() <= 0)
+				const auto ticksLeft = g_injectTicks.load();
+				if (ticksLeft <= 0)
 					return;
 				g_injectTicks.fetch_sub(1);
+				if (ticksLeft > kInjectionRetryTicks)
+					return;  // still settling; see kInjectionSettleTicks.
 
 				RE::GFxValue root, page;
 				if (view->GetVariable(&root, kMenuRootPath) && FindSystemPage(root, page, 10)) {
@@ -87,12 +100,31 @@ namespace NativeMenu::Vendor::SystemMenuHook
 			VanillaSettingsEngine::Tick(a_this, view, systemPage);
 		}
 
+		// Tick() walks Flash objects it doesn't own - vanilla's own menu, possibly
+		// reshaped by another mod's replacer or hook - so a stale or half-built GFxValue
+		// reaching into it can raise a hardware exception rather than fail cleanly.
+		// __except performs a normal stack unwind on x64 (unlike x86), so Tick()'s own
+		// std::lock_guard still unlocks correctly if this fires mid-tick.
+		void TickGuarded(RE::JournalMenu* a_this) noexcept
+		{
+			__try {
+				Tick(a_this);
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				g_disabled.store(true);
+				logger::critical(
+					"NativeMenu: caught exception {:#x} walking the System menu's Flash tree - "
+					"disabling the System menu injection for the rest of this session",
+					static_cast<unsigned long>(GetExceptionCode()));
+			}
+		}
+
 		struct JournalMenu_AdvanceMovie
 		{
 			static void thunk(RE::JournalMenu* a_this, float a_interval, std::uint32_t a_currentTime)
 			{
 				func(a_this, a_interval, a_currentTime);
-				Tick(a_this);
+				if (!g_disabled.load())
+					TickGuarded(a_this);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
@@ -112,7 +144,7 @@ namespace NativeMenu::Vendor::SystemMenuHook
 			{
 				if (a_event && a_event->menuName == RE::JournalMenu::MENU_NAME) {
 					g_injected.store(false);
-					g_injectTicks.store(a_event->opening ? kInjectionRetryTicks : 0);
+					g_injectTicks.store(a_event->opening ? kInjectionRetryTicks + kInjectionSettleTicks : 0);
 					VanillaSettingsEngine::Reset();
 				}
 				return RE::BSEventNotifyControl::kContinue;
