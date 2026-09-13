@@ -3358,17 +3358,30 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		elif defined(LANDSCAPE) || defined(LODLANDSCAPE) || defined(LODLANDNOISE)
 	neuralRenderingCategory = NeuralRenderingCategories::Landscape;
 #		else
-	// Everything on a humanoid actor that the branches above did not claim
-	// is Equipment: armor, clothing and wielded weapons. Bare skin (body as
-	// well as face) uses the skin-tint permutations and is already Skin by
-	// the time this runs. Permutation::ExtraFlags::IsHumanoidActor is set
-	// per pass by Upscaling::BSLightingShader_SetupNeuralCategory, so this
-	// also catches rigid (non-SKINNED) weapons, shields and helmets.
-	if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsHumanoidActor)
+	// Most eyes never compile the EYE technique above: vanilla renders their
+	// shine through the ENVMAP technique instead, distinguished only by the
+	// material's kEnvironmentMap feature plus an "eye" geometry name. That
+	// case can only be resolved at runtime, not by a technique #define.
+	// VanillaFresnel::IsEyePass (VanillaFresnel.cpp) already does this
+	// resolution for its own per-pixel Fresnel override and records the
+	// result in Permutation::ExtraFlags::IsEye; reuse it here before falling
+	// through to the humanoid/creature classification below, or these eyes
+	// get counted as Equipment or Skin instead.
+	if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsEye) {
+		neuralRenderingCategory = NeuralRenderingCategories::Eyes;
+	} else if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsHumanoidActor) {
+		// Everything on a humanoid actor that the branches above did not
+		// claim is Equipment: armor, clothing and wielded weapons. Bare skin
+		// (body as well as face) uses the skin-tint permutations and is
+		// already Skin by the time this runs. IsHumanoidActor is set per
+		// pass by Upscaling::BSLightingShader_SetupNeuralCategory, so this
+		// also catches rigid (non-SKINNED) weapons, shields and helmets.
 		neuralRenderingCategory = NeuralRenderingCategories::Equipment;
+	}
 #			if defined(SKINNED)
-	else
+	else {
 		neuralRenderingCategory = NeuralRenderingCategories::Skin;  // creature bodies
+	}
 #			endif
 #		endif
 	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, neuralRenderingCategory), 0, 0, psout.Diffuse.w);
