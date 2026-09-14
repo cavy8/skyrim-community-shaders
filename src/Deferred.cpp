@@ -14,6 +14,7 @@
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
 #include "Features/Upscaling.h"
+#include "Features/Upscaling/CategoryBlend.h"
 #include "Features/CSEditor.h"
 
 #include "Hooks.h"
@@ -135,8 +136,8 @@ void Deferred::SetupResources()
 		SetupRenderTarget(NORMALROUGHNESS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 		// Masks
 		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
-		// Masks2 (vertexAO; fp16 to allow blending)
-		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		// Masks2 (R: vertexAO, 16 bits to allow blending; G: Neural Rendering material category, see Upscaling/CategoryBlend.h)
+		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16G16_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 
 		// TAA water history buffers need RGBA16: alpha stores premultiplied coverage for ISWaterBlend
 		SetupRenderTarget(RE::RENDER_TARGETS::kWATER_1, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
@@ -292,6 +293,10 @@ void Deferred::StartDeferred()
 
 	PrepassPasses();
 
+	// Arms Neural Rendering's category capture for the frame's geometry.
+	if (globals::features::upscaling.loaded)
+		globals::features::upscaling.BeginNeuralRenderingCategoryCapture();
+
 	OverrideBlendStates();
 }
 
@@ -434,17 +439,13 @@ void Deferred::EndDeferred()
 
 	DeferredPasses();  // Perform deferred passes and composite forward buffers
 
-	// Forward lighting draws still tag Neural Rendering categories into Masks2
-	// (see Upscaling::RestoreNeuralRenderingCategories); hand it back clean now
-	// that the composite has consumed the decal-blended AO.
-	if (globals::features::upscaling.loaded)
-		globals::features::upscaling.RestoreNeuralRenderingCategories();
-
 	stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);  // Run OMSetRenderTargets again
 
 	deferredPass = false;
 
-	ResetBlendStates();
+	// Forward lighting draws keep adding Neural Rendering categories to Masks2
+	// (Upscaling::BSBatchRenderer_RenderPassImmediately) until post-processing.
+	ResetBlendStates(globals::features::upscaling.neuralRenderingCategoryCaptureActive);
 }
 
 void Deferred::OverrideBlendStates()
@@ -491,6 +492,9 @@ void Deferred::OverrideBlendStates()
 								blendDesc.RenderTarget[i].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 							}
 
+							// Masks2 AO (R) keeps mirroring RT0; its Neural Rendering category (G) is only written by unblended draws
+							blendDesc.RenderTarget[7].RenderTargetWriteMask = NeuralRenderingCategories::GetDeferredMasks2WriteMask(blendDesc.RenderTarget[0]);
+
 							DX::ThrowIfFailed(device->CreateBlendState(&blendDesc, &deferredBlendStates[a][b][c][d]));
 						} else {
 							deferredBlendStates[a][b][c][d] = nullptr;
@@ -515,22 +519,54 @@ void Deferred::OverrideBlendStates()
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
 }
 
-void Deferred::ResetBlendStates()
+void Deferred::ResetBlendStates(bool a_captureNeuralCategories)
 {
 	auto blendStates = BlendStates::GetSingleton();
 
-	// Restore modified blend states
 	for (int a = 0; a < 7; a++) {
 		for (int b = 0; b < 2; b++) {
 			for (int c = 0; c < 13; c++) {
 				for (int d = 0; d < 2; d++) {
-					blendStates->a[a][b][c][d] = forwardBlendStates[a][b][c][d];
+					blendStates->a[a][b][c][d] = a_captureNeuralCategories ?
+					                                 GetNeuralCategoryBlendState(neuralCategoryForwardBlendStates[a][b][c][d], forwardBlendStates[a][b][c][d], NeuralRenderingCategories::MakeForwardCategoryBlendDesc, "Upscaling::ForwardCategoryBlendState") :
+					                                 forwardBlendStates[a][b][c][d];
 				}
 			}
 		}
 	}
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
+}
+
+void Deferred::SetNeuralCategoryRedrawBlendStates(bool a_redraw)
+{
+	auto blendStates = BlendStates::GetSingleton();
+
+	for (int a = 0; a < 7; a++) {
+		for (int b = 0; b < 2; b++) {
+			for (int c = 0; c < 13; c++) {
+				for (int d = 0; d < 2; d++) {
+					blendStates->a[a][b][c][d] = a_redraw ?
+					                                 GetNeuralCategoryBlendState(neuralCategoryRedrawBlendStates[a][b][c][d], deferredBlendStates[a][b][c][d], NeuralRenderingCategories::MakeCategoryRedrawBlendDesc, "Upscaling::CategoryRedrawBlendState") :
+					                                 deferredBlendStates[a][b][c][d];
+				}
+			}
+		}
+	}
+
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
+}
+
+ID3D11BlendState* Deferred::GetNeuralCategoryBlendState(winrt::com_ptr<ID3D11BlendState>& a_cache, ID3D11BlendState* a_source, D3D11_BLEND_DESC (*a_makeDesc)(D3D11_BLEND_DESC), const char* a_name)
+{
+	if (!a_cache && a_source) {
+		D3D11_BLEND_DESC blendDesc;
+		a_source->GetDesc(&blendDesc);
+		blendDesc = a_makeDesc(blendDesc);
+		DX::ThrowIfFailed(globals::d3d::device->CreateBlendState(&blendDesc, a_cache.put()));
+		Util::SetResourceName(a_cache.get(), a_name);
+	}
+	return a_cache.get();
 }
 
 template <typename T>
@@ -682,12 +718,6 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumula
 		if (terrainBlending.loaded && terrainBlending.settings.Enabled) {
 			terrainBlending.RenderTerrainBlendingPasses();
 		}
-
-		// Snapshot Masks2's material categories now, before the blended decals
-		// below alpha-blend into it and corrupt the packed category bits.
-		auto& upscaling = globals::features::upscaling;
-		if (upscaling.loaded)
-			upscaling.CaptureNeuralRenderingCategories();
 	}
 
 	// Deferred blended decals

@@ -1,6 +1,7 @@
 #include "TerrainBlending.h"
 
 #include "Deferred.h"
+#include "Features/Upscaling.h"
 #include "Globals.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -390,8 +391,10 @@ void TerrainBlending::RenderTerrainBlendingPasses()
 		// Enable rendering for depth below the surface
 		context->OMSetDepthStencilState(terrainDepthStencilState, 0xFF);
 
+		// These blended passes bypass the outer RenderPassImmediately hooks, so Upscaling
+		// is handed the draw to give it its Neural Rendering category as well.
 		for (auto& renderPass : terrainRenderPasses)
-			Hooks::BSBatchRenderer__RenderPassImmediately::func(renderPass.a_pass, renderPass.a_technique, renderPass.a_alphaTest, renderPass.a_renderFlags);
+			globals::features::upscaling.RenderDeferredPass(Hooks::BSBatchRenderer__RenderPassImmediately::func.get(), renderPass.a_pass, renderPass.a_technique, renderPass.a_alphaTest, renderPass.a_renderFlags);
 
 		// Reset alpha blending
 		alphaBlendMode = 0;

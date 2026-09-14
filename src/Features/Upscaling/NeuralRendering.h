@@ -34,7 +34,7 @@ public:
 		bool hueGuard = false;
 	};
 
-	/** @brief Material categories encoded in the deferred Masks2 target. */
+	/** @brief Material categories encoded in the deferred Masks2 target's G channel. */
 	enum class MaterialCategory : std::uint32_t
 	{
 		kEverythingElse = 0,
@@ -207,7 +207,7 @@ public:
 	 * @param colorOut Distinct output resource receiving the neural-rendered image; must be UAV-writable.
 	 * @param depth Depth resource.
 	 * @param depthSRV Shader resource view over @p depth, used by the depth-guide compute pass.
-	 * @param materialCategoriesSRV Packed material category and vertex-AO render target.
+	 * @param materialCategoriesSRV Masks2 snapshot: vertex AO in R, material category in G.
 	 * @param motionVectors Motion-vector resource.
 	 * @param width Active region width in pixels.
 	 * @param height Active region height in pixels.

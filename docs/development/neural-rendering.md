@@ -432,8 +432,8 @@ layer of adjustment. Unlike the old opt-in `Per-Category Strengths` checkbox,
 category lookup is unconditional now: each category's hue guard needs to know
 which material a pixel is on every pixel, so `materialCategoriesSRV` is a hard
 requirement of `ValidateInputs` rather than only when per-category strengths
-were enabled, and `CaptureNeuralRenderingCategories` runs whenever Neural
-Rendering is enabled rather than only when that checkbox was set.
+were enabled, and the category capture runs whenever Neural Rendering is
+enabled with DLSS rather than only when that checkbox was set.
 
 Only Hair hue-guards by default (`CategoryStrengths::hueGuard`); the other six
 categories default off, matching the general observation that a colour bias is
@@ -447,43 +447,78 @@ plain bool.
 
 Classification stays entirely inside Community Shaders and does not use a DLSS
 control-mask parameter. `Lighting.hlsl` and `RunGrass.hlsl` already know their
-material permutations, so they store the category in the low three bits of the
-existing `R16_UNORM` `Masks2` value. The upper thirteen bits continue to carry
-vertex AO, limiting the maximum AO representation change to `7/65535`. Untagged
-pixels resolve as Everything Else. `Masks2` inherits each material's alpha
-blend state, so `Lighting.hlsl` writes it with the same stochastic 0/1 coverage
-the normals use rather than the material alpha: a lerp of two packed values
-scrambles the discrete category, turning a blended hairline strand at alpha
-below 0.5 over the face into Skin, or into an arbitrary category once the two
-surfaces' AO bits differ. Each pixel therefore holds one surface's exact AO and
-category; the dither is temporal (`FrameCount`-seeded), so the AO lerp is
-recovered in expectation under DLSS/TAA, and only blended materials with a
-vertex AO below 1 see any change at all.
+material permutations, so they store the category in the G channel of `Masks2`,
+which Community Shaders creates as `R16G16_UNORM`
+(`NeuralRenderingCategories::Encode`: id / 255, exact in 16-bit unorm). R keeps
+upstream's vertex AO with upstream's values, alpha and blending, so the deferred
+composite's AO is unchanged, and effect shaders keep upstream's `Masks2` write.
+Untagged pixels resolve as Everything Else.
 
-Alpha-blended lighting geometry is not part of the deferred pass at all: the
-engine sorts it and draws it after `Deferred::EndDeferred`, through the forward
-`Lighting.hlsl` permutation, with the deferred targets unbound. Hair strands and
-hairline scalps live there, which is why a deferred-only capture showed the
-face's Skin under the roots and the background's Everything Else under the
-blended mid-section while only the alpha-tested core read as Hair. The capture
-is therefore three steps, all in `Upscaling`:
+A category id cannot be blended: a lerp of two ids is a third id, and additive
+Hair (2) over Equipment (6) stores 8, which decodes as Everything Else (0). A draw
+has one source alpha for every channel of a target, and AO needs the material
+alpha, so per-channel write masks keep the two apart (`Upscaling/CategoryBlend.h`):
 
-1. `CaptureNeuralRenderingCategories` (Deferred's blended-decals hook) copies
-   the opaque categories out of `Masks2` before decals alpha-blend into it.
-2. `RestoreNeuralRenderingCategories` (end of `Deferred::EndDeferred`, after
-   `DeferredPasses` has consumed the decal-blended vertex AO) copies that
-   snapshot back into `Masks2` and arms the forward capture. From here
-   `BSBatchRenderer_RenderPassImmediately` binds `Masks2` to `SV_Target7` around
-   each forward lighting draw of the main world view (reflection and cubemap
-   passes are skipped, as is any draw whose slot-0 target is not the one the
-   deferred pass restored, since a mismatched size would fail
-   `OMSetRenderTargets`), and the forward `PS_OUTPUT` carries the same packed
-   category write with the same 0/1 coverage.
+- The deferred blend table (`Deferred::OverrideBlendStates`) mirrors RT0 onto
+  `Masks2` as upstream does, but enables G only for unblended entries
+  (`GetDeferredMasks2WriteMask`). Opaque and alpha-tested geometry, nearly all of
+  it, writes AO and category in one draw.
+- Blended deferred lighting passes are drawn a second time into G alone by
+  `Upscaling::RenderDeferredPass`. These are the decals with alpha blending, which is how FaceGen hairlines, brows,
+  beards and scars are authored, plus Terrain Blending's terrain. The redraw
+  blend table (`MakeCategoryRedrawBlendDesc`) masks off every GBuffer target and
+  `Masks2`'s R and blends G with source alpha. `ExtraFlags::NeuralCategoryRedraw`
+  makes `Lighting.hlsl` output the same stochastic 0/1 coverage the normals use
+  as `Masks2`'s alpha. The redraw binds a variant of the first draw's
+  depth-stencil state with an inclusive test and no depth or stencil writes. It
+  then restores that state and the deferred table.
+- Forward lighting draws write G only, with source alpha over coverage when RT0
+  blends and an overwrite when it does not (`MakeForwardCategoryBlendDesc`).
+
+Coverage is dithered per frame (`FrameCount`-seeded), and `DecodeColorCS`'s tent
+filter turns it back into a coverage-weighted mix of the category strengths. A
+pixel whose category matches neither overlapping surface therefore points at
+classification or at a writer outside these paths, not at blending.
+`tools/test-neural-category-blending.cpp` checks all three rules on D3D11 WARP,
+including that R and RT0 match upstream bit for bit.
+
+Other alpha-blended lighting geometry (loose strands, lashes, translucent
+clothing) is sorted and drawn after `Deferred::EndDeferred` through the forward
+`Lighting.hlsl` permutation, with the deferred targets unbound. The capture
+therefore spans the whole frame, all in `Upscaling`:
+
+1. `BeginNeuralRenderingCategoryCapture` (`Deferred::StartDeferred`) arms the
+   capture when Neural Rendering is on with DLSS. `StartDeferred` clears
+   `Masks2`. `BSBatchRenderer_RenderPassImmediately<N>` hooks the same three
+   dispatch sites as Light Limit Fix (the third is SE-only). It hands every
+   deferred-pass dispatch to `RenderDeferredPass`. That function redraws a
+   pass only when two things hold:
+   - its lighting draw actually ran, which `BSLightingShader_SetupNeuralCategory`
+     records;
+   - the blend state the draw left bound blends RT0.
+
+   Hooks further down the chain may defer a pass instead of drawing it, as
+   Terrain Blending does. Upscaling installs its hook last, so Terrain Blending
+   later draws those passes below it; `RenderTerrainBlendingPasses` therefore
+   routes its blended terrain loop through `RenderDeferredPass` itself.
+2. From `Deferred::EndDeferred` on, the same hook binds `Masks2` to `SV_Target7`
+   around each forward lighting draw of the main world view, and
+   `Deferred::ResetBlendStates(true)` selects the forward category variants.
+   Reflection and cubemap passes are skipped. So is any draw whose slot-0 target
+   is not the one the deferred pass restored, since a mismatched size would fail
+   `OMSetRenderTargets`. The hook restores the previous slot-7 target and target
+   mode after each draw.
 3. `FinishNeuralRenderingCategoryCapture` (start of `Main_PostProcessing`)
-   re-snapshots `Masks2` so every Neural Rendering evaluation keeps reading the
-   snapshot texture, now with both the opaque and the forward categories.
+   copies `Masks2` into the snapshot texture every Neural Rendering evaluation
+   reads, disarms the capture and restores the original engine blend states.
 
-`DecodeColorCS` reads that snapshot at the guide (render) resolution,
+Do not snapshot `Masks2` before the blended decals and copy it back after the
+composite: that erases every decal's category, which is how FaceGen hairlines,
+brows and beards read as the face or clothing beneath them. Do not store the
+category in AO's bits either. Keeping it exact then requires binary coverage in
+place of the material alpha, which dithers the AO of every blended surface.
+
+`DecodeColorCS` reads that snapshot's G channel at the guide (render) resolution,
 nearest-neighbour maps it to the active colour raster, and selects the category
 multipliers before calling `ResolveNeuralColor`.
 
@@ -498,7 +533,13 @@ classification, not the tent-filtered strengths above, since a resolved strength
 can't be mapped back to a category id. This is for tuning category boundaries
 (e.g. checking a hairline isn't reading as Skin); the model still evaluates
 normally underneath, so it carries the full Neural Rendering cost rather than
-being a cheap preview.
+being a cheap preview. While it is on, `Upscaling::LogNeuralCategoryDraw` also
+writes one `CommunityShaders.log` line per actor geometry and render stage
+(`deferred`, `deferred, category redraw`, `forward`, or `forward, Masks2 unbound`)
+with its technique, material, decal and alpha flags and the resolved
+`IsHumanoidActor`/`IsHair`, so a pixel reading the wrong category can be traced
+to the draw behind it. A blended deferred shape with a `deferred` line but no
+`deferred, category redraw` line got no category.
 
 Two categories cannot be derived from the shader permutation alone, and
 `Upscaling::BSLightingShader_SetupNeuralCategory` (hooked onto
@@ -516,17 +557,17 @@ from the geometry's owning actor:
 - `ExtraFlags::IsHair` is set from either of two signals. The pass's material
   is hair tint or its shader property carries the hair soft-lighting flag,
   which covers wigs and other hair worn as equipment. Or the geometry belongs
-  to one of the actor's hair or facial-hair head parts (or their extra parts,
-  which is how hairlines attach): head parts hang under the actor's skinned
-  face node as children named by the part's editor ID, so the hook walks up
-  from the geometry to the child of that node and matches its name against the
-  NPC's head parts. The `HAIR` technique only covers pieces authored with the
-  hair-tint shader type, and hair mods commonly author hairlines, braids and
-  loose strands with the default or skin-tint type instead; those compiled as
-  Equipment (humanoid), Skin (skin-tint, or skinned with the humanoid flag
-  cleared) or Everything Else, which is what the category debug view showed
-  along the hairline and braid. `IsHair` overrides the technique-derived
-  category in every permutation except `HAIR` itself.
+  to one of the actor's hair or facial-hair head parts or their extra parts
+  (vanilla hairlines are Misc-type extra parts of their hair) and its material
+  is not an accessory material - environment map, glow map, parallax,
+  multilayer parallax or eye - since hair records also carry accessories such
+  as environment-mapped earrings as extra parts. Head parts hang under the
+  actor's skinned face node named by the part's editor ID: a FaceGen head names
+  each shape, a runtime-assembled head names the part's root node. The hook
+  therefore matches the geometry and each ancestor up to the face node's child
+  against the NPC's head parts. The `HAIR` technique only covers pieces
+  authored with the hair-tint shader type; `IsHair` overrides the
+  technique-derived category in every permutation except `HAIR` itself.
 
 ## Depth-aware silhouette preservation
 

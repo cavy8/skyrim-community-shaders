@@ -90,6 +90,10 @@ namespace Permutation
 		// actor, whatever shader type it was authored with; see
 		// NeuralRenderingCategories::Hair.
 		static const uint IsHair = (1 << 12);
+		// Set during Neural Rendering's category redraw of a blended deferred
+		// pass: Masks2's alpha carries binary coverage instead of the material
+		// alpha; see Upscaling::RenderDeferredPass.
+		static const uint NeuralCategoryRedraw = (1 << 13);
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		static const uint IsEye = (1u << 31);
 	}

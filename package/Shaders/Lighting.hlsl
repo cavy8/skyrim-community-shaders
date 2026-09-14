@@ -3351,9 +3351,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.NormalGlossiness.w = stochasticBlend;
 #	endif  // defined(DEFERRED)
 
-	// Neural Rendering material category, packed into the low bits of Masks2
-	// next to vertex AO (stored as 1 - vertexAO so the cleared default of 0
-	// means no occlusion for pixels that never write this target). This runs
+	// Neural Rendering material category, stored in Masks2's G channel next to
+	// vertex AO in R (stored as 1 - vertexAO so the cleared default of 0 means
+	// no occlusion for pixels that never write this target). This runs
 	// for every lighting draw, not only the deferred ones: alpha-blended
 	// geometry such as hair strands and hairline scalps is sorted and drawn
 	// forward after the deferred pass, and Upscaling binds Masks2 back to
@@ -3408,18 +3408,22 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsHair)
 		neuralRenderingCategory = NeuralRenderingCategories::Hair;
 #	endif
-	// Masks2 takes the draw's own alpha blend state (Deferred::OverrideBlendStates
-	// mirrors RT0 onto every deferred target; the game's forward blend states do
-	// the same), and a lerp of two packed values scrambles the discrete category
-	// in the low bits: a hairline strand at alpha < 0.5 over the face rounds back
-	// to Skin, and any AO difference between the two surfaces leaves an arbitrary
-	// category behind. Blend it with the same stochastic 0/1 coverage the normals
-	// use, so a pixel holds one surface's exact AO and category; the per-frame
-	// dither still averages to the old AO lerp under DLSS/TAA, and DecodeColorCS's
-	// tent filter turns it back into a coverage-weighted mix of the category
-	// strengths.
+	// Masks2 keeps upstream's vertex AO in R, blended with the material alpha,
+	// and the category in G. Deferred and Upscaling give each channel its own
+	// write mask (Upscaling/CategoryBlend.h). One source alpha drives both
+	// channels, and a lerp of two category ids is a third category, so G only
+	// ever takes one surface's exact id through binary coverage matching the
+	// normals' stochastic blend: blended deferred draws leave G alone until
+	// Upscaling redraws them into G with NeuralCategoryRedraw set, and forward
+	// draws write G only. The dither is temporal, and DecodeColorCS's tent filter
+	// turns it back into a coverage-weighted mix of the category strengths.
 	float masks2Coverage = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
-	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, neuralRenderingCategory), 0, 0, masks2Coverage);
+#	if defined(DEFERRED)
+	float masks2Alpha = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::NeuralCategoryRedraw) ? masks2Coverage : psout.Diffuse.w;
+#	else
+	float masks2Alpha = masks2Coverage;
+#	endif
+	psout.Masks2 = float4(1.0 - vertexAO, NeuralRenderingCategories::Encode(neuralRenderingCategory), 0, masks2Alpha);
 
 #	if !defined(HDR_OUTPUT)  // Do not apply gamma correction before we pass to ISHDR.
 	if ((!inWorld && !inReflection) && SharedData::linearLightingSettings.enableLinearLighting && !(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow)) {

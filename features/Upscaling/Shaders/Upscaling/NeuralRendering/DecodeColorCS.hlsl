@@ -30,7 +30,7 @@ Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-r
 Texture2D<float4> OriginalColor : register(t1);  // Untouched linear scene colour, jittered raster.
 Texture2D<float4> ProxyColor : register(t2);     // The exact proxy EncodeColorCS handed the model.
 Texture2D<float> GuideDepth : register(t3);      // Game depth at the guide resolution.
-Texture2D<float> MaterialCategories : register(t4);  // Masks2: category in the low three R16_UNORM bits.
+Texture2D<float4> MaterialCategories : register(t4);  // Masks2 snapshot: category in G (NeuralRenderingCategories::Encode).
 Texture2D<float2> VanillaAdaptation : register(t5);            // Same inputs EncodeColorCS used for the display transform,
 StructuredBuffer<float> PostProcessAdaptation : register(t6);  // so a stale proxy can be compared with a fresh encode.
 RWTexture2D<float4> DestinationColor : register(u0);
@@ -59,7 +59,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		if (all(GuideSize > 0)) {
 			float2 guideCoord = NeuralGuidePosition(dispatchThreadID.xy, GuideSize, ActiveSize, GuideJitterOffset) - 0.5;
 			int2 guideTexel = clamp((int2)round(guideCoord), int2(0, 0), int2(GuideSize) - 1);
-			category = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(guideTexel, 0)));
+			category = NeuralRenderingCategories::Decode(MaterialCategories.Load(int3(guideTexel, 0)).g);
 			category = category < 7 ? category : NeuralRenderingCategories::EverythingElse;
 		}
 		DestinationColor[dispatchThreadID.xy] = float4(NeuralRenderingCategories::DebugColor(category), 1.0);
@@ -120,7 +120,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 				float tapWeight = max(0.0, 1.5 - abs(tapOffset.x)) * max(0.0, 1.5 - abs(tapOffset.y));
 				if (tapWeight <= 0.0)
 					continue;
-				uint tapCategory = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(tapTexel, 0)));
+				uint tapCategory = NeuralRenderingCategories::Decode(MaterialCategories.Load(int3(tapTexel, 0)).g);
 				tapCategory = tapCategory < 7 ? tapCategory : NeuralRenderingCategories::EverythingElse;
 				categoryColorStrength += tapWeight * CategoryColorStrengths[tapCategory >> 2][tapCategory & 3];
 				categoryTransferStrength += tapWeight * CategoryTransferStrengths[tapCategory >> 2][tapCategory & 3];
