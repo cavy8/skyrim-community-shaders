@@ -307,12 +307,21 @@ saturation / contrast / brightness / white against Post Processing's
 game build.
 
 **Known approximations.** Under the Post Processing tonemap owner only the
-exposure is replicated; its tonemapper and grading are not, so the proxy is an
-exposed classic Reinhard. Under Effects11 nothing is captured and the proxy is
-the plain Reinhard. The luminance edit is applied in scene-linear light and then
-passes through the real tonemap and contrast, so its final magnitude is still
-reshaped by them (a contrast of 1.2 makes a mid-tone edit ~20% stronger in log
-space); `Transfer Strength` remains the knob for that residual.
+exposure is replicated; its tonemapper (one of several selectable curves -
+ACES, Frostbite, Melon, ...) and its full colour grading (white balance,
+contrast, saturation, split-toning, LUT) are not - reproducing those exactly
+would need `colorgrading.hlsl`'s whole RenoDX/ACEScct-based pipeline, well
+beyond what a proxy needs. Under Effects11 nothing is captured either. Both
+cases fall back to `NeuralAcesFilmic` (`ColorTransfer.hlsli`), a small
+dependency-free approximation of a generic filmic response - shadows and
+midtones held close to linear, only the highlights rolled off - rather than a
+plain Reinhard, which compresses continuously from black and reads to the
+model as an implausibly flat, low-contrast frame regardless of which real
+tonemapper the user actually has active. The luminance edit is applied in
+scene-linear light and then passes through the real tonemap and contrast, so
+its final magnitude is still reshaped by them (a contrast of 1.2 makes a
+mid-tone edit ~20% stronger in log space); `Transfer Strength` remains the
+knob for that residual.
 
 ### Raw Model Output
 

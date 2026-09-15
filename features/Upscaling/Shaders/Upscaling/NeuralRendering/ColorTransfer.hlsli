@@ -119,7 +119,7 @@ struct NeuralDisplayTransform
 	float tintAmount;        // ISHDR Tint.w.
 };
 
-/** No exposure and no grading: the plain hue-preserving Reinhard proxy. */
+/** No exposure and no grading: the plain hue-preserving ACES-filmic proxy (NeuralAcesFilmic). */
 NeuralDisplayTransform NeuralIdentityDisplayTransform()
 {
 	NeuralDisplayTransform display;
@@ -208,22 +208,46 @@ float NeuralHejlBurgessDawson(float luminance, float whitePoint)
 }
 
 /**
+ * Krzysztof Narkowicz's compact fit to the ACES reference tonemap curve
+ * ("ACES Filmic Tone Mapping Curve", 2016), on one luminance value.
+ *
+ * Used as the fallback proxy tonemap below in place of a plain Reinhard
+ * (`x / (1 + x)`). Reinhard compresses continuously starting at x = 0, not
+ * just the highlights, so even midtones read as flatter and lower-contrast
+ * to the model than any actual filmic response - vanilla's own
+ * Hejl-Burgess-Dawson/Reinhard-with-white-point curve above, Post Processing's
+ * selectable tonemappers (ACES/Frostbite/Melon/...), and typical ReShade-style
+ * curves under Effects11 - all keep a near-linear response through shadows and
+ * midtones and only roll off toward white. This is a small, widely used,
+ * dependency-free approximation of that general shape; it is not an attempt to
+ * match any one of those curves exactly; a mismatch there stays a residual
+ * `Transfer Strength` corrects.
+ */
+float NeuralAcesFilmic(float x)
+{
+	const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+	return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+
+/**
  * Display-linear proxy of scene-linear @p linearColor under @p display.
  *
- * Without vanilla grading this is the exposed colour through the hue-preserving
- * scalar Reinhard the resolve was designed around. With it, it replicates the
- * SDR path of ISHDR.hlsl's BLEND pass stage for stage - exposure, the
- * luminance-driven Reinhard (white point) or Hejl-Burgess-Dawson curve,
- * saturation / tint / brightness, and the shadow-aware contrast around the
- * adapted luminance - omitting only bloom, the fade overlay and the HDR display
- * mapping. The output is clamped to 0..1 like the frame it stands for.
+ * Without vanilla grading this is the exposed colour through NeuralAcesFilmic,
+ * applied hue-preservingly on luminance and rescaled back onto colour exactly
+ * like the vanilla-grading tonemap stage below. With vanilla grading it
+ * instead replicates the SDR path of ISHDR.hlsl's BLEND pass stage for stage -
+ * exposure, the luminance-driven Reinhard (white point) or Hejl-Burgess-Dawson
+ * curve, saturation / tint / brightness, and the shadow-aware contrast around
+ * the adapted luminance - omitting only bloom, the fade overlay and the HDR
+ * display mapping. The output is clamped to 0..1 like the frame it stands for.
  */
 float3 ApplyNeuralDisplayTransform(float3 linearColor, NeuralDisplayTransform display)
 {
 	float3 color = max(linearColor, 0.0) * display.exposure;
 	if (!display.vanillaGrading) {
-		float peak = max(color.r, max(color.g, color.b));
-		return color / (1.0 + peak);
+		float luminance = dot(color, kNeuralLuma);
+		float mapped = NeuralAcesFilmic(luminance);
+		return color * (mapped / max(luminance, 1e-5));
 	}
 
 	float luminance = dot(color, kNeuralLuma);
@@ -250,7 +274,8 @@ float3 ApplyNeuralDisplayTransform(float3 linearColor, NeuralDisplayTransform di
  * (HDR) pixels are scaled down by one hue-preserving factor and an SDR frame
  * passes through unchanged. Scene linear: the colour goes through @p display
  * (see ApplyNeuralDisplayTransform); with the identity transform that is the
- * hue-preserving scalar Reinhard, a single positive scale of the linear light.
+ * hue-preserving scalar ACES-filmic curve, a single positive scale of the
+ * linear light.
  */
 float3 EncodeNeuralProxy(float3 color, uint domain, NeuralDisplayTransform display)
 {
