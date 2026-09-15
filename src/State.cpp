@@ -570,6 +570,7 @@ void State::SaveToJson(nlohmann::json& settings)
 	general["Enable Disk Cache"] = shaderCache->IsDiskCache();
 	general["Skip Unchanged Shaders"] = shaderCache->IsSkipUnchangedShaders();
 	general["Enable Async"] = shaderCache->IsAsync();
+	general["Show Background Compile Overlay"] = shaderCache->IsShowBackgroundOverlay();
 	general["Language"] = I18n::GetSingleton()->GetCurrentLocale();
 
 	settings["General"] = general;
@@ -654,6 +655,8 @@ void State::LoadFromJson(nlohmann::json& settings)
 			shaderCache->SetSkipUnchangedShaders(general["Skip Unchanged Shaders"]);
 		if (general.contains("Enable Async") && general["Enable Async"].is_boolean())
 			shaderCache->SetAsync(general["Enable Async"]);
+		if (general.contains("Show Background Compile Overlay") && general["Show Background Compile Overlay"].is_boolean())
+			shaderCache->SetShowBackgroundOverlay(general["Show Background Compile Overlay"]);
 
 		// Load i18n locale preference
 		if (general.contains("Language") && general["Language"].is_string()) {

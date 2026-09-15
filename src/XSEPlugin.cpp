@@ -122,6 +122,14 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 					std::this_thread::sleep_for(100ms);
 				}
 
+				// The boot compile pass is over. Any shader compiled from here on is one that
+				// wasn't touched by the loading screen (e.g. a permutation only reachable in
+				// actual gameplay). Treat it as background work: throttle it to
+				// backgroundCompilationThreadCount instead of the full boot thread count (see
+				// CompilationSet::TryTakeNext), and let the "show background overlay" setting
+				// govern whether it pops up (see RenderShaderCompilationStatus).
+				shaderCache->backgroundCompilation = true;
+
 				if (globals::game::quitGame) {
 					logger::info("Game was closed, skipping feature DataLoaded methods");
 					break;

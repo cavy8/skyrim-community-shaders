@@ -2381,6 +2381,16 @@ namespace SIE
 		isAsync = value;
 	}
 
+	bool ShaderCache::IsShowBackgroundOverlay() const
+	{
+		return showBackgroundOverlay;
+	}
+
+	void ShaderCache::SetShowBackgroundOverlay(bool value)
+	{
+		showBackgroundOverlay = value;
+	}
+
 	bool ShaderCache::IsDump() const
 	{
 		return isDump;

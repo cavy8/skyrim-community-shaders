@@ -3066,6 +3066,8 @@
     "menu.settings.shader_fast": "Fast (<2s)",
     "menu.settings.shader_slow": "Slow (2-8s)",
     "menu.settings.shader_very_slow": "Very slow (>=8s)",
+    "menu.settings.show_background_compile_overlay": "Show Background Compile Overlay",
+    "menu.settings.show_background_compile_overlay_tooltip": "Shows a progress popup when a shader not seen during the initial loading-screen compile is compiled during gameplay. Disabling this only hides that popup; compilation itself is unaffected, and failures are still reported.",
     "menu.settings.show_footer": "Show Footer",
     "menu.settings.show_footer_tooltip": "Shows the footer with game version, swap chain, and GPU information at the bottom of the window",
     "menu.settings.show_icon_buttons_in_header": "Show Icon Buttons in Header",

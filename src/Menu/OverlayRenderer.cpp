@@ -283,7 +283,11 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 
 	uint32_t effectFailed = EffectManager::GetSingleton().IsInitialized() ? EffectManager::GetSingleton().GetFailedEffectCount() : 0;
 
-	if (shaderCache->IsCompiling()) {
+	// Background compiles (anything queued after the boot loading screen) can be hidden via
+	// settings; failures still surface below through the (failed && !hide) fallback branch.
+	bool showProgress = shaderCache->IsCompiling() && (!shaderCache->backgroundCompilation || shaderCache->IsShowBackgroundOverlay());
+
+	if (showProgress) {
 		ImGui::SetNextWindowPos(ImVec2(pos, pos));
 		if (!ImGui::Begin("ShaderCompilationInfo", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::End();

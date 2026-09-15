@@ -262,6 +262,17 @@ void SettingsTabRenderer::RenderShadersTab()
 			ImGui::Text("%s", T("menu.settings.enable_async_tooltip", "Skips a shader being replaced if it hasn't been compiled yet. Also makes compilation blazingly fast!"));
 		}
 
+		bool showBackgroundOverlay = shaderCache->IsShowBackgroundOverlay();
+		if (ImGui::Checkbox(T("menu.settings.show_background_compile_overlay", "Show Background Compile Overlay"), &showBackgroundOverlay)) {
+			shaderCache->SetShowBackgroundOverlay(showBackgroundOverlay);
+		}
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T("menu.settings.show_background_compile_overlay_tooltip",
+								  "Shows a progress popup when a shader not seen during the initial loading-screen "
+								  "compile is compiled during gameplay. Disabling this only hides that popup; "
+								  "compilation itself is unaffected, and failures are still reported."));
+		}
+
 		// Skip confirmation when clearing shader cache
 		auto& menuSettings = globals::menu->GetSettings();
 		bool skipConfirmation = menuSettings.SkipClearCacheConfirmation;

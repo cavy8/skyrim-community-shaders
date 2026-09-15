@@ -388,6 +388,10 @@ namespace SIE
 		bool IsAsync() const;
 		/** Sets whether shader compilation is asynchronous. */
 		void SetAsync(bool value);
+		/** Gets whether the progress popup is shown for compiles queued after the boot loading screen. */
+		bool IsShowBackgroundOverlay() const;
+		/** Sets whether the progress popup is shown for compiles queued after the boot loading screen. */
+		void SetShowBackgroundOverlay(bool value);
 		/** Gets whether compiled shaders are dumped to disk as raw blobs. */
 		bool IsDump() const;
 		/** Sets whether compiled shaders are dumped to disk as raw blobs. */
@@ -874,6 +878,7 @@ namespace SIE
 		bool isDiskCache = true;
 		bool isSkipUnchangedShaders = true;  ///< when true, recompile a disk-cached shader only if its source is newer
 		bool isAsync = true;
+		bool showBackgroundOverlay = true;  ///< whether the progress popup renders for compiles queued after boot (see backgroundCompilation)
 		bool isDump = false;
 		bool hideError = false;
 		bool useFileWatcher = false;
