@@ -75,7 +75,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingEquipmentStrengths,
 	neuralRenderingDepthAwareResolve,
 	neuralRenderingAlternateFrames,
-	neuralRenderingDebugCategoryView);
+	neuralRenderingDebugCategoryView,
+	neuralRenderingRawModelOutput);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
 
@@ -764,6 +765,16 @@ void Upscaling::DrawNeuralRenderingSettings()
 			"yellow Eyes, green Foliage, cyan Landscape, purple Equipment, near-black Everything Else). Shows "
 			"the raw per-pixel classification, not the per-category strengths above. Neural Rendering still "
 			"evaluates normally underneath, so this costs the same as leaving it off."));
+	}
+
+	ImGui::BeginDisabled(settings.neuralRenderingPlacement != 3);
+	ImGui::Checkbox(T(TKEY("neural_rendering_raw_model_output"), "Raw Model Output"), &settings.neuralRenderingRawModelOutput);
+	ImGui::EndDisabled();
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_raw_model_output_tooltip"),
+			"Finished Image only. Writes what the DLSS model actually produced straight to the screen, skipping "
+			"every strength, guard, and blend above entirely. Useful for telling apart a weak model answer from "
+			"an over-conservative resolve - not meant to be left on."));
 	}
 
 	if (!neuralRenderingControlsAvailable)
@@ -2174,6 +2185,7 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
 	options.automaticMask = settings.neuralRenderingAutomaticMask;
 	options.debugCategoryView = settings.neuralRenderingDebugCategoryView;
+	options.rawModelOutput = settings.neuralRenderingRawModelOutput;
 	options.reset = neuralRenderingResetThisFrame;
 	const bool perAxis = settings.neuralRenderingResolutionMode == 1;
 	options.resolutionScaleX = perAxis ? settings.neuralRenderingResolutionScaleX : settings.neuralRenderingResolutionScale;

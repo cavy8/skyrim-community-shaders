@@ -97,6 +97,7 @@ public:
 		/// Debug view: render each pixel's classified material category as a flat colour instead
 		/// of the model's edit. See NeuralRendering::Options::debugCategoryView.
 		bool neuralRenderingDebugCategoryView = false;
+		bool neuralRenderingRawModelOutput = false;  // Diagnostic: skip the resolve, write Feature 18's answer directly (Finished Image only).
 	};
 
 	Settings settings;

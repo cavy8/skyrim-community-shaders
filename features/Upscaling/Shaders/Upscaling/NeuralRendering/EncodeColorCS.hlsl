@@ -23,7 +23,7 @@ cbuffer TransferParams : register(b0)
 	float LuminosityStrength;  // Unused here; layout shared with DecodeColorCS.
 	uint DebugCategoryView;    // Unused here; layout shared with DecodeColorCS.
 	float MaxRatio;            // Unused here; layout shared with DecodeColorCS.
-	float HueGuardPad;         // Unused; keeps the cbuffer layout matching DecodeColorCS.
+	uint RawModelOutput;       // Unused here; layout shared with DecodeColorCS.
 };
 
 Texture2D<float4> SourceColor : register(t0);

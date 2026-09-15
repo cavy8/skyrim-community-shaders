@@ -125,6 +125,14 @@ public:
 		/// carries the full Neural Rendering cost - it is for tuning category boundaries,
 		/// not a lightweight preview.
 		bool debugCategoryView = false;
+		/// Diagnostic: write Feature 18's answer directly to the output, preserving
+		/// the renderer's alpha, instead of blending it through the resolve. Only
+		/// honoured in the display-gamma colour domain (Finished Image) - in scene
+		/// linear this would dump a display-referred model answer into a linear HDR
+		/// buffer the game's own tonemapper still has to process, not a meaningful
+		/// image. Not meant to ship on; it exists to tell apart a weak model answer
+		/// from an over-conservative resolve.
+		bool rawModelOutput = false;
 		bool reset = false;
 
 		/// Valid region of @p depth and @p motionVectors, i.e. the game's render

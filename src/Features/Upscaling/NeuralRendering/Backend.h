@@ -130,6 +130,10 @@ public:
 		/// Debug view: the decode renders each pixel's classified material category as a flat
 		/// colour instead of blending the model's edit; see NeuralRendering::Options::debugCategoryView.
 		bool debugCategoryView = false;
+		/// Diagnostic: write Feature 18's answer directly, bypassing the resolve
+		/// entirely; see NeuralRendering::Options::rawModelOutput. Only honoured
+		/// in the display-gamma colour domain (Finished Image).
+		bool rawModelOutput = false;
 		bool reset = false;  ///< Force a history reset on this frame.
 	};
 

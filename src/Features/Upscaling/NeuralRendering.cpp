@@ -70,6 +70,7 @@ namespace
 		inputs.superResolutionPreset = options.superResolutionPreset;
 		inputs.automaticMask = options.automaticMask;
 		inputs.debugCategoryView = options.debugCategoryView;
+		inputs.rawModelOutput = options.rawModelOutput;
 		inputs.reset = options.reset;
 		return inputs;
 	}

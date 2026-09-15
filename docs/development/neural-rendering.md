@@ -314,6 +314,23 @@ passes through the real tonemap and contrast, so its final magnitude is still
 reshaped by them (a contrast of 1.2 makes a mid-tone edit ~20% stronger in log
 space); `Transfer Strength` remains the knob for that residual.
 
+### Raw Model Output
+
+`Raw Model Output` (Finished Image only, `Options::rawModelOutput`) is a
+diagnostic that bypasses `ResolveNeuralColor` entirely: `DecodeColorCS` writes
+Feature 18's answer converted straight back to display-referred colour,
+preserving the renderer's alpha, wherever `RawModelOutput` is set and
+`ColorDomain` is `kNeuralColorDomainDisplayGamma`. It is gated to that domain
+in the shader itself, not just the UI - in the scene-linear domain (Before/
+After/Separate Upscaling) the same bytes are a display-referred, roughly 0-1
+proxy answer, and dumping that into a linear HDR buffer the game's own
+tonemapper still has to process is not a meaningful image, just a washed-out
+frame. It exists to separate two possible causes of a weak-looking result: if
+this looks dramatically stronger than the normal resolve, the model and its
+tuning are fine and the attenuation is in the transfer/compositing math above;
+if it looks weak too, the problem is upstream of the resolve entirely (model
+input, guides, or colour-domain conversion). Not meant to be left on.
+
 ## Jitter
 
 The model re-decides its local tone and structure whenever the framing changes

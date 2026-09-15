@@ -47,7 +47,7 @@ namespace
 		float luminosityStrength = 1.0f;  ///< Overall multiplier on the model's luminance change alone.
 		std::uint32_t debugCategoryView = 0;  ///< Non-zero: the decode renders the classified category, not the model's edit.
 		float maxRatio = 2.0f;                ///< Two-sided guard on the model/proxy luminance ratio (1/maxRatio..maxRatio).
-		float hueGuardPad = 0.0f;             ///< Unused; keeps the cbuffer a whole number of float4s.
+		std::uint32_t rawModelOutput = 0;     ///< Non-zero: the decode writes Feature 18's answer directly (Finished Image diagnostic).
 	};
 	static_assert(sizeof(TransferParams) == 240);
 
@@ -890,6 +890,7 @@ struct NeuralRenderingBackend::State
 		}
 		transferParams.hueGuardMask = hueGuardMask;
 		transferParams.debugCategoryView = inputs.debugCategoryView ? 1u : 0u;
+		transferParams.rawModelOutput = inputs.rawModelOutput ? 1u : 0u;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		if (!skipFrame && !EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,

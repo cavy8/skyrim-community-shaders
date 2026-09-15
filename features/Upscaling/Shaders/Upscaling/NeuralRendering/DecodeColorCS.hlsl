@@ -24,7 +24,7 @@ cbuffer TransferParams : register(b0)
 	float LuminosityStrength;  // Overall multiplier on the model's luminance change alone (see ResolveNeuralColor).
 	uint DebugCategoryView;    // Non-zero: render the classified category (NeuralRenderingCategories::DebugColor) instead of the model's edit.
 	float MaxRatio;            // Two-sided guard on the model/proxy luminance ratio (1/MaxRatio..MaxRatio); see ResolveNeuralColor.
-	float HueGuardPad;         // Unused; keeps the cbuffer a whole number of float4s.
+	uint RawModelOutput;       // Non-zero: write Feature 18's answer directly, bypassing the resolve entirely (Finished Image diagnostic).
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
@@ -79,6 +79,20 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, uv, 0);
 
 	float4 original = OriginalColor[dispatchThreadID.xy];
+
+	// Diagnostic: write Feature 18's answer straight through, preserving the
+	// renderer's alpha, bypassing ResolveNeuralColor and every strength/guard
+	// below entirely. Restricted to the display-gamma domain (Finished Image) -
+	// in the scene-linear domain this would dump a display-referred, roughly
+	// 0-1 model answer into a linear HDR buffer the game's own tonemapper still
+	// has to process, which is not a meaningful image. Not the normal path; it
+	// exists to tell apart a weak model answer from an over-conservative resolve.
+	if (RawModelOutput != 0 && ColorDomain == kNeuralColorDomainDisplayGamma) {
+		float3 rawLinear = NeuralModelToLinear(model.rgb, ColorDomain);
+		DestinationColor[dispatchThreadID.xy] = float4(NeuralLinearToDomain(rawLinear, ColorDomain), original.a);
+		return;
+	}
+
 	float categoryColorStrength = 1.0;
 	float categoryTransferStrength = 1.0;
 	float categoryLuminosityStrength = 1.0;
