@@ -263,17 +263,28 @@ void PostProcessing::ProcessSettings(json& o_json)
 
 	for (auto& feat : pipeline) {
 		if (feat && o_json.contains(feat->GetType())) {
-			if (!feat->IsAutoEnabled())
-				feat->enabled = o_json.value(feat->GetType(), json::object()).value("enabled", true);
-			json featSettings = o_json.value(feat->GetType(), json::object()).value("settings", json::object());
-			feat->LoadSettings(featSettings);
+			try {
+				if (!feat->IsAutoEnabled())
+					feat->enabled = o_json.value(feat->GetType(), json::object()).value("enabled", true);
+				json featSettings = o_json.value(feat->GetType(), json::object()).value("settings", json::object());
+				feat->LoadSettings(featSettings);
+			} catch (const json::exception& e) {
+				logger::warn("Failed to load Post Processing settings for {}: {}", feat->GetType(), e.what());
+				feat->RestoreDefaultSettings();
+			}
 			if (loaded)
 				feat->SetupResources();
 		}
 	}
 
-	if (o_json.contains("ppsettings"))
-		settings = o_json["ppsettings"];
+	if (o_json.contains("ppsettings")) {
+		try {
+			settings = o_json["ppsettings"];
+		} catch (const json::exception& e) {
+			logger::warn("Failed to load Post Processing settings: {}", e.what());
+			settings = {};
+		}
+	}
 }
 
 void PostProcessing::SaveSettings(json& o_json)
@@ -694,7 +705,11 @@ bool PostProcessing::WantsTonemapOwnership() const
 	// main menu or a loading screen -- Color Grading included. Claiming the tonemap there
 	// would send ISHDR down its POSTPROCESS passthrough branch with no replacement
 	// tonemapper behind it, writing the raw linear scene straight to the screen.
-	return !globals::state->IsMainOrLoadingMenuOpen();
+	if (globals::state->IsMainOrLoadingMenuOpen())
+		return false;
+
+	const auto* colorGrading = static_cast<const ColorGrading*>(pipeline[static_cast<size_t>(FeaturePipelineIndex::ColorGrading)].get());
+	return colorGrading && fullscreenVS && colorGrading->IsReadyToTonemap();
 }
 
 bool PostProcessing::IsTonemapOwnedByEffects11() const
