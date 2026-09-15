@@ -2297,7 +2297,7 @@
     "feature.upscaling.neural_rendering_category_overrides_tooltip": "Override the strengths above, and toggle hue guard, independently for each material category. The strengths above still apply afterwards as a final multiplier over every category.",
     "feature.upscaling.neural_rendering_category_skin": "Skin",
     "feature.upscaling.neural_rendering_color_strength": "Color Strength",
-    "feature.upscaling.neural_rendering_color_strength_tooltip": "Blend the model's color changes independently of its bounded lighting and detail changes.",
+    "feature.upscaling.neural_rendering_color_strength_tooltip": "Blend the model's color changes independently of its bounded lighting and detail changes. 1 is the model's own color change; above 1 extrapolates the same change further.",
     "feature.upscaling.neural_rendering_compare_screenshot": "Take Comparison Screenshot",
     "feature.upscaling.neural_rendering_compare_screenshot_tooltip": "Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on - with no HUD or menu, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off.",
     "feature.upscaling.neural_rendering_debug": "Debug",

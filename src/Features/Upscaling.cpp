@@ -681,10 +681,11 @@ void Upscaling::DrawNeuralRenderingSettings()
 			"below multiply on top of these as a final adjustment layer."));
 	}
 
-	ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"), &settings.neuralRenderingColorStrength, 0.0f, 1.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"), &settings.neuralRenderingColorStrength, 0.0f, 2.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("neural_rendering_color_strength_tooltip"),
-			"Blend the model's color changes independently of its bounded lighting and detail changes."));
+			"Blend the model's color changes independently of its bounded lighting and detail changes. 1 is the "
+			"model's own color change; above 1 extrapolates the same change further."));
 	}
 	ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"), &settings.neuralRenderingTransferStrength, 0.0f, 2.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -724,7 +725,7 @@ void Upscaling::DrawNeuralRenderingSettings()
 				ImGui::TextUnformatted(tooltip);
 		}
 		ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"),
-			&strengths.colorStrength, 0.0f, 1.0f, "%.2f");
+			&strengths.colorStrength, 0.0f, 2.0f, "%.2f");
 		ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"),
 			&strengths.transferStrength, 0.0f, 2.0f, "%.2f");
 		ImGui::SliderFloat(T(TKEY("neural_rendering_luminosity_strength"), "Luminosity Strength"),

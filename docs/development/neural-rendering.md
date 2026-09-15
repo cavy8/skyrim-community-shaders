@@ -240,11 +240,16 @@ foliage around 0.3), so intentional recolouring of clearly coloured materials
 survives. This is what stops the model's green cast on neutral shading, which was
 most visible in the low-contrast Finished Image placement.
 
-`Color Strength` blends from stable renderer chroma at zero to that guarded
-model chroma at one, fading only in near-black pixels where normalized colour is
-numerically ambiguous. HDR headroom and alpha remain renderer-owned. No temporal
-accumulator or midpoint blend is involved; every frame is independently
-re-anchored.
+`Color Strength` (0..2, default 1) raises the guarded per-channel chroma ratio
+above to itself before it is applied: zero collapses the ratio to one in every
+channel, reproducing the renderer's own chroma exactly (indistinguishable from
+no colour transfer); one is the model's transferred chroma unchanged; above one
+extrapolates the same relative colour change further, still inside the
+per-channel guard. That result still fades to the renderer's own chroma only in
+near-black pixels, where normalized colour is numerically ambiguous, and is
+gated by `Transfer Strength` the same way the luminance edit is. HDR headroom
+and alpha remain renderer-owned. No temporal accumulator or midpoint blend is
+involved; every frame is independently re-anchored.
 
 ### Display-matched proxy
 

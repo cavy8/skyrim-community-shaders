@@ -845,7 +845,7 @@ struct NeuralRenderingBackend::State
 		// a NaN, which fails the comparison.
 		transferParams.guideJitterOffset[0] = std::abs(inputs.guideJitterOffsetX) <= 1.0f ? inputs.guideJitterOffsetX : 0.0f;
 		transferParams.guideJitterOffset[1] = std::abs(inputs.guideJitterOffsetY) <= 1.0f ? inputs.guideJitterOffsetY : 0.0f;
-		transferParams.colorStrength = std::clamp(inputs.colorStrength, 0.0f, 1.0f);
+		transferParams.colorStrength = std::clamp(inputs.colorStrength, 0.0f, 2.0f);
 		transferParams.transferStrength = std::clamp(inputs.transferStrength, 0.0f, 2.0f);
 		transferParams.activeSize[0] = colorWidth;
 		transferParams.activeSize[1] = colorHeight;
@@ -882,7 +882,7 @@ struct NeuralRenderingBackend::State
 		transferParams.maxRatio = std::clamp(inputs.maxRatio, 1.0f, 8.0f);
 		std::uint32_t hueGuardMask = 0;
 		for (std::size_t index = 0; index < inputs.categoryColorStrengths.size(); ++index) {
-			transferParams.categoryColorStrengths[index] = std::clamp(inputs.categoryColorStrengths[index], 0.0f, 1.0f);
+			transferParams.categoryColorStrengths[index] = std::clamp(inputs.categoryColorStrengths[index], 0.0f, 2.0f);
 			transferParams.categoryTransferStrengths[index] = std::clamp(inputs.categoryTransferStrengths[index], 0.0f, 2.0f);
 			transferParams.categoryLuminosityStrengths[index] = std::clamp(inputs.categoryLuminosityStrengths[index], 0.0f, 2.0f);
 			if (inputs.categoryHueGuard[index])

@@ -618,7 +618,16 @@ float3 NeuralChromaOffset(float3 color)
  * the luminance ratio is raised to it, so zero is the untouched frame, one is
  * exactly the model's relative change and two doubles it in log space, and the
  * two-sided guard clamps after scaling so a weight above one cannot escape it.
- * Chroma follows the same weight, saturated, on top of @p colorStrength.
+ * Chroma is gated by the same weight, saturated (see @p colorStrength below for
+ * how much of it is transferred in the first place).
+ *
+ * @p colorStrength raises the model's per-channel chroma ratio (relative to the
+ * proxy, guarded to kNeuralChromaRatioMin..Max) to itself: zero collapses that
+ * ratio to one in every channel, which reproduces the original's own chroma
+ * exactly and so is indistinguishable from no colour transfer at all; one is
+ * the model's transferred chroma unchanged; above one - up to 2 in the UI -
+ * extrapolates the same relative colour change further, re-guarded to the same
+ * bound afterwards so a strength above one cannot escape it either.
  *
  * @p luminosityStrength further scales only the luminance exponent, on top of
  * @p editWeight: one reproduces the plain @p editWeight behaviour above exactly,
@@ -673,7 +682,15 @@ float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalC
 	// onto the original. Equal to the model's own chroma whenever the proxy is a
 	// scalar multiple of the original; a no-op reproduces the original exactly.
 	float3 chromaRatio = clamp(normalizedModel / max(normalizedProxy, 1e-3), kNeuralChromaRatioMin, kNeuralChromaRatioMax);
-	float3 normalizedTarget = normalizedOriginal * chromaRatio;
+	// @p colorStrength raises that ratio to itself, the same log-space
+	// extrapolation @p editWeight already applies to the luminance ratio above:
+	// zero collapses it to 1 (the original's own chroma - see the @p colorStrength
+	// doc below for why that coincides exactly with leaving chroma alone), one is
+	// the model's transferred chroma unchanged, and above one extrapolates the
+	// same relative colour change further, re-guarded to kNeuralChromaRatioMin..Max
+	// afterwards so a strength above one cannot escape the per-channel bound.
+	float3 scaledChromaRatio = clamp(pow(chromaRatio, max(colorStrength, 0.0)), kNeuralChromaRatioMin, kNeuralChromaRatioMax);
+	float3 normalizedTarget = normalizedOriginal * scaledChromaRatio;
 	normalizedTarget /= max(dot(normalizedTarget, kNeuralLuma), 1e-5);
 	float3 targetChroma = normalizedTarget - 1.0;
 
@@ -699,9 +716,15 @@ float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalC
 
 	// Normalized colour is unreliable only near black. Fade the chroma there,
 	// while allowing the complete model palette everywhere with meaningful light.
+	// @p colorStrength no longer gates this blend directly - it is already baked
+	// into fullColorResult's chroma above - which is exact at zero: chromaRatio^0
+	// is 1 in every channel, so normalizedTarget reduces to normalizedOriginal and
+	// fullColorResult's chroma matches luminanceResult's chroma precisely (both
+	// are the untouched original chroma), making the two lerp endpoints coincide
+	// regardless of this weight.
 	float shadowConfidence = smoothstep(kNeuralRatioFloor, 4.0 * kNeuralRatioFloor,
 		min(proxyLuma, modelLuma));
-	float resolvedColorStrength = saturate(colorStrength) * shadowConfidence * saturate(editWeight);
+	float resolvedColorStrength = shadowConfidence * saturate(editWeight);
 
 	return float4(NeuralLinearToDomain(lerp(luminanceResult, fullColorResult, resolvedColorStrength), domain), originalColor.a);
 }
