@@ -44,25 +44,11 @@ public:
 	/** @brief Begins deferred rendering by binding GBuffer targets and overriding blend states. */
 	void StartDeferred();
 
-	/**
-	 * @brief Replaces engine blend states with deferred-compatible variants for GBuffer output.
-	 *
-	 * Masks2's AO channel mirrors RT0; its Neural Rendering category channel is written only by
-	 * unblended draws (NeuralRenderingCategories::GetDeferredMasks2WriteMask).
-	 */
+	/** @brief Replaces engine blend states with deferred-compatible variants for GBuffer output. */
 	void OverrideBlendStates();
 
-	/** @brief Restores forward blending, optionally also writing Masks2's category for Neural Rendering's capture. */
-	void ResetBlendStates(bool a_captureNeuralCategories = false);
-
-	/**
-	 * @brief Swaps the deferred blend table for Neural Rendering's category redraw variant, or back.
-	 *
-	 * The redraw variant writes only Masks2's category (NeuralRenderingCategories::MakeCategoryRedrawBlendDesc);
-	 * see Upscaling::RenderDeferredPass.
-	 * @param a_redraw True to select the redraw variant, false to restore the deferred table.
-	 */
-	void SetNeuralCategoryRedrawBlendStates(bool a_redraw);
+	/** @brief Restores original forward blend states after deferred pass completes. */
+	void ResetBlendStates();
 
 	/** @brief Dispatches the deferred composite compute shader and post-deferred feature passes. */
 	void DeferredPasses();
@@ -96,22 +82,8 @@ public:
 	 */
 	void CopyShadowLightData();
 
-	/**
-	 * @brief Lazily derives a Neural Rendering category variant of a blend state.
-	 * @param a_cache Slot that owns the derived state once created.
-	 * @param a_source Deferred or forward blend state to derive from; may be null.
-	 * @param a_makeDesc NeuralRenderingCategories helper that derives the variant's description.
-	 * @param a_name RenderDoc name for the derived state.
-	 * @return The derived state, or nullptr when a_source is null.
-	 */
-	ID3D11BlendState* GetNeuralCategoryBlendState(winrt::com_ptr<ID3D11BlendState>& a_cache, ID3D11BlendState* a_source, D3D11_BLEND_DESC (*a_makeDesc)(D3D11_BLEND_DESC), const char* a_name);
-
 	ID3D11BlendState* deferredBlendStates[7][2][13][2];
 	ID3D11BlendState* forwardBlendStates[7][2][13][2];
-	// Neural Rendering category variants, created on first use: the deferred table's
-	// category redraw variant and the forward table's category-writing variant.
-	winrt::com_ptr<ID3D11BlendState> neuralCategoryRedrawBlendStates[7][2][13][2];
-	winrt::com_ptr<ID3D11BlendState> neuralCategoryForwardBlendStates[7][2][13][2];
 
 	RE::RENDER_TARGET forwardRenderTargets[4];
 

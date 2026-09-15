@@ -160,18 +160,17 @@ public:
 	/**
 	 * @brief Flags the render pass geometry's actor ownership for Neural Rendering categories.
 	 *
-	 * Hooked onto BSLightingShader::SetupGeometry; acts while neuralRenderingCategoryCaptureActive,
-	 * which spans every lighting draw that can write Masks2. Sets
+	 * Hooked onto BSLightingShader::SetupGeometry, for every lighting draw that writes Masks2
+	 * (the deferred pass and the forward draws between RestoreNeuralRenderingCategories and
+	 * FinishNeuralRenderingCategoryCapture). Sets
 	 * State::ExtraShaderDescriptors::IsHumanoidActor when the geometry's owning reference is an
 	 * actor whose race carries the ActorTypeNPC keyword; Lighting.hlsl maps that flag to
 	 * NeuralRenderingCategories::Equipment for everything the skin, hair and eye permutations
-	 * did not already claim. Sets State::ExtraShaderDescriptors::IsHair when the material is
-	 * hair tint or carries the hair soft-lighting flag (wigs worn as equipment), or when the
-	 * geometry belongs to one of the actor's hair or facial-hair head parts or their extra
-	 * parts (hairlines authored with another shader type) without an accessory material such
-	 * as the environment-mapped earrings a hair record can carry as an extra part.
-	 * Lighting.hlsl maps that to NeuralRenderingCategories::Hair ahead of the technique-derived
-	 * category. With the category debug view on, also reports the draw (LogNeuralCategoryDraw).
+	 * did not already claim. Sets State::ExtraShaderDescriptors::IsHair when the geometry is
+	 * part of one of the actor's hair or facial-hair head parts (the hairlines, braids and
+	 * strands authored with a shader type other than hair tint), or when its material is
+	 * hair tint or carries the hair soft-lighting flag (wigs worn as equipment); Lighting.hlsl
+	 * maps that to NeuralRenderingCategories::Hair ahead of the technique-derived category.
 	 * @param a_pass The render pass being set up.
 	 */
 	void BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass);
@@ -279,9 +278,12 @@ public:
 	/** The first successful capture is logged once so its values can be checked against the game's imagespace. */
 	bool neuralRenderingDisplayCaptureLogged = false;
 	/**
-	 * Masks2 (material categories in G), copied once the frame's geometry is
-	 * done (FinishNeuralRenderingCategoryCapture). This is what every Neural
-	 * Rendering evaluation call reads instead of the live Masks2.
+	 * Masks2's packed material categories: copied right after opaque geometry,
+	 * before blended decals can alpha-blend into it and corrupt the category
+	 * bits (CaptureNeuralRenderingCategories), then refreshed once the forward
+	 * lighting draws have added theirs (FinishNeuralRenderingCategoryCapture).
+	 * This is what every Neural Rendering evaluation call reads instead of the
+	 * live Masks2.
 	 */
 	Texture2D* materialCategoriesSnapshot = nullptr;
 	/** Resolved once in DataLoaded(); identifies humanoid races for the Equipment category. */
@@ -394,52 +396,42 @@ public:
 	 */
 	void ApplyNeuralRenderingFinishedImage(RE::RENDER_TARGET a_target);
 
-	/** @brief Whether this frame captures material categories into Masks2: Neural Rendering on, with DLSS. */
-	bool ShouldCaptureNeuralRenderingCategories() const;
-
 	/**
-	 * @brief Arms the frame's material category capture. Called from Deferred::StartDeferred.
+	 * @brief Snapshots Masks2's packed material categories before blended decals can touch it.
 	 *
-	 * Masks2 keeps upstream's vertex AO in R and stores a discrete category in G
-	 * (NeuralRenderingCategories::Encode); any arithmetic blend of two category ids yields an
-	 * unrelated category, so G only ever takes one surface's id. Unblended deferred draws write
-	 * it next to AO, blended deferred passes (hairlines, brows, beards and scars are decals) are
-	 * redrawn into it by RenderDeferredPass, and forward lighting draws write it alone while
-	 * BSBatchRenderer_RenderPassImmediately binds Masks2 for them. Masks2 therefore accumulates
-	 * the frame's categories in draw order without touching anything upstream reads.
+	 * Masks2 is deliberately blendable (vertex AO fades under translucent decals), but the
+	 * material category packed into its low bits (NeuralRenderingCategories::Pack) is a discrete
+	 * value - alpha-blending it produces a meaningless bit pattern, not "the nearer category".
+	 * Called from Deferred's blended-decals hook, after opaque geometry but before decals draw.
+	 * First of three steps; see RestoreNeuralRenderingCategories() and
+	 * FinishNeuralRenderingCategoryCapture() for the forward-stage continuation.
 	 */
-	void BeginNeuralRenderingCategoryCapture();
+	void CaptureNeuralRenderingCategories();
 
 	/**
-	 * @brief Draws a deferred-pass render pass, then redraws a blended lighting pass into Masks2's
-	 * category channel alone.
+	 * @brief Hands the pre-decal category snapshot back to Masks2 once the deferred composite
+	 * has consumed the decal-blended vertex AO, and arms the forward category capture.
 	 *
-	 * The deferred blend table leaves Masks2's category to unblended draws. When the category
-	 * capture is armed and the lighting draw that just ran used a blending state, the pass is
-	 * drawn again with the redraw blend table (every target but that channel masked off), an
-	 * inclusive depth test that writes neither depth nor stencil, and
-	 * State::ExtraShaderDescriptors::NeuralCategoryRedraw so Lighting.hlsl outputs binary coverage.
-	 * Every other state is left as the first draw found it. Called from
-	 * BSBatchRenderer_RenderPassImmediately, and by TerrainBlending for the passes it defers.
-	 * @param a_render The next RenderPassImmediately in the hook chain.
-	 * @param a_pass The render pass.
-	 * @param a_technique The pass technique.
-	 * @param a_alphaTest Whether alpha testing is enabled.
-	 * @param a_renderFlags The render flags.
+	 * Alpha-blended lighting geometry (hair strands, hairline scalps, translucent clothing) is
+	 * sorted and drawn forward, after Deferred::EndDeferred, where Masks2 is normally unbound.
+	 * Those draws are what a hair category most often lives in, so BSBatchRenderer_RenderPassImmediately
+	 * binds Masks2 back for exactly those draws and they write their category on top of the
+	 * restored opaque snapshot. Restoring rather than writing over the live target keeps the
+	 * decals' AO contribution to the composite untouched. Called from Deferred::EndDeferred
+	 * after DeferredPasses().
 	 */
-	void RenderDeferredPass(void (*a_render)(RE::BSRenderPass*, uint32_t, bool, uint32_t), RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags);
+	void RestoreNeuralRenderingCategories();
 
 	/**
-	 * @brief Copies Masks2 into materialCategoriesSnapshot, disarms the capture and restores the
-	 * engine's forward blend states.
+	 * @brief Re-snapshots Masks2 after the forward lighting draws and disarms the forward capture.
 	 *
 	 * Called at the start of Main_PostProcessing, after world and first-person geometry and
 	 * before any Neural Rendering evaluation reads the snapshot.
 	 */
 	void FinishNeuralRenderingCategoryCapture();
 
-	/** True from BeginNeuralRenderingCategoryCapture() to FinishNeuralRenderingCategoryCapture() on a capturing frame. */
-	bool neuralRenderingCategoryCaptureActive = false;
+	/** True between RestoreNeuralRenderingCategories() and FinishNeuralRenderingCategoryCapture(). */
+	bool neuralRenderingForwardCaptureActive = false;
 
 	/** @brief Requests a Neural Rendering on/off comparison screenshot pair; captured over the next few rendered frames. */
 	void RequestNeuralRenderingComparisonCapture();
@@ -516,46 +508,9 @@ private:
 	};
 
 	/**
-	 * @brief Category debug view diagnostics: logs an actor draw's classification once per
-	 * geometry and render stage, so a pixel reading the wrong category can be traced to the
-	 * draw that wrote it, to a blended deferred pass that got no category redraw, or to a
-	 * forward draw that ran with Masks2 unbound.
-	 * @param a_actor The actor owning the drawn geometry.
-	 * @param a_pass The render pass being set up.
-	 * @param a_isHumanoidActor The resolved State::ExtraShaderDescriptors::IsHumanoidActor flag.
-	 * @param a_isHair The resolved State::ExtraShaderDescriptors::IsHair flag.
+	 * Binds Masks2 to SV_Target7 around each forward (post-deferred) lighting draw so it can
+	 * write its Neural Rendering category; see RestoreNeuralRenderingCategories().
 	 */
-	void LogNeuralCategoryDraw(RE::Actor* a_actor, const RE::BSRenderPass* a_pass, bool a_isHumanoidActor, bool a_isHair);
-	/** Geometry/stage keys LogNeuralCategoryDraw already reported; cleared while the debug view is off. */
-	std::unordered_set<std::uint64_t> loggedNeuralCategoryDraws;
-	/** True while BSBatchRenderer_RenderPassImmediately has Masks2 bound around a forward draw. */
-	bool neuralRenderingForwardCategoryBound = false;
-	/** True while RenderDeferredPass redraws a pass into Masks2's category channel. */
-	bool neuralRenderingCategoryRedrawActive = false;
-	/** The last pass BSLightingShader_SetupNeuralCategory set up; tells RenderDeferredPass its lighting draw ran. */
-	const RE::BSRenderPass* neuralRenderingCategorySetupPass = nullptr;
-	/** The bound blend state RenderDeferredPass last inspected (held, so its address is not reused), and whether its RT0 blends. */
-	winrt::com_ptr<ID3D11BlendState> neuralRenderingInspectedBlendState;
-	bool neuralRenderingInspectedBlendStateBlends = false;
-	/** Category redraw depth-stencil variants, keyed by the description of the state the first draw used. */
-	std::vector<std::pair<D3D11_DEPTH_STENCIL_DESC, winrt::com_ptr<ID3D11DepthStencilState>>> neuralCategoryRedrawDepthStates;
-
-	/**
-	 * @brief Lazily derives the depth-stencil state for a category redraw.
-	 *
-	 * The redraw repeats the pass's own depth, so strict depth tests become inclusive, and it
-	 * writes neither depth nor stencil a second time.
-	 * @param a_source The state the pass's first draw used; null is the D3D11 default state.
-	 * @return The cached variant.
-	 */
-	ID3D11DepthStencilState* GetNeuralCategoryRedrawDepthState(ID3D11DepthStencilState* a_source);
-
-	/**
-	 * Hands deferred passes to RenderDeferredPass, and binds Masks2 to SV_Target7 around each
-	 * forward (post-deferred) lighting draw so it can write its Neural Rendering category; see
-	 * BeginNeuralRenderingCategoryCapture().
-	 */
-	template <int N>
 	struct BSBatchRenderer_RenderPassImmediately
 	{
 		static void thunk(RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags);

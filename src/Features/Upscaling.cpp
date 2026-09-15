@@ -933,13 +933,8 @@ void Upscaling::PostPostLoad()
 
 	// Lets forward (post-deferred) lighting draws - sorted alpha geometry such as
 	// hair, and the first-person view - write their Neural Rendering category
-	// (see BeginNeuralRenderingCategoryCapture).
-	// Match LightLimitFix's three dispatch sites; RenderBatches alone misses
-	// the other immediate-pass paths used outside the opaque batch traversal.
-	stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately<1>>(REL::RelocationID(100877, 107667).address() + REL::Relocate(0x1E5, 0xED));
-	stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately<2>>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
-	if (REL::Module::IsSE())
-		stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately<3>>(REL::RelocationID(100871, 107661).address() + 0xEE);
+	// (see RestoreNeuralRenderingCategories).
+	stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
 
 	if (!MenuOpenCloseEventHandler::Register())
 		logger::warn("[Upscaling] MenuOpenCloseEventHandler registration failed; temporal history may survive loading transitions");
@@ -1043,8 +1038,8 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 		// runs from BSShaderRenderTargets_Create, during the game's own render-target
 		// (re)creation, and Masks2 (a repurposed native target - see MASKS2 in
 		// Deferred.h) is not guaranteed to exist yet at that point. It's created
-		// lazily in FinishNeuralRenderingCategoryCapture() instead, which only ever
-		// runs after Masks2 has genuinely been rendered into.
+		// lazily in CaptureNeuralRenderingCategories() instead, which only ever runs
+		// mid-frame after Masks2 has genuinely been rendered into.
 	}
 }
 
@@ -1872,8 +1867,8 @@ void Upscaling::Upscale()
 				// Pre-tonemap: show the model the frame exposed and graded as it will be displayed.
 				neuralOptions.display = MakeNeuralRenderingDisplayTransform();
 				const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-				// The category snapshot taken at the start of post-processing, not
-				// the live Masks2 - see FinishNeuralRenderingCategoryCapture.
+				// The pre-blended-decals snapshot, not the live Masks2 - see
+				// CaptureNeuralRenderingCategories.
 				auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 				// Hand the model the game's raw motion-vector target, not the 5x5
 				// dilated ghosting-reduction copy Streamline gets below. That copy
@@ -1948,56 +1943,25 @@ namespace
 		return false;
 	}
 
-	const RE::BSLightingShaderProperty* GetLightingProperty(const RE::BSRenderPass* a_pass)
-	{
-		if (!a_pass->shaderProperty || a_pass->shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
-			return nullptr;
-		return static_cast<const RE::BSLightingShaderProperty*>(a_pass->shaderProperty);
-	}
-
 	// Hair by shader authoring: the hair-tint material (which the HAIR technique
 	// already covers) or the hair soft-lighting property flag on any other
 	// material. This is what identifies wigs and other hair worn as equipment,
 	// which have no head part to match.
 	bool IsHairTintShader(const RE::BSRenderPass* a_pass)
 	{
-		const auto* lightingProperty = GetLightingProperty(a_pass);
-		if (!lightingProperty)
+		if (!a_pass->shaderProperty || a_pass->shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
 			return false;
+		const auto* lightingProperty = static_cast<const RE::BSLightingShaderProperty*>(a_pass->shaderProperty);
 		return (lightingProperty->material && lightingProperty->material->GetFeature() == RE::BSShaderMaterial::Feature::kHairTint) ||
 		       lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kHairTint);
 	}
 
-	// Materials hair is not authored with. A hair head part can also carry
-	// accessories as extra parts next to its hairline and braids - a FaceGen head
-	// may attach environment-mapped earrings to the hair record - so head part
-	// ownership alone would tag those as Hair.
-	bool IsAccessoryMaterial(const RE::BSRenderPass* a_pass)
-	{
-		const auto* lightingProperty = GetLightingProperty(a_pass);
-		if (!lightingProperty || !lightingProperty->material)
-			return false;
-		using Feature = RE::BSShaderMaterial::Feature;
-		switch (lightingProperty->material->GetFeature()) {
-		case Feature::kEnvironmentMap:
-		case Feature::kGlowMap:
-		case Feature::kParallax:
-		case Feature::kParallaxOcc:
-		case Feature::kMultilayerParallax:
-		case Feature::kEye:
-			return true;
-		default:
-			return false;
-		}
-	}
-
-	// Head parts hang under the actor's skinned face node, named by the part's
-	// editor ID (what Actor::GetHeadPartObject looks up): a FaceGen head names
-	// each shape itself, while a head assembled at runtime names the part's root
-	// node. Match the geometry and each ancestor up to the face node's child so
-	// both layouts resolve. Classifying hair from the NPC record rather than the
-	// material catches hairlines authored with a shader type other than hair tint
-	// (vanilla hairlines are Misc-type extra parts of their hair).
+	// Head parts hang directly under the actor's skinned face node, each as a
+	// child named by the part's editor ID (what Actor::GetHeadPartObject looks
+	// up), so the head part a geometry belongs to is its ancestor sitting right
+	// under that node. Classifying hair from the NPC record rather than the
+	// material catches the hairlines, braids and loose strands that hair mods
+	// author with the default or skin-tint shader type instead of hair tint.
 	bool IsHairHeadPartGeometry(RE::Actor* a_actor, const RE::BSGeometry* a_geometry)
 	{
 		const auto* faceNode = a_actor->GetFaceNodeSkinned();
@@ -2013,47 +1977,40 @@ namespace
 		auto* npc = a_actor->GetActorBase();
 		if (!npc)
 			return false;
-		const bool hasOverlays = npc->HasOverlays();
-		const auto numHeadParts = static_cast<std::uint32_t>(std::max<std::int8_t>(npc->numHeadParts, 0));
-		for (const RE::NiAVObject* object = a_geometry; object; object = object->parent) {
-			if ((hasOverlays && MatchesHairHeadPart(npc->GetBaseOverlays(), npc->GetNumBaseOverlays(), object->name)) ||
-				MatchesHairHeadPart(npc->headParts, numHeadParts, object->name))
-				return true;
-			if (object == partRoot)
-				break;
-		}
-		return false;
+		if (npc->HasOverlays() && MatchesHairHeadPart(npc->GetBaseOverlays(), npc->GetNumBaseOverlays(), partRoot->name))
+			return true;
+		return MatchesHairHeadPart(npc->headParts, static_cast<std::uint32_t>(std::max<std::int8_t>(npc->numHeadParts, 0)), partRoot->name);
 	}
 }
 
 void Upscaling::BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass)
 {
+	auto deferred = globals::deferred;
 	auto state = globals::state;
-	neuralRenderingCategorySetupPass = a_pass;
 	constexpr auto humanoidFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsHumanoidActor);
 	constexpr auto hairFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsHair);
 
-	// Every lighting draw that can write Masks2 falls inside the capture: the
-	// deferred pass (blended decals included) and the forward draws up to
-	// post-processing. A draw seen with cleared flags would land skinned armor
-	// in Skin and rigid armor in Everything Else.
-	RE::Actor* actor = nullptr;
+	// Every lighting draw that writes Masks2: the deferred pass and the forward
+	// draws between RestoreNeuralRenderingCategories and
+	// FinishNeuralRenderingCategoryCapture. A forward draw seen with cleared
+	// flags would land skinned armor in Skin and rigid armor in Everything Else.
+	const bool writesCategories = deferred->deferredPass || neuralRenderingForwardCaptureActive;
+
 	bool isHumanoidActor = false;
 	bool isHair = false;
-	if (neuralRenderingCategoryCaptureActive && actorTypeNPCKeyword && a_pass->geometry) {
-		// Hair by shader authoring (wigs) or by head part (hairlines authored
-		// with other shader types); see Lighting.hlsl.
+	if (writesCategories && settings.neuralRenderingEnabled && actorTypeNPCKeyword && a_pass->geometry) {
+		// Hair by shader authoring (wigs) or by head part (hairlines, braids and
+		// strands authored with other shader types); see Lighting.hlsl.
 		isHair = IsHairTintShader(a_pass);
 		if (auto userData = a_pass->geometry->GetUserData()) {
-			actor = userData->As<RE::Actor>();
-			if (actor) {
+			if (auto actor = userData->As<RE::Actor>()) {
 				// Any geometry owned by a humanoid actor - skinned armor/clothing
 				// as well as rigid weapons, shields and helmets attached to its
 				// skeleton. Skin (body and face) and eyes are claimed by their own
 				// material permutations before the shader consults this flag.
 				if (auto race = actor->GetRace())
 					isHumanoidActor = race->HasKeyword(actorTypeNPCKeyword);
-				isHair = isHair || (!IsAccessoryMaterial(a_pass) && IsHairHeadPartGeometry(actor, a_pass->geometry));
+				isHair = isHair || IsHairHeadPartGeometry(actor, a_pass->geometry);
 			}
 		}
 	}
@@ -2064,162 +2021,33 @@ void Upscaling::BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass)
 		descriptor |= humanoidFlag;
 	if (isHair)
 		descriptor |= hairFlag;
-
-	if (actor && settings.neuralRenderingDebugCategoryView)
-		LogNeuralCategoryDraw(actor, a_pass, isHumanoidActor, isHair);
 }
 
-void Upscaling::LogNeuralCategoryDraw(RE::Actor* a_actor, const RE::BSRenderPass* a_pass, bool a_isHumanoidActor, bool a_isHair)
+void Upscaling::CaptureNeuralRenderingCategories()
 {
-	// The stage decides whether a draw's category survives: unblended deferred
-	// draws, category redraws and forward draws with Masks2 bound write it. A
-	// blended deferred draw with no redraw line, or any other forward dispatch,
-	// leaves the surface beneath showing.
-	enum Stage : std::uint64_t
-	{
-		kDeferred,
-		kDeferredRedraw,
-		kForward,
-		kForwardUnbound
-	};
-	const Stage stage = globals::deferred->deferredPass ? (neuralRenderingCategoryRedrawActive ? kDeferredRedraw : kDeferred) :
-	                                                      (neuralRenderingForwardCategoryBound ? kForward : kForwardUnbound);
-	// Geometry comes from the engine's aligned heap, leaving the low bits free for the stage.
-	if (!loggedNeuralCategoryDraws.insert(reinterpret_cast<std::uint64_t>(a_pass->geometry) | stage).second)
-		return;
+	// A new frame's opaque categories supersede any forward capture still armed
+	// from a frame that never reached Main_PostProcessing.
+	neuralRenderingForwardCaptureActive = false;
 
-	static constexpr std::array<const char*, 4> stageNames{ "deferred", "deferred, category redraw", "forward", "forward, Masks2 unbound" };
-	const auto* lightingProperty = GetLightingProperty(a_pass);
-	const auto* material = lightingProperty ? lightingProperty->material : nullptr;
-	const auto* alphaProperty = a_pass->geometry->GetGeometryRuntimeData().alphaProperty.get();
-	const auto technique = a_pass->shader ? (static_cast<const RE::BSLightingShader*>(a_pass->shader)->currentRawTechnique >> 24) & 0x3F : 0u;
-	const bool decal = lightingProperty && lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kDecal, RE::BSShaderProperty::EShaderPropertyFlag::kDynamicDecal);
-	logger::info("[Upscaling] Neural category draw: actor \"{}\" [{:08X}] geometry \"{}\" stage \"{}\" technique {} material {} decal {} alphaBlend {} alphaTest {} humanoid {} hair {}",
-		a_actor->GetName(), a_actor->GetFormID(), a_pass->geometry->name.c_str(), stageNames[stage], technique,
-		material ? magic_enum::enum_name(material->GetFeature()) : std::string_view{ "none" }, decal,
-		alphaProperty && alphaProperty->GetAlphaBlending(), alphaProperty && alphaProperty->GetAlphaTesting(),
-		a_isHumanoidActor, a_isHair);
-}
-
-bool Upscaling::ShouldCaptureNeuralRenderingCategories() const
-{
 	// Only paid for when Neural Rendering can actually consume it: DLSS-only.
 	// The decode shader always samples the category texture now, since each
 	// category's hue guard toggle needs to know which material a pixel is.
-	return settings.neuralRenderingEnabled && GetUpscaleMethod() == UpscaleMethod::kDLSS;
-}
-
-void Upscaling::BeginNeuralRenderingCategoryCapture()
-{
-	// StartDeferred clears Masks2, whose category channel then accumulates the
-	// frame's categories in draw order: unblended deferred geometry, redrawn
-	// blended passes (hairlines, brows, beards and scars) and the forward draws
-	// BSBatchRenderer_RenderPassImmediately binds it for. Each write keeps exactly
-	// one surface's category, so the target needs no mid-frame snapshot.
-	neuralRenderingCategoryCaptureActive = ShouldCaptureNeuralRenderingCategories();
-}
-
-void Upscaling::RenderDeferredPass(void (*a_render)(RE::BSRenderPass*, uint32_t, bool, uint32_t), RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags)
-{
-	neuralRenderingCategorySetupPass = nullptr;
-	a_render(a_pass, a_technique, a_alphaTest, a_renderFlags);
-
-	// Only a lighting draw that actually ran into the GBuffer: a hook further down
-	// the chain may defer the pass instead (TerrainBlending does).
-	if (!neuralRenderingCategoryCaptureActive || !a_pass || neuralRenderingCategorySetupPass != a_pass || !globals::deferred->deferredPass ||
-		globals::game::shadowState->GetRuntimeData().renderTargets[7] != MASKS2)
+	if (!settings.neuralRenderingEnabled)
+		return;
+	if (GetUpscaleMethod() != UpscaleMethod::kDLSS)
 		return;
 
-	auto context = globals::d3d::context;
-
-	// The draw leaves its blend state bound. An unblended one already wrote the
-	// category next to AO (NeuralRenderingCategories::GetDeferredMasks2WriteMask).
-	winrt::com_ptr<ID3D11BlendState> blendState;
-	FLOAT blendFactor[4]{};
-	UINT sampleMask = 0;
-	context->OMGetBlendState(blendState.put(), blendFactor, &sampleMask);
-	if (blendState != neuralRenderingInspectedBlendState) {
-		D3D11_BLEND_DESC blendDesc{};  // A null state is the default, which does not blend
-		if (blendState)
-			blendState->GetDesc(&blendDesc);
-		neuralRenderingInspectedBlendState = blendState;
-		neuralRenderingInspectedBlendStateBlends = blendDesc.RenderTarget[0].BlendEnable;
-	}
-	if (!neuralRenderingInspectedBlendStateBlends)
-		return;
-
-	winrt::com_ptr<ID3D11DepthStencilState> depthState;
-	UINT stencilRef = 0;
-	context->OMGetDepthStencilState(depthState.put(), &stencilRef);
-
-	constexpr auto redrawFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::NeuralCategoryRedraw);
-	auto& descriptor = globals::state->permutationData.ExtraShaderDescriptor;
-
-	// The engine rebinds blend state from its table once flagged dirty, so the
-	// redraw swaps the table. Depth state is bound directly, as TerrainBlending
-	// binds its own.
-	globals::deferred->SetNeuralCategoryRedrawBlendStates(true);
-	context->OMSetDepthStencilState(GetNeuralCategoryRedrawDepthState(depthState.get()), stencilRef);
-	descriptor |= redrawFlag;
-	neuralRenderingCategoryRedrawActive = true;
-
-	a_render(a_pass, a_technique, a_alphaTest, a_renderFlags);
-
-	neuralRenderingCategoryRedrawActive = false;
-	descriptor &= ~redrawFlag;
-	// Rebinding the first draw's depth state keeps a directly bound one, such as
-	// TerrainBlending's, in place for the passes that follow.
-	context->OMSetDepthStencilState(depthState.get(), stencilRef);
-	globals::deferred->SetNeuralCategoryRedrawBlendStates(false);
-}
-
-ID3D11DepthStencilState* Upscaling::GetNeuralCategoryRedrawDepthState(ID3D11DepthStencilState* a_source)
-{
-	D3D11_DEPTH_STENCIL_DESC sourceDesc{};
-	if (a_source)
-		a_source->GetDesc(&sourceDesc);
-	else
-		sourceDesc = CD3D11_DEPTH_STENCIL_DESC(CD3D11_DEFAULT{});
-
-	for (const auto& [desc, variant] : neuralCategoryRedrawDepthStates) {
-		if (!std::memcmp(&desc, &sourceDesc, sizeof(desc)))
-			return variant.get();
-	}
-
-	auto variantDesc = sourceDesc;
-	variantDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-	if (variantDesc.DepthFunc == D3D11_COMPARISON_LESS)
-		variantDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
-	else if (variantDesc.DepthFunc == D3D11_COMPARISON_GREATER)
-		variantDesc.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;
-	variantDesc.StencilWriteMask = 0;
-
-	winrt::com_ptr<ID3D11DepthStencilState> variant;
-	DX::ThrowIfFailed(globals::d3d::device->CreateDepthStencilState(&variantDesc, variant.put()));
-	Util::SetResourceName(variant.get(), "Upscaling::CategoryRedrawDepthState");
-	return neuralCategoryRedrawDepthStates.emplace_back(sourceDesc, std::move(variant)).second.get();
-}
-
-void Upscaling::FinishNeuralRenderingCategoryCapture()
-{
-	if (!settings.neuralRenderingDebugCategoryView)
-		loggedNeuralCategoryDraws.clear();
-
-	if (!neuralRenderingCategoryCaptureActive)
-		return;
-	neuralRenderingCategoryCaptureActive = false;
-	globals::deferred->ResetBlendStates();
-
-	auto& masks2 = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
+	auto renderer = globals::game::renderer;
+	auto& masks2 = renderer->GetRuntimeData().renderTargets[MASKS2];
 	if (!masks2.texture)
 		return;
 
 	// Created lazily here rather than in CreateUpscalingTextureResources: this
-	// function only ever runs after Masks2 has genuinely been (re)created and
-	// rendered into. CreateUpscalingTextureResources runs during
-	// BSShaderRenderTargets_Create, the game's own render-target (re)creation,
-	// where Masks2 (a repurposed native target - see MASKS2 in Deferred.h) is not
-	// yet guaranteed to exist.
+	// function only ever runs mid-frame (from Deferred's blended-decals hook),
+	// after Masks2 has genuinely been (re)created and rendered into.
+	// CreateUpscalingTextureResources runs during BSShaderRenderTargets_Create,
+	// the game's own render-target (re)creation, where Masks2 (a repurposed
+	// native target - see MASKS2 in Deferred.h) is not yet guaranteed to exist.
 	if (!materialCategoriesSnapshot) {
 		D3D11_TEXTURE2D_DESC texDesc{};
 		masks2.texture->GetDesc(&texDesc);
@@ -2238,24 +2066,48 @@ void Upscaling::FinishNeuralRenderingCategoryCapture()
 	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
 }
 
-template <int N>
-void Upscaling::BSBatchRenderer_RenderPassImmediately<N>::thunk(RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags)
+void Upscaling::RestoreNeuralRenderingCategories()
+{
+	neuralRenderingForwardCaptureActive = false;
+	if (!materialCategoriesSnapshot || !settings.neuralRenderingEnabled || GetUpscaleMethod() != UpscaleMethod::kDLSS)
+		return;
+
+	auto& masks2 = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
+	if (!masks2.texture)
+		return;
+
+	// Masks2 is unbound here (EndDeferred cleared the OM before DeferredPasses),
+	// and the composite has already read the decal-blended AO it held.
+	globals::d3d::context->CopyResource(masks2.texture, materialCategoriesSnapshot->resource.get());
+	neuralRenderingForwardCaptureActive = true;
+}
+
+void Upscaling::FinishNeuralRenderingCategoryCapture()
+{
+	if (!neuralRenderingForwardCaptureActive)
+		return;
+	neuralRenderingForwardCaptureActive = false;
+
+	auto& masks2 = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
+	if (!materialCategoriesSnapshot || !masks2.texture)
+		return;
+
+	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
+}
+
+void Upscaling::BSBatchRenderer_RenderPassImmediately::thunk(RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags)
 {
 	auto& upscaling = globals::features::upscaling;
 	auto* deferred = globals::deferred;
 	auto* state = globals::state;
 	auto& runtimeData = globals::game::shadowState->GetRuntimeData();
 
-	if (deferred->deferredPass) {
-		upscaling.RenderDeferredPass(func.get(), a_pass, a_technique, a_alphaTest, a_renderFlags);
-		return;
-	}
-
 	// Only the forward lighting draws of the main world view, into the same
 	// full-resolution colour target the deferred pass restored: a cubemap
 	// face or reflection target in slot 0 would fail OMSetRenderTargets
 	// against a render-resolution Masks2.
-	const bool bindCategories = upscaling.neuralRenderingCategoryCaptureActive && state->inWorld &&
+	const bool bindCategories = upscaling.neuralRenderingForwardCaptureActive &&
+	                            !deferred->deferredPass && state->inWorld &&
 	                            a_pass && a_pass->shader &&
 	                            a_pass->shader->shaderType.get() == RE::BSShader::Type::Lighting &&
 	                            !(state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) &&
@@ -2266,18 +2118,13 @@ void Upscaling::BSBatchRenderer_RenderPassImmediately<N>::thunk(RE::BSRenderPass
 		return;
 	}
 
-	const auto previousTarget = runtimeData.renderTargets[7];
-	const auto previousTargetMode = runtimeData.setRenderTargetMode[7];
 	runtimeData.renderTargets[7] = MASKS2;
 	runtimeData.setRenderTargetMode[7] = RE::BSGraphics::SetRenderTargetMode::SRTM_NO_CLEAR;
 	runtimeData.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 
-	upscaling.neuralRenderingForwardCategoryBound = true;
 	func(a_pass, a_technique, a_alphaTest, a_renderFlags);
-	upscaling.neuralRenderingForwardCategoryBound = false;
 
-	runtimeData.renderTargets[7] = previousTarget;
-	runtimeData.setRenderTargetMode[7] = previousTargetMode;
+	runtimeData.renderTargets[7] = RE::RENDER_TARGET::kNONE;
 	runtimeData.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 }
 
@@ -2475,7 +2322,7 @@ bool Upscaling::EvaluateNeuralRenderingFinishedImage(ID3D11Texture2D* a_colorIn,
 		return false;
 	}
 
-	// The category snapshot taken at the start of post-processing, not the live Masks2 - see FinishNeuralRenderingCategoryCapture.
+	// The category snapshot (opaque categories captured before decals, forward categories added after), not the live Masks2 - see CaptureNeuralRenderingCategories.
 	auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 
 	// Same guide contract as the After Upscaling placement: the colour is display resolution and
@@ -2680,7 +2527,7 @@ void Upscaling::PerformUpscaling()
 		neuralRenderingResourcesActive = true;
 		auto renderer = globals::game::renderer;
 		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-		// The category snapshot taken at the start of post-processing, not the live Masks2 - see FinishNeuralRenderingCategoryCapture.
+		// The category snapshot (opaque categories captured before decals, forward categories added after), not the live Masks2 - see CaptureNeuralRenderingCategories.
 		auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 		auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
@@ -3049,8 +2896,8 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 	auto& upscaling = globals::features::upscaling;
 	auto upscaleMethod = upscaling.GetUpscaleMethod();
 
-	// World and first-person geometry are done; snapshot the frame's categories
-	// before anything below reads them.
+	// World and first-person geometry are done; take the categories the forward
+	// lighting draws added before anything below reads the snapshot.
 	upscaling.FinishNeuralRenderingCategoryCapture();
 
 	if (upscaling.ShouldUseFrameGenerationThisFrame()) {

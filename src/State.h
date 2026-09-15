@@ -295,10 +295,6 @@ public:
 		// whatever shader type the piece was authored with - see
 		// NeuralRenderingCategories::Hair.
 		IsHair = 1 << 12,
-		// Set by Upscaling::RenderDeferredPass while it redraws a blended deferred
-		// lighting pass into Masks2's category channel alone; Lighting.hlsl then
-		// outputs binary coverage as Masks2's alpha.
-		NeuralCategoryRedraw = 1 << 13,
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		IsEye = 1u << 31
 	};

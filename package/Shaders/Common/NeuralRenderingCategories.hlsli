@@ -11,28 +11,32 @@ namespace NeuralRenderingCategories
 	static const uint Landscape = 5;
 	static const uint Equipment = 6;
 
-	static const float StorageScale = 255.0;
+	static const uint CategoryMask = 0x7;
+	static const float R16UnormMaximum = 65535.0;
 
 	/**
-	 * Stores a material category in Masks2's G channel (R keeps upstream's vertex AO).
-	 * k / 255 is exact in the R16G16_UNORM target, since 65535 = 255 * 257.
+	 * Stores a material category in the low three bits of the R16_UNORM Masks2
+	 * target while preserving the upper thirteen bits of its vertex-AO value.
 	 */
-	float Encode(uint category)
+	float Pack(float vertexAOStorage, uint category)
 	{
-		return min(category, 255u) / StorageScale;
+		uint packed = (uint)round(saturate(vertexAOStorage) * R16UnormMaximum);
+		packed = (packed & ~CategoryMask) | min(category, CategoryMask);
+		return packed / R16UnormMaximum;
 	}
 
-	/** Extracts the material category written by Encode(). */
-	uint Decode(float stored)
+	/** Extracts the material category written by Pack(). */
+	uint Unpack(float packedVertexAO)
 	{
-		return (uint)round(saturate(stored) * StorageScale);
+		uint packed = (uint)round(saturate(packedVertexAO) * R16UnormMaximum);
+		return packed & CategoryMask;
 	}
 
 	/**
 	 * Fixed, maximally-distinguishable colour for each category, used by the Neural Rendering
 	 * "Show Material Categories" debug view (DecodeColorCS) to render the classification itself
-	 * rather than its resolved per-category strengths. Unknown categories (7 and above) fall back
-	 * to EverythingElse.
+	 * rather than its resolved per-category strengths. Categories 7 (never written by Pack, which
+	 * clamps to CategoryMask) and above fall back to EverythingElse.
 	 */
 	float3 DebugColor(uint category)
 	{
