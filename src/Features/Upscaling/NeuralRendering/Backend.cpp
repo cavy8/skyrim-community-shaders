@@ -46,7 +46,8 @@ namespace
 		float displayExposure[4]{ 0.0f, 0.18f, 0.0f, 1.0f };  ///< x Post Processing exposure on/off, y scale, zw range.
 		float luminosityStrength = 1.0f;  ///< Overall multiplier on the model's luminance change alone.
 		std::uint32_t debugCategoryView = 0;  ///< Non-zero: the decode renders the classified category, not the model's edit.
-		float hueGuardPad[2]{};                ///< Unused; keeps the cbuffer a whole number of float4s.
+		float maxRatio = 2.0f;                ///< Two-sided guard on the model/proxy luminance ratio (1/maxRatio..maxRatio).
+		float hueGuardPad = 0.0f;             ///< Unused; keeps the cbuffer a whole number of float4s.
 	};
 	static_assert(sizeof(TransferParams) == 240);
 
@@ -621,6 +622,7 @@ struct NeuralRenderingBackend::State
 		                      inputs.colorOut != inputs.motionVectors && inputs.depth != inputs.motionVectors;
 		const bool finite = std::isfinite(inputs.intensity) && std::isfinite(inputs.colorStrength) &&
 		                    std::isfinite(inputs.transferStrength) && std::isfinite(inputs.luminosityStrength) &&
+		                    std::isfinite(inputs.maxRatio) &&
 		                    std::isfinite(inputs.jitterOffsetX) && std::isfinite(inputs.jitterOffsetY) &&
 		                    std::isfinite(inputs.resolutionScaleX) && std::isfinite(inputs.resolutionScaleY) &&
 		                    std::isfinite(inputs.localToneStrength) &&
@@ -874,6 +876,10 @@ struct NeuralRenderingBackend::State
 		transferParams.displayExposure[2] = display.postProcessAdaptationRange[0];
 		transferParams.displayExposure[3] = display.postProcessAdaptationRange[1];
 		transferParams.luminosityStrength = std::clamp(inputs.luminosityStrength, 0.0f, 2.0f);
+		// The guard is two-sided (1/maxRatio..maxRatio) and only meaningful at or
+		// above one; a stale or misconfigured value below that would otherwise
+		// invert into a guard tighter than the floor it is supposed to raise.
+		transferParams.maxRatio = std::clamp(inputs.maxRatio, 1.0f, 8.0f);
 		std::uint32_t hueGuardMask = 0;
 		for (std::size_t index = 0; index < inputs.categoryColorStrengths.size(); ++index) {
 			transferParams.categoryColorStrengths[index] = std::clamp(inputs.categoryColorStrengths[index], 0.0f, 1.0f);

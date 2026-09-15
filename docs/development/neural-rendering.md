@@ -403,11 +403,21 @@ the guide resolution; only the colour/output subrects change.
 
 `Transfer Strength` (0..2, default 1) is the proxy's overall edit weight,
 expressed in the ratio design: `ResolveNeuralColor` raises the model/proxy
-luminance ratio to it (log-space scaling, clamped afterwards by the existing
-`0.5..2.0` guard) and multiplies the chroma blend by its saturated value. One is
+luminance ratio to it (log-space scaling, clamped afterwards by the `Max Ratio`
+guard below) and multiplies the chroma blend by its saturated value. One is
 therefore bit-exact with the previous behaviour, zero returns the untouched
 frame, and two exaggerates the model's relative change. Unlike the `DLSSNR.*`
 tuning parameters it is a per-frame constant, so it responds immediately.
+
+### Max Ratio
+
+The luminance ratio above is clamped to `1/Max Ratio..Max Ratio` (`ColorTransfer.hlsli`,
+`ResolveNeuralColor`) so a single evaluation cannot flash or collapse a pixel
+without bound. `Max Ratio` (1..4, default 2) exposes that guard directly instead
+of the previous hardcoded `2.0`; one disables any luminance change regardless of
+`Transfer Strength`, and raising it allows a stronger effect at the risk of
+flashing highlights or crushed shadows on an unstable frame. Values below one
+are treated as one in the shader.
 
 ## Luminosity strength
 

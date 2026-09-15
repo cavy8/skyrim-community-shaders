@@ -2317,6 +2317,8 @@
     "feature.upscaling.neural_rendering_local_tone_tooltip": "Adjust local tone detail.",
     "feature.upscaling.neural_rendering_luminosity_strength": "Luminosity Strength",
     "feature.upscaling.neural_rendering_luminosity_strength_tooltip": "Scales only the model's light/dark change, on top of Transfer Strength; its color and detail edit are unaffected. Lower it if Neural Rendering reads as too contrasty without giving up its color work.",
+    "feature.upscaling.neural_rendering_max_ratio": "Max Ratio",
+    "feature.upscaling.neural_rendering_max_ratio_tooltip": "How far the model's light/dark change is allowed to push a pixel, as a multiple of its original brightness in either direction (2 means at most half as dark or twice as bright). 1 disables any brightness change. Raise this for a stronger effect at the risk of flashing or crushed highlights.",
     "feature.upscaling.neural_rendering_model_inputs": "Model Tuning",
     "feature.upscaling.neural_rendering_model_inputs_tooltip": "These are handed to the DLSS Neural Rendering model itself, guiding what it does to the frame. The strengths further down control how much of its answer Cav's Unity Shaders actually applies.",
     "feature.upscaling.neural_rendering_placement": "Placement",

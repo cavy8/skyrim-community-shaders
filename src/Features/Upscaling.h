@@ -83,6 +83,7 @@ public:
 		float neuralRenderingResolutionScaleY = 1.0f;
 		float neuralRenderingTransferStrength = 1.0f;
 		float neuralRenderingLuminosityStrength = 1.0f;
+		float neuralRenderingMaxRatio = 2.0f;  // Two-sided guard on the model/proxy luminance ratio (1/x..x).
 		NeuralRendering::CategoryStrengths neuralRenderingEverythingElseStrengths;
 		NeuralRendering::CategoryStrengths neuralRenderingSkinStrengths;
 		// Hair is the only category that hue-guards its chroma change by default.

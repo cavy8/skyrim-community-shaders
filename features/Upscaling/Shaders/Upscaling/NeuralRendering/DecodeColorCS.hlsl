@@ -23,7 +23,8 @@ cbuffer TransferParams : register(b0)
 	float4 DisplayExposure;   // x: apply Post Processing auto exposure, y: 0.18 * compensation, zw: adaptation range.
 	float LuminosityStrength;  // Overall multiplier on the model's luminance change alone (see ResolveNeuralColor).
 	uint DebugCategoryView;    // Non-zero: render the classified category (NeuralRenderingCategories::DebugColor) instead of the model's edit.
-	float2 HueGuardPad;        // Unused; keeps the cbuffer a whole number of float4s.
+	float MaxRatio;            // Two-sided guard on the model/proxy luminance ratio (1/MaxRatio..MaxRatio); see ResolveNeuralColor.
+	float HueGuardPad;         // Unused; keeps the cbuffer a whole number of float4s.
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
@@ -158,5 +159,5 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	}
 
 	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, resolvedColorStrength, editWeight,
-		resolvedLuminosityStrength, ColorDomain, categoryHueGuardAmount);
+		resolvedLuminosityStrength, ColorDomain, categoryHueGuardAmount, MaxRatio);
 }

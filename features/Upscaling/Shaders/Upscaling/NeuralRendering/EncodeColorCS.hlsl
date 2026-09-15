@@ -21,7 +21,9 @@ cbuffer TransferParams : register(b0)
 	float4 DisplayTint;       // ISHDR Tint: xyz colour, w amount.
 	float4 DisplayExposure;   // x: apply Post Processing auto exposure, y: 0.18 * compensation, zw: adaptation range.
 	float LuminosityStrength;  // Unused here; layout shared with DecodeColorCS.
-	float3 HueGuardPad;        // Unused; keeps the cbuffer layout matching DecodeColorCS.
+	uint DebugCategoryView;    // Unused here; layout shared with DecodeColorCS.
+	float MaxRatio;            // Unused here; layout shared with DecodeColorCS.
+	float HueGuardPad;         // Unused; keeps the cbuffer layout matching DecodeColorCS.
 };
 
 Texture2D<float4> SourceColor : register(t0);

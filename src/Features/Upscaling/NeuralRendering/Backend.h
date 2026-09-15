@@ -103,6 +103,9 @@ public:
 		/// Additional multiplier on the model's luminance change alone; see
 		/// NeuralRendering::Options::luminosityStrength.
 		float luminosityStrength = 1.0f;
+		/// Two-sided guard (1/maxRatio..maxRatio) on the model/proxy luminance ratio;
+		/// see NeuralRendering::Options::maxRatio.
+		float maxRatio = 2.0f;
 		std::array<float, 7> categoryColorStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		std::array<float, 7> categoryTransferStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		std::array<float, 7> categoryLuminosityStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };

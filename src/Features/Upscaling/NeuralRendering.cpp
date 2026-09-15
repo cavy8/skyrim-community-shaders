@@ -53,6 +53,7 @@ namespace
 		inputs.colorStrength = options.colorStrength;
 		inputs.transferStrength = options.transferStrength;
 		inputs.luminosityStrength = options.luminosityStrength;
+		inputs.maxRatio = options.maxRatio;
 		for (std::size_t index = 0; index < options.categoryStrengths.size(); ++index) {
 			inputs.categoryColorStrengths[index] = options.categoryStrengths[index].colorStrength;
 			inputs.categoryTransferStrengths[index] = options.categoryStrengths[index].transferStrength;

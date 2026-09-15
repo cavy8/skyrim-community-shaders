@@ -72,7 +72,6 @@
 
 static const float3 kNeuralLuma = float3(0.2126, 0.7152, 0.0722);
 static const float kNeuralRatioFloor = 1.0 / 512.0;
-static const float kNeuralMaxRatio = 2.0;
 // Per-channel guard on the model's chroma change relative to the proxy (see ResolveNeuralColor).
 static const float kNeuralChromaRatioMin = 0.25;
 static const float kNeuralChromaRatioMax = 4.0;
@@ -633,10 +632,17 @@ float3 NeuralChromaOffset(float3 color)
  *
  * @p originalColor is stored in @p domain, and so is the result: the edit itself is
  * always applied in linear light, decoded with that domain's curve.
+ *
+ * @p maxRatio is the two-sided guard (1/maxRatio..maxRatio) on the model/proxy
+ * luminance ratio after @p editWeight and @p luminosityStrength have scaled it;
+ * one disables any luminance change, and the previous hardcoded behaviour is
+ * exactly two. Values below one are treated as one - a guard cannot be tighter
+ * than the floor it exists to raise.
  */
 float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalColor, float colorStrength,
-	float editWeight, float luminosityStrength, uint domain, float hueGuardAmount)
+	float editWeight, float luminosityStrength, uint domain, float hueGuardAmount, float maxRatio)
 {
+	maxRatio = max(maxRatio, 1.0);
 	float3 original = NeuralDomainToLinear(originalColor.rgb, domain);
 	float3 proxy = NeuralModelToLinear(proxyColor.rgb, domain);
 	float3 model = NeuralModelToLinear(modelColor.rgb, domain);
@@ -652,7 +658,7 @@ float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalC
 	editWeight = max(editWeight, 0.0);
 	float lumaExponent = max(editWeight * max(luminosityStrength, 0.0), 0.0);
 	float ratio = (modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor);
-	ratio = clamp(pow(ratio, lumaExponent), 1.0 / kNeuralMaxRatio, kNeuralMaxRatio);
+	ratio = clamp(pow(ratio, lumaExponent), 1.0 / maxRatio, maxRatio);
 
 	float3 luminanceResult = original * ratio;
 	float targetLuma = dot(luminanceResult, kNeuralLuma);

@@ -96,6 +96,11 @@ public:
 		/// leaves luminance untouched (still subject to Transfer Strength being
 		/// non-zero); one matches the pre-luminosity-strength behaviour exactly.
 		float luminosityStrength = 1.0f;
+		/// Two-sided guard (1/maxRatio..maxRatio) on the model/proxy luminance
+		/// ratio the resolve applies (see ColorTransfer.hlsli, ResolveNeuralColor).
+		/// One disables any luminance change; the previous hardcoded behaviour is
+		/// exactly 2.
+		float maxRatio = 2.0f;
 		/// Per-material multipliers and hue-guard toggles; always in effect. The
 		/// global strengths above are still applied afterwards as the final
 		/// adjustment layer, and each category's own hue guard toggle replaces a
