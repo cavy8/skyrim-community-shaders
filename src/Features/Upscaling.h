@@ -84,6 +84,10 @@ public:
 		float neuralRenderingTransferStrength = 1.0f;
 		float neuralRenderingLuminosityStrength = 1.0f;
 		float neuralRenderingMaxRatio = 2.0f;  // Two-sided guard on the model/proxy luminance ratio (1/x..x).
+		// Off by default: the guard above is not applied at all, so a correct large
+		// light/dark swing (e.g. a lit surface the model puts fully into shadow)
+		// is never capped. On, Max Ratio governs the swing as before.
+		bool neuralRenderingRatioGuardEnabled = false;
 		NeuralRendering::CategoryStrengths neuralRenderingEverythingElseStrengths;
 		NeuralRendering::CategoryStrengths neuralRenderingSkinStrengths;
 		// Hair is the only category that hue-guards its chroma change by default.

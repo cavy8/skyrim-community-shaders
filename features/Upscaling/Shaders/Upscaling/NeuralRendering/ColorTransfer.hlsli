@@ -671,7 +671,11 @@ float3 NeuralChromaOffset(float3 color)
  * luminance ratio after @p editWeight and @p luminosityStrength have scaled it;
  * one disables any luminance change, and the previous hardcoded behaviour is
  * exactly two. Values below one are treated as one - a guard cannot be tighter
- * than the floor it exists to raise.
+ * than the floor it exists to raise. The guard is opt-in (see
+ * NeuralRendering::Options::ratioGuardEnabled); off, the caller passes an
+ * effectively unbounded value instead of a smaller one, so this clamp never
+ * binds and a correct large swing - such as putting a lit surface fully into
+ * shadow - reaches the frame untouched.
  */
 float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalColor, float colorStrength,
 	float editWeight, float luminosityStrength, uint domain, float hueGuardAmount, float maxRatio)

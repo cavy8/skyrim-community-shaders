@@ -66,6 +66,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	neuralRenderingTransferStrength,
 	neuralRenderingLuminosityStrength,
 	neuralRenderingMaxRatio,
+	neuralRenderingRatioGuardEnabled,
 	neuralRenderingEverythingElseStrengths,
 	neuralRenderingSkinStrengths,
 	neuralRenderingHairStrengths,
@@ -700,12 +701,23 @@ void Upscaling::DrawNeuralRenderingSettings()
 			"Scales only the model's light/dark change, on top of Transfer Strength; its color and detail edit "
 			"are unaffected. Lower it if Neural Rendering reads as too contrasty without giving up its color work."));
 	}
-	ImGui::SliderFloat(T(TKEY("neural_rendering_max_ratio"), "Max Ratio"), &settings.neuralRenderingMaxRatio, 1.0f, 4.0f, "%.2f");
+	ImGui::Checkbox(T(TKEY("neural_rendering_ratio_guard_enabled"), "Enable Ratio Guard"), &settings.neuralRenderingRatioGuardEnabled);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_max_ratio_tooltip"),
-			"How far the model's light/dark change is allowed to push a pixel, as a multiple of its original "
-			"brightness in either direction (2 means at most half as dark or twice as bright). 1 disables any "
-			"brightness change. Raise this for a stronger effect at the risk of flashing or crushed highlights."));
+		ImGui::TextUnformatted(T(TKEY("neural_rendering_ratio_guard_enabled_tooltip"),
+			"Off by default: the model's light/dark change is applied exactly as it computed it, however far it "
+			"swings - including turning a lit surface fully into shadow. Turn this on to cap that swing with Max "
+			"Ratio below, if a specific scene flashes or flickers; capping it can also crush shadow detail the "
+			"model was correctly reproducing."));
+	}
+	if (settings.neuralRenderingRatioGuardEnabled) {
+		ImGui::SliderFloat(T(TKEY("neural_rendering_max_ratio"), "Max Ratio"), &settings.neuralRenderingMaxRatio, 1.0f, 8.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("neural_rendering_max_ratio_tooltip"),
+				"How far the model's light/dark change is allowed to push a pixel, as a multiple of its original "
+				"brightness in either direction (2 means at most half as dark or twice as bright). 1 disables any "
+				"brightness change. Lower this if a specific scene flashes or flickers; raising it further "
+				"re-approaches the guard being off."));
+		}
 	}
 
 	// --- Per-category overrides, each with its own hue guard ---
@@ -2167,6 +2179,7 @@ NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
 	options.transferStrength = settings.neuralRenderingTransferStrength;
 	options.luminosityStrength = settings.neuralRenderingLuminosityStrength;
 	options.maxRatio = settings.neuralRenderingMaxRatio;
+	options.ratioGuardEnabled = settings.neuralRenderingRatioGuardEnabled;
 	using MaterialCategory = NeuralRendering::MaterialCategory;
 	const auto setCategoryStrengths = [&](MaterialCategory category, const NeuralRendering::CategoryStrengths& strengths) {
 		options.categoryStrengths[static_cast<std::size_t>(category)] = strengths;

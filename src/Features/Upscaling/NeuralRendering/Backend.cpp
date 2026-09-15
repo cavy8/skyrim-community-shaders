@@ -64,6 +64,12 @@ namespace
 	/// queue, so latching every intermediate value of a slider drag would hitch
 	/// per frame; matches kModelRasterDebounceFrames's reasoning exactly.
 	constexpr std::uint32_t kTuningDebounceFrames = 12;
+	/// Sent to the shader in place of a real Max Ratio when the ratio guard is
+	/// off (NeuralRendering::Options::ratioGuardEnabled false). ResolveNeuralColor
+	/// only ever uses this as clamp(ratio, 1/x, x); a value this large makes that
+	/// clamp a no-op for any luminance ratio the model could plausibly produce,
+	/// without the shader needing a separate enabled flag.
+	constexpr float kNeuralRatioGuardDisabledValue = 1.0e6f;
 
 	/**
 	 * @brief Model raster extent for one axis.
@@ -879,7 +885,10 @@ struct NeuralRenderingBackend::State
 		// The guard is two-sided (1/maxRatio..maxRatio) and only meaningful at or
 		// above one; a stale or misconfigured value below that would otherwise
 		// invert into a guard tighter than the floor it is supposed to raise.
-		transferParams.maxRatio = std::clamp(inputs.maxRatio, 1.0f, 8.0f);
+		// Disabled (the default - see NeuralRendering::Options::ratioGuardEnabled):
+		// send a value large enough that the shader's clamp never actually binds,
+		// so a correct large light/dark swing (e.g. a shadow edit) is never capped.
+		transferParams.maxRatio = inputs.ratioGuardEnabled ? std::clamp(inputs.maxRatio, 1.0f, 8.0f) : kNeuralRatioGuardDisabledValue;
 		std::uint32_t hueGuardMask = 0;
 		for (std::size_t index = 0; index < inputs.categoryColorStrengths.size(); ++index) {
 			transferParams.categoryColorStrengths[index] = std::clamp(inputs.categoryColorStrengths[index], 0.0f, 2.0f);

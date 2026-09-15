@@ -106,6 +106,8 @@ public:
 		/// Two-sided guard (1/maxRatio..maxRatio) on the model/proxy luminance ratio;
 		/// see NeuralRendering::Options::maxRatio.
 		float maxRatio = 2.0f;
+		/// Whether maxRatio is applied at all; see NeuralRendering::Options::ratioGuardEnabled.
+		bool ratioGuardEnabled = false;
 		std::array<float, 7> categoryColorStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		std::array<float, 7> categoryTransferStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		std::array<float, 7> categoryLuminosityStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };

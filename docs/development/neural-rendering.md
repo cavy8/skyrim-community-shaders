@@ -440,15 +440,25 @@ therefore bit-exact with the previous behaviour, zero returns the untouched
 frame, and two exaggerates the model's relative change. Unlike the `DLSSNR.*`
 tuning parameters it is a per-frame constant, so it responds immediately.
 
-### Max Ratio
+### Ratio guard / Max Ratio
 
-The luminance ratio above is clamped to `1/Max Ratio..Max Ratio` (`ColorTransfer.hlsli`,
-`ResolveNeuralColor`) so a single evaluation cannot flash or collapse a pixel
-without bound. `Max Ratio` (1..4, default 2) exposes that guard directly instead
-of the previous hardcoded `2.0`; one disables any luminance change regardless of
-`Transfer Strength`, and raising it allows a stronger effect at the risk of
-flashing highlights or crushed shadows on an unstable frame. Values below one
-are treated as one in the shader.
+The luminance ratio above can be clamped to `1/Max Ratio..Max Ratio`
+(`ColorTransfer.hlsli`, `ResolveNeuralColor`) so a single evaluation cannot
+flash or collapse a pixel without bound. `Enable Ratio Guard` (default **off**)
+controls whether that clamp applies at all; the `Max Ratio` slider (1..8,
+default 2) only appears once it is on. Off, `Backend.cpp` sends the shader an
+effectively unbounded value instead of a smaller one, so the clamp never binds
+and the model's genuine light/dark change - including turning a lit surface
+fully into shadow, which any finite guard eventually caps - reaches the frame
+exactly as evaluated. On, raising `Max Ratio` allows a stronger effect at the
+risk of flashing on an unstable model frame; values below one are treated as
+one in the shader.
+
+Earlier revisions exposed `Max Ratio` as an always-on 1..4 slider while
+`Backend.cpp` separately hard-clamped the value it actually sent to the shader
+to 8 - so past 4 in the UI (or an ini edit past 8) had no further effect, which
+read as the guard being unliftable. The guard is now opt-in and its two ranges
+match (1..8 both in the UI and in `Backend.cpp`).
 
 ## Luminosity strength
 

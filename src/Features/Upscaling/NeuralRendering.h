@@ -97,10 +97,18 @@ public:
 		/// non-zero); one matches the pre-luminosity-strength behaviour exactly.
 		float luminosityStrength = 1.0f;
 		/// Two-sided guard (1/maxRatio..maxRatio) on the model/proxy luminance
-		/// ratio the resolve applies (see ColorTransfer.hlsli, ResolveNeuralColor).
-		/// One disables any luminance change; the previous hardcoded behaviour is
+		/// ratio the resolve applies (see ColorTransfer.hlsli, ResolveNeuralColor),
+		/// only in effect while @ref ratioGuardEnabled is true. One disables any
+		/// luminance change; the previous hardcoded, always-on behaviour was
 		/// exactly 2.
 		float maxRatio = 2.0f;
+		/// Whether @ref maxRatio is applied at all. Off by default: the model's
+		/// light/dark change reaches the frame exactly as computed, however far
+		/// it swings - including a correct edit that puts a lit surface fully
+		/// into shadow, which no small guard value can pass. Turning this on
+		/// trades some of that range for protection against a single unstable
+		/// model frame flashing or flickering.
+		bool ratioGuardEnabled = false;
 		/// Per-material multipliers and hue-guard toggles; always in effect. The
 		/// global strengths above are still applied afterwards as the final
 		/// adjustment layer, and each category's own hue guard toggle replaces a
