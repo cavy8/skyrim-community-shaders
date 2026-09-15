@@ -1843,7 +1843,6 @@ void Upscaling::Upscale()
 	}
 
 	{
-		globals::profiler->BeginPass("Upscaling::Upscale");
 		state->BeginPerfEvent("Upscaling");
 		TracyD3D11Zone(globals::state->tracyCtx, "Upscaling Dispatch");
 
@@ -1876,6 +1875,7 @@ void Upscaling::Upscale()
 				// is a deliberate lie for DLSS's history rejection. The model feeds
 				// its own temporal state and was trained on plain per-pixel vectors,
 				// so the dilated rim reads as flicker or smear along moving edges.
+				globals::profiler->BeginPass("Upscaling::NeuralRenderingGenerate");
 				if (settings.neuralRenderingPlacement == 0) {
 					if (neuralRendering.Evaluate(main.texture,
 							neuralRenderingTexture->resource.get(),
@@ -1904,14 +1904,18 @@ void Upscaling::Upscale()
 						nativeHeight,
 						neuralOptions);
 				}
+				globals::profiler->EndPass();
 			}
+			globals::profiler->BeginPass("Upscaling::Upscale");
 			streamline.Upscale(dlssInput, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get());
+			globals::profiler->EndPass();
 		} else if (upscaleMethod == UpscaleMethod::kFSR) {
+			globals::profiler->BeginPass("Upscaling::Upscale");
 			fidelityFX.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR);
+			globals::profiler->EndPass();
 		}
 
 		state->EndPerfEvent();
-		globals::profiler->EndPass();
 	}
 }
 
@@ -2063,7 +2067,9 @@ void Upscaling::CaptureNeuralRenderingCategories()
 		materialCategoriesSnapshot->CreateSRV(srvDesc);
 	}
 
+	globals::profiler->BeginPass("Upscaling::NeuralRenderingCategoryCapture");
 	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
+	globals::profiler->EndPass();
 }
 
 void Upscaling::RestoreNeuralRenderingCategories()
@@ -2078,7 +2084,9 @@ void Upscaling::RestoreNeuralRenderingCategories()
 
 	// Masks2 is unbound here (EndDeferred cleared the OM before DeferredPasses),
 	// and the composite has already read the decal-blended AO it held.
+	globals::profiler->BeginPass("Upscaling::NeuralRenderingCategoryCapture");
 	globals::d3d::context->CopyResource(masks2.texture, materialCategoriesSnapshot->resource.get());
+	globals::profiler->EndPass();
 	neuralRenderingForwardCaptureActive = true;
 }
 
@@ -2092,7 +2100,9 @@ void Upscaling::FinishNeuralRenderingCategoryCapture()
 	if (!materialCategoriesSnapshot || !masks2.texture)
 		return;
 
+	globals::profiler->BeginPass("Upscaling::NeuralRenderingCategoryCapture");
 	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
+	globals::profiler->EndPass();
 }
 
 void Upscaling::BSBatchRenderer_RenderPassImmediately::thunk(RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags)
@@ -2346,9 +2356,12 @@ bool Upscaling::EvaluateNeuralRenderingFinishedImage(ID3D11Texture2D* a_colorIn,
 								 globals::state->GetTonemapOwner() == State::TonemapOwner::kPostProcessing);
 	options.colorDomain = sceneLinear ? NeuralRendering::ColorDomain::kSceneLinear : NeuralRendering::ColorDomain::kDisplayGamma;
 
-	if (!neuralRendering.Evaluate(a_colorIn, a_colorOut,
-			depthTexture, depthSRV, materialCategoriesSRV, motionVector.texture,
-			nativeWidth, nativeHeight, options)) {
+	globals::profiler->BeginPass("Upscaling::NeuralRenderingGenerate");
+	const bool evaluated = neuralRendering.Evaluate(a_colorIn, a_colorOut,
+		depthTexture, depthSRV, materialCategoriesSRV, motionVector.texture,
+		nativeWidth, nativeHeight, options);
+	globals::profiler->EndPass();
+	if (!evaluated) {
 		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: Evaluate() returned false "
 					  "(see preceding [NeuralRendering] log lines for the reason)");
 		return false;
@@ -2553,6 +2566,7 @@ void Upscaling::PerformUpscaling()
 		neuralOptions.display = MakeNeuralRenderingDisplayTransform();
 		// Raw game motion-vector target, not the dilated ghosting-reduction copy
 		// DLSS consumes; see the matching note in Upscale() for the reasoning.
+		globals::profiler->BeginPass("Upscaling::NeuralRenderingGenerate");
 		neuralRenderingResultValid = neuralRendering.Evaluate(sharpenerTexture->resource.get(),
 			neuralRenderingTexture->resource.get(),
 			depth.texture,
@@ -2562,12 +2576,15 @@ void Upscaling::PerformUpscaling()
 			nativeWidth,
 			nativeHeight,
 			neuralOptions);
+		globals::profiler->EndPass();
 	} else if (GetUpscaleMethod() == UpscaleMethod::kDLSS && settings.neuralRenderingEnabled &&
 		settings.neuralRenderingPlacement == 2 && neuralRenderingTexture && sharpenerTexture) {
 		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
 		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
+		globals::profiler->BeginPass("Upscaling::NeuralRenderingGenerate");
 		neuralRenderingResultValid = neuralRendering.ResolveSeparateUpscaling(
 			sharpenerTexture->resource.get(), neuralRenderingTexture->resource.get(), nativeWidth, nativeHeight);
+		globals::profiler->EndPass();
 	}
 
 	// Finished Image evaluates later, at the tonemap, so it snapshots depth now
