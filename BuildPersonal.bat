@@ -11,7 +11,6 @@ rem
 rem Edit EXCLUDE_FEATURES below (feature folder names under features\) to change
 rem the set. Never ship these binaries.
 setlocal
-set "SKIP_CONFIGURE=1"
 set "EXCLUDE_FEATURES=Terrain Helper|HDR Display"
 
 call "%~dp0BuildRelease.bat" Dev ALL
