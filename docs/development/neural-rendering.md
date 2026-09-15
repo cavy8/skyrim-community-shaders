@@ -32,7 +32,7 @@ jitter parameter (neither does OptiScaler's pre-SR path), so the backend
 compensates for it itself; see *Jitter* below. `Upscaling::Upscale()` passes the
 same offset Streamline receives (`-jitter`) through `NeuralRendering::Options`.
 
-### After Upscaling (`neuralRenderingPlacement == 1`, default)
+### After Upscaling (`neuralRenderingPlacement == 1`)
 
 Runs in `Upscaling::PerformUpscaling()` after the colour upscale and before
 `UpscaleDepth()`, on the display-resolution upscaled frame, before RCAS
@@ -62,7 +62,7 @@ The private D3D12 device is initialized through the resident NGX core with the
 same project identity as Streamline and the Streamline directory in its feature
 path; initializing only through the Feature 18 snippet cannot load DLSS-SR.
 
-### Finished Image (`neuralRenderingPlacement == 3`, experimental)
+### Finished Image (`neuralRenderingPlacement == 3`, default)
 
 Runs from `PostProcessingExtensions::Main_HDRTonemapBlendCinematic_Render` (`src/Hooks.cpp`),
 the single hook point that sees every path the frame's tonemap can take: right after

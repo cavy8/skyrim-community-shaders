@@ -566,7 +566,7 @@ void Upscaling::DrawNeuralRenderingSettings()
 		T(TKEY("neural_rendering_placement_before"), "Before Upscaling"),
 		T(TKEY("neural_rendering_placement_after"), "After Upscaling"),
 		T(TKEY("neural_rendering_placement_separate"), "Separate Upscaling (Experimental)"),
-		T(TKEY("neural_rendering_placement_finished_image"), "Finished Image (Experimental)")
+		T(TKEY("neural_rendering_placement_finished_image"), "Finished Image")
 	};
 	int placement = static_cast<int>(settings.neuralRenderingPlacement);
 	if (ImGui::Combo(T(TKEY("neural_rendering_placement"), "Placement"), &placement, placementLabels, IM_ARRAYSIZE(placementLabels)))
