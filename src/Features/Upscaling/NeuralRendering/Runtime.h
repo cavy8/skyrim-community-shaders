@@ -20,13 +20,17 @@ namespace NeuralRendering
 	 */
 	struct Tuning
 	{
-		float intensity = 0.8f;
+		float intensity = 1.0f;
 		float localToneStrength = 1.0f;
 		float localStructureStrength = 1.0f;
 		float skinStructureStrength = -1.0f;
 		std::uint32_t style = 3;
 		bool useAutoMask = true;
 		bool uiCorrection = false;
+
+		/// Every field here is latched at feature-create time (see Execute()), so
+		/// this is how Execute() notices a slider changed and rebuilds the feature.
+		friend bool operator==(const Tuning&, const Tuning&) = default;
 	};
 
 	/** @brief Result of recording the private DLSS-SR residual pass. */

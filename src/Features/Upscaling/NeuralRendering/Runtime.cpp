@@ -399,9 +399,12 @@ namespace NeuralRendering
 			// The model latches its tuning at feature-create time; the same names
 			// written only at evaluate are read by nothing. They are set again in
 			// the evaluate block below purely so a future shared-parameter-block
-			// path stays correct, but this is the write that takes effect. A tuning
-			// change therefore needs the feature rebuilt - today that means toggling
-			// Neural Rendering off and on; a debounced in-place rebuild is a follow-up.
+			// path stays correct, but this is the write that takes effect. The
+			// caller (NeuralRenderingBackend::State::Run) is responsible for
+			// releasing featureHandle_ first when a tuning value has changed and
+			// settled, the same debounced way it already handles a model-raster
+			// change; by the time control reaches here, tuning is exactly what
+			// should be latched into a (re)created feature.
 			parameters->Set("DLSSNR.Hint.Render.Preset", 0u);
 			parameters->Set("DLSSNR.Intensity", tuning.intensity);
 			parameters->Set("DLSSNR.Style", tuning.style);

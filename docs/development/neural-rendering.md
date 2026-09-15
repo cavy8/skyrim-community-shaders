@@ -562,9 +562,17 @@ evaluated frames would be the obvious refinement and has not been tried.
 
 `DLSSNR.Intensity` / `Style` / `LocalToneStrength` / `LocalStructureStrength` /
 `SkinStructureStrength` / `UseAutoMask` / `Hint.Render.Preset` are **latched when
-the feature is created**. Writing them only at evaluate does nothing. `Runtime`
-sets them at create time; changing a slider therefore needs the feature rebuilt,
-which today means toggling Neural Rendering off and on. A debounced in-place
-rebuild (drain the interop queue, `ResetFeature()`, recreate) is a follow-up - it
-must go through the same GPU-idle path `EnsureResources()` uses, never a bare
-`release()`.
+the feature is created**. Writing them only at evaluate does nothing; `Runtime`
+sets them at create time only (`Runtime::Execute`).
+
+`NeuralRenderingBackend::State::SettleTuning` (`Backend.cpp`) debounces a changed
+value the same way `SettleModelRaster` debounces a resolution-scale drag: once a
+requested `NeuralRendering::Tuning` has been stable for `kTuningDebounceFrames`
+(12) and actually differs from what is latched into the live handle, `Run()`
+drains the interop queue (`D3D12Interop::WaitForIdle`), calls
+`Runtime::ResetFeature()`, and lets the next `Runtime::Execute()` recreate the
+feature with the new values - the same GPU-idle path a model-raster change
+already uses, never a bare `release()` while the interop queue might still
+reference the handle. A slider drag therefore settles on its own within about a
+fifth of a second at 60 FPS; toggling Neural Rendering off and on is no longer
+necessary.

@@ -58,6 +58,11 @@ namespace
 	/// and the NGX feature are rebuilt for it. Rebuilding drains the interop queue,
 	/// so applying every intermediate value of a slider drag would hitch per frame.
 	constexpr std::uint32_t kModelRasterDebounceFrames = 12;
+	/// Frames a changed tuning value must stay stable before Feature 18 is torn
+	/// down and recreated for it (see SettleTuning). Rebuilding drains the interop
+	/// queue, so latching every intermediate value of a slider drag would hitch
+	/// per frame; matches kModelRasterDebounceFrames's reasoning exactly.
+	constexpr std::uint32_t kTuningDebounceFrames = 12;
 
 	/**
 	 * @brief Model raster extent for one axis.
@@ -202,6 +207,17 @@ struct NeuralRenderingBackend::State
 	std::uint32_t requestedModelHeight = 0;
 	std::uint32_t requestedModelStableFrames = 0;
 
+	/// Tuning last requested and how many consecutive frames it has been asked
+	/// for (see SettleTuning), versus the tuning actually latched into the live
+	/// Feature 18 handle. DLSSNR.Intensity/Style/LocalToneStrength/
+	/// LocalStructureStrength/SkinStructureStrength/UseAutoMask only take effect
+	/// at feature creation (see Runtime::Execute), so a settled change here has
+	/// to force a recreate rather than just flow through to the next Execute().
+	NeuralRendering::Tuning requestedTuning{};
+	NeuralRendering::Tuning appliedTuning{};
+	std::uint32_t requestedTuningStableFrames = 0;
+	bool tuningInitialized = false;
+
 	/// Counts Run() calls; odd frames are skipped in alternating-frame mode.
 	std::uint64_t evaluateFrameIndex = 0;
 
@@ -309,6 +325,42 @@ struct NeuralRenderingBackend::State
 		if (allocated && activeUnchanged && requestedModelStableFrames < kModelRasterDebounceFrames)
 			return { color.desc.Width, color.desc.Height };
 		return { desiredWidth, desiredHeight };
+	}
+
+	/**
+	 * @brief Debounces a Feature-18 tuning change and reports when it should be latched in.
+	 *
+	 * DLSSNR.Intensity/Style/LocalToneStrength/LocalStructureStrength/
+	 * SkinStructureStrength/UseAutoMask only take effect when Feature 18 is
+	 * (re)created (see Runtime::Execute), so applying every intermediate value of
+	 * a slider drag would tear the feature down and rebuild it - and drain the
+	 * interop queue to do it safely - every frame. Instead the request is tracked
+	 * the same way SettleModelRaster tracks a resolution-scale drag: once it has
+	 * been stable for kTuningDebounceFrames and actually differs from what is
+	 * latched into the live handle, the caller is told to recreate.
+	 *
+	 * @return True exactly once per settled change; the caller must then drain
+	 *         the interop queue, call Runtime::ResetFeature(), and update
+	 *         appliedTuning - never release the handle without draining first.
+	 */
+	bool SettleTuning(const NeuralRendering::Tuning& desired)
+	{
+		if (!(desired == requestedTuning)) {
+			requestedTuning = desired;
+			requestedTuningStableFrames = 0;
+		} else if (requestedTuningStableFrames < kTuningDebounceFrames) {
+			++requestedTuningStableFrames;
+		}
+		if (!tuningInitialized) {
+			tuningInitialized = true;
+			appliedTuning = requestedTuning;
+			return false;
+		}
+		if (requestedTuningStableFrames >= kTuningDebounceFrames && !(requestedTuning == appliedTuning)) {
+			appliedTuning = requestedTuning;
+			return true;
+		}
+		return false;
 	}
 
 	/**
@@ -620,14 +672,10 @@ struct NeuralRenderingBackend::State
 		const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
 		context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
 
-		NeuralRendering::Tuning tuning;
-		tuning.intensity = inputs.intensity;
-		tuning.localToneStrength = inputs.localToneStrength;
-		tuning.localStructureStrength = inputs.localStructureStrength;
-		tuning.skinStructureStrength = inputs.skinStructureStrength;
-		tuning.style = inputs.style;
-		tuning.useAutoMask = inputs.automaticMask;
-		tuning.uiCorrection = false;  // Cav's Unity Shaders never runs Neural Rendering after the UI composite.
+		// Run() has already settled and (if it changed) recreated the feature for this
+		// frame's tuning via SettleTuning; appliedTuning is exactly what should be
+		// latched into a create and restated into an evaluate, per Runtime::Execute.
+		const NeuralRendering::Tuning& tuning = appliedTuning;
 
 		ID3D12GraphicsCommandList* commandList = nullptr;
 		if (!interop.BeginD3D12(&commandList) || !commandList)
@@ -717,6 +765,30 @@ struct NeuralRenderingBackend::State
 		if (inputs.colorIn != lastColorInput) {
 			resetPending = true;
 			lastColorInput = inputs.colorIn;
+		}
+
+		// DLSSNR.Intensity/Style/LocalToneStrength/LocalStructureStrength/
+		// SkinStructureStrength/UseAutoMask are latched at Feature 18 creation and
+		// do nothing written at evaluate (see Runtime::Execute). SettleTuning
+		// debounces a changed value the same way SettleModelRaster debounces a
+		// resolution-scale drag, then this forces a recreate through the same
+		// GPU-idle path EnsureResources uses for a raster change - never a bare
+		// release() while the interop queue might still reference the handle.
+		NeuralRendering::Tuning desiredTuning;
+		desiredTuning.intensity = inputs.intensity;
+		desiredTuning.localToneStrength = inputs.localToneStrength;
+		desiredTuning.localStructureStrength = inputs.localStructureStrength;
+		desiredTuning.skinStructureStrength = inputs.skinStructureStrength;
+		desiredTuning.style = inputs.style;
+		desiredTuning.useAutoMask = inputs.automaticMask;
+		desiredTuning.uiCorrection = false;  // Cav's Unity Shaders never runs Neural Rendering after the UI composite.
+		if (SettleTuning(desiredTuning)) {
+			if (!interop.WaitForIdle())
+				return LatchFailure("tuning change", interop.LastError());
+			NeuralRendering::Runtime::Instance().ResetFeature();
+			separateResetPending = true;
+			separateResidualReady = false;
+			resetPending = true;
 		}
 
 		// Alternating frames (the proxy's experimental "VRNR"): run the model every
