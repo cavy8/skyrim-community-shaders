@@ -627,7 +627,7 @@ struct NeuralRenderingBackend::State
 		tuning.skinStructureStrength = inputs.skinStructureStrength;
 		tuning.style = inputs.style;
 		tuning.useAutoMask = inputs.automaticMask;
-		tuning.uiCorrection = false;  // Community Shaders never runs Neural Rendering after the UI composite.
+		tuning.uiCorrection = false;  // Cav's Unity Shaders never runs Neural Rendering after the UI composite.
 
 		ID3D12GraphicsCommandList* commandList = nullptr;
 		if (!interop.BeginD3D12(&commandList) || !commandList)

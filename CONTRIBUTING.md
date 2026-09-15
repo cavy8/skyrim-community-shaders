@@ -1,5 +1,5 @@
-# Community Shaders Contribution Guidelines
-If you would like to contribute to Community Shaders, you can do so by raising a pull request (PR) or raising an issue with an attached patch.
+# Cav's Unity Shaders Contribution Guidelines
+If you would like to contribute to Cav's Unity Shaders, you can do so by raising a pull request (PR) or raising an issue with an attached patch.
 
 ## What is considered a useful contribution
 

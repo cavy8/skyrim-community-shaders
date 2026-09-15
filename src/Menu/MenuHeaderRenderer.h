@@ -28,7 +28,7 @@ public:
 	 * adapts based on whether the window is docked or floating.
 	 *
 	 * @param isDocked True if the menu window is docked into a tab bar.
-	 * @param showLogo True if the Community Shaders logo should be displayed.
+	 * @param showLogo True if the Cav's Unity Shaders logo should be displayed.
 	 * @param canShowIcons True if action icons (save, load, clear cache, etc.) should be shown.
 	 * @param uiScale Current UI scale factor for sizing icon buttons.
 	 * @param uiIcons Reference to the loaded icon textures and sizes.

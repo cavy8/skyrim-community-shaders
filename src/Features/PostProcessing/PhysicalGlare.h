@@ -1,6 +1,6 @@
 #pragma once
 
-// Physical Glare — Community Shaders / Post Processing
+// Physical Glare — Cav's Unity Shaders / Post Processing
 // Author: Jiaye, 2026
 //
 // Physically-based glare via FFT convolution with a wavelength-dependent

@@ -93,7 +93,7 @@ namespace Util::IconLoader
 		const bool useMonochrome = menu->GetSettings().Theme.UseMonochromeIcons;
 		const bool useMonochromeLogo = menu->GetSettings().Theme.UseMonochromeLogo;
 		const char* iconFolder = useMonochrome ? "Action Icons\\Monochrome" : "Action Icons";
-		const char* logoPath = useMonochromeLogo ? "Community Shaders Logo\\Monochrome\\cs-logo.png" : "Community Shaders Logo\\cs-logo.png";
+		const char* logoPath = useMonochromeLogo ? "Cav's Unity Shaders Logo\\Monochrome\\cs-logo.png" : "Cav's Unity Shaders Logo\\cs-logo.png";
 
 		return {
 			{ std::string(iconFolder) + "\\save-settings.png", &menu->uiIcons.saveSettings.texture, &menu->uiIcons.saveSettings.size },

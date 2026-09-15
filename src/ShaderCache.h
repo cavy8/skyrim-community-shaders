@@ -354,7 +354,7 @@ namespace SIE
 			return instance;
 		}
 
-		/** @brief Returns true if the shader type is one Community Shaders can replace. */
+		/** @brief Returns true if the shader type is one Cav's Unity Shaders can replace. */
 		inline static bool IsSupportedShader(const RE::BSShader::Type type)
 		{
 			return type == RE::BSShader::Type::Lighting ||
@@ -369,7 +369,7 @@ namespace SIE
 			       type == RE::BSShader::Type::ImageSpace;
 		}
 
-		/** @brief Returns true if the shader type is one Community Shaders can replace. */
+		/** @brief Returns true if the shader type is one Cav's Unity Shaders can replace. */
 		inline static bool IsSupportedShader(const RE::BSShader& shader)
 		{
 			return IsSupportedShader(shader.shaderType.get());
@@ -647,10 +647,10 @@ namespace SIE
 			Skinned = 1 << 1,
 			ModelSpaceNormals = 1 << 2,
 			// flags 3 to 8 are unused by vanilla
-			// Community Shaders start
+			// Cav's Unity Shaders start
 			TruePbr = 1 << 3,
 			Deferred = 1 << 4,
-			// Community Shaders end
+			// Cav's Unity Shaders end
 			Specular = 1 << 9,
 			SoftLighting = 1 << 10,
 			RimLighting = 1 << 11,

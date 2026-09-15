@@ -218,7 +218,7 @@ public:
 	 */
 	void CheckTypedUAVLoadSupport();
 	/**
-	 * @brief Strips and rewrites shader descriptor bits for Community Shaders' pipeline.
+	 * @brief Strips and rewrites shader descriptor bits for Cav's Unity Shaders' pipeline.
 	 * @param a_shader The shader being compiled.
 	 * @param a_vertexDescriptor Vertex descriptor flags (modified in place).
 	 * @param a_pixelDescriptor Pixel descriptor flags (modified in place).

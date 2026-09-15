@@ -57,7 +57,7 @@ public:
 	enum class FontRole : std::uint8_t
 	{
 		Body = 0,    // Default UI text
-		Title,       // Large title text (e.g., "Community Shaders" header)
+		Title,       // Large title text (e.g., "Cav's Unity Shaders" header)
 		Heading,     // Section headers (tabs, category labels)
 		Subheading,  // Subsection headers (feature names, separators)
 		Subtext,     // Smaller secondary text (descriptions, about content)

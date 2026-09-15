@@ -30,7 +30,7 @@ namespace
 	std::unordered_map<ImGuiID, float> s_windowOverlapAlpha;
 
 	constexpr ImGuiWindowFlags SKIP_WINDOW_FLAGS = ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove;
-	constexpr const char* MAIN_WINDOW_PREFIX = "Community Shaders";
+	constexpr const char* MAIN_WINDOW_PREFIX = "Cav's Unity Shaders";
 
 	bool IsMainWindow(ImGuiWindow* win) { return win->Name && strncmp(win->Name, MAIN_WINDOW_PREFIX, strlen(MAIN_WINDOW_PREFIX)) == 0; }
 

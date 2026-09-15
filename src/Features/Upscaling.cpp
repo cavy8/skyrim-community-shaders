@@ -635,7 +635,7 @@ void Upscaling::DrawNeuralRenderingSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("neural_rendering_model_inputs_tooltip"),
 			"These are handed to the DLSS Neural Rendering model itself, guiding what it does to the frame. "
-			"The strengths further down control how much of its answer Community Shaders actually applies."));
+			"The strengths further down control how much of its answer Cav's Unity Shaders actually applies."));
 	}
 
 	const char* neuralStyles[] = {
@@ -671,7 +671,7 @@ void Upscaling::DrawNeuralRenderingSettings()
 		ImGui::TextUnformatted(T(TKEY("neural_rendering_automatic_mask_tooltip"), "Generates the skin mask automatically."));
 	}
 
-	// --- Strengths: how much of the model's answer Community Shaders applies ---
+	// --- Strengths: how much of the model's answer Cav's Unity Shaders applies ---
 	ImGui::Separator();
 	ImGui::TextUnformatted(T(TKEY("neural_rendering_strengths"), "Strengths"));
 	if (auto _tt = Util::HoverTooltipWrapper()) {

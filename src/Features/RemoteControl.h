@@ -7,7 +7,7 @@
 // Status panel for the devbench bridge. The plugin's tools are registered into the external
 // devbench host via DevBenchBridge (see src/Features/RemoteControl/DevBenchBridge.cpp); this feature surfaces, in the
 /**
- * @brief Feature class for integrating Community Shaders with an external devbench host.
+ * @brief Feature class for integrating Cav's Unity Shaders with an external devbench host.
  * 
  * Exposes shader tools (feature, inspect, shadercache, capture, settings) to AI assistants
  * through a shared devbench bench, accessible via MCP and REST protocols. Uses a singleton
@@ -43,7 +43,7 @@ public:
 	std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return {
-			"Expose Community Shaders to AI assistants through the external devbench host.",
+			"Expose Cav's Unity Shaders to AI assistants through the external devbench host.",
 			{
 				"Registers feature, inspect, shadercache, capture, and settings tools",
 				"Drivable over MCP and REST from the shared devbench bench",

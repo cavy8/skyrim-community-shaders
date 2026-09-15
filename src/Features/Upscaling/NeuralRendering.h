@@ -14,7 +14,7 @@ struct ID3D11ShaderResourceView;
  * Streamline-owned NGX core. It drives a directly loaded nvngx_dlssnr.dll
  * through the transport layer in `NeuralRendering/`, bridging Skyrim's D3D11
  * resources into D3D12 with shared textures. The runtime DLL is proprietary and
- * must be supplied by the user; Community Shaders never ships it.
+ * must be supplied by the user; Cav's Unity Shaders never ships it.
  */
 class NeuralRendering final
 {
