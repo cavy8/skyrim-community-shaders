@@ -13,17 +13,19 @@ Ported so far:
 | Cloud Relight | `alandtse/open-shaders` | `dev` | `f18e9543f` |
 | Foliage Lighting | `alandtse/open-shaders` | `dev` | `f18e9543f` |
 | Vanilla Fresnel | `alandtse/open-shaders` | `dev` | `f18e9543f` |
-| Post Processing | `jiayev/skyrim-community-shaders` | `compendium-clean` | `10d2eba1b` |
+| Post Processing | `jiayev/skyrim-community-shaders` | `compendium-clean` | `10d2eba1b`, `51c03d33b` |
+| Light Limit Fix (diet SLF) | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `69201a6ab`, `fe9228b99` |
+| Advanced Skin profiles / overrides | `jiayev/skyrim-community-shaders` | `compendium-clean` | `4c4eb6d25` |
 
 > The port commits did **not** record the exact upstream SHA they were taken
-> from. Baselines *observed on 2026-09-10* (use as an approximate "since" point,
+> from. Baselines *reviewed on 2026-09-15* (use as an approximate "since" point,
 > then pin properly on the first re-sync):
-> - `alandtse/open-shaders@dev` — `7d5622f8d53268c7ce3a95912f07fa6aa8bde5bc`
-> - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `cb9a1fb` (Snow Cover
+> - `alandtse/open-shaders@dev` — `7ae52a55430ea1efb3c14d3fb944a18639c3b9c9`
+> - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `497916e45ec5a731903356dedb72f920a1aaabb4` (Snow Cover
 >   itself landed upstream in `a661e44` "feat: snow", 2026-09-03)
-> - `jiayev/skyrim-community-shaders@compendium-clean` — not yet pinned; the port
->   commit (`10d2eba1b`, "port jiayev's Post Processing feature") didn't record the
->   source SHA. Pin on first re-sync. Not in the README's
+> - `jiayev/skyrim-community-shaders@compendium-clean` — `72041475c8e1521be9737b5b5d9e4e28a16ce1ab`; the original
+>   Post Processing port (`10d2eba1b`) did not record a source SHA. The focused
+>   re-sync was reviewed against this head. Not in the README's
 >   [Branch-Specific Credits](../../README.md#branch-specific-credits) — add it there too.
 
 ---
