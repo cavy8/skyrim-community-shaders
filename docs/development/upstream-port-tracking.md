@@ -14,7 +14,7 @@ Ported so far:
 | Foliage Lighting | `alandtse/open-shaders` | `dev` | `f18e9543f` |
 | Vanilla Fresnel | `alandtse/open-shaders` | `dev` | `f18e9543f` |
 | Post Processing | `jiayev/skyrim-community-shaders` | `compendium-clean` | `10d2eba1b`, `51c03d33b` |
-| Light Limit Fix (diet SLF) | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `69201a6ab`, `fe9228b99` |
+| Light Limit Fix (diet SLF) | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `69201a6ab`, `fe9228b99`; re-synced against head `7c58cb1ee` (2026-09-17, see §3) |
 | Advanced Skin profiles / overrides | `jiayev/skyrim-community-shaders` | `compendium-clean` | `4c4eb6d25`; TRUE_PBR compile fix `2da0eb7a5` |
 | TruePBR micro shadow AO | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `0a69dbbc5` |
 | Volumetric Lighting god ray strength / focused rays | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `a582a558a` (base strength/shaft-definition/priority), `122f4e2fc` (sun focus) |
@@ -119,6 +119,50 @@ enums is load-bearing.
 ---
 
 ## 3. Per-feature watch lists
+
+### Light Limit Fix (diet-SLF / local shadow cache)  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
+
+**Upstream lineage**: `42e236274d45da5305ff5f383086208ec26c94ee` (feat: diet SLF),
+`a0fe19bcae32825958ba56781e7ddc0b74164b32` (fix: shadow bias scaling),
+`8421c9cca263ebc20d26c6ea108d23b3f5b2af3c` (fix: finalize diet SLF),
+`7da7f6c4e605d1f0158764efb158fe6e4d8070f9` (fix: LLS bugs and double cache cap),
+`dbcc02ffc3ee29bfeb443acdbbb15ea3a93c67ca` (fix: LLS spot light position and shadow updates), and
+later Bottle head commits through `7c58cb1ee9f08bd5d590399b44ac1807498eda47`.
+
+**Upstream source paths**
+
+- `src/Features/LightLimitFix.cpp`, `src/Features/LightLimitFix.h`
+- `features/Light Limit Fix/Shaders/LightLimitFix/LightLimitFix.hlsli`,
+  `LocalShadowCopyCS.hlsl` (byte-identical between the two branches — untouched)
+
+This repo already has its own from-scratch diet-SLF architecture (not a direct copy of Bottle's),
+so a re-sync here is always a genuine comparison against current Bottle head, never a cherry-pick.
+
+**2026-09-17 re-sync — what was present already vs. what was pulled forward:**
+
+| Area | Before this pass | After |
+| --- | --- | --- |
+| Shadow-cache capacity | 32 slots, no memory cap, hard-throw on allocation failure | 64 slots, 2 GiB cap (`LOCAL_SHADOW_MAX_CACHE_BYTES`), halves the slot count and retries on `CreateTexture2D` failure, falls back to the game's own shadow masks (warn-logged) if even the minimum can't be allocated |
+| Engine shadow-resource handling | Always compute-copy via `LocalShadowCopyCS.hlsl` | Tracks engine mip levels/array-slice count (`localShadowEngineMipLevels`/`localShadowEngineSlices`); `GetDepthCopyFamily()` picks a direct `CopySubresourceRegion` path when cache and engine share a format family and resolution, compute-copy remains the fallback |
+| Cache invalidation | Reused a caster's slot indefinitely as long as the same `BSShadowLight*` kept appearing; no store of the underlying `NiLight*` or its rotation | Caster stores `niLight`/`rotation`; a changed `NiLight*` or a teleport beyond `max(LOCAL_SHADOW_TELEPORT_DISTANCE, radius*0.25)` resets the caster's bookkeeping (slice preserved); rotation delta now also counts toward "moved"; `CopyLocalShadowMaps` is a two-pass accumulate-then-copy so two casters claiming the same engine slice this frame are detected (`localShadowStatCollisions`) and the colliding copy is skipped instead of one silently reading the wrong slice |
+| Scheduling | Starvation was an inline `1002.0f` literal at 120 stale frames, no rescue mechanism | Explicit `starved` flag, `LOCAL_SHADOW_STARVED_SCORE` (500 + staleness so ties break toward the longest-waiting caster), threshold lowered to 60 frames, and the top-N selection swaps in the highest-scoring starved caster over the lowest-priority admitted slot if none of the top N is already starved. Actor/moving-light priority tiers unchanged (verified identical to Bottle's, which also didn't touch them) |
+| Filtering/bias | Depth bias scaled only by engine bias and the user slider | Also scaled by the cache/engine resolution ratio, so a downsampled cache doesn't show more self-shadow acne at the same nominal bias. Resolution-aware PCF/filter radius and the "Match Game" resolution option were **already present and confirmed functionally identical** to Bottle's — not re-touched |
+| Contact shadows | Fixed step count, single nearest-depth sample per step, no ray-length awareness, no end fade | Step count now clamped to the ray's actual projected screen-space pixel length (`GetPixelLimitedSteps`); first two steps sample a bilinear-filtered/nearest depth pair (`GetScreenDepthPair`) to separate occlusion from penetration; occlusion fades out over the last steps of the ray. The coarse `MayBeOccluded()` rejection prepass is untouched (confirmed byte-identical to Bottle's) |
+
+**Local adaptations / things a future re-sync must not blindly overwrite**
+
+- Personal's `CopyLocalShadowMaps` uses a callback (`ForEachAccumulatedShadowLight`) rather than a
+  raw loop; the collision-detection restructure kept that shape (accumulate into `pending` inside
+  the callback, copy in a second pass afterward) rather than switching to Bottle's loop structure
+  wholesale.
+- The Statistics panel now also shows a slice-collision count and the cache's actual memory
+  footprint in MB — `localShadowStatCollisions` is tracked on both branches but Bottle itself never
+  surfaces it in the UI; showing it here is a small local addition beyond upstream, not a
+  divergence to preserve against a future resync (feel free to keep it or drop it).
+- No settings-schema or i18n changes were needed — every improvement above is compile-time
+  constants and internal bookkeeping, not new user-facing settings.
+- **Present** — describes exactly which current-Bottle-head improvements are pulled forward, per
+  the table above; this is not a full architectural replacement of Personal's diet-SLF design.
 
 ### Snow Cover  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
 
@@ -229,7 +273,9 @@ enums is load-bearing.
   VSM cascade merging (see `dirVSMDetailedShadow` in `Lighting.hlsl` instead). Porting this fix
   requires reconciling that VSM refactor first; it is not a Foliage-Lighting-scoped change. Do
   not hand-wire a stub `directionalCoverage` — it would silently no-op the shadow-limit fade
-  this fix exists to add.
+  this fix exists to add. **Status: Deferred — architectural dependency not currently present.**
+  Re-evaluate once/if `LightLimitFix`'s directional-shadow path adopts VSM cascade merging with a
+  `directionalCoverage` output of its own.
 - i18n keys added.
 
 ### Vanilla Fresnel  (`alandtse/open-shaders@dev`, CORE feature)
