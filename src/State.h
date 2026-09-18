@@ -395,6 +395,24 @@ public:
 		float4 TreeWindProbeBase;
 		float4 TreeWindProbeTop;
 
+		// Whole-frame wind/grass permutation defaults, set once per frame from
+		// Wind::GetPermutationContribution() in Wind::Reset(). The tree fields above are
+		// then overridden per-mesh by Wind::OnTreeBendRenderPassBegin for qualifying draws.
+		float WindIntensityOverride;
+		uint32_t OverrideWindIntensity;
+		float pad1;
+		float pad2;
+
+		float TrunkWindBendSensitivity;
+		float TreeLeafBaseWindFlutterGain;
+		uint32_t EnableAmbientGrassWind;
+		float GrassWindBendProfile;
+
+		float GrassWindFlutterStrength;
+		float GrassWindFlutterFrequency;
+		float GrassWindSensitivity;
+		float GrassWindCompressionToBend;
+
 		bool operator==(const PermutationCB& other) const
 		{
 			return PixelShaderDescriptor == other.PixelShaderDescriptor &&
@@ -412,7 +430,17 @@ public:
 			       TreeLeafTransientWindInfluence == other.TreeLeafTransientWindInfluence &&
 			       TreeLeafTransientFlutterMaximum == other.TreeLeafTransientFlutterMaximum &&
 			       TreeTransientMaximumBendMultiplier == other.TreeTransientMaximumBendMultiplier &&
-			       TreeWindProbeBase == other.TreeWindProbeBase && TreeWindProbeTop == other.TreeWindProbeTop;
+			       TreeWindProbeBase == other.TreeWindProbeBase && TreeWindProbeTop == other.TreeWindProbeTop &&
+			       WindIntensityOverride == other.WindIntensityOverride &&
+			       OverrideWindIntensity == other.OverrideWindIntensity &&
+			       TrunkWindBendSensitivity == other.TrunkWindBendSensitivity &&
+			       TreeLeafBaseWindFlutterGain == other.TreeLeafBaseWindFlutterGain &&
+			       EnableAmbientGrassWind == other.EnableAmbientGrassWind &&
+			       GrassWindBendProfile == other.GrassWindBendProfile &&
+			       GrassWindFlutterStrength == other.GrassWindFlutterStrength &&
+			       GrassWindFlutterFrequency == other.GrassWindFlutterFrequency &&
+			       GrassWindSensitivity == other.GrassWindSensitivity &&
+			       GrassWindCompressionToBend == other.GrassWindCompressionToBend;
 		}
 	};
 	STATIC_ASSERT_ALIGNAS_16(PermutationCB);

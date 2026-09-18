@@ -1,6 +1,7 @@
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
+#include "Common/GrassWind.hlsli"
 #include "Common/LightingCommon.hlsli"
 #include "Common/Math.hlsli"
 #include "Common/MotionBlur.hlsli"
@@ -8,6 +9,7 @@
 #include "Common/Permutation.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
+#include "Common/WindField.hlsli"
 
 #define DEFERRED
 
@@ -106,20 +108,24 @@ cbuffer cb8 : register(b8)
 }
 #	endif
 
-// Calculate wind displacement for a grass vertex
-float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
+// Calculate wind displacement for a grass vertex: vanilla per-instance sway (scaled by the
+// Wind feature's intensity-override setting), plus the shared ambient wind field's contribution
+// at this instance's world position when Wind's ambient grass response is enabled.
+float3 CalculateWindDisplacement(VS_INPUT input, float windTimer, float3 worldPosition)
 {
-	float windAngle = 0.4 * ((input.InstanceData1.x + input.InstanceData1.y) * -0.0078125 + windTimer);
-	float windAngleSin, windAngleCos;
-	sincos(windAngle, windAngleSin, windAngleCos);
+	float tipWeight = 0.5 * (input.Color.w * input.Color.w);
+	float windIntensityScale = GrassWind::GetWindIntensityOverrideScale();
 
-	float windTmp3 = 0.2 * cos(Math::PI * windAngleCos);
-	float windTmp1 = sin(Math::PI * windAngleSin);
-	float windTmp2 = sin(Math::TAU * windAngleSin);
-	float windPower = WindVector.z * (((windTmp1 + windTmp2) * 0.3 + windTmp3) *
-										 (0.5 * (input.Color.w * input.Color.w)));
+	float3 vanillaDisplacement = GrassWind::CalculateVanillaDisplacement(
+		input.InstanceData1.xy, input.Color.w, WindVector, windTimer, windIntensityScale);
 
-	return float3(WindVector.xy, 0) * windPower;
+	float3 ambientDisplacement = 0.0;
+	if (Permutation::EnableAmbientGrassWind != 0) {
+		WindField::WindSample sample = WindField::SampleCurrent(worldPosition, 1.0, 1.0);
+		ambientDisplacement = sample.velocity * (tipWeight * max(Permutation::GrassWindSensitivity, 0.0) * windIntensityScale);
+	}
+
+	return vanillaDisplacement + ambientDisplacement;
 }
 
 #	ifdef GRASS_LIGHTING
@@ -193,7 +199,10 @@ VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 	}
 #		endif
 
-	const float vertexTerm = WindVector.z * (0.5 * (input.Color.w * input.Color.w));
+	// Ambient wind field sampling isn't wired into Grass Optimizations' InstanceExtras compute
+	// pass yet (deferred; see Wind's tracking-doc entry), so this path only gets the intensity
+	// override scale, not the shared field's directional/gust contribution.
+	const float vertexTerm = WindVector.z * (0.5 * (input.Color.w * input.Color.w)) * GrassWind::GetWindIntensityOverrideScale();
 	msPosition.xyz += float3(WindVector.xy, 0) * (e1.x * vertexTerm);
 	const float3 eyeRel = msPosition.xyz - FrameBuffer::CameraPosAdjust.xyz;
 	const float4 projSpacePosition = mul(FrameBuffer::CameraViewProj, float4(eyeRel, 1.0));
@@ -244,7 +253,8 @@ VS_OUTPUT main(VS_INPUT input)
 	msPosition.xyz += displacement;
 #		endif  // GRASS_COLLISION
 
-	msPosition.xyz += CalculateWindDisplacement(input, WindTimer);
+	float3 windWorldPosition = mul(World, msPosition).xyz;
+	msPosition.xyz += CalculateWindDisplacement(input, WindTimer, windWorldPosition);
 
 	float4 projSpacePosition = mul(WorldViewProj, msPosition);
 	vsout.HPosition = projSpacePosition;
@@ -263,7 +273,7 @@ VS_OUTPUT main(VS_INPUT input)
 #			ifdef GRASS_COLLISION
 	previousMsPosition.xyz += previousDisplacement;
 #			endif  // GRASS_COLLISION
-	previousMsPosition.xyz += CalculateWindDisplacement(input, PreviousWindTimer);
+	previousMsPosition.xyz += CalculateWindDisplacement(input, PreviousWindTimer, windWorldPosition);
 	vsout.PreviousWorldPosition = mul(PreviousWorld, previousMsPosition).xyz;
 
 #			ifdef GRASS_LIGHTING

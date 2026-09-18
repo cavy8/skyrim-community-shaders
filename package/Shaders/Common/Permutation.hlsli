@@ -136,6 +136,22 @@ namespace Permutation
 
 		float4 TreeWindProbeBase;
 		float4 TreeWindProbeTop;
+
+		// Whole-frame wind/grass permutation defaults; see State::PermutationCB.
+		float WindIntensityOverride;
+		uint OverrideWindIntensity;
+		float pad1;
+		float pad2;
+
+		float TrunkWindBendSensitivity;
+		float TreeLeafBaseWindFlutterGain;
+		uint EnableAmbientGrassWind;
+		float GrassWindBendProfile;
+
+		float GrassWindFlutterStrength;
+		float GrassWindFlutterFrequency;
+		float GrassWindSensitivity;
+		float GrassWindCompressionToBend;
 	};
 
 }

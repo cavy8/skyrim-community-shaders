@@ -483,23 +483,6 @@ namespace SharedData
 		float2 pad0;
 	};
 
-	// Mirrors the C++ WindSharedData struct (Features/Wind/Wind.h); see Wind::GetSharedWindData.
-	struct WindFieldSettings
-	{
-		WindField::WindTuning tuning;
-		float4 ambient;
-		float4 previousAmbient;
-		WindField::Field current;
-		WindField::Field previous;
-		WindField::Field transition;
-		WindField::Field previousTransition;
-		float4 transitionData;  // x/y: current/previous blend, z/w: reserved
-		float4 springDebug;     // xy: field minimum, z: field size, w: maximum tilt radians
-		uint4 activeCounts;     // x/y: current/previous transient impulse counts, z/w: reserved
-		WindField::TransientWindSource transientImpulses[WindField::TransientImpulseCapacity];
-		WindField::TransientWindSource previousTransientImpulses[WindField::TransientImpulseCapacity];
-	};
-
 	cbuffer FeatureData : register(b6)
 	{
 		GrassLightingSettings grassLightingSettings;
@@ -527,7 +510,22 @@ namespace SharedData
 		SnowCoverSettings snowCoverSettings;
 		PostProcessingSettings postProcessingSettings;
 		VolumetricLightingSettings volumetricLightingSettings;
-		WindFieldSettings windFieldSettings;
+
+		// Flat field names (not a nested struct) to match WindField.hlsli/TransientWindImpulse.hlsli,
+		// which reference these directly as SharedData::WindFieldXxx. Mirrors the C++ WindSharedData
+		// struct (Features/Wind/Wind.h) byte-for-byte; see Wind::GetSharedWindData.
+		WindField::WindTuning WindFieldTuning;
+		float4 WindFieldAmbient;
+		float4 WindFieldPreviousAmbient;
+		WindField::Field WindFieldCurrent;
+		WindField::Field WindFieldPrevious;
+		WindField::Field WindFieldTransition;
+		WindField::Field WindFieldPreviousTransition;
+		float4 WindFieldTransitionData;  // x/y: current/previous blend, z/w: reserved
+		float4 WindFieldSpringDebug;     // xy: field minimum, z: field size, w: maximum tilt radians
+		uint4 WindFieldActiveCounts;     // x/y: current/previous transient impulse counts, z/w: reserved
+		WindField::TransientWindSource WindFieldTransientImpulses[WindField::TransientImpulseCapacity];
+		WindField::TransientWindSource WindFieldPreviousTransientImpulses[WindField::TransientImpulseCapacity];
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);

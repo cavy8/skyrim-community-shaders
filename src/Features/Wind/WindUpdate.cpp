@@ -5,6 +5,7 @@
 
 #include "Features/Wind/Trees/TreeWindPatcher.h"
 #include "Globals.h"
+#include "State.h"
 
 namespace
 {
@@ -70,6 +71,25 @@ void Wind::Reset()
 		windFieldHasPreviousSample ? windFieldCurrent.direction : float3{ 1.0f, 0.0f, 0.0f };
 	const auto selectedWind = SelectWind(*this, ambientWindVelocity, fallbackDirection);
 	UpdateWindField(selectedWind.direction, selectedWind.speed, frameTime);
+
+	if (auto* state = globals::state) {
+		const auto contribution = GetPermutationContribution();
+		auto& permutationData = state->permutationData;
+		permutationData.WindIntensityOverride = contribution.windIntensityOverride;
+		permutationData.OverrideWindIntensity = contribution.overrideWindIntensity;
+		permutationData.TreeTransientWindInfluence = contribution.treeTransientWindInfluenceDefault;
+		permutationData.TreeLeafTransientWindInfluence = contribution.treeLeafTransientWindInfluenceDefault;
+		permutationData.TreeLeafTransientFlutterMaximum = contribution.treeLeafTransientFlutterMaximumDefault;
+		permutationData.TreeTransientMaximumBendMultiplier = contribution.treeTransientMaximumBendMultiplierDefault;
+		permutationData.TrunkWindBendSensitivity = contribution.trunkWindBendSensitivity;
+		permutationData.TreeLeafBaseWindFlutterGain = contribution.treeLeafBaseWindFlutterGain;
+		permutationData.EnableAmbientGrassWind = contribution.enableAmbientGrassWind;
+		permutationData.GrassWindSensitivity = contribution.grassWindSensitivity;
+		permutationData.GrassWindBendProfile = contribution.grassWindBendProfile;
+		permutationData.GrassWindCompressionToBend = contribution.grassWindCompressionToBend;
+		permutationData.GrassWindFlutterStrength = contribution.grassWindFlutterStrength;
+		permutationData.GrassWindFlutterFrequency = contribution.grassWindFlutterFrequency;
+	}
 }
 
 void Wind::AdvanceWindHistory(float a_frameTime)

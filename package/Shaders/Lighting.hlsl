@@ -12,6 +12,7 @@
 #include "Common/Shading.hlsli"
 #include "Common/SharedData.hlsli"
 #include "Common/Skinned.hlsli"
+#include "Common/TreeWind.hlsli"
 #include "Common/Triplanar.hlsli"
 
 #if defined(FACEGEN) || defined(FACEGEN_RGB_TINT)
@@ -192,6 +193,24 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif  // SKINNED
 
 	vsout.Position = viewPos;
+
+	// Wind's per-mesh trunk bend: additive to vanilla TREE_ANIM leaf shimmer above, gated at
+	// runtime by the TreeBend descriptor bit Wind::OnTreeBendRenderPassBegin sets for qualifying
+	// (non-LOD) tree draws, so this is a no-op for every other Lighting-shader draw.
+#	if defined(TREE_ANIM) && !defined(SKINNED)
+	[branch] if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::TreeBend) {
+		TreeWind::SamplePositions treePositions = TreeWind::BuildSamplePositions(World, 0.0.xxx);
+		float2 treeTransientInfluence = float2(Permutation::TreeTransientWindInfluence, Permutation::TreeLeafTransientWindInfluence);
+		TreeWind::Sample currentTreeSample = TreeWind::SampleCurrent(treePositions, treeTransientInfluence);
+		TreeWind::Sample previousTreeSample = TreeWind::SamplePrevious(treePositions, treeTransientInfluence);
+		float2 currentTrunkDisplacement = TreeWind::GetWorldDisplacement(input.Position.z, currentTreeSample.trunkVelocity.xy);
+		float2 previousTrunkDisplacement = TreeWind::GetWorldDisplacement(input.Position.z, previousTreeSample.trunkVelocity.xy);
+		worldPosition.xyz += float3(currentTrunkDisplacement, 0.0);
+		previousWorldPosition.xyz += float3(previousTrunkDisplacement, 0.0);
+		viewPos = mul(ViewProj, worldPosition);
+		vsout.Position = viewPos;
+	}
+#	endif  // defined(TREE_ANIM) && !defined(SKINNED)
 
 #	if defined(LODLANDNOISE) || defined(LODLANDSCAPE)
 	vsout.Position.z += min(1, 1e-4 * max(0, viewPos.z - 70000)) * 0.5;
