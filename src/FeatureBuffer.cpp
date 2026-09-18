@@ -24,6 +24,7 @@
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
 #include "Features/VanillaFresnel.h"
+#include "Features/VolumetricLighting.h"
 #include "Features/WetnessEffects.h"
 #include "TruePBR.h"
 
@@ -72,5 +73,6 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::foliageLighting.settings,
 		globals::features::vanillaFresnel.settings,
 		globals::features::snowCover.GetCommonBufferData(),
-		globals::features::postProcessing.GetCommonBufferData());
+		globals::features::postProcessing.GetCommonBufferData(),
+		globals::features::volumetricLighting.GetCommonBufferData());
 }
