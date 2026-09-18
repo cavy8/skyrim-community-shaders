@@ -75,7 +75,9 @@ git log <LAST_SYNCED_SHA>..open-shaders/dev --oneline -- \
   "package/Shaders/Common/TreeWindSpring.hlsli" "package/Shaders/Common/WindField.hlsli" \
   "package/Shaders/Common/WindFieldTypes.hlsli" "package/Shaders/Common/TransientWindImpulse.hlsli" \
   "package/Shaders/Common/DampedSpring.hlsli" \
-  "package/Shaders/GrassWindSpringCS.hlsl" "package/Shaders/TreeWindSpringCS.hlsl"
+  "package/Shaders/GrassWindSpringCS.hlsl" "package/Shaders/TreeWindSpringCS.hlsl" \
+  "features/Procedural Sun" "src/Features/ProceduralSun.cpp" "src/Features/ProceduralSun.h" \
+  "package/Shaders/Sky.hlsl" "package/Shaders/Tests/TestProceduralSun.hlsl"
 
 git log <LAST_SYNCED_SHA>..bottle/Bottle-Compendium --oneline -- \
   "features/Snow Cover" "src/Features/SnowCover.cpp" "src/Features/SnowCover.h" \
@@ -632,6 +634,50 @@ No cloud-shadow gating either (upstream's `CLOUD_SHADOWS`-conditional multiply o
 color) — this repo's `Lighting.hlsl` doesn't expose a `CloudShadows::` hook at the insertion point,
 so the bounce always uses the plain directional light color.
 
+### Procedural Sun  (`alandtse/open-shaders@dev`)
+
+**Upstream source anchor**: `95bacd8211fec29a46ada67a65c237a02bf219c9` (audited 2026-09-17, current
+head), introduced at `470f847247223a7a2db99aff2253c261f0bd7f4c` (feat: procedural sun, #678).
+
+**Upstream source paths**
+
+- `src/Features/ProceduralSun.cpp`, `src/Features/ProceduralSun.h`
+- `features/Procedural Sun/Shaders/Features/ProceduralSun.ini`,
+  `features/Procedural Sun/Shaders/ProceduralSun/ProceduralSun.hlsli` (pure math, no dependencies
+  beyond intrinsics — ported unmodified), `.../LICENSE`
+- `package/Shaders/Tests/TestProceduralSun.hlsl` — copied unmodified, **not independently
+  force-compiled** (uses absolute include paths for a test harness, not standalone `fxc`)
+
+**Shared-file injection points**
+
+| File | Region |
+| --- | --- |
+| `package/Shaders/Common/SharedData.hlsli` | `ProceduralSunSettings` struct + `proceduralSunSettings` field, appended to `FeatureData : register(b6)` |
+| `src/FeatureBuffer.cpp` | `globals::features::proceduralSun.GetCommonBufferData()` appended as the last `_GetFeatureBufferData` argument |
+| `src/Globals.h/.cpp`, `src/Feature.cpp` | feature registration |
+| `package/Shaders/Sky.hlsl` | `#include "ProceduralSun/ProceduralSun.hlsli"` under `#if defined(PROCEDURAL_SUN)`, by the `HDRSun.hlsli` include; coexistence block inserted right before the **pre-existing** `#if defined(TEX) && defined(EFFECTS11)` block that calls this repo's own simpler `ComputeProceduralSun()` (screen-space disk+corona, driven by `SharedData::enbSettings.EnableProceduralSun`) |
+
+**Coexistence with this repo's existing Effects11 procedural sun — do not remove either path.**
+Personal already had a simpler, screen-space `ComputeProceduralSun()` owned by Effects11
+(`enbSettings.EnableProceduralSun`); this port adds the angular, limb-darkened standalone version
+alongside it, not instead of it. Ownership is resolved exactly as upstream designed it (ported
+verbatim, not reimplemented): a local `effects11OwnsSun = SharedData::enbSettings
+.EnableProceduralSun != 0` gates the new standalone block off when Effects11's own toggle is on;
+Effects11's own block (unconditional on its own setting) then runs immediately after and
+overwrites `baseColor` again, so Effects11 always wins when both are enabled, and the standalone
+feature's own `enabled` setting only takes effect when Effects11 isn't using its own. No
+double-render, no ambiguity, verified across all four `PROCEDURAL_SUN`/`EFFECTS11` define
+combinations plus the `CLOUD_SHADOWS`-gated occlusion refinement.
+
+**Capability status — Present.** Verified: C++ build clean; `Sky.hlsl` pixel shader force-compiled
+with `fxc` across the default case, Effects11-only, standalone-only, both-coexisting, and
+`CLOUD_SHADOWS`. Not tested in-game.
+
+**Correction to prior tracking-document language**: earlier notes described Procedural Sun as
+"Partial overlap" (Effects11's simpler version only). That is superseded — Personal now has both
+the Effects11 screen-space version and the standalone angular version, with deterministic
+ownership between them.
+
 ---
 
 ## 4. Re-sync checklist
@@ -702,16 +748,12 @@ pass can decide whether any of it is worth adopting. Nothing in this section cha
 
 ### `alandtse/open-shaders@dev` (`7ae52a5543` → `95bacd821`)
 
-- **`features/Wind/`** — new top-level feature, "add shared wind field system" (#634). A
-  cross-feature wind model other features (grass, foliage, clouds) can query; potentially
-  relevant context for anything that touches grass/foliage motion here later.
+- **`features/Wind/`** (#634) and **Procedural sun** (#678) — both now ported; see their entries
+  under [3. Per-feature watch lists](#3-per-feature-watch-lists) above (**Partial port** and
+  **Present** respectively) instead of this list.
 - **Scene Manager** (#589) and an **"OS Menu" editor tab** (#674) — new UI/workflow surface, not
-  overlapping any of our ported features' code paths.
-- **Procedural sun** (#678) — **Partial overlap**: Personal already has the simpler Effects11
-  procedural-sun path (`ComputeProceduralSun()`); it does not have open-shaders' standalone
-  angular/limb-darkened Procedural Sun feature or the two-path coexistence/ownership logic #678
-  adds. That's a larger port (see the "Larger feature ports" queue), not something this pass took
-  on; recorded here so the status isn't read as "not present" in the meantime.
+  overlapping any of our ported features' code paths. Scene Manager is tracked as a "Larger feature
+  ports" item, not yet started as of this writing.
 - **linear lighting rework** (#666, `feat: linear lighting rework`)
   — touches `linearLightingSettings`, which `CloudRelight.hlsli` already reads
   (`SharedData::linearLightingSettings.enableLinearLighting` etc.); worth a diff against our
