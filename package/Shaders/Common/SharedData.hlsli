@@ -394,7 +394,7 @@ namespace SharedData
 		float silverLiningMix;
 
 		float silverLiningSpread;
-		float3 pad;
+		float3 celestialLightWeights;
 	};
 
 	struct FoliageLightingSettings
