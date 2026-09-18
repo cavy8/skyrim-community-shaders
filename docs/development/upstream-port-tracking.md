@@ -67,7 +67,15 @@ git log <LAST_SYNCED_SHA>..open-shaders/dev --oneline -- \
   "package/Shaders/Common/SharedData.hlsli" "package/Shaders/Common/Permutation.hlsli" \
   "src/Features/CloudRelight.cpp" "src/Features/CloudRelight.h" \
   "src/Features/FoliageLighting.cpp" "src/Features/FoliageLighting.h" \
-  "src/Features/VanillaFresnel.cpp" "src/Features/VanillaFresnel.h"
+  "src/Features/VanillaFresnel.cpp" "src/Features/VanillaFresnel.h" \
+  "features/Wind" "src/Features/Wind" "src/Utils/ActorUtils.h" "src/Utils/ActorUtils.cpp" \
+  "src/Utils/LazyShader.h" \
+  "package/Shaders/Common/GrassWind.hlsli" "package/Shaders/Common/GrassWindResponse.hlsli" \
+  "package/Shaders/Common/GrassWindSpring.hlsli" "package/Shaders/Common/TreeWind.hlsli" \
+  "package/Shaders/Common/TreeWindSpring.hlsli" "package/Shaders/Common/WindField.hlsli" \
+  "package/Shaders/Common/WindFieldTypes.hlsli" "package/Shaders/Common/TransientWindImpulse.hlsli" \
+  "package/Shaders/Common/DampedSpring.hlsli" \
+  "package/Shaders/GrassWindSpringCS.hlsl" "package/Shaders/TreeWindSpringCS.hlsl"
 
 git log <LAST_SYNCED_SHA>..bottle/Bottle-Compendium --oneline -- \
   "features/Snow Cover" "src/Features/SnowCover.cpp" "src/Features/SnowCover.h" \
@@ -492,6 +500,99 @@ non-PBR permutations still compile unchanged. **Present by code.**
   shaders need `COMPUTESHADER` (not `CSHADER`) since `Util::CompileShader` injects that macro for
   `.hlsl` compute-shader compiles (see `Utils/D3D.cpp`).
 - **Present.**
+
+### Wind  (`alandtse/open-shaders@dev`)
+
+**Upstream source anchor**: `95bacd8211fec29a46ada67a65c237a02bf219c9` (dev tip audited 2026-09-17),
+introduced at `7acc8d70ad1dd60fb3ec46319a1f836f5d4065ca` (feat(wind): add shared wind field system,
+#634) but evolved substantially since — use current `dev`, not that original commit, as the
+source of truth for any re-sync.
+
+**Upstream source paths**
+
+- `src/Features/Wind/**` (feature-owned: `Wind.h/.cpp`, `WindField`, `WindGrass`, `WindTrees`,
+  `WindUpdate`, `TransientWindImpulse`, `Grass/`, `Trees/`, `Runtime/`, `Settings/`, `UI/`,
+  `WindEffects/` — Fus Ro Dah, Dragon, SpellShout, StormCall, ProjectileMagic, WeaponThrowVR,
+  Explosion, HeavyImpact routers)
+- `features/Wind/CORE`, `features/Wind/Shaders/Features/Wind.ini`
+- `package/SKSE/Plugins/CommunityShaders/WindSettings/**`
+- `package/Shaders/Common/GrassWind.hlsli`, `GrassWindResponse.hlsli`, `GrassWindSpring.hlsli`,
+  `TransientWindCulling.hlsli`, `TransientWindImpulse.hlsli`, `TreeWind.hlsli`,
+  `TreeWindSpring.hlsli`, `WindField.hlsli`, `WindFieldTypes.hlsli`, `DampedSpring.hlsli`
+- `package/Shaders/GrassWindSpringCS.hlsl`, `TreeWindSpringCS.hlsl`,
+  `package/Shaders/Tests/TestWindField.hlsl`, `WindFieldParitySamples.hlsli`
+
+**Shared-file injection points**
+
+| File | Region |
+| --- | --- |
+| `src/State.h` / `package/Shaders/Common/Permutation.hlsli` | `PermutationCB`/`PerShader`: `TreeBend` `ExtraShaderDescriptors` bit (`1 << 13`); per-mesh tree-bend fields (`TreeBendModelSensitivity`…`TreeWindProbeTop`) set by `Wind::OnTreeBendRenderPassBegin`; whole-frame grass/tree defaults (`WindIntensityOverride`…`GrassWindCompressionToBend`) set once/frame by `Wind::Reset()` from `Wind::GetPermutationContribution()` |
+| `package/Shaders/Common/SharedData.hlsli` | `FeatureData : register(b6)`: flat `WindFieldTuning`/`WindFieldAmbient`/`WindFieldCurrent`/…/`WindFieldTransientImpulses[]` fields (not a nested struct — `WindField.hlsli` references these directly as `SharedData::WindFieldXxx`), appended after `volumetricLightingSettings`; matches `Wind::GetSharedWindData()`/`WindSharedData` byte-for-byte |
+| `src/FeatureBuffer.cpp` | `globals::features::wind.GetSharedWindData()` appended as the last `_GetFeatureBufferData` argument |
+| `src/Globals.h/.cpp`, `src/Feature.cpp` | feature registration (forward decl/extern/instance/`GetFeatureList()` entry) |
+| `package/Shaders/RunGrass.hlsl` | `CalculateWindDisplacement` — ambient-field blend on top of vanilla sway, gated by `Permutation::EnableAmbientGrassWind`; both call sites now pass a computed `windWorldPosition`; `GRASS_OPTIMIZATIONS` path scaled by `GrassWind::GetWindIntensityOverrideScale()` only |
+| `package/Shaders/Lighting.hlsl` | new block after `vsout.Position = viewPos;`, inside `#if defined(TREE_ANIM) && !defined(SKINNED)`, runtime-gated by the `TreeBend` bit — trunk displacement via `TreeWind::SampleCurrent`/`GetWorldDisplacement`, recomputes `viewPos` via `mul(ViewProj, worldPosition)` only when the bit is set |
+| `package/Shaders/Common/Math.hlsli` | `EPSILON_WIND_*`/`EPSILON_DAMPED_SPRING_*` constants (were missing from upstream's own diff footprint here, needed by the copied Wind `.hlsli` files) |
+| `src/Utils/ActorUtils.h/.cpp` | `IsDragon`, `GetVisualOrigin`, `GetMagicOrigin`, `GetAimDirection` merged into this repo's **pre-existing** `ActorUtils` (from "Port character wetness from openshaders") — do not replace that file wholesale on a re-sync, it also owns `ForEachLoadedActor`/`ForEachActorGeometry`/`ForEachHeldWeaponGeometry`/`GetShapeBound`/`ExtractShapeBound`, used by `CharacterRainSurfaces.cpp` |
+| `src/Utils/FileSystem.h/.cpp` | `PathHelpers::GetWindSettingsPath()` |
+| `src/Utils/LazyShader.h` | added; trimmed to drop the `ID3DBlob` specialization (`Util::CompileShaderBlob` doesn't exist here, and Wind only instantiates `LazyShader<ID3D11ComputeShader>`) |
+
+**Local adaptations from upstream's Feature/render-pass framework, which this repo doesn't have**
+
+- Dropped entirely (dead code with no caller in this repo): `SupportsVR`, `GetDiagnostics`,
+  `RegisterUxActions`, `GetRuntimeFlags`/`SetRuntimeFlag` (devbench/UX-action registry —
+  `Utils/DevBenchUx.h` doesn't exist here), and the page-scoped `HasScopedDefaultSettings`/
+  `RestoreCurrentPageDefaultSettings`/`HasScopedOverrideSettings`/`ReapplyCurrentPageOverrideSettings`
+  (a generic per-page reset/reapply dispatch this repo's Menu never calls — confirmed no other
+  caller anywhere in `src/`).
+- `Feature::OnRenderPassBegin`/`WantsRenderPassHook` (a generic per-pass hook virtual this repo's
+  `Feature` doesn't have) reimplemented as a self-installed `BSLightingShader`/`BSUtilityShader`
+  `SetupGeometry` vfunc hook (`Wind::Hooks::Install`, called from `PostPostLoad`) — the same idiom
+  `TerrainVariation`/`SnowCover` already use here. No restore-after-draw closure needed: the hook
+  clears the `TreeBend` bit unconditionally at the top of every call, and `State::Update()` already
+  diffs+reuploads `PermutationCB` on every draw when it changes, same as `TerrainVariation`'s
+  `ExtraFeatureDescriptor` flag.
+- `FeatureCategories::kFoliage` doesn't exist here; used `kGrass`.
+- `globals::game::isVR` doesn't exist (no VR build target) — `WeaponThrowVRWind::DataLoaded()`'s
+  VR-gate replaced with an unconditional early return (VR weapon-throw wind tracking permanently
+  inert here; the router itself has no VR-only SDK dependency, so it was still worth keeping as a
+  no-op rather than deleting).
+- `TreeWindSpring.hlsli`'s local spring-field texture cache (`register(s14)`, `t111`-`t126`)
+  collides with `Lighting.hlsl`'s pre-existing `SampShadowMaskSampler : register(s14)`, and isn't
+  wired to any C++-side texture/SRV binding here anyway. Its VS-facing functions
+  (`SampleCurrent`/`SamplePrevious`/`TrySample{Current,Previous}Transient`) were replaced with the
+  same "plain ambient field, no local cache" fallback every caller already treated as the
+  out-of-cache case. The compute-only branch (`TREE_WIND_SPRING_COMPUTE`, used by
+  `TreeWindSpringCS.hlsl`) is untouched.
+
+**Capability status — Partial port.** What works: CPU-side simulation (ambient procedural field,
+weather-driven direction/speed, transient impulse routing from Fus Ro Dah/dragons/spells/shouts/
+storm call/explosions/heavy impacts/projectiles), feature registration, settings UI, and the GPU
+side reaches real geometry — grass gets ambient-field-driven sway (direction/speed/gust, plus
+transient impulses via `WindField::SampleCurrent`) and full-detail (non-LOD) trees get trunk bend
+from the ambient field, gated by the per-mesh `TreeWindPatcher` sensitivities. Verified: C++ build
+clean; `RunGrass.hlsl` and `Lighting.hlsl` vertex shaders force-compiled with `fxc` across the
+relevant permutations (plain, `GRASS_OPTIMIZATIONS`, `GRASS_LIGHTING`, `TREE_ANIM`,
+`TREE_ANIM`+`SKINNED`). **Not yet tested in-game.**
+
+What's deferred, not yet present:
+- **Local spring-field spatial variation** (grass and tree wind response smoothed/cached per-cell
+  via `GrassWindSpringCS.hlsl`/`TreeWindSpringCS.hlsl` compute output) — the compute shaders exist
+  and compile, but nothing binds their output textures to the vertex shaders; both grass and tree
+  response currently use the direct procedural field only, no local caching/smoothing layer.
+- **Tree transient impulses** (shouts/dragons visibly bending tree trunks) — `TreeWind.hlsli`'s
+  transient sampling exclusively goes through the now-stubbed `TreeWindSpring::TrySample*Transient`
+  (always returns no sample); trees get ambient sway only. Grass is unaffected by this — its
+  transient response goes through `WindField::SampleCurrent` directly, not the spring cache.
+- **`GRASS_OPTIMIZATIONS` path** — only gets the wind-intensity-override scale; full ambient-field
+  sampling there needs Grass Optimizations' own `InstanceExtras`-building compute shader to sample
+  the wind field and pack a response per instance, which wasn't touched.
+- **Grass Collision interaction** — not reviewed; the `GRASS_COLLISION` fxc permutation wasn't
+  force-compiled (blocked on an unrelated pre-existing include-path issue in the verification
+  pass, not a code defect from this port — needs re-checking with a correct `/I` root).
+- Leaf-specific flutter refinement (`Sample.leafAnimationStrength`) computed but not yet consumed
+  by any leaf-normal perturbation in the vertex shader — trunk bend only.
+- Devbench diagnostics/UX-action integration (see above) — intentionally dropped, not deferred.
 
 ---
 
