@@ -942,6 +942,10 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #		include "ExponentialHeightFog/ExponentialHeightFog.hlsli"
 #	endif
 
+#	if defined(PSEUDO_SUN_BOUNCE)
+#		include "PseudoSunBounce/sunbounce.hlsli"
+#	endif
+
 #	include "Common/LightingEval.hlsli"
 #	if defined(CHARACTER_RAIN_SURFACE)
 #		include "WetnessEffects/CharacterRainLighting.hlsli"
@@ -2966,6 +2970,32 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		if (!(SharedData::iblSettings.UseStaticIBL && !inWorld && !inReflection)) {
 			directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -ambientNormal);
 		}
+	}
+#	endif
+
+	// Lightweight directional approximation of indirect sunlight bounce off the ground/nearest
+	// wall, lifting ambient in shadowed spots. Diffuse term only -- the faux-specular refinement
+	// upstream also computes needs wiring into the forward/deferred specular composition further
+	// down this file, which wasn't done here; see the Wind-style tracking-doc entry for this port.
+#	if defined(PSEUDO_SUN_BOUNCE)
+	if (!SharedData::InInterior && inWorld && SharedData::pseudoSunBounceSettings.intensity > 0.0) {
+		SunBounce::SH2_RGB sunBounceSH = SunBounce::CalcSunBounceSH(SharedData::DirLightDirection.xyz, dirLightColor,
+			SharedData::pseudoSunBounceSettings.groundAlbedo, SharedData::pseudoSunBounceSettings.wallAlbedo);
+
+		sunBounceSH.R = SphericalHarmonics::HanningConvolution(sunBounceSH.R, SharedData::pseudoSunBounceSettings.windowWidth);
+		sunBounceSH.G = SphericalHarmonics::HanningConvolution(sunBounceSH.G, SharedData::pseudoSunBounceSettings.windowWidth);
+		sunBounceSH.B = SphericalHarmonics::HanningConvolution(sunBounceSH.B, SharedData::pseudoSunBounceSettings.windowWidth);
+
+		float3 bounceLighting;
+		bounceLighting.r = SphericalHarmonics::Unproject(sunBounceSH.R, -ambientNormal);
+		bounceLighting.g = SphericalHarmonics::Unproject(sunBounceSH.G, -ambientNormal);
+		bounceLighting.b = SphericalHarmonics::Unproject(sunBounceSH.B, -ambientNormal);
+		bounceLighting = max(0, bounceLighting);
+#		if defined(SKYLIGHTING)
+		bounceLighting *= saturate(MultiBounceAO(SharedData::pseudoSunBounceSettings.groundAlbedo, skylightingDiffuse) * skylightingDiffuse);
+#		endif
+
+		directionalAmbientColor += bounceLighting * SharedData::pseudoSunBounceSettings.intensity;
 	}
 #	endif
 

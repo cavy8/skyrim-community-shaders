@@ -46,6 +46,7 @@ struct ScreenshotFeature;
 struct Skin;
 struct SnowCover;
 struct Wind;
+struct PseudoSunBounce;
 
 class State;
 class Deferred;
@@ -144,6 +145,7 @@ namespace globals
 		extern Skin skin;
 		extern SnowCover snowCover;
 		extern Wind wind;
+		extern PseudoSunBounce pseudoSunBounce;
 
 	}
 

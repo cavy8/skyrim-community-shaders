@@ -44,6 +44,7 @@
 #include "Features/VolumetricShadows.h"
 #include "Features/WaterEffects.h"
 #include "Features/CSEditor.h"
+#include "Features/PseudoSunBounce.h"
 #include "Features/WetnessEffects.h"
 #include "Features/Wind/Wind.h"
 #include "Menu.h"
@@ -111,6 +112,7 @@ namespace globals
 		Skin skin{};
 		SnowCover snowCover{};
 		Wind wind{};
+		PseudoSunBounce pseudoSunBounce{};
 
 		namespace llf
 		{

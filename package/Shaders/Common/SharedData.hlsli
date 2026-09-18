@@ -483,6 +483,14 @@ namespace SharedData
 		float2 pad0;
 	};
 
+	struct PseudoSunBounceSettings
+	{
+		float3 groundAlbedo;
+		float intensity;
+		float3 wallAlbedo;
+		float windowWidth;
+	};
+
 	cbuffer FeatureData : register(b6)
 	{
 		GrassLightingSettings grassLightingSettings;
@@ -526,6 +534,8 @@ namespace SharedData
 		uint4 WindFieldActiveCounts;     // x/y: current/previous transient impulse counts, z/w: reserved
 		WindField::TransientWindSource WindFieldTransientImpulses[WindField::TransientImpulseCapacity];
 		WindField::TransientWindSource WindFieldPreviousTransientImpulses[WindField::TransientImpulseCapacity];
+
+		PseudoSunBounceSettings pseudoSunBounceSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);
