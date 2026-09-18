@@ -33,6 +33,7 @@
 #include "Features/Skin.h"
 #include "Features/SkySync.h"
 #include "Features/Skylighting.h"
+#include "Features/ProceduralSun.h"
 #include "Features/PseudoSunBounce.h"
 #include "Features/SnowCover.h"
 #include "Features/Wind/Wind.h"
@@ -273,7 +274,8 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::skin,
 		&globals::features::snowCover,
 		&globals::features::wind,
-		&globals::features::pseudoSunBounce
+		&globals::features::pseudoSunBounce,
+		&globals::features::proceduralSun
 	};
 
 	return features;

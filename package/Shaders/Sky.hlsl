@@ -180,6 +180,10 @@ cbuffer AlphaTestRefCB : register(b11)
 #		include "HDRDisplay/HDRSun.hlsli"
 #	endif
 
+#	if defined(PROCEDURAL_SUN)
+#		include "ProceduralSun/ProceduralSun.hlsli"
+#	endif
+
 Texture2D<float> TexDepthSampler : register(t17);
 
 #	if defined(EFFECTS11)
@@ -229,6 +233,66 @@ PS_OUTPUT main(PS_INPUT input)
 	float hdrSunGain = HDRSun::GetHdrSunGain(input.TexCoord0.xy, baseColor);
 	baseColor.xyz *= hdrSunGain;
 #		endif
+
+	// Standalone Procedural Sun and Effects11's own simpler procedural sun (ComputeProceduralSun,
+	// below) both replace the vanilla sun texture; ownership must be deterministic when both are
+	// enabled. Effects11's EnableProceduralSun setting always wins when set -- the standalone
+	// block below is skipped via effects11OwnsSun, and Effects11's own block (unconditional on
+	// its own setting) runs after and overwrites baseColor again. When Effects11's toggle is off,
+	// the standalone feature's own "enabled" setting decides. Matches upstream's coexistence
+	// design (alandtse/open-shaders), adapted to this file's structure rather than reimplemented.
+#		if defined(PROCEDURAL_SUN) && defined(TEX)
+	bool effects11OwnsSun = false;
+#			if defined(EFFECTS11)
+	effects11OwnsSun = SharedData::enbSettings.EnableProceduralSun != 0;
+#			endif
+	bool proceduralSunActive = SharedData::proceduralSunSettings.enabled &&
+	                            !effects11OwnsSun &&
+	                            (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSun) &&
+	                            (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InWorld);
+	if (proceduralSunActive) {
+		float3 viewDirection = normalize(input.WorldPosition.xyz);
+		float cosTheta = clamp(dot(viewDirection, SharedData::SunDirection.xyz), -1.0f, 1.0f);
+		float3 limbDarkening;
+		float discCoverage;
+		ProceduralSun::EvaluateDisc(
+			cosTheta,
+			SharedData::proceduralSunSettings.sunDiskCos,
+			SharedData::proceduralSunSettings.edgeSoftness,
+			limbDarkening,
+			discCoverage);
+
+		float haloProfile = 0.0f;
+		if (SharedData::proceduralSunSettings.haloEnabled) {
+			haloProfile = ProceduralSun::EvaluateHalo(
+				cosTheta,
+				SharedData::proceduralSunSettings.sunDiskCos,
+				SharedData::proceduralSunSettings.sunHaloCos,
+				SharedData::proceduralSunSettings.haloFalloff);
+		}
+
+		float3 proceduralSunColor;
+		float sunCoverage;
+		ProceduralSun::ComposeDiscAndHalo(
+			limbDarkening,
+			discCoverage,
+			SharedData::proceduralSunSettings.diskIntensity,
+			haloProfile,
+			SharedData::proceduralSunSettings.haloIntensity,
+			proceduralSunColor,
+			sunCoverage);
+
+		baseColor.xyz = proceduralSunColor;
+		baseColor.w = sunCoverage;
+#			if defined(CLOUD_SHADOWS)
+		if (sunCoverage > 0.0f && SharedData::proceduralSunSettings.cloudOcclusionStrength > 0.0f) {
+			float cloudOpacity = CloudShadows::CloudShadowsTexture.SampleLevel(SampBaseSampler, viewDirection, 0).x;
+			baseColor.w *= ProceduralSun::GetCloudTransmission(cloudOpacity, SharedData::proceduralSunSettings.cloudOcclusionStrength);
+		}
+#			endif
+		skyScale = 0.0;
+	}
+#		endif  // defined(PROCEDURAL_SUN) && defined(TEX)
 
 #		if defined(TEX) && defined(EFFECTS11)
 	if (SharedData::enbSettings.EnableProceduralSun && (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSun)) {
