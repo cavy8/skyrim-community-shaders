@@ -295,6 +295,9 @@ public:
 		// whatever shader type the piece was authored with - see
 		// NeuralRenderingCategories::Hair.
 		IsHair = 1 << 12,
+		// Set by Wind::OnTreeBendRenderPassBegin for tree trunk/leaf geometry that
+		// should sample per-mesh wind-bend sensitivities from PermutationCB.
+		TreeBend = 1 << 13,
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		IsEye = 1u << 31
 	};
@@ -372,11 +375,44 @@ public:
 		float EffectRadius;
 		float3 pad0;
 
+		// Per-mesh tree wind-bend sensitivities, set by Wind::OnTreeBendRenderPassBegin
+		// just before a qualifying tree draw; see State::ExtraShaderDescriptors::TreeBend.
+		float TreeBendModelSensitivity;
+		float TreeLeafModelSensitivity;
+		float TreeWindUpperBendRange;
+		float TreeWindMaximumDisplacementPercent;
+
+		float TreeWindBoundsBase;
+		float TreeWindBoundsHeight;
+		float TreeWindTrunkGustInfluence;
+		float TreeLeafGustInfluence;
+
+		float TreeTransientWindInfluence;
+		float TreeLeafTransientWindInfluence;
+		float TreeLeafTransientFlutterMaximum;
+		float TreeTransientMaximumBendMultiplier;
+
+		float4 TreeWindProbeBase;
+		float4 TreeWindProbeTop;
+
 		bool operator==(const PermutationCB& other) const
 		{
 			return PixelShaderDescriptor == other.PixelShaderDescriptor &&
 			       ExtraShaderDescriptor == other.ExtraShaderDescriptor &&
-			       ExtraFeatureDescriptor == other.ExtraFeatureDescriptor && EffectRadius == other.EffectRadius;
+			       ExtraFeatureDescriptor == other.ExtraFeatureDescriptor && EffectRadius == other.EffectRadius &&
+			       TreeBendModelSensitivity == other.TreeBendModelSensitivity &&
+			       TreeLeafModelSensitivity == other.TreeLeafModelSensitivity &&
+			       TreeWindUpperBendRange == other.TreeWindUpperBendRange &&
+			       TreeWindMaximumDisplacementPercent == other.TreeWindMaximumDisplacementPercent &&
+			       TreeWindBoundsBase == other.TreeWindBoundsBase &&
+			       TreeWindBoundsHeight == other.TreeWindBoundsHeight &&
+			       TreeWindTrunkGustInfluence == other.TreeWindTrunkGustInfluence &&
+			       TreeLeafGustInfluence == other.TreeLeafGustInfluence &&
+			       TreeTransientWindInfluence == other.TreeTransientWindInfluence &&
+			       TreeLeafTransientWindInfluence == other.TreeLeafTransientWindInfluence &&
+			       TreeLeafTransientFlutterMaximum == other.TreeLeafTransientFlutterMaximum &&
+			       TreeTransientMaximumBendMultiplier == other.TreeTransientMaximumBendMultiplier &&
+			       TreeWindProbeBase == other.TreeWindProbeBase && TreeWindProbeTop == other.TreeWindProbeTop;
 		}
 	};
 	STATIC_ASSERT_ALIGNAS_16(PermutationCB);

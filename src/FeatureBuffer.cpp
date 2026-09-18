@@ -26,6 +26,7 @@
 #include "Features/VanillaFresnel.h"
 #include "Features/VolumetricLighting.h"
 #include "Features/WetnessEffects.h"
+#include "Features/Wind/Wind.h"
 #include "TruePBR.h"
 
 template <class... Ts>
@@ -74,5 +75,6 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::vanillaFresnel.settings,
 		globals::features::snowCover.GetCommonBufferData(),
 		globals::features::postProcessing.GetCommonBufferData(),
-		globals::features::volumetricLighting.GetCommonBufferData());
+		globals::features::volumetricLighting.GetCommonBufferData(),
+		globals::features::wind.GetSharedWindData());
 }

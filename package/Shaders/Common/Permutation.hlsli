@@ -90,6 +90,9 @@ namespace Permutation
 		// actor, whatever shader type it was authored with; see
 		// NeuralRenderingCategories::Hair.
 		static const uint IsHair = (1 << 12);
+		// Set on tree trunk/leaf geometry that should sample per-mesh wind-bend
+		// sensitivities from the PerShader cbuffer below; see Wind::OnTreeBendRenderPassBegin.
+		static const uint TreeBend = (1 << 13);
 		// Reserved high bit to avoid colliding with upstream's sequential flags.
 		static const uint IsEye = (1u << 31);
 	}
@@ -114,6 +117,25 @@ namespace Permutation
 		uint ExtraFeatureDescriptor;
 
 		float EffectRadius;
+
+		// Per-mesh tree wind-bend sensitivities; see State::PermutationCB.
+		float TreeBendModelSensitivity;
+		float TreeLeafModelSensitivity;
+		float TreeWindUpperBendRange;
+		float TreeWindMaximumDisplacementPercent;
+
+		float TreeWindBoundsBase;
+		float TreeWindBoundsHeight;
+		float TreeWindTrunkGustInfluence;
+		float TreeLeafGustInfluence;
+
+		float TreeTransientWindInfluence;
+		float TreeLeafTransientWindInfluence;
+		float TreeLeafTransientFlutterMaximum;
+		float TreeTransientMaximumBendMultiplier;
+
+		float4 TreeWindProbeBase;
+		float4 TreeWindProbeTop;
 	};
 
 }

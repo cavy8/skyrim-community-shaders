@@ -45,6 +45,7 @@
 #include "Features/WaterEffects.h"
 #include "Features/CSEditor.h"
 #include "Features/WetnessEffects.h"
+#include "Features/Wind/Wind.h"
 #include "Menu.h"
 #include "SceneSettingsManager.h"
 #include "ShaderCache.h"
@@ -109,6 +110,7 @@ namespace globals
 		PostProcessing postProcessing{};
 		Skin skin{};
 		SnowCover snowCover{};
+		Wind wind{};
 
 		namespace llf
 		{

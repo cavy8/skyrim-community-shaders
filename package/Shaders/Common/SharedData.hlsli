@@ -3,6 +3,8 @@
 
 #include "Common/FrameBuffer.hlsli"
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
+#include "Common/TransientWindImpulse.hlsli"
+#include "Common/WindFieldTypes.hlsli"
 
 namespace SharedData
 {
@@ -481,6 +483,23 @@ namespace SharedData
 		float2 pad0;
 	};
 
+	// Mirrors the C++ WindSharedData struct (Features/Wind/Wind.h); see Wind::GetSharedWindData.
+	struct WindFieldSettings
+	{
+		WindField::WindTuning tuning;
+		float4 ambient;
+		float4 previousAmbient;
+		WindField::Field current;
+		WindField::Field previous;
+		WindField::Field transition;
+		WindField::Field previousTransition;
+		float4 transitionData;  // x/y: current/previous blend, z/w: reserved
+		float4 springDebug;     // xy: field minimum, z: field size, w: maximum tilt radians
+		uint4 activeCounts;     // x/y: current/previous transient impulse counts, z/w: reserved
+		WindField::TransientWindSource transientImpulses[WindField::TransientImpulseCapacity];
+		WindField::TransientWindSource previousTransientImpulses[WindField::TransientImpulseCapacity];
+	};
+
 	cbuffer FeatureData : register(b6)
 	{
 		GrassLightingSettings grassLightingSettings;
@@ -508,6 +527,7 @@ namespace SharedData
 		SnowCoverSettings snowCoverSettings;
 		PostProcessingSettings postProcessingSettings;
 		VolumetricLightingSettings volumetricLightingSettings;
+		WindFieldSettings windFieldSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);
