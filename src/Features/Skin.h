@@ -82,7 +82,7 @@ struct Skin : Feature
 
 	struct Settings
 	{
-		bool EnableSkin = true;
+		bool EnableSkin = false;
 		/** @brief Compatibility-only filename discovery. Disabled because GetTexture returns placeholders for missing resources. */
 		bool EnableLegacyExtraTextureDiscovery = false;
 		float ExtraSkinWetness = 0.0f;

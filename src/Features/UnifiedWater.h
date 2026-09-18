@@ -113,6 +113,9 @@ struct UnifiedWater : OverlayFeature
 
 	virtual bool IsCore() const override { return true; }
 
+	/** @brief Overrides the CORE+Beta default so Unified Water starts enabled at boot. */
+	virtual bool IsDisabledByDefault() const override { return false; }
+
 	/** @brief Installs engine hooks for water mesh replacement and worldspace handling. */
 	virtual void PostPostLoad() override;
 
