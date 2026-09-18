@@ -58,9 +58,27 @@ public:
 	struct alignas(16) UpdateCubemapCB
 	{
 		float3 CameraPreviousPosAdjust;
-		uint pad0;
+		uint CaptureIndex;
+		float CaptureDeltaTime;
+		uint ResetCapture;
+		uint pad0[2];
 	};
 	STATIC_ASSERT_ALIGNAS_16(UpdateCubemapCB);
+
+	/** @brief Tracks whether scene lighting or the captured geometry changed enough to invalidate the capture history. */
+	struct alignas(16) CaptureLightingState
+	{
+		float ReferenceLuminance;
+		uint PendingResetMask;
+		uint Reset;
+		uint Initialized;
+	};
+	STATIC_ASSERT_ALIGNAS_16(CaptureLightingState);
+
+	std::unique_ptr<StructuredBuffer> captureLightingState;
+	ID3D11ComputeShader* detectCaptureLightingCS = nullptr;
+	float3 cameraPreviousPosAdjust[2] = {};
+	float previousCaptureTime[2] = {};
 
 	ID3D11ComputeShader* updateCubemapCS = nullptr;
 	ID3D11ComputeShader* updateCubemapReflectionsCS = nullptr;
@@ -178,6 +196,7 @@ bool HasShaderDefine(RE::BSShader::Type) override { return true; };
 	virtual void PostPostLoad() override;
 
 	virtual void ClearShaderCache() override;
+	ID3D11ComputeShader* GetComputeShaderDetectLighting();
 	ID3D11ComputeShader* GetComputeShaderUpdate();
 	ID3D11ComputeShader* GetComputeShaderUpdateReflections();
 	ID3D11ComputeShader* GetComputeShaderUpdateFakeReflections();

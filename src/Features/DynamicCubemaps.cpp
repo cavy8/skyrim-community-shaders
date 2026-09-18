@@ -176,6 +176,10 @@ bool MenuOpenCloseEventHandler::Register()
 
 void DynamicCubemaps::ClearShaderCache()
 {
+	if (detectCaptureLightingCS) {
+		detectCaptureLightingCS->Release();
+		detectCaptureLightingCS = nullptr;
+	}
 	if (updateCubemapCS) {
 		updateCubemapCS->Release();
 		updateCubemapCS = nullptr;
@@ -208,6 +212,15 @@ void DynamicCubemaps::ClearShaderCache()
 		bc6hEncodeCS->Release();
 		bc6hEncodeCS = nullptr;
 	}
+}
+
+ID3D11ComputeShader* DynamicCubemaps::GetComputeShaderDetectLighting()
+{
+	if (!detectCaptureLightingCS) {
+		logger::debug("Compiling DetectCaptureLightingCS");
+		detectCaptureLightingCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DynamicCubemaps\\DetectCaptureLightingCS.hlsl", {}, "cs_5_0"));
+	}
+	return detectCaptureLightingCS;
 }
 
 ID3D11ComputeShader* DynamicCubemaps::GetComputeShaderUpdate()
@@ -295,7 +308,7 @@ void DynamicCubemaps::UpdateCubemapCapture(bool a_reflections)
 
 	uint index = a_reflections ? 1 : 0;
 
-	ID3D11UnorderedAccessView* uavs[3];
+	ID3D11UnorderedAccessView* uavs[4];
 	if (a_reflections) {
 		uavs[0] = envCaptureReflectionsTexture->uav.get();
 		uavs[1] = envCaptureRawReflectionsTexture->uav.get();
@@ -306,20 +319,17 @@ void DynamicCubemaps::UpdateCubemapCapture(bool a_reflections)
 		uavs[2] = envCapturePositionTexture->uav.get();
 	}
 
-	if (resetCapture[index]) {
-		float clearColor[4]{ 0, 0, 0, 0 };
-		context->ClearUnorderedAccessViewFloat(uavs[0], clearColor);
-		context->ClearUnorderedAccessViewFloat(uavs[1], clearColor);
-		context->ClearUnorderedAccessViewFloat(uavs[2], clearColor);
-		resetCapture[index] = false;
-	}
-
-	context->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
+	uavs[3] = captureLightingState->UAV();
+	context->CSSetUnorderedAccessViews(0, 4, uavs, nullptr);
 
 	UpdateCubemapCB updateData{};
 
-	static float3 cameraPreviousPosAdjust[2] = { { 0, 0, 0 }, { 0, 0, 0 } };
 	updateData.CameraPreviousPosAdjust = cameraPreviousPosAdjust[index];
+	updateData.CaptureIndex = index;
+	updateData.CaptureDeltaTime = std::max(0.0f, globals::state->timer - previousCaptureTime[index]);
+	updateData.ResetCapture = resetCapture[index];
+	previousCaptureTime[index] = globals::state->timer;
+	resetCapture[index] = false;
 
 	auto eyePosition = Util::GetEyePosition();
 
@@ -332,6 +342,11 @@ void DynamicCubemaps::UpdateCubemapCapture(bool a_reflections)
 
 	context->CSSetSamplers(0, 1, &computeSampler);
 
+	context->CSSetShader(GetComputeShaderDetectLighting(), nullptr, 0);
+	globals::profiler->BeginPass("DynamicCubemaps::DetectLighting");
+	context->Dispatch(1, 1, 1);
+	globals::profiler->EndPass();
+
 	context->CSSetShader(a_reflections ? (fakeReflections ? GetComputeShaderUpdateFakeReflections() : GetComputeShaderUpdateReflections()) : GetComputeShaderUpdate(), nullptr, 0);
 
 	globals::profiler->BeginPass(a_reflections ? "DynamicCubemaps::CaptureReflections" : "DynamicCubemaps::Capture");
@@ -341,7 +356,8 @@ void DynamicCubemaps::UpdateCubemapCapture(bool a_reflections)
 	uavs[0] = nullptr;
 	uavs[1] = nullptr;
 	uavs[2] = nullptr;
-	context->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
+	uavs[3] = nullptr;
+	context->CSSetUnorderedAccessViews(0, 4, uavs, nullptr);
 
 	srvs[0] = nullptr;
 	srvs[1] = nullptr;
@@ -624,6 +640,7 @@ void DynamicCubemaps::PostDeferred()
 
 void DynamicCubemaps::SetupResources()
 {
+	GetComputeShaderDetectLighting();
 	GetComputeShaderUpdate();
 	GetComputeShaderUpdateReflections();
 	GetComputeShaderInferrence();
@@ -790,6 +807,10 @@ void DynamicCubemaps::SetupResources()
 		}
 
 		updateCubemapCB = new ConstantBuffer(ConstantBufferDesc<UpdateCubemapCB>(), "DynamicCubemaps::UpdateCubemapCB");
+		captureLightingState = std::make_unique<StructuredBuffer>(StructuredBufferDesc<CaptureLightingState>(uint64_t(1), true, false), 1, "DynamicCubemaps::CaptureLightingState");
+		captureLightingState->CreateUAV();
+		const UINT clearState[4]{};
+		globals::d3d::context->ClearUnorderedAccessViewUint(captureLightingState->UAV(), clearState);
 	}
 
 	{
