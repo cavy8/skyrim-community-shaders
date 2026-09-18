@@ -18,6 +18,7 @@ Ported so far:
 | Advanced Skin profiles / overrides | `jiayev/skyrim-community-shaders` | `compendium-clean` | `4c4eb6d25`; TRUE_PBR compile fix `2da0eb7a5` |
 | TruePBR micro shadow AO | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `0a69dbbc5` |
 | Volumetric Lighting god ray strength / focused rays | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `a582a558a` (base strength/shaft-definition/priority), `122f4e2fc` (sun focus) |
+| Dynamic Cubemaps lighting-change detection | `jiayev/skyrim-community-shaders` | `compendium-clean` | `49c35c6ef` |
 
 > The port commits did **not** record the exact upstream SHA they were taken
 > from. Baselines *reviewed on 2026-09-17* (use as an approximate "since" point,
@@ -383,6 +384,56 @@ non-PBR permutations still compile unchanged. **Present by code.**
   `CLOUD_SHADOWS`) at port time.
 - **Present.**
 
+### Dynamic Cubemaps lighting-change detection  (`jiayev/skyrim-community-shaders@compendium-clean`)
+
+**Upstream source paths**
+
+- `features/Dynamic Cubemaps/Shaders/DynamicCubemaps/CaptureCommon.hlsli` (new),
+  `DetectCaptureLightingCS.hlsl` (new), `InferCubemapCS.hlsl` (2-line hook), `UpdateCubemapCS.hlsl`
+  (rewritten around the new shared helpers)
+- `src/Features/DynamicCubemaps.cpp`, `src/Features/DynamicCubemaps.h`
+
+**Shared-file injection points**
+
+| File | Region |
+| --- | --- |
+| `CaptureCommon.hlsli` | new: `CaptureLightingState` UAV struct/buffer (u3), `SampleCapture`/`AdjustCapturePosition`/`CaptureGeometryMatches`/`CaptureHistoryExpired` helpers shared by update + detect shaders |
+| `DetectCaptureLightingCS.hlsl` | new: dispatched `(1,1,1)` once per `UpdateCubemapCapture` call, before the update dispatch; writes `LightingState[0].Reset`/`.PendingResetMask` |
+| `UpdateCubemapCS.hlsl` | rewritten `main()` around `CaptureCommon`'s history/geometry helpers; reset now clears history instead of the old per-UAV `ClearUnorderedAccessViewFloat` block |
+| `src/Features/DynamicCubemaps.h` | `UpdateCubemapCB` gains `CaptureIndex`/`CaptureDeltaTime`/`ResetCapture`; new `CaptureLightingState` struct, `captureLightingState` (`StructuredBuffer`), `detectCaptureLightingCS`, member-level `cameraPreviousPosAdjust[2]`/`previousCaptureTime[2]` (previously a function-local `static` in `UpdateCubemapCapture`) |
+| `src/Features/DynamicCubemaps.cpp` | `UpdateCubemapCapture` binds a 4th UAV slot for `captureLightingState`, dispatches `GetComputeShaderDetectLighting()` before the capture dispatch; `SetupResources` creates/clears the structured buffer |
+
+**Local adaptations that must survive a re-sync**
+
+- Kept this repo's own colorspace helpers (`Color::IrradianceToLinear`/`IrradianceToGamma` in
+  `Common/Color.hlsli`) instead of introducing the source fork's `Common/ColorManagement.hlsli` —
+  this repo never had that header. Both are gated the same way (behind
+  `defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER)`); a re-sync must keep using
+  `Color::Irradiance*`, not reintroduce `ColorManagement::`.
+- Kept this repo's `#if !defined(REFLECTIONS)` sky exclusion in `SampleCapture` (only the
+  non-reflections capture ignores `depth == 1.0`) — a pre-existing local divergence from the
+  source fork, which excludes the sky unconditionally in both captures. Re-verify this still
+  matches intent if the source fork's own sky-handling changes.
+- **Deliberately not ported**: the same upstream commit also bundles an unrelated refactor that
+  collapses `envTexture`/`envReflectionsTexture` into one `envFilteredTexture` for the
+  irradiance/BC6H pipeline (new format, dropped `uavReflectionsArray`/
+  `envReflectionsTextureArraySRV`). That refactor has nothing to do with lighting-change
+  detection; this repo's `envTexture`/`envReflectionsTexture` dual-texture structure is untouched.
+  A future re-sync should treat that refactor as a separate, optional pickup, not something
+  silently carried in in this feature's diff.
+- Also deliberately not ported: the source fork's `UpdateCubemap()` dropped a
+  `nextTask = NextTask::kCaptureInferAndIrradianceA;` reset (paired with a "restart the split
+  pipeline so stale mid/last irradiance mips aren't compressed before recapture" comment) from its
+  time-jump `resetCapture` block. This repo's `UpdateCubemap()` retains that reset; nothing here
+  established why the source fork removed it, and removing it looked like a potential regression,
+  not a lighting-detection-scoped change.
+- `shader-validation.yaml` coverage for these compute shaders not confirmed; all six touched
+  permutations (detect; update × plain/`REFLECTIONS`/`FAKEREFLECTIONS`; infer × plain/
+  `REFLECTIONS`) were force-compiled by hand with `fxc -D COMPUTESHADER=1` at port time — compute
+  shaders need `COMPUTESHADER` (not `CSHADER`) since `Util::CompileShader` injects that macro for
+  `.hlsl` compute-shader compiles (see `Utils/D3D.cpp`).
+- **Present.**
+
 ---
 
 ## 4. Re-sync checklist
@@ -509,10 +560,8 @@ pass can decide whether any of it is worth adopting. Nothing in this section cha
 No movement on the ported Post Processing or Advanced Skin paths (§1a `git log` filter came back
 empty). Everything in this range is new/unported surface:
 
-- **Dynamic Cubemaps lighting-change detection** — new `DetectCaptureLightingCS.hlsl` +
-  `CaptureCommon.hlsli`, refactors `UpdateCubemapCS.hlsl` (147 → fewer lines) and
-  `DynamicCubemaps.cpp/h`. Automatically re-captures the cubemap when scene lighting changes
-  rather than relying on a fixed schedule.
+- **2026-09-17:** ported **Dynamic Cubemaps lighting-change detection** (`49c35c6ef`) — see the
+  dedicated §3 section below for what was ported vs. deliberately left out.
 - **Linear Lighting refactor** (`LinearLighting.cpp/h`) alongside the Physical Sky cloud work
   below — touches `package/Shaders/Lighting.hlsl`, `RunGrass.hlsl`, `Water.hlsl`, `Particle.hlsl`,
   `Effect.hlsl` (6 lines each), so any future port from this range should re-check those hunks
