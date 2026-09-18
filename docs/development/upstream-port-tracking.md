@@ -9,8 +9,8 @@ Ported so far:
 
 | Feature | Upstream repo | Upstream branch | Port commit |
 | --- | --- | --- | --- |
-| Snow Cover | `InTheBottle/skyrim-community-shaders` (Bottle-Compendium) | `Bottle-Compendium` | `0d5c19633` |
-| Cloud Relight | `alandtse/open-shaders` | `dev` | `f18e9543f` |
+| Snow Cover | `InTheBottle/skyrim-community-shaders` (Bottle-Compendium) | `Bottle-Compendium` | `0d5c19633`; re-synced `b8afc7b00` (fire-melt removal, upstream `85f2020e8`) |
+| Cloud Relight | `alandtse/open-shaders` | `dev` | `f18e9543f`; re-synced `105a90cea` (align lighting and controls, upstream `1d67aaead`/#681) |
 | Foliage Lighting | `alandtse/open-shaders` | `dev` | `f18e9543f` |
 | Vanilla Fresnel | `alandtse/open-shaders` | `dev` | `f18e9543f` |
 | Post Processing | `jiayev/skyrim-community-shaders` | `compendium-clean` | `10d2eba1b`, `51c03d33b` |
@@ -18,15 +18,16 @@ Ported so far:
 | Advanced Skin profiles / overrides | `jiayev/skyrim-community-shaders` | `compendium-clean` | `4c4eb6d25` |
 
 > The port commits did **not** record the exact upstream SHA they were taken
-> from. Baselines *reviewed on 2026-09-15* (use as an approximate "since" point,
-> then pin properly on the first re-sync):
-> - `alandtse/open-shaders@dev` — `7ae52a55430ea1efb3c14d3fb944a18639c3b9c9`
-> - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `497916e45ec5a731903356dedb72f920a1aaabb4` (Snow Cover
->   itself landed upstream in `a661e44` "feat: snow", 2026-09-03)
-> - `jiayev/skyrim-community-shaders@compendium-clean` — `72041475c8e1521be9737b5b5d9e4e28a16ce1ab`; the original
->   Post Processing port (`10d2eba1b`) did not record a source SHA. The focused
->   re-sync was reviewed against this head. Not in the README's
->   [Branch-Specific Credits](../../README.md#branch-specific-credits) — add it there too.
+> from. Baselines *reviewed on 2026-09-17* (use as an approximate "since" point,
+> then pin properly on the next re-sync):
+> - `alandtse/open-shaders@dev` — `95bacd821` (was `7ae52a5543` on 2026-09-15; Cloud Relight
+>   re-synced through #681, see the Cloud Relight section below for what's still outstanding)
+> - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `352e736e6` (was `497916e45e` on
+>   2026-09-15; Snow Cover re-synced through `85f2020e8` above)
+> - `jiayev/skyrim-community-shaders@compendium-clean` — `b8f93c390` (was `72041475c8` on
+>   2026-09-15; no movement on the ported Post Processing/Advanced Skin paths).
+>   Not in the README's [Branch-Specific Credits](../../README.md#branch-specific-credits) —
+>   add it there too.
 
 ---
 
@@ -143,8 +144,13 @@ enums is load-bearing.
 
 - All UI strings routed through `T()` / `TKEY()` (source fork predates i18n). Re-run `python tools/extract-i18n.py --write` and `python tools/sort-i18n.py --write` after.
 - `NoSnow`/`NoFoliageTint` landed at bits **7/8**, not the source fork's 8/9 (see §2).
-- Fire-melt hook uses this repo's shared `BSLightingShader/BSEffectShader_SetupGeometry` thunk pattern (like SubsurfaceScattering) — no `Hooks.cpp` edit.
 - Ships with Tamriel + the five city worldspaces enabled; falls back to bundled placeholder textures (`SnowCover/default/`) when a worldspace's configured PBR snow texture isn't installed.
+- **2026-09-17 (`b8afc7b00`):** followed upstream `85f2020e8` "remove snow cover fire detection" —
+  dropped fire-melt entirely (settings, `FireSources` GPU buffer, the
+  `BSEffectShader_SetupGeometry` hook, `CheckFireSource()`). `SnowCoverSettings` cbuffer member
+  and `SnowCover::PerFrame` shrank 464 → 176 bytes. `SnowCover.ini` bumped to `1-2-0`. Upstream's
+  same commit also flipped `Tamriel.json`'s `AffectTreeTint` 0 → 1 as an apparently unrelated
+  default change — **not** carried over; re-review if picking that up later.
 
 ### Cloud Relight  (`alandtse/open-shaders@dev`)
 
@@ -160,12 +166,26 @@ enums is load-bearing.
 | --- | --- |
 | `package/Shaders/Sky.hlsl` | `#include "CloudRelight/CloudRelight.hlsli"`; in `PS_OUTPUT main`, `if (SharedData::cloudRelightSettings.enabled)` → `CloudRelight::RelightCloud(baseColor, viewDir, SampBaseSampler)` |
 | `features/Cloud Shadows/Shaders/CloudShadows/CloudShadows.hlsli` | 6-line hook block |
-| `package/Shaders/Common/SharedData.hlsli` | `CloudRelightSettings` (cloudRelightMix, cloudOriginalMix, silverLiningMix, silverLiningSpread, pad) + cbuffer member |
+| `package/Shaders/Common/SharedData.hlsli` | `CloudRelightSettings` (cloudRelightMix, cloudOriginalMix, silverLiningMix, silverLiningSpread, celestialLightWeights) + cbuffer member |
 
 **Local adaptations**
 
 - New i18n keys for the settings UI (upstream has none) — `extract-i18n`/`sort-i18n` after edits.
 - `shader-validation.yaml` has no `CLOUD_RELIGHT` define — a green hlslkit run does **not** exercise this code. Force-compile `Sky.hlsl` with the define.
+- **2026-09-17 (`105a90cea`):** ported upstream `1d67aaead` "align lighting and controls" (#681).
+  `CloudRelightSettings.pad` repurposed as `celestialLightWeights` (same 32-byte size, no cbuffer
+  append). `CloudRelight.hlsli`'s silver-lining math reworked (`GetSilverDensity()` split out,
+  `Phase::SilverLining()` no longer spread-driven). Added `SkySync::GetCelestialLightWeights()` —
+  new API on `SkySync` (not present here before this sync) that exposes the eased sun/Masser/
+  Secunda transition weights already tracked internally by `ShadowFader`; `CloudRelight`
+  falls back to the engine directional light (`{-1,0,0}` sentinel) when Sky Sync is inactive or
+  unloaded. `CloudRelight.ini` bumped to `1-1-1`.
+  - **Not yet ported** from the same open-shaders `dev` head (`95bacd821`): `fix(grass): stabilize
+    backface lighting` (#686) and `fix(grass): remove vanilla lighting dimming` (#680) — both are
+    general `RunGrass.hlsl` bugfixes unrelated to any of our ports (backface normal flip logic,
+    `FogNearColor.w` dimming), not Cloud-Relight-specific; picking them up is a mainline-sync
+    decision, not a port re-sync. `fix(foliage): fade scattering at shadow limits` (#677) — see the
+    Foliage Lighting section below; blocked on an architectural gap, not merged.
 
 ### Foliage Lighting  (`alandtse/open-shaders@dev`, CORE feature)
 
@@ -192,6 +212,16 @@ enums is load-bearing.
 - `SafePow` added to `Math.hlsli` — if upstream later adds its own, de-dup.
 - `Feature` category: this repo has no `kFoliage` — uses `kGrass` / `kLighting`.
 - Strip any `virtual bool SupportsVR() override` from the copied header (C3668 here).
+- **Blocked, not merged (reviewed 2026-09-17):** upstream `58fd866d2` "fix(foliage): fade
+  scattering at shadow limits" (#677) adds an `out float directionalCoverage` overload of
+  `LightLimitFix::GetDirectionalShadow()` (via a `DirectionalShadow.hlsli` wrapper) so foliage
+  transmission can be zeroed on the lit side of a VSM cascade boundary. **This repo has neither
+  `DirectionalShadow.hlsli` nor a two-output `LightLimitFix::GetDirectionalShadow()`** — our
+  Light Limit Fix directional-shadow path has architecturally diverged from upstream's current
+  VSM cascade merging (see `dirVSMDetailedShadow` in `Lighting.hlsl` instead). Porting this fix
+  requires reconciling that VSM refactor first; it is not a Foliage-Lighting-scoped change. Do
+  not hand-wire a stub `directionalCoverage` — it would silently no-op the shadow-limit fade
+  this fix exists to add.
 - i18n keys added.
 
 ### Vanilla Fresnel  (`alandtse/open-shaders@dev`, CORE feature)
@@ -255,6 +285,36 @@ enums is load-bearing.
 - Marked alpha at port time — confirm current release stage in
   `features/Post Processing/Shaders/Features/PostProcessing.ini` before assuming defaults.
 
+### Advanced Skin profiles / overrides  (`jiayev/skyrim-community-shaders@compendium-clean`)
+
+**Upstream source paths**
+
+- `features/Skin/Shaders/Skin/Skin.hlsli` (small shared-shader touch)
+- `src/Features/Skin.cpp`, `src/Features/Skin.h`
+
+**Local files produced** — same paths (`features/Skin/`, `src/Features/Skin.*`). No `SharedData.hlsli`
+cbuffer changes; the port is scoped to the C++ profile/override layer plus a `Skin.hlsli` hook.
+
+**Local adaptations that must survive a re-sync**
+
+- New i18n keys for the profile/override UI — `extract-i18n --write` / `sort-i18n --write` after
+  edits (upstream predates our i18n routing here too).
+- `package/Shaders/Skin/Overrides/README.md` is a local addition documenting the override format;
+  not present upstream.
+
+**Not yet reviewed for merge:** `2da0eb7a5` "fix(shaders): compile skin and hair permutations
+under `TRUE_PBR`" (appears on both the `jiayev` and `bottle` histories — shared ancestor commit,
+not a coincidence) fixes a real compile failure (`Skin.hlsli(104): error X3018: invalid subscript
+'RoughnessSecondary'`, `Hair.hlsli(74): error X3018`) when `TRUE_PBR` combines with Advanced Skin
+or Hair Specular. It derives `CS_SKIN_SHADING`/`CS_HAIR_SHADING` in `LightingCommon.hlsli` and
+regates the feature includes on those instead of the raw `SKIN`/`HAIR` defines. **This repo does
+not have this fix** (`CS_SKIN_SHADING` is absent from `LightingCommon.hlsli`) and likely has the
+same latent compile failure in the same `TRUE_PBR` + Skin/Hair permutations — worth a dedicated
+follow-up to confirm and port; the upstream commit message includes an fxc validation matrix
+(76/192 → 10/192 failing permutations, full hlslkit suite green) that should transfer almost
+directly since it's a `LightingCommon.hlsli`/`LightingEval.hlsli`/`Lighting.hlsl` hunk, not
+fork-specific.
+
 ---
 
 ## 4. Re-sync checklist
@@ -313,3 +373,81 @@ Unlike §1a, there's no shared feature-path filter to `git log` against — thes
 forks aren't laid out like this codebase. Skim commit subjects/PR titles for
 tonemap, HDR-output, gamut, or frame-generation changes near a release, rather
 than diffing full trees on a schedule. Fold into the monthly check in §5.
+
+---
+
+## 7. New upstream features observed, not currently ported or watched (reviewed 2026-09-17)
+
+Survey of everything each fork shipped since the 2026-09-15 baselines (§1a/§1b), beyond the
+already-ported feature surface. None of this has been ported — recorded here so a future re-sync
+pass can decide whether any of it is worth adopting. Nothing in this section changes what §1a's
+`git log` path filters need to cover unless a port is actually taken from it later.
+
+### `alandtse/open-shaders@dev` (`7ae52a5543` → `95bacd821`)
+
+- **`features/Wind/`** — new top-level feature, "add shared wind field system" (#634). A
+  cross-feature wind model other features (grass, foliage, clouds) can query; potentially
+  relevant context for anything that touches grass/foliage motion here later.
+- **Scene Manager** (#589) and an **"OS Menu" editor tab** (#674) — new UI/workflow surface, not
+  overlapping any of our ported features' code paths.
+- **Procedural sun** (#678) and **linear lighting rework** (#666, `feat: linear lighting rework`)
+  — the latter touches `linearLightingSettings`, which `CloudRelight.hlsli` already reads
+  (`SharedData::linearLightingSettings.enableLinearLighting` etc.); worth a diff against our
+  Linear Lighting feature next time Cloud Relight is re-synced, in case the field set moved.
+  Cloud Relight's own math changes from this range are captured in `105a90cea` above.
+- **PBR grass** (#2709) and **terrain-variation mesh support** (#2703) — mainline-CS features
+  merged into this fork via its `chore(sync)` commits, unrelated to our ports.
+  `fix(grass): fix renderdoc crash with grass-opt enabled` (#2706) may be worth a look given we
+  carry our own grass-PS duplication (§2) but wasn't investigated this pass.
+- VR-specific work (dynamic near clip #615, native-menu VR awareness, instance-culling fixes) —
+  out of scope, this fork's Skyrim VR support doesn't apply here unless VR is added later.
+- `refactor(math): centralize ClampFinite` (#638), `refactor(ui): adopt CheckboxFlag across
+  features` (#639), `feat(feature): add generic per-render-pass hook` (#654) — general
+  infrastructure refactors, not evaluated for adoption.
+
+### `InTheBottle/skyrim-community-shaders@Bottle-Compendium` (`497916e45e` → `352e736e6`)
+
+- **PBR micro shadow AO** (`0a69dbbc5`) — new TruePBR shading term, `PBR.hlsli` +
+  `SharedData.hlsli` additions.
+- **Character skin wetness** (`374fab73b`) — sizeable new feature: `CharacterRainSurfaces`,
+  `CharacterRainLighting.hlsli`, `CharacterRainSpots.hlsli`, wired into `WetnessEffects` and
+  `GrassCollision`. Large diff (~1200 lines); would be a standalone port, not a small pickup.
+- **Directional light focused rays fix** (`122f4e2fc`) — Volumetric Lighting change
+  (`ISVolumetricLightingGenerateCS.hlsl`, `VolumetricLighting.cpp/h`).
+- **TRUE_PBR + Skin/Hair compile fix** (`2da0eb7a5`) — see the Advanced Skin section above; this
+  one looks directly applicable and worth a dedicated follow-up.
+- The `snow-rework` branch (already flagged in §1a) is still the one to watch for a Snow Cover
+  rewrite that would supersede `Bottle-Compendium`'s version entirely.
+
+### DLSS-NR forks (§6) — skimmed 2026-09-17
+
+- `YtzyFvra/skyrim-community-shaders@feature/dlssnr-vr` — active NGX Feature 18 (DLSS Ray
+  Reconstruction) renderer work, plus `fix(post-processing): guard tonemapper index` (#554) and
+  `fix(effects11): sync ENB state with settings save` (#555) — both land in the tonemap-ownership
+  seam Post Processing/Effects11 share here; worth a look if a tonemap-ownership bug surfaces.
+- `wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass@main` — "Add finished-picture NR with HDR and pre-SR
+  transfer" is the most recent head; ongoing HDR/pre-SR timing work relevant to
+  `HDRDisplay/HDROutputCS.hlsl`'s assumptions if DLSS-NR is ever integrated here.
+- `xenmods/DLSSNR-Cost-Scaler@main` — not a CS fork (a standalone ReShade-adjacent add-on); its
+  "preserve native hue and saturation across ColorStrength" and anamorphic scaling work is
+  conceptually adjacent but shares no code seam with this repo.
+
+### `jiayev/skyrim-community-shaders@compendium-clean` (`72041475c8` → `b8f93c390`)
+
+No movement on the ported Post Processing or Advanced Skin paths (§1a `git log` filter came back
+empty). Everything in this range is new/unported surface:
+
+- **Dynamic Cubemaps lighting-change detection** — new `DetectCaptureLightingCS.hlsl` +
+  `CaptureCommon.hlsli`, refactors `UpdateCubemapCS.hlsl` (147 → fewer lines) and
+  `DynamicCubemaps.cpp/h`. Automatically re-captures the cubemap when scene lighting changes
+  rather than relying on a fixed schedule.
+- **Linear Lighting refactor** (`LinearLighting.cpp/h`) alongside the Physical Sky cloud work
+  below — touches `package/Shaders/Lighting.hlsl`, `RunGrass.hlsl`, `Water.hlsl`, `Particle.hlsl`,
+  `Effect.hlsl` (6 lines each), so any future port from this range should re-check those hunks
+  against our own Linear Lighting state.
+- **Physical Sky cloud improvements** — `CloudMotion.hlsli` (new), substantial `CloudTemporal.hlsli`
+  rework (+209/-lines), `CloudBlur.hlsli`/`CloudBoundary.hlsl`/`Volumetrics.cs.hlsl` changes,
+  `VolumetricClouds.cpp` and `PhysicalSky.cpp/h` updates.
+
+None of the three forks' new work above was ported in this pass — recorded for the next re-sync
+to triage, not acted on.
