@@ -104,7 +104,8 @@ public:
 	static constexpr uint32_t ENGINE_SHADOW_SLOTS = 4;
 	static constexpr uint32_t ENGINE_SHADOW_MAP_SLICES = 8;
 	static constexpr uint32_t MIN_LOCAL_SHADOW_SLOTS = 4;
-	static constexpr uint32_t MAX_LOCAL_SHADOW_SLOTS = 32;
+	static constexpr uint32_t MAX_LOCAL_SHADOW_SLOTS = 64;
+	static constexpr uint64_t LOCAL_SHADOW_MAX_CACHE_BYTES = 2048ull * 1024ull * 1024ull;
 	static constexpr uint32_t LOCAL_SHADOW_FADE_FRAMES = 8;
 	static constexpr uint32_t LOCAL_SHADOW_SWEEP_INTERVAL = 30;
 	static constexpr uint32_t LOCAL_SHADOW_EVICT_AGE = 120;
@@ -112,7 +113,8 @@ public:
 	static constexpr uint32_t LOCAL_SHADOW_CAMERA_HOLD_FRAMES = 60;
 	static constexpr uint32_t LOCAL_SHADOW_GEOM_REHASH_INTERVAL = 4;
 	static constexpr uint32_t LOCAL_SHADOW_CLEAN_REFRESH_FRAMES = 300;
-	static constexpr uint32_t LOCAL_SHADOW_STATIC_STARVE_FRAMES = 120;
+	static constexpr uint32_t LOCAL_SHADOW_STATIC_STARVE_FRAMES = 60;
+	static constexpr float LOCAL_SHADOW_STARVED_SCORE = 500.0f;
 	static constexpr uint32_t LOCAL_SHADOW_TYPE_SPOT = 0;
 	static constexpr uint32_t LOCAL_SHADOW_TYPE_HEMISPHERE = 1;
 	static constexpr uint32_t LOCAL_SHADOW_TYPE_OMNI = 2;
@@ -120,6 +122,7 @@ public:
 	static constexpr float LOCAL_SHADOW_ANIMATION_SPEED = 90.0f;
 	static constexpr float LOCAL_SHADOW_MAX_SLACK = 24.0f;
 	static constexpr float LOCAL_SHADOW_DEFAULT_POISSON_RADIUS = 4.0f;
+	static constexpr float LOCAL_SHADOW_TELEPORT_DISTANCE = 128.0f;
 
 	struct alignas(16) LocalShadowData
 	{
@@ -143,6 +146,7 @@ public:
 	struct LocalShadowCaster
 	{
 		RE::BSShadowLight* light = nullptr;
+		RE::NiLight* niLight = nullptr;
 		int32_t slice = -1;
 		uint32_t lastSeenFrame = 0;
 		uint32_t lastEvaluatedFrame = 0;
@@ -153,6 +157,8 @@ public:
 		uint32_t rejectStreak = 0;
 		RE::NiPoint3 position{};
 		RE::NiPoint3 renderedPosition{};
+		RE::NiMatrix3 rotation{};
+		RE::NiMatrix3 renderedRotation{};
 		float radius = 0.0f;
 		float radiusAnchor = -1.0f;
 		float score = -1.0f;
@@ -167,6 +173,7 @@ public:
 		uint32_t skinnedCasters = 0;
 		bool hidden = false;
 		bool dynamic = false;
+		bool starved = false;
 		float4x4 shadowProj{};
 		float4 shadowParams{};
 		float4 shadowParams2{};
@@ -340,8 +347,12 @@ public:
 	ConstantBuffer* localShadowCopyCB = nullptr;
 	ID3D11ComputeShader* localShadowCopyCS = nullptr;
 	uint32_t localShadowCacheSlots = 0;
+	uint32_t localShadowRequestedSlots = 0;
 	uint32_t localShadowCacheResolution = 0;
 	uint32_t localShadowEngineResolution = 0;
+	uint32_t localShadowEngineMipLevels = 1;
+	uint32_t localShadowEngineSlices = 0;
+	bool localShadowDirectCopy = false;
 	DXGI_FORMAT localShadowCacheFormat = DXGI_FORMAT_UNKNOWN;
 	RE::Setting* poissonRadiusScaleSetting = nullptr;
 	bool poissonRadiusScaleLookedUp = false;
@@ -349,6 +360,7 @@ public:
 	uint32_t localShadowStatTracked = 0;
 	uint32_t localShadowStatCached = 0;
 	uint32_t localShadowStatRendered = 0;
+	uint32_t localShadowStatCollisions = 0;
 
 	/**
 	 * @brief Picks which shadow casters the engine may render this frame so the cache covers every caster over time.

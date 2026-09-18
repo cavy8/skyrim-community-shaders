@@ -197,6 +197,50 @@ namespace LightLimitFix
 
 	static const uint CONTACT_SHADOW_COARSE_STEPS = 4;
 
+	static const float CONTACT_SHADOW_MIN_PIXELS_PER_STEP = 1.0;
+
+	static const float CONTACT_SHADOW_MIN_PROBE_DEPTH = 1.0;
+
+	static const uint CONTACT_SHADOW_BILINEAR_STEPS = 2;
+
+	uint GetPixelLimitedSteps(float3 rayOrigin, float3 stepVS, uint requestedSteps)
+	{
+		uint limitedSteps = requestedSteps;
+
+		const float3 probeVS = rayOrigin + stepVS;
+		[branch] if (probeVS.z >= CONTACT_SHADOW_MIN_PROBE_DEPTH) {
+			const float2 pixelScale = FrameBuffer::DynamicResolutionParams1.xy * SharedData::BufferDim.xy;
+			const float2 stepPixels = (FrameBuffer::ViewToUV(probeVS, true) - FrameBuffer::ViewToUV(rayOrigin, true)) * pixelScale;
+			const float rayPixels = length(stepPixels) * float(requestedSteps);
+
+			limitedSteps = min(requestedSteps, (uint)max(2.0, floor(rayPixels / CONTACT_SHADOW_MIN_PIXELS_PER_STEP)));
+		}
+
+		return limitedSteps;
+	}
+
+	float2 GetScreenDepthPair(float2 uv)
+	{
+		const float2 pixel = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv) * SharedData::BufferDim.xy - 0.5;
+		const float2 pixelFloor = floor(pixel);
+		const float2 weight = pixel - pixelFloor;
+
+		const int2 maxCoord = int2(FrameBuffer::DynamicResolutionParams1.xy * SharedData::BufferDim.xy) - 1;
+		const int2 base = clamp(int2(pixelFloor), int2(0, 0), maxCoord);
+		const int2 next = min(base + 1, maxCoord);
+
+		const float d00 = SharedData::DepthTexture.Load(int3(base.x, base.y, 0)).x;
+		const float d10 = SharedData::DepthTexture.Load(int3(next.x, base.y, 0)).x;
+		const float d01 = SharedData::DepthTexture.Load(int3(base.x, next.y, 0)).x;
+		const float d11 = SharedData::DepthTexture.Load(int3(next.x, next.y, 0)).x;
+
+		const float filtered = lerp(lerp(d00, d10, weight.x), lerp(d01, d11, weight.x), weight.y);
+		const float nearest = weight.x < 0.5 ? (weight.y < 0.5 ? d00 : d01) : (weight.y < 0.5 ? d10 : d11);
+
+		const float2 depths = SharedData::GetScreenDepths(float4(filtered, nearest, 0, 0)).xy;
+		return float2(max(depths.x, depths.y), min(depths.x, depths.y));
+	}
+
 	// Coarse rejection prepass: samples the ray at four evenly spaced points and reports whether
 	// any interval can intersect the occlusion band. Rays that never come near an occluder skip
 	// the fine march entirely, so cost scales with penumbra coverage instead of step count.
@@ -246,27 +290,44 @@ namespace LightLimitFix
 		const float depthDeltaFade = SharedData::lightLimitFixSettings.ContactShadowDepthFade / perspectiveScale;
 		const float3 stepVS = lightDirectionVS * SharedData::lightLimitFixSettings.ContactShadowStride * perspectiveScale;
 
-		bool march = contactShadowSteps > 0;
-		[branch] if (march && contactShadowSteps > CONTACT_SHADOW_COARSE_STEPS)
-			march = MayBeOccluded(viewPosition, stepVS, contactShadowSteps, 1.0 / max(depthDeltaFade, 1e-5));
-
-		[branch] if (march)
+		[branch] if (contactShadowSteps > 0)
 		{
-			float3 rayPosition = viewPosition + stepVS * noise;
-			[loop] for (uint i = 0; i < contactShadowSteps; i++)
+			const uint marchSteps = GetPixelLimitedSteps(viewPosition, stepVS, contactShadowSteps);
+			const float3 marchStepVS = stepVS * (float(contactShadowSteps) / float(marchSteps));
+
+			bool march = true;
+			[branch] if (marchSteps > CONTACT_SHADOW_COARSE_STEPS)
+				march = MayBeOccluded(viewPosition, marchStepVS, marchSteps, 1.0 / max(depthDeltaFade, 1e-5));
+
+			[branch] if (march)
 			{
-				rayPosition += stepVS;
+				float3 rayPosition = viewPosition + marchStepVS * noise;
+				const float rayEndFadeScale = float(CONTACT_SHADOW_COARSE_STEPS) / float(marchSteps);
+				[loop] for (uint i = 0; i < marchSteps; i++)
+				{
+					rayPosition += marchStepVS;
 
-				float2 rayUV = FrameBuffer::ViewToUV(rayPosition, true);
-				if (!IsSaturated(rayUV))
-					break;
+					float2 rayUV = FrameBuffer::ViewToUV(rayPosition, true);
+					if (!IsSaturated(rayUV))
+						break;
 
-				float rayDepth = SharedData::GetScreenDepth(rayUV);
-				float depthDelta = rayPosition.z - rayDepth;
-				if (rayDepth > CONTACT_SHADOW_FIRST_PERSON_MAX_DEPTH)
-					contactShadow = max(contactShadow, saturate(depthDelta * depthDeltaThickness) - saturate(depthDelta * depthDeltaFade));
-				if (contactShadow >= 1.0)
-					break;
+					float2 rayDepths;
+					[branch] if (i < CONTACT_SHADOW_BILINEAR_STEPS) {
+						rayDepths = GetScreenDepthPair(rayUV);
+					} else {
+						float rayDepth = SharedData::GetScreenDepth(rayUV);
+						rayDepths = float2(rayDepth, rayDepth);
+					}
+
+					float occlusionDelta = rayPosition.z - rayDepths.x;
+					float penetrationDelta = rayPosition.z - rayDepths.y;
+					if (rayDepths.y > CONTACT_SHADOW_FIRST_PERSON_MAX_DEPTH) {
+						float occlusion = saturate(occlusionDelta * depthDeltaThickness) - saturate(penetrationDelta * depthDeltaFade);
+						contactShadow = max(contactShadow, occlusion * saturate(float(marchSteps - i) * rayEndFadeScale));
+					}
+					if (contactShadow >= 1.0)
+						break;
+				}
 			}
 		}
 
