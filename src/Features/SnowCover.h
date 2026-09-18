@@ -6,7 +6,7 @@
 #include "TruePBR.h"
 #include "Utils/FormIdParser.h"
 
-/** @brief Renders dynamic seasonal snow accumulation on landscape, statics, trees and grass, with fire-based melting. */
+/** @brief Renders dynamic seasonal snow accumulation on landscape, statics, trees and grass. */
 struct SnowCover : Feature
 {
 private:
@@ -37,14 +37,6 @@ private:
 	static constexpr uint DEFAULT_PEAK_WINTER_MONTH = 0;
 	static constexpr uint32_t FIRST_SRV_SLOT = 38;  // t38-t44, see SnowCover.hlsli
 
-	static constexpr uint32_t MAX_FIRE_SOURCES = 16;
-	static constexpr uint32_t FIRE_SEEN_GRACE_TICKS = 4;    // tolerate a few culled frames before fading out
-	static constexpr float FIRE_FADE_IN_RATE = 1.6f;        // melt strength gained per second while lit
-	static constexpr float FIRE_FADE_OUT_RATE = 0.02f;      // melt strength lost per second once gone; snow re-covers over ~50s
-	static constexpr float FIRE_MERGE_DISTANCE = 96.0f;     // one fire emits many draws
-	static constexpr float FIRE_MAX_BOUND_RADIUS = 512.0f;  // larger additive draws are not flames
-	static constexpr float FIRE_MAX_MELT_RADIUS = 1024.0f;
-
 public:
 	virtual inline std::string GetName() { return "Snow Cover"; }
 	virtual inline std::string GetShortName() { return "SnowCover"; }
@@ -59,11 +51,6 @@ public:
 		float SnowHeightOffset = 0.0f;
 		uint AffectHavok = 0;
 		uint AffectFloraTint = 0;
-
-		uint EnableFireMelt = 1;
-		float FireRadiusScale = 3.0f;
-		float FireInnerScale = 0.35f;
-		float FireMaxDistance = 12288.0f;
 	};
 	static_assert(sizeof(UserSettings) % 16 == 0);
 
@@ -118,13 +105,9 @@ public:
 
 		UserSettings settings;
 		WorldSettings wsettings;
-
-		uint FireCount;
-		uint firePad[3];
-		float4 FireSources[MAX_FIRE_SOURCES];  // xyz = world position, w = melt radius
 	};
 	static_assert(sizeof(PerFrame) % 16 == 0);
-	static_assert(sizeof(PerFrame) == 464);
+	static_assert(sizeof(PerFrame) == 176);
 
 	UserSettings settings;
 	WorldSettings wsettings;
@@ -133,19 +116,6 @@ public:
 	PerFrame GetCommonBufferData();
 
 	std::array<winrt::com_ptr<ID3D11ShaderResourceView>, 7> views;
-
-	struct FireSource
-	{
-		RE::NiPoint3 position;
-		float radius;           // full melt radius while lit
-		float strength = 0.0f;  // eased 0..1 so melt grows in and recedes out smoothly
-		uint32_t lastSeenTick;
-	};
-	std::vector<FireSource> fireSources;
-	std::mutex fireSourcesMutex;
-	uint32_t fireTick = 0;
-
-	void CheckFireSource(RE::BSRenderPass* a_pass, uint32_t a_descriptor);
 
 	std::string status;
 	std::string last_worldspace;  // owned copy + content comparison; a raw editorID pointer can dangle/rehash
@@ -203,7 +173,6 @@ public:
 	}
 
 	virtual void SetupResources();
-	virtual void Reset();
 	virtual void Prepass() override;
 
 	virtual void DrawSettings();
@@ -228,16 +197,9 @@ public:
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		struct BSEffectShader_SetupGeometry
-		{
-			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
 		static void Install()
 		{
 			stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
-			stl::write_vfunc<0x6, BSEffectShader_SetupGeometry>(RE::VTABLE_BSEffectShader[0]);
 			logger::info("[SnowCover] Installed hooks");
 		}
 	};

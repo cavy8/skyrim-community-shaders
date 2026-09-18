@@ -1,30 +1,22 @@
 #include "SnowCover.h"
 
 #include "../I18n/I18n.h"
-#include "ShaderCache.h"
 #include "Util.h"
 #include "Utils/FileSystem.h"
 #include <DDSTextureLoader.h>
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <ranges>
 #include <string.h>
-#include <string_view>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SnowCover::UserSettings,
 	EnableExpensiveFoliage,
 	AffectHavok,
 	AffectFloraTint,
-	SnowHeightOffset,
-	EnableFireMelt,
-	FireRadiusScale,
-	FireInnerScale,
-	FireMaxDistance)
+	SnowHeightOffset)
 
 namespace
 {
@@ -42,27 +34,6 @@ void SnowCover::DrawSettings()
 	ImGui::Checkbox(T(TKEY("enable_nicer_foliage"), "Enable Nicer Foliage"), (bool*)&settings.EnableExpensiveFoliage);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("enable_nicer_foliage_tooltip"), "Uses one more texture sample to put snow on edges of tree lods and grass."));
-	}
-	ImGui::Checkbox(T(TKEY("melt_snow_near_fire"), "Melt Snow Near Fire"), (bool*)&settings.EnableFireMelt);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("melt_snow_near_fire_tooltip"),
-							  "Clears snow around campfires, torches and braziers.\n"
-							  "Fires are recognised as additive flame draws using fire-themed textures."));
-	}
-	if (settings.EnableFireMelt) {
-		ImGui::SliderFloat(T(TKEY("fire_melt_radius"), "Fire Melt Radius"), &settings.FireRadiusScale, 0.5f, 8.0f, "%.1fx");
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("fire_melt_radius_tooltip"), "Melt radius as a multiple of the flame's bounding radius."));
-		}
-		ImGui::SliderFloat(T(TKEY("fire_melt_softness"), "Fire Melt Softness"), &settings.FireInnerScale, 0.0f, 0.9f, "%.2f");
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("fire_melt_softness_tooltip"), "Fraction of the radius that is fully clear. Lower values give a softer edge."));
-		}
-		ImGui::SliderFloat(T(TKEY("fire_melt_max_distance"), "Fire Melt Max Distance"), &settings.FireMaxDistance, 1024.0f, 40000.0f, "%.0f");
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("fire_melt_max_distance_tooltip"), "Fires beyond this camera distance are ignored. At most 16 fires are tracked."));
-		}
-		ImGui::Text(T(TKEY("tracked_fires"), "Tracked fires: %u"), perFrame.FireCount);
 	}
 	ImGui::Checkbox(T(TKEY("snow_on_mobile_objects"), "Snow on Mobile Objects"), (bool*)&settings.AffectHavok);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -335,22 +306,6 @@ SnowCover::PerFrame SnowCover::GetCommonBufferData()
 	perFrame.settings = settings;
 	perFrame.wsettings = wsettings;
 
-	uint32_t count = 0;
-	if (settings.EnableFireMelt) {
-		std::lock_guard lock{ fireSourcesMutex };
-		for (const auto& source : fireSources) {
-			if (count >= MAX_FIRE_SOURCES)
-				break;
-			const float radius = source.radius * source.strength;
-			if (radius < 1.0f)
-				continue;
-			perFrame.FireSources[count++] = float4(source.position.x, source.position.y, source.position.z, radius);
-		}
-	}
-	for (uint32_t i = count; i < MAX_FIRE_SOURCES; ++i)
-		perFrame.FireSources[i] = float4(0.0f, 0.0f, 0.0f, 0.0f);
-	perFrame.FireCount = count;
-
 	return perFrame;
 }
 
@@ -609,23 +564,6 @@ void SnowCover::Prepass()
 	}
 }
 
-void SnowCover::Reset()
-{
-	// Frame-rate independent ease; clamp guards against loading-screen delta spikes snapping the melt.
-	const float dt = std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, 0.1f);
-	std::lock_guard lock{ fireSourcesMutex };
-	++fireTick;
-	for (auto& source : fireSources) {
-		const bool seen = fireTick - source.lastSeenTick <= FIRE_SEEN_GRACE_TICKS;
-		const float target = seen ? 1.0f : 0.0f;
-		const float step = (seen ? FIRE_FADE_IN_RATE : FIRE_FADE_OUT_RATE) * dt;
-		source.strength = source.strength < target ? std::min(target, source.strength + step) : std::max(target, source.strength - step);
-	}
-	std::erase_if(fireSources, [this](const FireSource& source) {
-		return source.strength <= 0.0f && fireTick - source.lastSeenTick > FIRE_SEEN_GRACE_TICKS;
-	});
-}
-
 void SnowCover::LoadSettings(json& o_json)
 {
 	settings = o_json;
@@ -641,75 +579,11 @@ void SnowCover::RestoreDefaultSettings()
 	settings = {};
 }
 
-void SnowCover::CheckFireSource(RE::BSRenderPass* a_pass, uint32_t a_descriptor)
-{
-	if (!settings.EnableFireMelt || !wsettings.EnableSnowCover)
-		return;
-	if (!a_pass || !a_pass->geometry || !a_pass->shaderProperty)
-		return;
-
-	using EffectFlags = SIE::ShaderCache::EffectShaderFlags;
-	const bool addBlend = (a_descriptor & static_cast<uint32_t>(EffectFlags::AddBlend)) != 0;
-	const bool soft = (a_descriptor & static_cast<uint32_t>(EffectFlags::Soft)) != 0;
-	const bool grayscale = (a_descriptor & static_cast<uint32_t>(EffectFlags::GrayscaleToColor)) != 0;
-	// Effects11's own classifier. Flames are authored both with and without a palette, so
-	// GRAYSCALE_TO_COLOR must never be a requirement; this drops only soft-no-palette smoke and glow.
-	if (!addBlend || (soft && !grayscale))
-		return;
-
-	const RE::NiPoint3 center = a_pass->geometry->worldBound.center;
-	const float boundRadius = a_pass->geometry->worldBound.radius;
-	if (boundRadius <= 0.0f || boundRadius > FIRE_MAX_BOUND_RADIUS)
-		return;
-
-	if ((center - Util::GetEyePosition()).Length() > settings.FireMaxDistance)
-		return;
-
-	if (a_pass->shaderProperty->GetRTTI() != globals::rtti::BSEffectShaderPropertyRTTI.get())
-		return;
-	auto material = static_cast<RE::BSEffectShaderMaterial*>(a_pass->shaderProperty->material);
-	if (!material)
-		return;
-
-	// Precision guard, run last: every real flame carries one of these in its source or greyscale path.
-	static constexpr std::array<std::string_view, 6> kFireTokens{ "fire", "flame", "candle", "torch", "lava", "magma" };
-	const auto hasFireToken = [](const RE::BSFixedString& a_path) {
-		const char* raw = a_path.c_str();
-		if (!raw)
-			return false;
-		std::string lowered(raw);
-		std::ranges::transform(lowered, lowered.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-		return std::ranges::any_of(kFireTokens, [&](std::string_view token) { return lowered.find(token) != std::string::npos; });
-	};
-	if (!hasFireToken(material->sourceTexturePath) && !hasFireToken(material->greyscaleTexturePath))
-		return;
-
-	const float meltRadius = std::min(boundRadius * settings.FireRadiusScale, FIRE_MAX_MELT_RADIUS);
-
-	std::lock_guard lock{ fireSourcesMutex };
-	for (auto& source : fireSources) {
-		if ((source.position - center).Length() < FIRE_MERGE_DISTANCE) {
-			source.position = center;
-			source.radius = std::max(source.radius, meltRadius);
-			source.lastSeenTick = fireTick;
-			return;
-		}
-	}
-	if (fireSources.size() < MAX_FIRE_SOURCES)
-		fireSources.emplace_back(FireSource{ center, meltRadius, 0.0f, fireTick });
-}
-
 void SnowCover::Hooks::BSLightingShader_SetupGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
 	if (globals::features::snowCover.wsettings.EnableSnowCover) {
 		globals::features::snowCover.BSLightingShader_Setup(Pass);
 	}
-	func(This, Pass, RenderFlags);
-}
-
-void SnowCover::Hooks::BSEffectShader_SetupGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
-{
-	globals::features::snowCover.CheckFireSource(Pass, globals::state->currentPixelDescriptor);
 	func(This, Pass, RenderFlags);
 }
 

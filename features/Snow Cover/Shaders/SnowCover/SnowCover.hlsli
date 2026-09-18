@@ -45,23 +45,6 @@ namespace SnowCover
 		return 1 - smoothstep(fadeStart, fadeEnd, viewDist) * amount;
 	}
 
-	float GetFireAttenuation(float3 p)
-	{
-		if (!SharedData::snowCoverSettings.EnableFireMelt)
-			return 1;
-		float atten = 1;
-		uint count = min(SharedData::snowCoverSettings.FireCount, 16);
-		for (uint i = 0; i < count; ++i) {
-			float4 fire = SharedData::snowCoverSettings.FireSources[i];
-			float radius = fire.w;
-			if (radius < 1)
-				continue;
-			float inner = radius * SharedData::snowCoverSettings.FireInnerScale;
-			atten = min(atten, smoothstep(inner, radius, length(p - fire.xyz)));
-		}
-		return atten;
-	}
-
 	float GetHeightMult(float3 p)
 	{
 		float2 scale = SharedData::snowCoverSettings.mapScale;
@@ -103,9 +86,6 @@ namespace SnowCover
 		}
 		if (mult < 0.01)
 			return;
-		mult *= GetFireAttenuation(p);
-		if (mult < 0.01)
-			return;
 		float2 uv = frac(SharedData::snowCoverSettings.UVScale * (p.xy + worldNormal.xy) / 100);
 		float3 diffuse = Color::LinearToSrgb(SnowAlbedo.Sample(SampColorSampler, uv).rgb) * SharedData::snowCoverSettings.MainTint.rgb * Color::PBRLightingScale;
 
@@ -132,11 +112,6 @@ namespace SnowCover
 		if (mult <= 0) {
 			alt = false;
 			return mult;
-		}
-		mult *= GetFireAttenuation(p);
-		if (mult <= 0) {
-			alt = false;
-			return 0;
 		}
 		float main_mult = (1 - abs(worldNormal.z - SharedData::snowCoverSettings.peakMainAngle)) + min(0, weatherMult) * SharedData::snowCoverSettings.minAngle;
 		float alt_mult = (1 - abs(worldNormal.z - SharedData::snowCoverSettings.peakAltAngle)) + sin(p.z * 0.01 + cos(p.x * p.y * 0.01) * 0.025) * 0.05;
