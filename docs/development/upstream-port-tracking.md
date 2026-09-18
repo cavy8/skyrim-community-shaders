@@ -15,7 +15,9 @@ Ported so far:
 | Vanilla Fresnel | `alandtse/open-shaders` | `dev` | `f18e9543f` |
 | Post Processing | `jiayev/skyrim-community-shaders` | `compendium-clean` | `10d2eba1b`, `51c03d33b` |
 | Light Limit Fix (diet SLF) | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `69201a6ab`, `fe9228b99` |
-| Advanced Skin profiles / overrides | `jiayev/skyrim-community-shaders` | `compendium-clean` | `4c4eb6d25` |
+| Advanced Skin profiles / overrides | `jiayev/skyrim-community-shaders` | `compendium-clean` | `4c4eb6d25`; TRUE_PBR compile fix `2da0eb7a5` |
+| TruePBR micro shadow AO | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `0a69dbbc5` |
+| Volumetric Lighting god ray strength / focused rays | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `a582a558a` (base strength/shaft-definition/priority), `122f4e2fc` (sun focus) |
 
 > The port commits did **not** record the exact upstream SHA they were taken
 > from. Baselines *reviewed on 2026-09-17* (use as an approximate "since" point,
@@ -180,12 +182,17 @@ enums is load-bearing.
   Secunda transition weights already tracked internally by `ShadowFader`; `CloudRelight`
   falls back to the engine directional light (`{-1,0,0}` sentinel) when Sky Sync is inactive or
   unloaded. `CloudRelight.ini` bumped to `1-1-1`.
-  - **Not yet ported** from the same open-shaders `dev` head (`95bacd821`): `fix(grass): stabilize
-    backface lighting` (#686) and `fix(grass): remove vanilla lighting dimming` (#680) — both are
-    general `RunGrass.hlsl` bugfixes unrelated to any of our ports (backface normal flip logic,
-    `FogNearColor.w` dimming), not Cloud-Relight-specific; picking them up is a mainline-sync
-    decision, not a port re-sync. `fix(foliage): fade scattering at shadow limits` (#677) — see the
-    Foliage Lighting section below; blocked on an architectural gap, not merged.
+  - **2026-09-17:** ported `fix(grass): remove vanilla lighting dimming` (#680, `5fb80fe62`) —
+    removed the two `FogNearColor.w *` multiplications in `RunGrass.hlsl`'s forward-path
+    `outputColor` and deferred-path `psout.Diffuse.xyz` (both PS branches use the same source
+    file region for this fix). A third `FogNearColor.w * diffuseColor` later in the file (the
+    third `PS_OUTPUT main`, a different permutation) was left untouched, matching upstream's own
+    scope. Present by code.
+  - Grass backface stabilization / open-shaders #686 — **present by code/behavior** already;
+    this repo's `RunGrass.hlsl` normal handling does not exhibit the flip artifact #686 fixes.
+    Not a pending pickup.
+  - `fix(foliage): fade scattering at shadow limits` (#677) — see the
+    Foliage Lighting section below; blocked on an architectural gap, not merged (**Deferred**).
 
 ### Foliage Lighting  (`alandtse/open-shaders@dev`, CORE feature)
 
@@ -302,18 +309,79 @@ cbuffer changes; the port is scoped to the C++ profile/override layer plus a `Sk
 - `package/Shaders/Skin/Overrides/README.md` is a local addition documenting the override format;
   not present upstream.
 
-**Not yet reviewed for merge:** `2da0eb7a5` "fix(shaders): compile skin and hair permutations
-under `TRUE_PBR`" (appears on both the `jiayev` and `bottle` histories — shared ancestor commit,
-not a coincidence) fixes a real compile failure (`Skin.hlsli(104): error X3018: invalid subscript
-'RoughnessSecondary'`, `Hair.hlsli(74): error X3018`) when `TRUE_PBR` combines with Advanced Skin
-or Hair Specular. It derives `CS_SKIN_SHADING`/`CS_HAIR_SHADING` in `LightingCommon.hlsli` and
-regates the feature includes on those instead of the raw `SKIN`/`HAIR` defines. **This repo does
-not have this fix** (`CS_SKIN_SHADING` is absent from `LightingCommon.hlsli`) and likely has the
-same latent compile failure in the same `TRUE_PBR` + Skin/Hair permutations — worth a dedicated
-follow-up to confirm and port; the upstream commit message includes an fxc validation matrix
-(76/192 → 10/192 failing permutations, full hlslkit suite green) that should transfer almost
-directly since it's a `LightingCommon.hlsli`/`LightingEval.hlsli`/`Lighting.hlsl` hunk, not
-fork-specific.
+**2026-09-17 (`2da0eb7a5`):** ported `fix(shaders): compile skin and hair permutations under
+`TRUE_PBR`` (appears on both the `jiayev` and `bottle` histories — shared ancestor commit, not a
+coincidence). `TRUE_PBR` gives `DirectContext`/`MaterialProperties` layout priority, so
+`RoughnessSecondary`/`SecondarySpecIntensity`/`Curvature`/`FuzzRoughness`/`hairShadow` don't exist
+in a PBR permutation; the old guards only tested `SKIN`/`CS_SKIN` and `HAIR`/`CS_HAIR`, so those
+paths still compiled and referenced absent members whenever `TRUE_PBR` was also defined. Derived
+`CS_SKIN_SHADING`/`CS_HAIR_SHADING` in `LightingCommon.hlsli` (`SKIN`/`HAIR` && `CS_SKIN`/`CS_HAIR`
+&& `!TRUE_PBR`) and re-gated the actual shading-path selection/usage sites in
+`Skin.hlsli`/`LightingCommon.hlsli`/`LightingEval.hlsli`/`Lighting.hlsl` on those. Left raw (per
+upstream): the `Lighting.hlsl` texture declarations preceding the `LightingCommon.hlsli` include,
+the puddle-noise geometry-classification check, and the bare `SKIN` geometry checks. Verified via
+fxc: `TRUE_PBR+SKIN+CS_SKIN` and `TRUE_PBR+HAIR+CS_HAIR` now compile (forward and deferred); the
+non-PBR permutations still compile unchanged. **Present by code.**
+
+### TruePBR micro shadow AO  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
+
+**Upstream source paths**
+
+- `features/TruePBR/Shaders/Features/TruePBR.ini` (version bump)
+- `package/Shaders/Common/PBR.hlsli`, `package/Shaders/Common/SharedData.hlsli`
+- `src/TruePBR.cpp`, `src/TruePBR.h`
+
+**Shared-file injection points**
+
+| File | Region |
+| --- | --- |
+| `package/Shaders/Common/PBR.hlsli` | end of `PBR::GetDirectLightInput` — `EnableMicroShadows` branch attenuating `lightingOutput.diffuse`/`.specular`/`.coatDiffuse` by `ApproximateDirectOcculusion(material.AO, NdotL)` blended by `MicroShadowStrength` |
+| `package/Shaders/Common/SharedData.hlsli` | `TruePBRSettings` gains `EnableMicroShadows`/`MicroShadowStrength`, replacing 12 bytes of `pad` (struct stays 16 bytes) |
+
+**Local adaptations**
+
+- Reused this repo's existing `ApproximateDirectOcculusion()` in `Common/Shading.hlsli` (already
+  used by the Skin shading path) instead of introducing a duplicate — upstream's commit uses the
+  same spelling, so no rename was needed.
+- `src/TruePBR.h`'s `Settings` and `SharedData.hlsli`'s `TruePBRSettings` must stay byte-identical
+  (`FeatureBuffer.cpp` passes `TruePBR::settings` straight through as the GPU struct).
+- `TruePBR.ini` bumped `1-0-0` → `1-1-0`.
+- **Present.**
+
+### Volumetric Lighting god ray strength / focused rays  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
+
+**Upstream source paths**
+
+- `features/Volumetric Lighting/Shaders/Features/VolumetricLighting.ini` (version bumps)
+- `package/Shaders/Common/SharedData.hlsli`, `package/Shaders/ISVolumetricLightingGenerateCS.hlsl`
+- `src/Features/VolumetricLighting.cpp`, `src/Features/VolumetricLighting.h`
+- `src/Features/Effects11.cpp`, `src/Features/SkySync.cpp`, `src/Hooks.cpp`, `src/FeatureBuffer.cpp`
+
+**Local adaptations that must survive a re-sync**
+
+- This repo's `VolumetricLighting` feature had **neither** the base god-ray strength/shaft-
+  definition/Effects11-priority system nor the sun-focus follow-up before this pass — the source
+  anchor commit (`122f4e2fc`, "fix: directional light focused rays") is a fix *on top of* a
+  prerequisite feature (`a582a558a`, "feat: dedicated basic godray adjustment") that Personal
+  never had. Both were ported together as one feature; a re-sync must check both commits, not
+  just the outward-facing "focused rays" one.
+- `VolumetricLighting` now owns `GetRenderData()` (resolves the engine's
+  `BSVolumetricLightingRenderData` once) and `ClaimEffects11Intensity()` (arbitrates ownership
+  against Effects 11's `GAMEVOLUMETRICRAYS` preset intensity). `Effects11::OverrideWeather` and
+  `SkySync::PostPostLoad` now go through these instead of resolving the render data address
+  themselves — **do not re-introduce a second raw `REL::RelocationID(527719, 414629)` resolution
+  site**; there must be exactly one.
+- `ApplyGodRaySettings()` is invoked once per `Sky::UpdateColors`, from `Hooks.cpp`'s
+  `WeatherExtensions::Sky_UpdateColors::thunk`, after Effects11 and SkySync have run for the tick.
+- `VolumetricLightingSettings` (`GodRayGain`, `GodRayExponent`) was appended to the **end** of
+  `SharedData.hlsli`'s `FeatureData` cbuffer and `FeatureBuffer.cpp`'s initializer list — matching
+  this repo's existing append-only convention (§2), not Bottle's complete `SharedData.hlsli`.
+- `VolumetricLighting.ini` bumped `1-1-0` → `1-2-0` (this repo's own version history; does not
+  track Bottle's `1-2-0`/`1-3-0` numbering since Personal was starting from a smaller feature).
+- `shader-validation.yaml` coverage for `ISVolumetricLightingGenerateCS.hlsl` not confirmed;
+  force-compiled by hand with `fxc` (`CSHADER`, with and without `TERRAIN_SHADOWS`/
+  `CLOUD_SHADOWS`) at port time.
+- **Present.**
 
 ---
 
@@ -405,19 +473,23 @@ pass can decide whether any of it is worth adopting. Nothing in this section cha
   features` (#639), `feat(feature): add generic per-render-pass hook` (#654) — general
   infrastructure refactors, not evaluated for adoption.
 
-### `InTheBottle/skyrim-community-shaders@Bottle-Compendium` (`497916e45e` → `352e736e6`)
+### `InTheBottle/skyrim-community-shaders@Bottle-Compendium` (`497916e45e` → `7c58cb1ee`)
 
-- **PBR micro shadow AO** (`0a69dbbc5`) — new TruePBR shading term, `PBR.hlsli` +
-  `SharedData.hlsli` additions.
 - **Character skin wetness** (`374fab73b`) — sizeable new feature: `CharacterRainSurfaces`,
   `CharacterRainLighting.hlsli`, `CharacterRainSpots.hlsli`, wired into `WetnessEffects` and
   `GrassCollision`. Large diff (~1200 lines); would be a standalone port, not a small pickup.
-- **Directional light focused rays fix** (`122f4e2fc`) — Volumetric Lighting change
-  (`ISVolumetricLightingGenerateCS.hlsl`, `VolumetricLighting.cpp/h`).
-- **TRUE_PBR + Skin/Hair compile fix** (`2da0eb7a5`) — see the Advanced Skin section above; this
-  one looks directly applicable and worth a dedicated follow-up.
+  Personal already has its own Character Rain implementation — **present by code** (see the
+  Character Rain note below), so this is a candidate for a parity re-check, not a fresh port.
 - The `snow-rework` branch (already flagged in §1a) is still the one to watch for a Snow Cover
   rewrite that would supersede `Bottle-Compendium`'s version entirely.
+- **2026-09-17: Character Rain — corrected capability record.** Personal's own Character Rain
+  implementation (predates this tracking pass) is **present by code**; an earlier read of this
+  document's "not currently ported" language was inaccurate. No action taken here beyond
+  correcting the record — a line-by-line parity diff against Bottle's `374fab73b` wetness work is
+  still open, per the note above.
+- **2026-09-17:** the diet-SLF/local-shadow re-sync (see the Light Limit Fix section above) was
+  reviewed against Bottle head `7c58cb1ee` (moved from the `352e736e6` baseline recorded in this
+  file on 2026-09-15/17) — see that section for exactly what was and wasn't pulled forward.
 
 ### DLSS-NR forks (§6) — skimmed 2026-09-17
 
