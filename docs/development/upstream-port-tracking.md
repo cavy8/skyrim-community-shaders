@@ -21,14 +21,19 @@ Ported so far:
 | Dynamic Cubemaps lighting-change detection | `jiayev/skyrim-community-shaders` | `compendium-clean` | `49c35c6ef` |
 
 > The port commits did **not** record the exact upstream SHA they were taken
-> from. Baselines *reviewed on 2026-09-17* (use as an approximate "since" point,
-> then pin properly on the next re-sync):
-> - `alandtse/open-shaders@dev` — `95bacd821` (was `7ae52a5543` on 2026-09-15; Cloud Relight
->   re-synced through #681, see the Cloud Relight section below for what's still outstanding)
-> - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `352e736e6` (was `497916e45e` on
->   2026-09-15; Snow Cover re-synced through `85f2020e8` above)
-> - `jiayev/skyrim-community-shaders@compendium-clean` — `b8f93c390` (was `72041475c8` on
->   2026-09-15; no movement on the ported Post Processing/Advanced Skin paths).
+> from. Baselines *audited on 2026-09-17* against the actual source trees (this is the
+> "near-term port queue" pass — items 1-8 of `docs/development/implementation-brief.md` §1 — not
+> a commit-message-matching exercise; use these as the "since" point, then pin properly on the
+> next re-sync):
+> - `alandtse/open-shaders@dev` — `95bacd821` (unchanged from the 2026-09-15/17 baseline; Cloud
+>   Relight re-synced through #681, grass dimming removal #680 ported this pass — see the Cloud
+>   Relight section below for what's still outstanding)
+> - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `7c58cb1ee` (was `352e736e6` at the
+>   start of this pass; re-fetched before implementation per the brief's instruction. TRUE_PBR
+>   Skin/Hair compile fix, TruePBR micro shadow AO, Volumetric Lighting god-ray-strength/focused-
+>   rays, and the diet-SLF/local-shadow re-sync were all taken from or verified against this head)
+> - `jiayev/skyrim-community-shaders@compendium-clean` — `b8f93c390` (unchanged; Dynamic Cubemaps
+>   lighting-change detection and the restored Post Processing textures were taken from this head).
 >   Not in the README's [Branch-Specific Credits](../../README.md#branch-specific-credits) —
 >   add it there too.
 
@@ -563,13 +568,24 @@ pass can decide whether any of it is worth adopting. Nothing in this section cha
   relevant context for anything that touches grass/foliage motion here later.
 - **Scene Manager** (#589) and an **"OS Menu" editor tab** (#674) — new UI/workflow surface, not
   overlapping any of our ported features' code paths.
-- **Procedural sun** (#678) and **linear lighting rework** (#666, `feat: linear lighting rework`)
-  — the latter touches `linearLightingSettings`, which `CloudRelight.hlsli` already reads
+- **Procedural sun** (#678) — **Partial overlap**: Personal already has the simpler Effects11
+  procedural-sun path (`ComputeProceduralSun()`); it does not have open-shaders' standalone
+  angular/limb-darkened Procedural Sun feature or the two-path coexistence/ownership logic #678
+  adds. That's a larger port (see the "Larger feature ports" queue), not something this pass took
+  on; recorded here so the status isn't read as "not present" in the meantime.
+- **linear lighting rework** (#666, `feat: linear lighting rework`)
+  — touches `linearLightingSettings`, which `CloudRelight.hlsli` already reads
   (`SharedData::linearLightingSettings.enableLinearLighting` etc.); worth a diff against our
   Linear Lighting feature next time Cloud Relight is re-synced, in case the field set moved.
   Cloud Relight's own math changes from this range are captured in `105a90cea` above.
-- **PBR grass** (#2709) and **terrain-variation mesh support** (#2703) — mainline-CS features
-  merged into this fork via its `chore(sync)` commits, unrelated to our ports.
+- **PBR grass** (#2709) and **terrain-variation mesh support** (#2703) — mainline-CS features that
+  reached open-shaders via its `chore(sync)` commits, not specific to any of our ports.
+  **2026-09-17 — corrected capability record**: both are **present by code** in Personal already
+  (`RunGrass.hlsl` has `#if defined(GRASS_LIGHTING) && defined(TRUE_PBR)` blocks; `TerrainVariation.cpp`
+  has the `EnableMeshSupport` setting, UI checkbox and mesh-texture-cache path), independently of
+  this fork — a prior pass over this document had left them out of the capability ledger entirely,
+  which read as "not present." Not something this queue ported; recorded here only to correct that
+  omission.
   `fix(grass): fix renderdoc crash with grass-opt enabled` (#2706) may be worth a look given we
   carry our own grass-PS duplication (§2) but wasn't investigated this pass.
 - VR-specific work (dynamic near clip #615, native-menu VR awareness, instance-culling fixes) —
