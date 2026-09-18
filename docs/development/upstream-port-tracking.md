@@ -89,7 +89,9 @@ git log <LAST_SYNCED_SHA>..jiayev/compendium-clean --oneline -- \
   "package/Shaders/ISHDR.hlsl" "features/HDR Display/Shaders/HDRDisplay/HDROutputCS.hlsl" \
   "src/ShaderCache.cpp" "src/ShaderCache.h" "src/Utils/D3D.h" "src/Utils/D3D.cpp" \
   "src/Features/Effects11.cpp" "src/State.h" \
-  "package/Shaders/Common/SharedData.hlsli"
+  "package/Shaders/Common/SharedData.hlsli" \
+  "features/Pseudo Sun Bounce" "src/Features/PseudoSunBounce.cpp" "src/Features/PseudoSunBounce.h" \
+  "package/Shaders/Lighting.hlsl"
 ```
 
 GitHub compare URLs (paste the synced SHA in for a quick browser diff):
@@ -593,6 +595,42 @@ What's deferred, not yet present:
 - Leaf-specific flutter refinement (`Sample.leafAnimationStrength`) computed but not yet consumed
   by any leaf-normal perturbation in the vertex shader — trunk bend only.
 - Devbench diagnostics/UX-action integration (see above) — intentionally dropped, not deferred.
+
+### Pseudo Sun Bounce  (`jiayev/skyrim-community-shaders@compendium-clean`)
+
+**Upstream source anchor**: `b8f93c39028a8d82ae7a9c09e76f1ad32c169765` (audited 2026-09-17, current head).
+
+**Upstream source paths**
+
+- `src/Features/PseudoSunBounce.cpp`, `src/Features/PseudoSunBounce.h`
+- `features/Pseudo Sun Bounce/Shaders/Features/PseudoSunBounce.ini`
+- `features/Pseudo Sun Bounce/Shaders/PseudoSunBounce/sunbounce.hlsli` — pure SH math, ported
+  unmodified; this repo's `Common/Spherical Harmonics/SphericalHarmonics.hlsli` already has every
+  function it calls (`Zero`/`Add`/`Scale`/`EvaluateCosineLobe`/`HanningConvolution`/`Unproject`/
+  `FauxSpecularLobe`/`FuncProductIntegral`) with matching signatures.
+
+**Shared-file injection points**
+
+| File | Region |
+| --- | --- |
+| `package/Shaders/Common/SharedData.hlsli` | `PseudoSunBounceSettings` struct + `pseudoSunBounceSettings` field, appended to the end of `FeatureData : register(b6)` |
+| `src/FeatureBuffer.cpp` | `globals::features::pseudoSunBounce.settings` appended as the last `_GetFeatureBufferData` argument |
+| `src/Globals.h/.cpp`, `src/Feature.cpp` | feature registration |
+| `package/Shaders/Lighting.hlsl` | `#include "PseudoSunBounce/sunbounce.hlsli"` under `#if defined(PSEUDO_SUN_BOUNCE)` near the other feature includes (~L945, by `EXP_HEIGHT_FOG`); diffuse-bounce block right after the `IBL` contribution, before `reflectionDiffuseColor = diffuseColor + directionalAmbientColor` (~L2976) — this repo's ambient-composition code at that exact point matches upstream's closely enough (same `directionalAmbientColor`/`ambientNormal`/`skylightingDiffuse`/`MultiBounceAO` names) to drop the block in directly |
+| `src/Features/PseudoSunBounce.cpp` | added `#include "Utils/Serialize.h"` — needed for this repo's `float3`↔JSON `to_json`/`from_json` overloads (declared in `nlohmann::`) to be visible to the `NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT` macro; upstream's own build resolves this differently and didn't need the explicit include |
+
+**Capability status — Adapted port, intentionally scoped down.** The diffuse bounce term (ground/
+wall SH lobes → `directionalAmbientColor`) is fully wired and verified (`fxc /D PSEUDO_SUN_BOUNCE=1`,
+alone and with `SKYLIGHTING=1`). **Deliberately not ported**: upstream also computes a "faux
+specular bounce" term (`SunBounce::CalcFauxSpecularBounce`) consumed at two further points deep in
+the forward/deferred specular composition code (`indirectLobeWeights.specular` blocks, one per
+output path). That needs closer comparison against this repo's specular composition before it can
+be safely inserted — porting it speculatively risked getting two more delicate insertion points
+wrong for a secondary visual refinement. `sunbounce.hlsli` still declares
+`CalcFauxSpecularBounce`; it's just uncalled from this repo's `Lighting.hlsl`. Not tested in-game.
+No cloud-shadow gating either (upstream's `CLOUD_SHADOWS`-conditional multiply on the bounce
+color) — this repo's `Lighting.hlsl` doesn't expose a `CloudShadows::` hook at the insertion point,
+so the bounce always uses the plain directional light color.
 
 ---
 
