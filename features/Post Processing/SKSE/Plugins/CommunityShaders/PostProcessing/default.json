@@ -8,7 +8,7 @@
         }
     },
     "COD Bloom": {
-        "enabled": true,
+        "enabled": false,
         "settings": {
             "BlendFactor": 0.009999999776482582,
             "MipBlendFactor": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],
@@ -28,7 +28,7 @@
         }
     },
     "Color Grading and Tone Mapping": {
-        "enabled": true,
+        "enabled": false,
         "settings": {
             "cdlOffset": [0.0, 0.0, 0.0, 0.0],
             "contrast": [1.0, 1.0, 1.0, 0.0],
@@ -76,11 +76,11 @@
         }
     },
     "Composite": {
-        "enabled": true,
+        "enabled": false,
         "settings": null
     },
     "Depth of Field": {
-        "enabled": true,
+        "enabled": false,
         "settings": {
             "AutoFocus": true,
             "BlurQuality": 7.0,
@@ -106,7 +106,7 @@
         }
     },
     "Histogram Auto Exposure": {
-        "enabled": true,
+        "enabled": false,
         "settings": {
             "AdaptArea": [0.6000000238418579, 0.6000000238418579],
             "AdaptSpeed": 1.5,
@@ -126,7 +126,7 @@
         }
     },
     "Lens Flare": {
-        "enabled": true,
+        "enabled": false,
         "settings": {
             "ApertureBlades": 6,
             "ApertureRotation": 0.0,
@@ -199,7 +199,7 @@
         }
     },
     "Local Exposure": {
-        "enabled": true,
+        "enabled": false,
         "settings": {
             "BaseBlend": 0.6,
             "BlurredLuminanceKernelSize": 50.0,
@@ -270,14 +270,14 @@
         }
     },
     "Vignette": {
-        "enabled": true,
+        "enabled": false,
         "settings": {
             "FocalLength": 1.0,
             "Power": 3.0
         }
     },
     "ppsettings": {
-        "DisableVanillaTonemapping": 1
+        "DisableVanillaTonemapping": 0
     },
     "preset_name": "default"
 }

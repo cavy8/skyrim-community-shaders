@@ -33,7 +33,6 @@ namespace
 		case Index::DoF:
 		case Index::LensFlare:
 		case Index::LocalExposure:
-			return true;
 		case Index::MotionBlur:
 		case Index::PhysicalGlare:
 		case Index::LUT:
@@ -485,9 +484,9 @@ void PostProcessing::SetupResources()
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::LocalExposure)] = std::make_shared<LocalExposure>();
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::LocalExposure)].get()->enabled = false;
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::AutoExposure)] = std::make_shared<HistogramAutoExposure>();
-	pipeline[static_cast<size_t>(FeaturePipelineIndex::AutoExposure)].get()->enabled = true;
+	pipeline[static_cast<size_t>(FeaturePipelineIndex::AutoExposure)].get()->enabled = false;
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::ColorGrading)] = std::make_shared<ColorGrading>();
-	pipeline[static_cast<size_t>(FeaturePipelineIndex::ColorGrading)].get()->enabled = true;
+	pipeline[static_cast<size_t>(FeaturePipelineIndex::ColorGrading)].get()->enabled = false;
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::LUT)] = std::make_shared<LUT>();
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::LUT)].get()->enabled = false;
 
@@ -498,13 +497,13 @@ void PostProcessing::SetupResources()
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::PhysicalGlare)] = std::make_shared<PhysicalGlare>();
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::PhysicalGlare)].get()->enabled = false;
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::CODBloom)] = std::make_shared<CODBloom>();
-	pipeline[static_cast<size_t>(FeaturePipelineIndex::CODBloom)].get()->enabled = true;
+	pipeline[static_cast<size_t>(FeaturePipelineIndex::CODBloom)].get()->enabled = false;
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::LensFlare)] = std::make_shared<LensFlare>();
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::LensFlare)].get()->enabled = false;
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::Composite)] = std::make_shared<Composite>();
-	pipeline[static_cast<size_t>(FeaturePipelineIndex::Composite)].get()->enabled = true;
+	pipeline[static_cast<size_t>(FeaturePipelineIndex::Composite)].get()->enabled = false;
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::Vignette)] = std::make_shared<Vignette>();
-	pipeline[static_cast<size_t>(FeaturePipelineIndex::Vignette)].get()->enabled = true;
+	pipeline[static_cast<size_t>(FeaturePipelineIndex::Vignette)].get()->enabled = false;
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::Camera)] = std::make_shared<Camera>();
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::Camera)].get()->enabled = false;
 	pipeline[static_cast<size_t>(FeaturePipelineIndex::Border)] = std::make_shared<Border>();
