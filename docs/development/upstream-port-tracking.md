@@ -332,7 +332,15 @@ so a re-sync here is always a genuine comparison against current Bottle head, ne
   `src/Features/PostProcessing/ColorSpace.h`.
 - `FeatureBuffer` wires `GetCommonBufferData()` rather than reading settings directly, so
   `DisableVanillaTonemapping` is masked when Post Processing doesn't own the frame.
-- LUT/bokeh textures renamed for RenderDoc debuggability; unused upstream `textures/` dropped.
+- LUT/bokeh textures renamed for RenderDoc debuggability.
+- **2026-09-17:** restored `features/Post Processing/textures/rgbnoise.dds` and `starburst.dds`
+  from `jiayev/skyrim-community-shaders@compendium-clean`, byte-identical to the source blobs.
+  Neither texture is sampled by any code on either branch (`git grep` for `rgbnoise`/`starburst`
+  turns up only UI strings and the unrelated procedurally-generated `PhysicalGlare` starburst
+  pattern) — they're unused upstream too, but the desired Personal implementation keeps them in
+  the tree rather than omitting them. No packaging changes needed: `CMakeLists.txt` globs and
+  copies each feature folder recursively, so a non-empty `textures/` subfolder is picked up
+  automatically. **Included.**
 - `shader-validation.yaml` has no Post Processing–specific defines beyond what CI already
   exercises (149 PP permutations + 9 ISHDR permutations were fxc-validated at port time,
   not by hlslkit) — force-compile with `fxc` rather than trusting a green hlslkit run alone.
