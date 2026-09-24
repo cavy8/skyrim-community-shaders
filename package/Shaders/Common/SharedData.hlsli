@@ -1,6 +1,12 @@
 #ifndef __SHARED_DATA_DEPENDENCY_HLSL__
 #define __SHARED_DATA_DEPENDENCY_HLSL__
 
+#ifdef REVERSE_Z
+#	define SCENE_DEPTH_FORMAT float
+#else
+#	define SCENE_DEPTH_FORMAT unorm float
+#endif
+
 #include "Common/FrameBuffer.hlsli"
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
 #include "Common/TransientWindImpulse.hlsli"
@@ -504,7 +510,8 @@ namespace SharedData
 		float haloFalloff;
 
 		float cloudOcclusionStrength;
-		float3 pad0;
+		float sunQuadModelRadius;
+		float2 pad0;
 	};
 
 	cbuffer FeatureData : register(b6)
@@ -572,12 +579,28 @@ namespace SharedData
 
 	float GetScreenDepth(float depth)
 	{
+#ifdef REVERSE_Z
+#	if defined(PSHADER) || defined(VSHADER)
+		if (!FrameBuffer::IsReverseProjection())
+			return (CameraData.w / (-depth * CameraData.z + CameraData.x));
+#	endif
+		return (CameraData.w / (depth * CameraData.z + CameraData.y));
+#else
 		return (CameraData.w / (-depth * CameraData.z + CameraData.x));
+#endif
 	}
 
 	float4 GetScreenDepths(float4 depths)
 	{
+#ifdef REVERSE_Z
+#	if defined(PSHADER) || defined(VSHADER)
+		if (!FrameBuffer::IsReverseProjection())
+			return (CameraData.w / (-depths * CameraData.z + CameraData.x));
+#	endif
+		return (CameraData.w / (depths * CameraData.z + CameraData.y));
+#else
 		return (CameraData.w / (-depths * CameraData.z + CameraData.x));
+#endif
 	}
 
 	float GetScreenDepth(float2 uv)
