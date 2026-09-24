@@ -56,6 +56,106 @@ namespace FrameBuffer
 		return positionCS.z / positionCS.w;
 	}
 
+	float FarPlaneDepth()
+	{
+#ifdef REVERSE_Z
+		return 0.0;
+#else
+		return 1.0;
+#endif
+	}
+
+	bool IsReverseProjection(float4x4 projection)
+	{
+#ifdef REVERSE_Z
+		return projection[2][2] * projection[3][2] < 0.0;
+#else
+		return false;
+#endif
+	}
+
+	bool IsReverseProjection()
+	{
+		return IsReverseProjection(CameraProj);
+	}
+
+	float FarPlaneClipZ(float clipW, bool reverseProjection)
+	{
+		return reverseProjection ? 0.0 : clipW;
+	}
+
+	float FarPlaneClipZ(float clipW)
+	{
+		return FarPlaneClipZ(clipW, IsReverseProjection());
+	}
+
+	float ToStandardClipZ(float4 clipPosition, bool reverseProjection)
+	{
+		return reverseProjection ? clipPosition.w - clipPosition.z : clipPosition.z;
+	}
+
+	float ToStandardClipZ(float4 clipPosition)
+	{
+		return ToStandardClipZ(clipPosition, IsReverseProjection());
+	}
+
+	float3 ToStandardClip(float4 clipPosition, bool reverseProjection)
+	{
+		return float3(clipPosition.xy, ToStandardClipZ(clipPosition, reverseProjection));
+	}
+
+	float3 ToStandardClip(float4 clipPosition)
+	{
+		return ToStandardClip(clipPosition, IsReverseProjection());
+	}
+
+	float4 OffsetClipDepth(float4 clipPosition, float standardOffset, bool reverseProjection)
+	{
+		clipPosition.z += reverseProjection ? -standardOffset : standardOffset;
+		return clipPosition;
+	}
+
+	float4 OffsetClipDepth(float4 clipPosition, float standardOffset)
+	{
+		return OffsetClipDepth(clipPosition, standardOffset, IsReverseProjection());
+	}
+
+	float ToNativeDepth(float standardDepth)
+	{
+#ifdef REVERSE_Z
+		return 1.0 - standardDepth;
+#else
+		return standardDepth;
+#endif
+	}
+
+	float ToStandardDepth(float depth)
+	{
+#ifdef REVERSE_Z
+		return 1.0 - depth;
+#else
+		return depth;
+#endif
+	}
+
+	float2 ToStandardDepth(float2 depth)
+	{
+#ifdef REVERSE_Z
+		return 1.0 - depth;
+#else
+		return depth;
+#endif
+	}
+
+	float4 ToStandardDepth(float4 depth)
+	{
+#ifdef REVERSE_Z
+		return 1.0 - depth;
+#else
+		return depth;
+#endif
+	}
+
 	/**
 	 * @brief Converts normalized screen UVs to dynamic-resolution UVs and clamps them.
 	 *

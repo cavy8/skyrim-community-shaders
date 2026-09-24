@@ -28,7 +28,7 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float2 adjustedTexCoord = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(input.TexCoord);
 
-	float depth = DepthTex.Sample(DepthSampler, adjustedTexCoord).x;
+	float depth = FrameBuffer::ToStandardDepth(DepthTex.Sample(DepthSampler, adjustedTexCoord).x);
 
 	float depthFactor = DepthParams.w / ((1 - depth) * DepthParams.z + DepthParams.y);
 	float offsetDelta = min(TexelSize.y, TexelSize.z * abs(depthFactor - TexelSize.x));
