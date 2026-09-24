@@ -9,6 +9,7 @@
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
 #include "Features/FoliageLighting.h"
+#include "Features/FootstepParticles.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/GrassOptimizations.h"
@@ -25,6 +26,7 @@
 #include "Features/PostProcessing.h"
 #include "Features/RemoteControl.h"
 #include "Features/RenderDoc.h"
+#include "Features/ReverseZ.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/ScreenshotFeature.h"
@@ -100,6 +102,7 @@ namespace globals
 		PerformanceOverlay performanceOverlay{};
 		WetnessEffects wetnessEffects{};
 		ExtendedTranslucency extendedTranslucency{};
+		ReverseZ reverseZ{};
 		Upscaling upscaling{};
 		HDRDisplay hdrDisplay{};
 		Effects11 effects11{};
@@ -115,6 +118,7 @@ namespace globals
 		Wind wind{};
 		PseudoSunBounce pseudoSunBounce{};
 		ProceduralSun proceduralSun{};
+		FootstepParticles footstepParticles{};
 
 		namespace llf
 		{
@@ -278,6 +282,7 @@ namespace globals
 	{
 		using namespace game;
 		auto frameBuffer = (FrameBuffer*)mappedFrameBuffer->pData;
+		features::reverseZ.FixupMappedFrameBuffer(*frameBuffer);
 		frameBufferCached.data = *frameBuffer;
 		mappedFrameBuffer = nullptr;
 	}

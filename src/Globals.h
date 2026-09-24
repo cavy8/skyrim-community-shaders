@@ -35,6 +35,7 @@ struct WaterEffects;
 struct PerformanceOverlay;
 struct WetnessEffects;
 struct ExtendedTranslucency;
+struct FootstepParticles;
 struct Upscaling;
 class Profiler;
 struct CSEditor;
@@ -48,6 +49,7 @@ struct SnowCover;
 struct Wind;
 struct PseudoSunBounce;
 struct ProceduralSun;
+struct ReverseZ;
 
 class State;
 class Deferred;
@@ -133,6 +135,7 @@ namespace globals
 		extern PerformanceOverlay performanceOverlay;
 		extern WetnessEffects wetnessEffects;
 		extern ExtendedTranslucency extendedTranslucency;
+		extern ReverseZ reverseZ;
 		extern Upscaling upscaling;
 		extern HDRDisplay hdrDisplay;
 		extern Effects11 effects11;
@@ -148,6 +151,7 @@ namespace globals
 		extern Wind wind;
 		extern PseudoSunBounce pseudoSunBounce;
 		extern ProceduralSun proceduralSun;
+		extern FootstepParticles footstepParticles;
 
 	}
 
