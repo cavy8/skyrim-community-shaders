@@ -19,23 +19,49 @@ Ported so far:
 | TruePBR micro shadow AO | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `0a69dbbc5` |
 | Volumetric Lighting god ray strength / focused rays | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `a582a558a` (base strength/shaft-definition/priority), `122f4e2fc` (sun focus) |
 | Dynamic Cubemaps lighting-change detection | `jiayev/skyrim-community-shaders` | `compendium-clean` | `49c35c6ef` |
+| Reverse Z | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `124bc7e22` (feature), `1698b4beb` (depth-convention edits across `FrameBuffer.hlsli`/`DeferredCompositeCS.hlsl`/`Effect.hlsl`/`IS*.hlsl`/`Lighting.hlsl`/`Utility.hlsl`/`Water.hlsl`/`LightLimitFix.hlsli`); undocumented until the 2026-09-25 review — see §3 |
+| Footstep Particles | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `124bc7e22`; undocumented until the 2026-09-25 review — see §3 |
 
 > The port commits did **not** record the exact upstream SHA they were taken
-> from. Baselines *audited on 2026-09-17* against the actual source trees (this is the
-> "near-term port queue" pass — items 1-8 of `docs/development/implementation-brief.md` §1 — not
-> a commit-message-matching exercise; use these as the "since" point, then pin properly on the
-> next re-sync):
-> - `alandtse/open-shaders@dev` — `95bacd821` (unchanged from the 2026-09-15/17 baseline; Cloud
->   Relight re-synced through #681, grass dimming removal #680 ported this pass — see the Cloud
->   Relight section below for what's still outstanding)
-> - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `7c58cb1ee` (was `352e736e6` at the
->   start of this pass; re-fetched before implementation per the brief's instruction. TRUE_PBR
->   Skin/Hair compile fix, TruePBR micro shadow AO, Volumetric Lighting god-ray-strength/focused-
->   rays, and the diet-SLF/local-shadow re-sync were all taken from or verified against this head)
-> - `jiayev/skyrim-community-shaders@compendium-clean` — `b8f93c390` (unchanged; Dynamic Cubemaps
->   lighting-change detection and the restored Post Processing textures were taken from this head).
->   Not in the README's [Branch-Specific Credits](../../README.md#branch-specific-credits) —
->   add it there too.
+> from. Baselines *audited on 2026-09-25* against the actual source trees (this is a
+> full upstream port review — Bottle audited in full including unported features per explicit
+> request; `open-shaders`/`jiayev` restricted to movement on already-ported surface only, per
+> explicit request — not a commit-message-matching exercise; use these as the "since" point, then
+> pin properly on the next re-sync):
+> - `alandtse/open-shaders@dev` — `a6291d6f59` (was `95bacd821`). No movement in Cloud Relight's,
+>   Foliage Lighting's, or Vanilla Fresnel's own feature files. Real findings: a Wind commit
+>   (`f58cc4f61d`) that finishes the "local spring-field spatial variation"/grass-flutter capability
+>   this doc lists as deferred for Wind; a possible latent GPU-state bug in `WindGrass.cpp`/
+>   `WindTrees.cpp` (`6150e8d39e`); a 3-commit Procedural Sun / `Sky.hlsl` composition fix cluster
+>   (`f537f4b9cf`, `a0eafffe21`, `1c0d36c350`); and a TRUE_PBR skin/hair guard fix
+>   (`ce9367f300`→superseded by `25161eb4f3`) landing immediately adjacent to Vanilla Fresnel's/
+>   Foliage Lighting's own hunks in `Lighting.hlsl`/`LightingCommon.hlsli`/`LightingEval.hlsli`. See
+>   the Wind, Procedural Sun, and Vanilla Fresnel sections in §3 for detail.
+> - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `dac6803377` (was `7c58cb1ee`).
+>   **Full feature audit this pass** (not just movement in already-ported paths), per explicit
+>   request. Found two undocumented ports already on `Personal` (Reverse Z, Footstep Particles —
+>   added to the table above and §3, landed 2026-09-23 without a tracking-doc update) and
+>   significant further movement in Light Limit Fix (contact-shadow rewrite + cache-scheduling
+>   rework, landed *after* both the 2026-09-17 LLF re-sync and the Sept-23 port) that supersedes
+>   what this doc previously recorded as "Present" — see the Light Limit Fix section in §3. Several
+>   genuinely new, unported Bottle subsystems were also found (Physical Sun/Effects11 adaptation
+>   integration, Sky Scattering rework for Effects11, `ENBDepthOfField`, FSR4 runtime-upscaler
+>   split) — recorded in §7. Character Rain parity task closed as moot: Bottle reverted its own
+>   character-wetness implementation (`3afd2b6277`), so there is no longer an upstream counterpart
+>   to diff Personal's own implementation against.
+> - `jiayev/skyrim-community-shaders@compendium-clean` — `330cb5dd30` (was `b8f93c390`). No movement
+>   in Dynamic Cubemaps lighting-detection or Pseudo Sun Bounce. Advanced Skin's TRUE_PBR guard
+>   coverage (`25161eb4f3`) confirmed already fully present locally, line-by-line — no action needed
+>   beyond a cosmetic `Skin.ini` version bump upstream took that Personal hasn't (not a functional
+>   gap). Post Processing: two `src/ShaderCache.cpp` robustness fixes not yet re-synced (disk-cache
+>   probe exception handling, `backgroundCompilation` atomic+notify) — see the Post Processing
+>   section in §3. (A prior note here claiming jiayev was missing from the README's
+>   [Branch-Specific Credits](../../README.md#branch-specific-credits) was stale — it's listed there.)
+> - `community-shaders/dev` (mainline, via the `cavy8` fork's synced `dev` branch) — `aebf01c2ef`.
+>   `Personal` is fully merged through local `dev` (`66369e5c58`); mainline is one trivial commit
+>   ahead (`feat: detect Dll version causing grass stutter (#2716)`, 1-line removal in
+>   `RunGrass.hlsl` + `XSEPlugin.cpp` addition) that hasn't been pulled into local `dev` yet. Low
+>   risk, doesn't touch any ported hunk.
 
 ---
 
@@ -84,7 +110,14 @@ git log <LAST_SYNCED_SHA>..bottle/Bottle-Compendium --oneline -- \
   "src/Utils/FormIdParser.cpp" "src/Utils/FormIdParser.h" \
   "package/Shaders/Lighting.hlsl" "package/Shaders/RunGrass.hlsl" "package/Shaders/DistantTree.hlsl" \
   "package/Shaders/Common/SharedData.hlsli" "package/Shaders/Common/Permutation.hlsli" \
-  "package/Shaders/Common/Color.hlsli"
+  "package/Shaders/Common/Color.hlsli" \
+  "features/ReverseZ" "src/Features/ReverseZ.cpp" "src/Features/ReverseZ.h" \
+  "features/Footstep Particles" "src/Features/FootstepParticles.cpp" "src/Features/FootstepParticles.h" \
+  "package/Shaders/Common/FrameBuffer.hlsli" "package/Shaders/DeferredCompositeCS.hlsl" \
+  "package/Shaders/Effect.hlsl" "package/Shaders/Utility.hlsl" "package/Shaders/Water.hlsl" \
+  "src/ShaderCache.cpp" \
+  "features/Light Limit Fix/Shaders/LightLimitFix/LightLimitFix.hlsli" \
+  "src/Features/LightLimitFix.cpp" "src/Features/LightLimitFix.h"
 
 git log <LAST_SYNCED_SHA>..jiayev/compendium-clean --oneline -- \
   "features/Post Processing" "src/Features/PostProcessing.cpp" "src/Features/PostProcessing.h" \
@@ -102,8 +135,12 @@ GitHub compare URLs (paste the synced SHA in for a quick browser diff):
 - `https://github.com/InTheBottle/skyrim-community-shaders/compare/<SHA>...Bottle-Compendium`
 - `https://github.com/jiayev/skyrim-community-shaders/compare/<SHA>...compendium-clean`
 
-Also watch the `snow-rework` branch on the Bottle fork — Snow Cover is actively
-being reworked there and may supersede the `Bottle-Compendium` version.
+~~Also watch the `snow-rework` branch on the Bottle fork~~ — **retired 2026-09-25.**
+`bottle/snow-rework` (tip `a661e44600`) is an ancestor of current `Bottle-Compendium`
+(`git merge-base --is-ancestor bottle/snow-rework bottle/Bottle-Compendium` is true) — its content
+was folded into mainline `Bottle-Compendium` history before the `7c58cb1ee` baseline and is the
+same source material Snow Cover is already synced against. The branch has no commits past
+2026-09-02 and is stale/abandoned. Nothing further to watch here.
 
 ### 1b. This fork's own upstream (mainline Community Shaders)
 
@@ -114,6 +151,14 @@ most likely merge-conflict / silent-breakage site. After any merge from
 mainline, re-verify each feature's hunks below still apply and still compile
 with the feature define forced (see [shader-workflow.md](shader-workflow.md) and
 the porting notes in `.claude` memory).
+
+**2026-09-25 status:** `Personal` is fully merged through local `dev` (`66369e5c58` — verified via
+`git merge-base Personal dev` equalling `dev`'s tip). Mainline (`community-shaders/dev`, the
+`cavy8` fork's synced copy of the upstream `community-shaders/skyrim-community-shaders` `dev`
+branch) is one trivial commit ahead: `aebf01c2ef` "feat: detect Dll version causing grass stutter
+(#2716)" — a 1-line removal in `RunGrass.hlsl` (`dirDetailedShadow += ShadowClampValue * (1.0 -
+dirDetailedShadow);`, unrelated to any ported hunk) plus a 24-line addition to `XSEPlugin.cpp`. Low
+risk; just needs local `dev` fetched/merged forward.
 
 ---
 
@@ -178,8 +223,75 @@ so a re-sync here is always a genuine comparison against current Bottle head, ne
   divergence to preserve against a future resync (feel free to keep it or drop it).
 - No settings-schema or i18n changes were needed — every improvement above is compile-time
   constants and internal bookkeeping, not new user-facing settings.
-- **Present** — describes exactly which current-Bottle-head improvements are pulled forward, per
-  the table above; this is not a full architectural replacement of Personal's diet-SLF design.
+- **Present (as of the 2026-09-17 pass only)** — describes exactly which Bottle-head improvements
+  from that pass were pulled forward; **superseded by further Bottle movement, see below.**
+
+**2026-09-25 review — significant further Bottle movement, re-sync not yet done:**
+
+Bottle kept reworking diet-SLF after both the 2026-09-17 re-sync above and the undocumented
+2026-09-23 Reverse Z/Footstep Particles port (which itself touched 95 lines of
+`LightLimitFix.hlsli` for the reverse-Z depth convention — already captured). None of the following
+is reflected locally. Direct file-diff against current Bottle head (`dac6803377`) confirms
+`LightLimitFix.cpp` diverges 308 lines, `LightLimitFix.h` 56 lines, `LightLimitFix.hlsli` 229 lines:
+
+- **`d05a80bb00`** "chore: improve contact shadows" (95 lines, `LightLimitFix.hlsli`) and
+  **`dac6803377`** "feat: tiny glade like contact shadows" (178 lines `LightLimitFix.hlsli`, 25/12
+  lines `LightLimitFix.cpp/h`, current Bottle head) — a full rewrite of the contact-shadow ray
+  representation the 2026-09-17 pass ported: replaces `ContactShadowRay{clipOrigin,clipStep,
+  viewDepth}` with a UV-space `{uvOrigin,uvDelta,inverseDepth,tMax}` form, exponential march
+  (`CONTACT_SHADOW_MARCH_EXPONENT`), and a new end-fade constant. **Depends on
+  `FrameBuffer::CameraProj`/`DynamicResolutionParams1`** — i.e. it's coupled to the already-ported
+  Reverse Z work (see the Reverse Z section below); re-sync this only after confirming Reverse Z
+  itself is fully current, not before.
+- **`6ae45a32fa`** "fix: SLF shadow flicker" (185/20 lines `LightLimitFix.cpp/h`) — replaces the
+  starvation/`contentHash`/`cachedGeomHash`/`LOCAL_SHADOW_STARVED_SCORE` cache-invalidation model the
+  2026-09-17 pass ported with a different reclaim-priority model (`LOCAL_SHADOW_ACTOR_SCORE = 1000`,
+  `LOCAL_SHADOW_AGE_URGENCY = 64`, a static `IsLocalShadowSliceReclaimable()` helper). This directly
+  supersedes what's documented as "Present" above — needs a full re-diff against current Bottle,
+  not a patch on top of the 2026-09-17 work.
+- **`a0ac9312e8`** "fix: unforce bias LLS" (10/1 lines) — small, removes a forced-bias code path.
+- **Priority: highest item in the 2026-09-25 review.** Largest architecturally-significant
+  outstanding gap of anything found this pass, and the one most likely to cause visible regressions
+  (contact-shadow behavior, cache flicker) if left unsynced. Status pending a fresh re-sync pass —
+  do not describe as "Present" until this is done.
+
+### Reverse Z  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
+
+Ported `124bc7e22` (feature) + `1698b4beb` (shared depth-convention edits), 2026-09-23 —
+**undocumented until this 2026-09-25 review.** Rewrites depth handling across `FrameBuffer.hlsli`
+(new), `DeferredCompositeCS.hlsl`, `Effect.hlsl`, most `IS*.hlsl` post-process shaders,
+`Lighting.hlsl`, `Utility.hlsl`, `Water.hlsl`, `LightLimitFix/ClusterBuildingCS.hlsl`,
+`GrassOptimizations/*` (culling/Hi-Z/SPD), `ScreenSpaceGI/common.hlsli`,
+`ScreenSpaceShadows/RaymarchCS.hlsl`/`bend_sss_gpu.hlsli`, `TerrainBlending/DepthBlend.hlsl`,
+`DynamicCubemaps/CaptureCommon.hlsli`. Given this blast radius, most apparent "unrelated churn" in
+`Lighting.hlsl`/`SharedData.hlsli` on any future Bottle diff is likely Reverse Z, not a separate
+feature — check here first before assuming a new port target.
+
+**2026-09-25 review — residual follow-up fixes, not yet captured:**
+
+- `src/ShaderCache.cpp` diverges 86 lines from Bottle head (`9a6d3b2426` "fix: reverse z map",
+  `0a9f8f8ac0` "fix: reverse z imagespaces", `3b9a9dc3c9` "fix: Motion blur and DOF PP z" also
+  touches this file).
+- `package/Shaders/Effect.hlsl` diverges 45 lines (`42d5129c75` "fix: reverse z effect shaders").
+- `package/Shaders/PostProcessing/MotionBlur/motionblur_*.cs.hlsl` (4 files) +
+  `src/Features/PostProcessing/MotionBlur.cpp`, from `3b9a9dc3c9` — not individually diffed, but
+  same commit as the `ShaderCache.cpp` divergence above, so very likely also outstanding.
+- `src/Features/ReverseZ.cpp` itself is confirmed **byte-identical** to current Bottle head — the
+  `1e88b27471` "fix: reverse z interior perk menu" fix (68 lines) is already captured. Only the
+  follow-up fixes above are outstanding.
+- Size: small-medium, mechanical re-application of a handful of hunks in files Personal already
+  owns from the port. Lower priority than the Light Limit Fix contact-shadow rework above, but that
+  rework itself depends on Reverse Z being current, so do this first.
+
+### Footstep Particles  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
+
+Ported `124bc7e22`, 2026-09-23 — **undocumented until this 2026-09-25 review.** Direct port,
+feature-owned files only (`features/Footstep Particles/**`, `src/Features/FootstepParticles.cpp/h`,
+934/177 lines). No shared-file injection points beyond feature registration
+(`src/Deferred.cpp`, `src/Feature.cpp`). Not independently checked for upstream movement since the
+port SHA this pass — no specific gap flagged, but also not confirmed current; a dedicated
+path-filtered `git log` against `features/Footstep Particles` / `src/Features/FootstepParticles.*`
+is still owed on the next re-sync pass.
 
 ### Snow Cover  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
 
@@ -215,6 +327,11 @@ so a re-sync here is always a genuine comparison against current Bottle head, ne
   and `SnowCover::PerFrame` shrank 464 → 176 bytes. `SnowCover.ini` bumped to `1-2-0`. Upstream's
   same commit also flipped `Tamriel.json`'s `AffectTreeTint` 0 → 1 as an apparently unrelated
   default change — **not** carried over; re-review if picking that up later.
+- **2026-09-25 review: no movement.** `git log 7c58cb1ee..bottle/Bottle-Compendium` against Snow
+  Cover's own paths is empty; the hot-file filter (`Lighting.hlsl`/`RunGrass.hlsl`/
+  `DistantTree.hlsl`/`Color.hlsli`) shows commits but none touch a `SnowCover::` call site
+  (verified via `grep "SnowCover::"` on the diff) — that churn is entirely Reverse Z/Procedural
+  Sun/cloud-shadow work in the same files. No re-sync needed.
 
 ### Cloud Relight  (`alandtse/open-shaders@dev`)
 
@@ -255,6 +372,17 @@ so a re-sync here is always a genuine comparison against current Bottle head, ne
     Not a pending pickup.
   - `fix(foliage): fade scattering at shadow limits` (#677) — see the
     Foliage Lighting section below; blocked on an architectural gap, not merged (**Deferred**).
+- **2026-09-25 review: no movement in Cloud Relight's own files**
+  (`features/Cloud Relight/**`, `src/Features/CloudRelight.cpp/h`, the Cloud Shadows hook). But
+  **`a0eafffe21`** "fix(ll): correct sky composition" (#738, 2026-09-21) reworks `Sky.hlsl`'s color
+  composition under Linear Lighting (`ENABLE_LL`) — introduces `ComposeSkyColor()`/
+  `composeAuthoredSky` threaded through `PS_OUTPUT main()`, changing when `Color::Sky()` applies
+  (pre- vs post-multiply) across base/blend/cloud-relight/procedural-sun/HDR-sun/moonmask/horizfade
+  paths, and directly touches the `CR_CLOUDS` block Cloud Relight's own hook sits inside. This needs
+  a careful diff (not a mechanical cherry-pick) next time `Sky.hlsl` is touched — bundle with the
+  Procedural Sun re-sync below, since both hook the same function and the same commit landed
+  alongside two Procedural Sun fixes the same evening. The `linearLightingSettings` field set Cloud
+  Relight reads has **not** moved (zero diff on `SharedData.hlsli` for that struct in this range).
 
 ### Foliage Lighting  (`alandtse/open-shaders@dev`, CORE feature)
 
@@ -294,6 +422,12 @@ so a re-sync here is always a genuine comparison against current Bottle head, ne
   Re-evaluate once/if `LightLimitFix`'s directional-shadow path adopts VSM cascade merging with a
   `directionalCoverage` output of its own.
 - i18n keys added.
+- **2026-09-25 review: no movement** in Foliage Lighting's own files. The deferred-item blocker
+  check was re-verified: `package/Shaders/Common/DirectionalShadow.hlsli` exists on current
+  `open-shaders@dev` but is **unchanged** since the `95bacd821` baseline — the blocker situation is
+  identical to 2026-09-17, still correctly deferred, nothing new to re-evaluate. `Math.hlsli` (where
+  Personal's local `SafePow` lives) also has zero upstream commits in this range — the de-dup
+  concern remains hypothetical, no action.
 
 ### Vanilla Fresnel  (`alandtse/open-shaders@dev`, CORE feature)
 
@@ -318,6 +452,20 @@ so a re-sync here is always a genuine comparison against current Bottle head, ne
 - Relies on the invariant that `TRUE_PBR` never combines with `ENVMAP`/`EMAT`/`MULTI_LAYER_PARALLAX`/`EYE` in the validation matrix — the Fresnel hunks reference vars from the non-`TRUE_PBR` `MaterialProperties` branch on purpose.
 - `shader-validation.yaml` has no `VANILLA_FRESNEL` define — force-compile `Lighting.hlsl` and `RunGrass.hlsl` (PS included) by hand with `fxc /D VANILLA_FRESNEL=1`.
 - i18n keys added.
+- **2026-09-25 review: no movement in Vanilla Fresnel's own files**, but two commits land right
+  next to its hunks in the same three shared files: **`ce9367f300`** "fix(skin): guard non-PBR
+  material access" (#716, 2026-09-19) — narrows a `SKIN`/`CS_SKIN` guard in `Lighting.hlsl` (~L2094)
+  immediately after a `VANILLA_FRESNEL`/`TRUE_PBR` `#endif` block — and **`25161eb4f3`**
+  "fix(shaders): compile skin and hair under TRUE_PBR" (#2738, 2026-09-24, supersedes `ce9367f300`)
+  — generalizes the same fix into `CS_SKIN_SHADING`/`CS_HAIR_SHADING` macros used at ~15 guard sites
+  across `Lighting.hlsl`/`LightingEval.hlsli`/`LightingCommon.hlsli`. Not a Vanilla Fresnel content
+  change, low urgency (guard-only, no visible artifact), but a straight cherry-pick of either commit
+  will likely conflict against Personal's local Vanilla Fresnel/Foliage Lighting hunks in the same
+  files — fold in opportunistically next time these files are touched for either feature. Note:
+  `#2738`'s equivalent fix already reached Personal via `jiayev`'s shared-ancestor commit and is
+  confirmed fully present (see Advanced Skin section) — this is the `open-shaders` side of the same
+  underlying upstream fix propagating through a different fork; no separate action needed once the
+  guard-adjacency is acknowledged.
 
 ### Post Processing  (`jiayev/skyrim-community-shaders@compendium-clean`)
 
@@ -363,6 +511,28 @@ so a re-sync here is always a genuine comparison against current Bottle head, ne
   not by hlslkit) — force-compile with `fxc` rather than trusting a green hlslkit run alone.
 - Marked alpha at port time — confirm current release stage in
   `features/Post Processing/Shaders/Features/PostProcessing.ini` before assuming defaults.
+- **2026-09-25 review: two `src/ShaderCache.cpp` robustness fixes not yet re-synced**, both from
+  **`c321154fa4`** "fix: shader wakeups, cache probes and SSS guards" (#2722, 2026-09-21):
+  - **Disk-cache probe exception safety.** Upstream changes `std::filesystem::exists(diskPath)`
+    (the throwing overload) to the `std::error_code`-taking overload, with the rationale "a failed
+    filesystem probe is a cache miss, not a failed compilation task." Personal's `ShaderCache.cpp`
+    (currently ~L1398 and ~L2527) still uses the throwing overload — a filesystem hiccup (AV lock,
+    permission error, network drive) here throws uncaught into the compile path instead of
+    degrading to a cache miss. Trivial fix (add an `std::error_code` out-param); medium urgency,
+    rare trigger.
+  - **`backgroundCompilation` synchronization.** Upstream replaces the plain
+    `bool backgroundCompilation` with `std::atomic_bool` plus a new
+    `ShaderCache::SetBackgroundCompilation(bool)` that locks `compilationMutex` and notifies
+    `conditionVariable` — because `Complete()` erases the entry before notifying, flipping the mode
+    while the dispatcher thread is parked in `conditionVariable.wait()` previously wouldn't wake it.
+    Personal (`ShaderCache.h` ~L621) still has a plain `bool`, written directly with no lock/notify
+    from `src/Menu.cpp` (`SkipCompilationKey` handler, ~L1138) and `src/XSEPlugin.cpp` (~L131) — the
+    skip-compilation hotkey and boot-time background-mode toggle can silently fail to take effect
+    promptly. Medium urgency.
+  - **Not applicable:** the same commit also swaps `TryTakeNext`'s admission-budget check from
+    `compilationPool.get_tasks_total()` to `tasksInProgress.size()` to fix a related race — Personal's
+    `TryTakeNext` already uses a dedicated `std::atomic<uint32_t> dispatchedTasksInFlight` counter (a
+    different, race-free mechanism), so this part doesn't apply.
 
 ### Advanced Skin profiles / overrides  (`jiayev/skyrim-community-shaders@compendium-clean`)
 
@@ -419,6 +589,11 @@ non-PBR permutations still compile unchanged. **Present by code.**
   (`FeatureBuffer.cpp` passes `TruePBR::settings` straight through as the GPU struct).
 - `TruePBR.ini` bumped `1-0-0` → `1-1-0`.
 - **Present.**
+- **2026-09-25 review: no movement.** `package/Shaders/Common/PBR.hlsli` is byte-for-byte unchanged
+  against current Bottle head since `7c58cb1ee`. `src/TruePBR.cpp/h` show large diffs (240/62
+  lines) but these come entirely from an unrelated Bottle feature ("per-object material override")
+  that was added and then fully reverted in the same window (`a6d5d34d4a` "revert per object
+  mato") — net zero effect on the ported micro-shadow-AO surface.
 
 ### Volumetric Lighting god ray strength / focused rays  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
 
@@ -454,6 +629,10 @@ non-PBR permutations still compile unchanged. **Present by code.**
   force-compiled by hand with `fxc` (`CSHADER`, with and without `TERRAIN_SHADOWS`/
   `CLOUD_SHADOWS`) at port time.
 - **Present.**
+- **2026-09-25 review: effectively no movement.** `VolumetricLighting.cpp/h`/`.ini` are byte-for-
+  byte unchanged since `7c58cb1ee`. The only touched file in the god-ray path filter is
+  `ISVolumetricLightingGenerateCS.hlsl` (5 lines, from the Reverse Z commit `6db6512c96`) — already
+  byte-identical between local HEAD and Bottle head, captured by the Reverse Z port. No action.
 
 ### Dynamic Cubemaps lighting-change detection  (`jiayev/skyrim-community-shaders@compendium-clean`)
 
@@ -504,6 +683,9 @@ non-PBR permutations still compile unchanged. **Present by code.**
   shaders need `COMPUTESHADER` (not `CSHADER`) since `Util::CompileShader` injects that macro for
   `.hlsl` compute-shader compiles (see `Utils/D3D.cpp`).
 - **Present.**
+- **2026-09-25 review (jiayev): no movement.** Zero commits in `b8f93c390..jiayev/compendium-clean`
+  touch `CaptureCommon.hlsli`, `DetectCaptureLightingCS.hlsl`, `InferCubemapCS.hlsl`,
+  `UpdateCubemapCS.hlsl`, or `src/Features/DynamicCubemaps.cpp/h`.
 
 ### Wind  (`alandtse/open-shaders@dev`)
 
@@ -598,6 +780,44 @@ What's deferred, not yet present:
   by any leaf-normal perturbation in the vertex shader — trunk bend only.
 - Devbench diagnostics/UX-action integration (see above) — intentionally dropped, not deferred.
 
+**2026-09-25 review — high-value movement found, changes the shape of the deferred items above:**
+
+- **`f58cc4f61d`** "feat(wind): grass flutter and ambient tuning" (#760, 2026-09-25, newest commit
+  audited in this whole pass). This is upstream **finishing the exact "local spring-field spatial
+  variation" deferred item above** — not a small fix. Adds a new `WindField::Components
+  .ambientTurbulence` field (`WindFieldTypes.hlsli`, threaded through `WindField.hlsli`'s
+  `SampleField`/`SampleCurrentComponents`); `GrassWindSpringCS.hlsl` now computes and **stores a
+  per-cell "flutter" value in the alpha channel of its `Response`/`Velocity` output textures**,
+  driven by ambient turbulence, gust envelope, and a transient-impulse-driven flutter with
+  exponential half-life decay (`TransientFlutterHalfLife = 0.15f`) — the spring-field output is
+  finally being *consumed*, not just computed-and-unbound; `GrassWindResponse.hlsli`'s
+  `ComputeWindResponse` now reads that per-cell flutter out of the spring-field sample
+  (`currentSample.w`/`previousSample.w`) instead of the old direct-procedural
+  `CalculateFlutterWave()` frequency-scaling, when `EnableAmbientGrassWind` is set;
+  `RunGrass.hlsl`'s `ApplyGrassWindResponse` gains a `GrassWind::CalculateFlutterDisplacement`
+  branch (gated on `Permutation::EnableGrassWindSpringBend`/`EnableAmbientGrassWind`) turning the
+  flutter scalar into a per-vertex displacement via a bend-axis-perpendicular direction, replacing
+  the always-vanilla-style flutter when ambient wind is active. New tunables land in `WindSettings`/
+  `FieldData`: `GrassWindSpring::EvaluateFlutterAmplitudeMultiplier`/`FlutterFrequency`/
+  `TransientFlutterStrength`/`FlutterAmplitudeResponse`. **If Wind's deferred spring-field/flutter
+  gap is picked up, this commit is now the reference implementation to port from** rather than
+  designing the missing compute-texture-binding + flutter-consumption logic from scratch. No
+  movement found on tree transient impulses (`TreeWindSpring::TrySample*Transient` still stubbed
+  upstream in this range), the `GRASS_OPTIMIZATIONS` path, or Grass Collision interaction — those
+  deferred items are unchanged.
+- **`6150e8d39e`** "fix(wind): preserve shared compute buffers" (#726, 2026-09-20) — possible latent
+  bug, needs a direct check against Personal's code (not yet verified either way). Upstream's
+  `WindGrass.cpp`/`WindTrees.cpp` were unbinding constant-buffer slot 5
+  (`context->CSSetConstantBuffers(5, 1, &nullBuffer)`) after grass/tree wind-spring compute
+  dispatch, which the commit message says clobbers a **shared** b5 buffer needed by subsequent
+  compute passes; fix drops that unbind call (keeps only slot 0's unbind). Also touches
+  `GrassOptimizations.cpp` (shrinks a null-buffer unbind array from 4 to 2, same "shared b5/b6 must
+  stay bound" rationale) — `GrassOptimizations.cpp` is outside Wind's tracked port-path list, so
+  check separately whether Personal has this file and the same pattern. Personal's
+  `WindGrass.cpp`/`WindTrees.cpp` were ported from this exact upstream lineage and plausibly carry
+  the identical unbind-slot-5 line — worth a direct grep-and-check; if present, it's a one-line fix
+  with a hard-to-notice GPU-state-corruption failure mode on subsequent draws. Moderate urgency.
+
 ### Pseudo Sun Bounce  (`jiayev/skyrim-community-shaders@compendium-clean`)
 
 **Upstream source anchor**: `b8f93c39028a8d82ae7a9c09e76f1ad32c169765` (audited 2026-09-17, current head).
@@ -633,6 +853,11 @@ wrong for a secondary visual refinement. `sunbounce.hlsli` still declares
 No cloud-shadow gating either (upstream's `CLOUD_SHADOWS`-conditional multiply on the bounce
 color) — this repo's `Lighting.hlsl` doesn't expose a `CloudShadows::` hook at the insertion point,
 so the bounce always uses the plain directional light color.
+
+**2026-09-25 review (jiayev): no movement.** Zero commits in `b8f93c390..jiayev/compendium-clean`
+touch `src/Features/PseudoSunBounce.cpp/h` or `features/Pseudo Sun Bounce/**` — the diffuse bounce
+term Personal has is unchanged; the deliberately-skipped specular/cloud-shadow gaps remain as
+described above with no new upstream movement to reconsider.
 
 ### Procedural Sun  (`alandtse/open-shaders@dev`)
 
@@ -677,6 +902,35 @@ with `fxc` across the default case, Effects11-only, standalone-only, both-coexis
 "Partial overlap" (Effects11's simpler version only). That is superseded — Personal now has both
 the Effects11 screen-space version and the standalone angular version, with deterministic
 ownership between them.
+
+**2026-09-25 review — active bug-fix cluster, re-sync warranted.** Upstream had a burst of
+`Sky.hlsl`/sun-related fixes on 2026-09-21, all from the same author within ~3 hours of each other
+— recommend re-syncing as one unit, in this chronological order, since they're sequential edits to
+the same function:
+
+1. **`1c0d36c350`** "fix(sky): restore vanilla sun glare" (#733) — one-line: the depth-occlusion
+   `#else` branch (occludes the sun disc by scene depth) narrows to
+   `#elif !defined(DITHER) || !defined(TEX)`. Minor alone, in the same `Sky.hlsl` region as
+   Procedural Sun's rendering.
+2. **`f537f4b9cf`** "fix(sun): prevent procedural sun clipping" (#735) — direct Procedural Sun fix,
+   touches `ProceduralSun.hlsli`/`Sky.hlsl`/`ProceduralSun.cpp/h`/`SharedData.hlsli`, adds
+   `TestProceduralSun.hlsl` coverage. Adds `GetOcclusionBillboardScale`/`GetBillboardScale`/
+   `ResizeBillboardVertex` to rescale the sun billboard mesh based on a new `sunQuadModelRadius`
+   field (read from `sky->sun->sunBase->GetModelData().modelBound.radius` in
+   `ProceduralSun::GetCommonBufferData()`) vs. the engine's fixed glare-visibility-sample assumption
+   (`VANILLA_SUN_BASE_HALF_WIDTH = 425.0f`), stopping the sun disc from clipping; also refactors
+   `IsProceduralSunActive()` into a shared helper called from both VS and PS. Real, non-trivial
+   correctness fix — visible clipping artifact, moderate urgency.
+3. **`a0eafffe21`** "fix(ll): correct sky composition" (#738) — see the Cloud Relight section
+   above; substantial `Sky.hlsl` composition rework (`ComposeSkyColor()`/`composeAuthoredSky`) that
+   sets `composeAuthoredSky = false` in the procedural-sun and HDR-sun branches specifically.
+   **Needs careful diffing, not mechanical cherry-pick**, since it touches the exact composition
+   logic both Cloud Relight and Procedural Sun hook into.
+
+Out-of-scope note: `47f5e45630` "feat(utility): expand atmosphere controls" (#741) also touches
+`Sky.hlsl`/`SharedData.hlsli` in the same area (CS Utility's own `cloudBrightness`/
+`cloudSaturation`/`sunGlareIntensity` fields) — CS Utility itself remains out of scope for this
+repo, but it will textually interleave with any `Sky.hlsl` re-sync of the three commits above.
 
 ---
 
@@ -739,14 +993,19 @@ than diffing full trees on a schedule. Fold into the monthly check in §5.
 
 ---
 
-## 7. New upstream features observed, not currently ported or watched (reviewed 2026-09-17)
+## 7. New upstream features observed, not currently ported or watched (reviewed 2026-09-17, updated 2026-09-25)
 
-Survey of everything each fork shipped since the 2026-09-15 baselines (§1a/§1b), beyond the
-already-ported feature surface. None of this has been ported — recorded here so a future re-sync
+Survey of everything each fork shipped since the last baseline, beyond the already-ported feature
+surface. **Scope note (2026-09-25):** per explicit instruction, this pass only did a from-scratch
+new-feature survey for `InTheBottle/skyrim-community-shaders` (Bottle) — its subsection below is
+fully refreshed against `dac6803377`. The `open-shaders` and `jiayev` subsections are left as they
+stood at the 2026-09-17 review; those two forks were this pass only checked for movement on
+already-ported surface (see §3's per-feature "2026-09-25 review" notes), not re-surveyed for brand
+new features. None of this section's content has been ported — recorded here so a future re-sync
 pass can decide whether any of it is worth adopting. Nothing in this section changes what §1a's
 `git log` path filters need to cover unless a port is actually taken from it later.
 
-### `alandtse/open-shaders@dev` (`7ae52a5543` → `95bacd821`)
+### `alandtse/open-shaders@dev` (`7ae52a5543` → `95bacd821`, not re-surveyed 2026-09-25 — see scope note above)
 
 - **`features/Wind/`** (#634) and **Procedural sun** (#678) — both now ported; see their entries
   under [3. Per-feature watch lists](#3-per-feature-watch-lists) above (**Partial port** and
@@ -775,23 +1034,90 @@ pass can decide whether any of it is worth adopting. Nothing in this section cha
   features` (#639), `feat(feature): add generic per-render-pass hook` (#654) — general
   infrastructure refactors, not evaluated for adoption.
 
-### `InTheBottle/skyrim-community-shaders@Bottle-Compendium` (`497916e45e` → `7c58cb1ee`)
+### `InTheBottle/skyrim-community-shaders@Bottle-Compendium` (`7c58cb1ee` → `dac6803377`, full feature audit 2026-09-25)
 
-- **Character skin wetness** (`374fab73b`) — sizeable new feature: `CharacterRainSurfaces`,
-  `CharacterRainLighting.hlsli`, `CharacterRainSpots.hlsli`, wired into `WetnessEffects` and
-  `GrassCollision`. Large diff (~1200 lines); would be a standalone port, not a small pickup.
-  Personal already has its own Character Rain implementation — **present by code** (see the
-  Character Rain note below), so this is a candidate for a parity re-check, not a fresh port.
-- The `snow-rework` branch (already flagged in §1a) is still the one to watch for a Snow Cover
-  rewrite that would supersede `Bottle-Compendium`'s version entirely.
-- **2026-09-17: Character Rain — corrected capability record.** Personal's own Character Rain
-  implementation (predates this tracking pass) is **present by code**; an earlier read of this
-  document's "not currently ported" language was inaccurate. No action taken here beyond
-  correcting the record — a line-by-line parity diff against Bottle's `374fab73b` wetness work is
-  still open, per the note above.
-- **2026-09-17:** the diet-SLF/local-shadow re-sync (see the Light Limit Fix section above) was
-  reviewed against Bottle head `7c58cb1ee` (moved from the `352e736e6` baseline recorded in this
-  file on 2026-09-15/17) — see that section for exactly what was and wasn't pulled forward.
+**Character Rain parity task — closed, moot.** Bottle **reverted its own** character-wetness
+implementation: `3afd2b6277` "revert: character wetness" deletes `CharacterRainSurfaces.cpp/h`,
+`CharacterRainLighting.hlsli`, `CharacterRainSpots.hlsli` entirely and strips the associated
+`WetnessEffects.cpp/h`/`GrassCollision.cpp`/`State.h`/`ActorUtils.*` hooks (net -1231/+38 lines).
+Confirmed: `git ls-tree -r bottle/Bottle-Compendium | grep -i characterrain` returns nothing at
+current head. There is no longer an upstream Bottle implementation to line-by-line-diff Personal's
+own Character Rain against — the previously-open "still needs a parity recheck" item is closed;
+only worth revisiting if Bottle reintroduces the feature later.
+
+**`snow-rework` branch — retired, see §1a.** It's an ancestor of current `Bottle-Compendium`, not a
+pending rewrite; nothing further to watch.
+
+**Two large ports landed 2026-09-23 without a tracking-doc update — now recorded in §3/top table:**
+Reverse Z (`124bc7e22`/`1698b4beb`) and Footstep Particles (`124bc7e22`). See their dedicated §3
+sections for residual follow-up gaps.
+
+**Light Limit Fix — significant further movement, re-sync now owed.** See the Light Limit Fix
+section in §3 for the full detail (`d05a80bb00`, `dac6803377`, `6ae45a32fa`, `a0ac9312e8`) — this
+supersedes the 2026-09-17 "Present" record and is the highest-priority item from this review.
+
+**Genuinely new, unported Bottle subsystems found this pass** (none have any local counterpart;
+ranked by rough size):
+
+- **Light Limit Fix contact-shadow/scheduling rework** — see above, not a separate feature but
+  large enough to call out again here.
+- **Sky Scattering rework for Effects11** (`0657cf0ab4` "feat: rework sky scattering for effects
+  11") — medium-large. Adds `features/Effects11/Shaders/Effects11/SkyScattering.hlsli` (new, 237
+  lines; confirmed absent locally), reworks `ApplyVolumetricRaysPS.hlsl`/
+  `RaymarchVolumetricRaysPS.hlsl`, a 5-line `CloudShadows/CloudShadows.hlsli` hook, 20 lines of
+  `Sky.hlsl`, 23 new `SharedData.hlsli` struct fields, 103/30 lines of `Effects11.cpp/h`, 21 lines
+  of `EffectManager.cpp`. A from-scratch Effects11 atmospheric-scattering model, independent of
+  Personal's Cloud Relight/Procedural Sun ports but touching the same shared `Sky.hlsl`/
+  `SharedData.hlsli` hot files.
+- **Physical Sun / Effects11 sun-adaptation integration** (`26611dd183` "feat: readd physical sun w
+  e11 adaptation") — medium. Extends Bottle's **own, separately-lineaged** copy of a
+  similarly-named `features/Procedural Sun/` feature (settings diverge from Personal's
+  open-shaders-sourced version: Bottle has `cloudExtinction`/`excludeFromAdaptation`, Personal has
+  `cloudOcclusionStrength` — confirmed different upstream lineages, not the same code under a
+  shared name). New: `features/Effects11/Shaders/Effects11/AdaptationSunMaskPS.hlsl` (45 lines,
+  confirmed absent locally) plus Effects11 sun-ownership wiring in `Effects11.cpp/h`/
+  `EffectManager.cpp`. Would need disambiguation against Personal's existing open-shaders
+  `ProceduralSun` (does it coexist via the same `effects11OwnsSun`-style arbitration Procedural Sun
+  already resolved, or does Bottle's version replace that arbitration?) before porting.
+- **`ENBDepthOfField`** (`src/Features/Effects11/Effects/ENBDepthOfField.cpp/h`) — small,
+  self-contained new `EffectBase` subclass (aperture/focus-time IDs, one SRV,
+  `enbdepthoffield.fx`). Confirmed absent locally.
+- **FSR4/FSR3 runtime-upscaler split** (`src/Features/Upscaling/FidelityFX/RuntimeUpscaler.cpp`,
+  new file, references `../../ReverseZ.h`) — confirmed absent locally. Coupled to both the
+  FidelityFX upscaling path and the already-ported Reverse Z work; worth checking whether Personal's
+  current `FidelityFX.cpp` needs this split now that Reverse Z is in.
+- **Cloud self-shadowing** (`35e2151ab9` "feat: cloud self shadowing and cloud improvements") — low
+  priority, uncertain net upstream state: Bottle **partially reverted this itself** two commits
+  later (`6660d25a1b` "revert" removes the 60-line `CloudShadows.hlsli` self-shadow addition and
+  `Sky.hlsl`'s +18 lines, but leaves some `CloudShadows.cpp/h` changes in place). Not evaluated
+  further given the self-revert; re-check net state if picking this up later.
+- **`b4e7b08ec4`** "feat(menu): sortable profiler timing tables" (#2759) — UI-only,
+  `PerformanceOverlay.cpp`/`Menu/ProfilingRenderer.cpp`/`Utils/UI.cpp/h`. **Not Bottle-original** —
+  this is a mainline-CS change Bottle absorbed via `e8ac64db3c` "chore: merge upstream/dev
+  (post-1.9.0 fixes)"; check mainline sync status (§1b) rather than treating as a Bottle pickup.
+- Skimmed titles only, not diffed: `09384077cf` "feat: height fog native for e11\vanilla",
+  `283b33399b` "e11 fixes", `1e1da45856` "disable post processing default" — small-to-unknown size,
+  Effects11/PostProcessing-adjacent.
+
+**Other notable upstream changes (not feature-scoped, worth flagging):**
+
+- **`44826d2805`** "fix(terrain-shadows): stabilize penumbrae" (#2729) — mainline-CS fix (reached
+  Bottle via its own `chore: merge main into dev`), touches `TerrainShadows.hlsli`/
+  `ShadowUpdate.cs.hlsl`/`SharedData.hlsli`/`TerrainShadows.cpp/h`. Confirmed local
+  `TerrainShadows.hlsli` diverges 24 lines from Bottle head — Terrain Shadows isn't a Bottle-sourced
+  port in Personal, so this is informational only (check mainline sync status, §1b), but it's a
+  `SharedData.hlsli`-touching fix worth knowing about.
+- **`25161eb4f3`** "fix(shaders): compile skin and hair under TRUE_PBR" (#2738) also appears on
+  Bottle's history via its own upstream-merge commits — same fix already documented as ported
+  (`2da0eb7a5`, "shared ancestor commit") and confirmed fully present (see Advanced Skin, §3). No
+  new action.
+- **Reverse Z (`6db6512c96`)** is the single largest hot-file-touching change in the whole audited
+  range and is already ported (§3) — flagged here only as context: most apparent "unrelated churn"
+  in `Lighting.hlsl`/`SharedData.hlsli` on any future Bottle diff in this window is Reverse Z, not a
+  separate feature.
+- The 1.9.0 release boundary (`5db085e779`/`a6e649f81a`) sits right where the Sept-23 local port
+  stopped — everything before it is very likely captured, everything from `6ae45a32fa` onward
+  (~30 commits through `dac6803377`) is the residual surface this review found.
 
 ### DLSS-NR forks (§6) — skimmed 2026-09-17
 
@@ -806,7 +1132,7 @@ pass can decide whether any of it is worth adopting. Nothing in this section cha
   "preserve native hue and saturation across ColorStrength" and anamorphic scaling work is
   conceptually adjacent but shares no code seam with this repo.
 
-### `jiayev/skyrim-community-shaders@compendium-clean` (`72041475c8` → `b8f93c390`)
+### `jiayev/skyrim-community-shaders@compendium-clean` (`72041475c8` → `b8f93c390`, not re-surveyed 2026-09-25 — see scope note above)
 
 No movement on the ported Post Processing or Advanced Skin paths (§1a `git log` filter came back
 empty). Everything in this range is new/unported surface:
@@ -816,10 +1142,14 @@ empty). Everything in this range is new/unported surface:
 - **Linear Lighting refactor** (`LinearLighting.cpp/h`) alongside the Physical Sky cloud work
   below — touches `package/Shaders/Lighting.hlsl`, `RunGrass.hlsl`, `Water.hlsl`, `Particle.hlsl`,
   `Effect.hlsl` (6 lines each), so any future port from this range should re-check those hunks
-  against our own Linear Lighting state.
+  against our own Linear Lighting state. **2026-09-25:** confirmed no further movement in this
+  range (one-line check only, per this pass's scope limit — not re-investigated in depth).
 - **Physical Sky cloud improvements** — `CloudMotion.hlsli` (new), substantial `CloudTemporal.hlsli`
   rework (+209/-lines), `CloudBlur.hlsli`/`CloudBoundary.hlsl`/`Volumetrics.cs.hlsl` changes,
-  `VolumetricClouds.cpp` and `PhysicalSky.cpp/h` updates.
+  `VolumetricClouds.cpp` and `PhysicalSky.cpp/h` updates. **2026-09-25:** confirmed no further
+  movement in this range (one-line check only, per this pass's scope limit).
 
 None of the three forks' new work above was ported in this pass — recorded for the next re-sync
-to triage, not acted on.
+to triage, not acted on. The 2026-09-25 pass's actual ported-surface findings for `jiayev` (two
+`ShaderCache.cpp` robustness fixes) are recorded under Post Processing in §3, not here — this
+section only tracks brand-new/unported surface, which per that pass's scope was not re-surveyed.
