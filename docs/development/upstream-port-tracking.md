@@ -22,6 +22,7 @@ Ported so far:
 | Reverse Z | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `124bc7e22` (feature), `1698b4beb` (depth-convention edits across `FrameBuffer.hlsli`/`DeferredCompositeCS.hlsl`/`Effect.hlsl`/`IS*.hlsl`/`Lighting.hlsl`/`Utility.hlsl`/`Water.hlsl`/`LightLimitFix.hlsli`); undocumented until the 2026-09-25 review — see §3; residual follow-ups (`9a6d3b2426`, `0a9f8f8ac0`, `3b9a9dc3c9`) closed in the 2026-09-25 implementation pass, see §3 |
 | Footstep Particles | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `124bc7e22`; undocumented until the 2026-09-25 review — see §3; re-checked in the 2026-09-25 implementation pass, byte-identical to Bottle head, no drift |
 | ENB Depth of Field (Effects11) | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `2a39ad34e9` (DOF half of "DOF and water readd" — the bundled water-settings half was left out, out of scope); ported 2026-09-25, see §3 |
+| Sky Scattering (Effects11) | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `0657cf0ab4`; ported 2026-09-25 (second pass), see §3 |
 
 > The port commits did **not** record the exact upstream SHA they were taken
 > from. Baselines *audited on 2026-09-25* against the actual source trees (this is a
@@ -38,6 +39,29 @@ Ported so far:
 >   (`ce9367f300`→superseded by `25161eb4f3`) landing immediately adjacent to Vanilla Fresnel's/
 >   Foliage Lighting's own hunks in `Lighting.hlsl`/`LightingCommon.hlsli`/`LightingEval.hlsli`. See
 >   the Wind, Procedural Sun, and Vanilla Fresnel sections in §3 for detail.
+> **2026-09-25, second pass (same day):** explicit follow-up request to fully align with Bottle
+> across five areas, each landed as its own commit: (1) merged `community-shaders/dev` (72 commits
+> behind; dev's own tip is an ancestor of Bottle, so Bottle already carries all of it) — the
+> System-menu SEH crash guard added 2026-09-12 (`e8da56037f`) was removed in favor of dev's actual
+> root-cause fix (`4163322011`/`25069c3f97`: session-gated ticking + function-pointer-only callback
+> storage, fixing a GPtr-lifetime use-after-free); (2) Procedural Sun brought fully current — Bottle
+> moved well past `26611dd183` (`31f9890f27`/`05c07ee292`/`343bf8cc44`/`3d64571711`): cloud
+> "occlusion strength" replaced by a proper optical-depth "extinction" model with `sunVisibility`/
+> `radianceLimit` HDR-aware additive blending and a new CLOUDS-pass cloud-darkening-near-sun effect;
+> kept our own billboard anti-clip resize and EFFECTS11 sun-ownership arbitration, neither of which
+> Bottle's file has; (3) **Light Limit Fix reverted, not advanced** — discovered Bottle's own
+> content-hash-based caster caching (which this doc's table already listed as ported) was itself
+> later replaced by a leaner heuristic scheduler in Bottle's "diet SLF" chain
+> (`42e236274d`..`6ae45a32fa`..`7da7f6c4e6`) after a real shadow-flicker bug; re-synced to match,
+> keeping our own fade-in-on-slice-assignment addition and fixing a `localShadowStatCollisions`
+> stat that was never being reset; (4) ported Sky Scattering (`0657cf0ab4`) in full — see below;
+> (5) FSR4 (`9ea5d7e64a`) investigated in depth and **explicitly deferred by user request** after
+> quantifying the real blocker: `Upscaling.cpp`/`.h` have diverged from Bottle's pre-commit baseline
+> by ~1700 lines (independent upscaler work on this fork), so Bottle's 119/22-line diff can't be
+> applied mechanically — it would need a genuine hand merge in the GPU swapchain/frame-generation
+> code, the least recoverable subsystem to get wrong, with no FSR4-capable hardware available here
+> to verify the result actually renders. `FidelityFX.cpp/h` and `DX12SwapChain.h` do still match
+> Bottle's pre-commit baseline byte-for-byte if a future pass wants to start from the easy end.
 > - `InTheBottle/skyrim-community-shaders@Bottle-Compendium` — `dac6803377` (was `7c58cb1ee`).
 >   **Full feature audit this pass** (not just movement in already-ported paths), per explicit
 >   request. Found two undocumented ports already on `Personal` (Reverse Z, Footstep Particles —
@@ -295,7 +319,27 @@ size so every field after it in `FeatureData` keeps its offset — see §2):
 Verified: `BuildDevFast` clean (no new warnings); `Lighting.hlsl` force-compiled with `fxc` for
 `PSHADER+LIGHT_LIMIT_FIX+DEFERRED` (with and without `REVERSE_Z`) and the non-deferred forward path.
 Not tested in-game. **`d05a80bb00`/`dac6803377`'s contact-shadow rework and `a0ac9312e8`: Present.**
-`6ae45a32fa`'s scheduling/cache-invalidation rework: still **Deferred**, see above.
+
+**2026-09-25, second pass — scheduling/cache-invalidation revert, not advancement.** The
+`6ae45a32fa` scheduling rework marked "Deferred" above was a misreading: what Personal actually had
+here (content-hash-based caster caching, geometry rehashing, a `starved` flag) was itself a *port
+of an earlier, more complex* Bottle iteration than what's at Bottle's current head. Bottle's "diet
+SLF" chain (`42e236274d` "feat: diet SLF" → `a0fe19bcae` → `8421c9cca2` → `7da7f6c4e6` →
+`dbcc02ffc3` → `6ae45a32fa` "fix: SLF shadow flicker" → `4a1b4acd9a`) **replaced** that content-hash
+system with a leaner admission-budget/importance-urgency heuristic (`IsLocalShadowSliceReclaimable`,
+actor-preemption in `AcquireLocalShadowSlice`, `LOCAL_SHADOW_AGE_URGENCY`/`LOCAL_SHADOW_ACTOR_SCORE`)
+specifically to fix a shadow-flicker bug. Reverted `LightLimitFix.cpp`/`.h` to match — removed
+`ComputeLocalShadowContentHash`, `cachedGeomHash`/`cachedGeomFrame`/`cachedGeomCount`/
+`skinnedCasters`/`radiusAnchor`/`starved`/`contentHash`/`renderedContentHash`, restored
+`IsLocalShadowSliceReclaimable` and the newcomer-admission-budget logic. Also picked up
+`7da7f6c4e6`'s `light.lightFlags.reset(LightFlags::Shadow, LightFlags::ShadowCaster,
+LightFlags::LocalShadow)` call on both constant-point-light setup paths (was missing entirely).
+Kept two Personal-only additions Bottle's file doesn't have: the `assignedFrame`-based fade-in for
+newly assigned shadow slices (`LOCAL_SHADOW_FADE_FRAMES`), and `localShadowStatCollisions` — which
+turned out to have never been reset each frame; now fixed alongside the revert. No settings-schema
+change (this is pure C++ scheduling logic, no `LightLimitFix::Settings`/`.ini` involvement). Verified:
+`BuildDevFast` clean. Not tested in-game — this changes real shadow-caster eviction/admission
+behavior and deserves an in-game look for flicker/pop regressions before shipping.
 
 ### Reverse Z  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
 
@@ -1068,6 +1112,81 @@ Verified: `BuildDevFast` clean; `AdaptationSunMaskPS.hlsl` force-compiled standa
 procedural sun at all) is actually wanted, that's a separate, deliberate call — say so and it's a
 small removal from here.
 
+**2026-09-25, second pass — full cloud-extinction re-sync (`31f9890f27`/`05c07ee292`/`343bf8cc44`/
+`3d64571711`), resolving the bug-fix cluster noted above at the same time.** Bottle moved
+substantially past `26611dd183` since the first pass. `cloudOcclusionStrength` (plain power-based
+cloud fade) replaced with `cloudExtinction`: an optical-depth model shared between the sun disc's
+own cloud fade (`GetGlareCloudTransmission`, `sqrt(occlusion)` before the power curve) and a new
+`CLOUDS`+`DEFERRED` pass that darkens/backlights actual cloud pixels near the sun
+(`EvaluateCloudExtinction`/`ApplyCloudExtinction`), using `sunVisibility` (from the sun mesh's own
+`kBlendColor.alpha`, so it fades correctly at the horizon/behind terrain) and `radianceLimit` (4096
+for HDR-capable formats, 1 otherwise) to additive-blend (`ToAdditiveBlend`) correctly against the
+target's dynamic range. `ProceduralSun::PerFrameData` grew from 3 to 4 vec4s (still respecting the
+16-byte-aligned append convention) to carry `sunVisibility`/`radianceLimit` alongside the kept
+`sunQuadModelRadius`. New `GetSunVisibility()`/`GetMainTargetRadianceLimit()` static methods added.
+This also resolves the `1c0d36c350`/`a0eafffe21` bug-fix-cluster note above as far as Procedural
+Sun's own rendering path is concerned — Bottle's cloud-extinction rework superseded that code
+entirely; the composition-arbitration parts of that cluster remain a Cloud Relight/`ComposeSkyColor`
+concern, not a Procedural Sun one. One HLSL wrinkle: the new `GetSunLuminance()` helper calls
+`Color::Sky()`, which is PSHADER/CSHADER-only in `Color.hlsli` — since `ProceduralSun.hlsli` is
+included at file scope in `Sky.hlsl` (both VS and PS need the billboard-resize functions), had to
+wrap just that one function in the same `#if defined(PSHADER) || defined(CSHADER) ||
+defined(COMPUTESHADER)` guard `Color.hlsli` itself uses, or the VS compile fails with an undeclared
+identifier. Verified: `BuildDevFast` clean; `fxc`-compiled the VS (`TEX`, `OCCLUSION`) and PS
+(disc-only, `CLOUDS`+cloud-extinction) permutations. Not tested in-game.
+
+### Sky Scattering (Effects11)  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
+
+**Ported 2026-09-25**, source commit `0657cf0ab4` "feat: rework sky scattering for effects 11".
+New physically-motivated atmospheric scattering model shared by two existing Effects11 systems:
+
+- **New file** `features/Effects11/Shaders/Effects11/SkyScattering.hlsli` (237 lines, copied
+  verbatim) — Henyey-Greenstein phase functions, exponential optical depth against an analytic
+  spherical cloud-layer intersection, single/multiple-scattering approximations. Depends only on
+  `Common/Game.hlsli` (`GAME_UNIT_TO_M`), `Common/Random.hlsli`, `Common/SharedData.hlsli`, and
+  optionally `CloudShadows/CloudShadows.hlsli` — all already present, all function/constant names
+  matched on the local copy, ported unmodified.
+- **Volumetric rays pipeline reused, not duplicated**: `RaymarchVolumetricRaysPS`/
+  `ApplyVolumetricRaysPS` gained a second half-res render target (`skyTexA`/`skyTexB`, mirroring
+  `vlTexA`/`vlTexB`) and are both byte-identical to Bottle's pre-commit baseline, so Bottle's diff
+  applied verbatim. The blur passes (horizontal/vertical) are now a shared lambda dispatched once
+  per effect that's actually enabled (`volumetricRays`/`skyScattering` bools), rather than
+  unconditional — either can run without the other.
+- **Cloud relighting in `Sky.hlsl`**: `SkyScattering::RelightCloud()` inserted into the existing
+  `CLOUDS`+`EFFECTS11` block, right before the pre-existing `CloudsEdgeIntensity` moon/sun-phase
+  glow — computes per-pixel sun/moon lighting and cloud-shadow self-occlusion for actual cloud
+  color, optionally feeding `edgeTransmittance` back into the existing edge-glow term via
+  `CalculateCloudsEdgeFromScattering`. This block only touches `cloudColor`/`edgeTransmittance`, not
+  the same call sites `CloudRelight` (`CR_CLOUDS`) or Procedural Sun's own new cloud-extinction
+  block (both landed the same day, see above) touch — the three coexist without literal collision,
+  but a user enabling both `CloudRelight` and Effects11 Sky Scattering will get cloud color relit by
+  two independent systems; not resolved, same category of interaction as the pre-existing
+  `CloudsEdgeIntensity` effect.
+- **`Effects11::PerFrame` cbuffer** (`src/Features/Effects11.h`) — Bottle's own struct has diverged
+  further from this fork's (Bottle has Water fields this fork never ported; see the `ENBDepthOfField`
+  entry above for the "DOF and water readd" split), so Bottle's diff didn't apply verbatim here. The
+  20 new fields (`EnableCloudsScattering` through `CloudsLightingDensity`) were appended after
+  `VolumetricRaysColorFilter` instead — that field ends the struct on a 16-byte boundary already, and
+  the new fields form the same 5×vec4 grouping Bottle uses, so the layout is equivalent even though
+  the byte offsets differ from Bottle's. Mirrored identically in `SharedData.hlsli`'s `ENBSettings`.
+  `additiveBlendState` renamed `scatteringBlendState` (`DestBlend` changed `D3D11_BLEND_ONE` →
+  `D3D11_BLEND_SRC_ALPHA` so the sky glow's alpha, carried from cloud-shadow occlusion, actually
+  attenuates the blend).
+- **`EffectManager::RegisterSettings()`** — new `SKYSCATTERING` category (14 settings, all
+  time-of-day-interpolated except two bools), `EnableCloudsScattering` in `EFFECT`,
+  `SetCategoryDependency`/`SetCategoryExteriorOnly` wired the same way `CLOUDSHADOWS` already is.
+  Pure ENB-preset-driven data (not this repo's own JSON settings), so no `.ini` version bump and no
+  i18n keys — consistent with every other `ENB*`/Effects11 setting.
+- **`CloudShadows.hlsli`** — needs an include guard (`SkyScattering.hlsli` includes it too); this
+  repo's copy already had one from unrelated earlier work, so no change needed there.
+
+Verified: `BuildDevFast` clean; `fxc`-force-compiled `Sky.hlsl`
+(`EFFECTS11`+`CLOUDS`+`DEFERRED`+`CLOUD_SHADOWS`+`PROCEDURAL_SUN`+`TEX`), `ApplyVolumetricRaysPS.hlsl`,
+and `RaymarchVolumetricRaysPS.hlsl` (with `CLOUD_SHADOWS`+`TERRAIN_SHADOWS`). Not tested in-game —
+this is a real new rendering pass (extra render targets, extra blur dispatches) that needs an actual
+frame captured with an ENB preset that turns `EnableCloudsScattering` on to confirm it looks right
+and doesn't regress volumetric-rays-only performance.
+
 ---
 
 ## 4. Re-sync checklist
@@ -1195,23 +1314,11 @@ supersedes the 2026-09-17 "Present" record and is the highest-priority item from
 **Genuinely new, unported Bottle subsystems found this pass** (none have any local counterpart;
 ranked by rough size):
 
-- **Light Limit Fix contact-shadow/scheduling rework** — the contact-shadow half is ported (see the
-  Light Limit Fix section in §3); the scheduling/cache-invalidation half (`6ae45a32fa`) is still
-  outstanding, still the largest remaining LLF gap.
-- **Sky Scattering rework for Effects11** (`0657cf0ab4` "feat: rework sky scattering for effects
-  11") — medium-large, **still not ported**. Adds `features/Effects11/Shaders/Effects11/
-  SkyScattering.hlsli` (new, 237 lines; confirmed absent locally), reworks `ApplyVolumetricRaysPS.hlsl`/
-  `RaymarchVolumetricRaysPS.hlsl`, a 5-line `CloudShadows/CloudShadows.hlsli` hook, 20 lines of
-  `Sky.hlsl`, 23 new `SharedData.hlsli` struct fields, 103/30 lines of `Effects11.cpp/h`, 21 lines
-  of `EffectManager.cpp`. A from-scratch Effects11 atmospheric-scattering model, independent of
-  Personal's Cloud Relight/Procedural Sun ports but touching the same shared `Sky.hlsl`/
-  `SharedData.hlsli` hot files, and coupled to `VolumetricLighting::ClaimEffects11Intensity()`'s
-  existing Effects11 ownership arbitration (§3, Volumetric Lighting) since it reworks the same
-  `ApplyVolumetricRaysPS.hlsl`/`RaymarchVolumetricRaysPS.hlsl` files that arbitration governs.
-  Deliberately deferred this pass: large enough, and coupled enough to existing arbitration and to
-  Cloud Relight/Procedural Sun's `Sky.hlsl` hooks, to warrant its own dedicated session with in-game
-  verification rather than a same-session addition alongside the LLF/Reverse-Z/Post-Processing work
-  above.
+- **Light Limit Fix contact-shadow/scheduling rework** — **closed 2026-09-25 (second pass)**. The
+  contact-shadow half was already ported; the scheduling half turned out to need a *revert* rather
+  than a port forward — see the "second pass" note in the Light Limit Fix section in §3.
+- **Sky Scattering rework for Effects11** (`0657cf0ab4`) — **ported 2026-09-25 (second pass)**; see
+  the Sky Scattering section in §3. Not tested in-game.
 - **Physical Sun / Effects11 sun-adaptation integration** (`26611dd183` "feat: readd physical sun w
   e11 adaptation") — the disambiguation this item called for is done; see the Procedural Sun section
   in §3 for the resolution (the `excludeFromAdaptation`/`AdaptationSunMaskPS.hlsl` piece was merged
@@ -1247,6 +1354,18 @@ ranked by rough size):
   new headers). This is a full FSR4 SDK integration, not a code-level port — multi-session scope of
   its own (build-system changes, new binary dependencies, needs an actual FSR4-capable GPU to verify
   at all). Recorded here with full scope so a future dedicated pass doesn't have to re-derive it.
+  **2026-09-25, second pass:** re-investigated as part of an explicit 5-item Bottle-alignment
+  request and quantified exactly why this stays deferred — diffed Personal's current
+  `Upscaling.cpp`/`.h`/`FidelityFX.cpp`/`.h`/`DX12SwapChain.cpp`/`.h`/`CMakeLists.txt` against
+  `9ea5d7e64a^` (Bottle's tree immediately before the FSR4 commit): `FidelityFX.cpp`, `FidelityFX.h`,
+  and `DX12SwapChain.h` are still **byte-identical** to that baseline (Bottle's diff for those would
+  apply cleanly), `DX12SwapChain.cpp` differs by only 2 lines, and `CMakeLists.txt` by 21 — but
+  `Upscaling.cpp`/`.h` (the files Bottle's own FSR4 diff actually touches) have diverged by ~1700
+  lines combined from this fork's independent upscaler work. Presented this scope breakdown to the
+  user with three options (proceed / defer / port only the already-clean files); **user chose to
+  defer**. If picked up later, start from `FidelityFX.cpp/h`/`DX12SwapChain.h` (free) and budget the
+  real effort for reconciling `Upscaling.cpp/h` by hand plus in-game verification on FSR4-capable
+  hardware, which this environment does not have.
 - **Cloud self-shadowing** (`35e2151ab9` "feat: cloud self shadowing and cloud improvements") — low
   priority, uncertain net upstream state: Bottle **partially reverted this itself** two commits
   later (`6660d25a1b` "revert" removes the 60-line `CloudShadows.hlsli` self-shadow addition and
