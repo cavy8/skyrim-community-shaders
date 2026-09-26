@@ -337,7 +337,7 @@ struct PS_OUTPUT
 	float4 Diffuse: SV_Target0;
 	float4 MotionVectors: SV_Target1;
 	float4 NormalGlossiness: SV_Target2;
-	// Neural Rendering material category. Only bound (by Upscaling) for the
+	// Neural Rendering material category. Only bound (by NeuralRendering) for the
 	// forward lighting draws that follow the deferred pass; unbound otherwise.
 	float4 Masks2: SV_Target7;
 };
@@ -3296,7 +3296,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// means no occlusion for pixels that never write this target). This runs
 	// for every lighting draw, not only the deferred ones: alpha-blended
 	// geometry such as hair strands and hairline scalps is sorted and drawn
-	// forward after the deferred pass, and Upscaling binds Masks2 back to
+	// forward after the deferred pass, and NeuralRendering binds Masks2 back to
 	// SV_Target7 for exactly those draws (BSBatchRenderer_RenderPassImmediately)
 	// so hair reads as Hair instead of exposing the face or background beneath.
 	uint neuralRenderingCategory = NeuralRenderingCategories::EverythingElse;
@@ -3327,7 +3327,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// claim is Equipment: armor, clothing and wielded weapons. Bare skin
 		// (body as well as face) uses the skin-tint permutations and is
 		// already Skin by the time this runs. IsHumanoidActor is set per
-		// pass by Upscaling::BSLightingShader_SetupNeuralCategory, so this
+		// pass by NeuralRendering::SetupGeometryCategory, so this
 		// also catches rigid (non-SKINNED) weapons, shields and helmets.
 		neuralRenderingCategory = NeuralRenderingCategories::Equipment;
 	}
@@ -3342,8 +3342,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// hairlines, braids and loose strands commonly use the default or skin-tint
 	// type, so the HAIR technique alone leaves them as Equipment, Skin or
 	// Everything Else, while wigs worn as equipment carry hair-tint authoring
-	// without any head part. Upscaling resolves both at runtime
-	// (BSLightingShader_SetupNeuralCategory) and that wins over the
+	// without any head part. NeuralRendering resolves both at runtime
+	// (SetupGeometryCategory) and that wins over the
 	// technique-derived classification above.
 	if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsHair)
 		neuralRenderingCategory = NeuralRenderingCategories::Hair;

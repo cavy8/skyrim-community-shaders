@@ -61,6 +61,7 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::wetnessEffects.GetCommonBufferData(),
 		globals::features::skylighting.GetCommonBufferData(a_inWorld),
 		globals::features::cloudShadows.GetCommonBufferData(),
+		globals::features::proceduralSun.GetCommonBufferData(),
 		globals::features::lodBlending.settings,
 		globals::features::hairSpecular.settings,
 		globals::features::terrainVariation.settings,
@@ -71,14 +72,14 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::terrainBlending.settings,
 		globals::features::exponentialHeightFog.GetCommonBufferData(),
 		globals::features::truePBR.settings,
-		globals::features::skin.GetCommonBufferData(),
-		globals::features::cloudRelight.GetCommonBufferData(),
 		globals::features::foliageLighting.settings,
+		globals::features::skin.GetCommonBufferData(),
 		globals::features::vanillaFresnel.settings,
 		globals::features::snowCover.GetCommonBufferData(),
 		globals::features::postProcessing.GetCommonBufferData(),
 		globals::features::volumetricLighting.GetCommonBufferData(),
+		// Bottle's order ends here (see SharedData.hlsli FeatureData); local settings follow.
+		globals::features::cloudRelight.GetCommonBufferData(),
 		globals::features::wind.GetSharedWindData(),
-		globals::features::pseudoSunBounce.settings,
-		globals::features::proceduralSun.GetCommonBufferData());
+		globals::features::pseudoSunBounce.settings);
 }

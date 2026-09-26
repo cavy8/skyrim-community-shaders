@@ -278,24 +278,27 @@ public:
 		IsSun = 1 << 4,
 		SuppressExternalEmittance = 1 << 5,
 		AdditiveLighting = 1 << 6,
-		NoSnow = 1 << 7,
-		NoFoliageTint = 1 << 8,
+		IsEye = 1 << 7,
+		NoSnow = 1 << 8,
+		NoFoliageTint = 1 << 9,
+		// Bits above are Bottle's, verbatim and in Bottle's order (new Bottle bits are
+		// appended upward). Local (non-Bottle) bits are allocated downward from bit 31.
+		// Mirror every change in Permutation::ExtraFlags (Permutation.hlsli).
+		//
 		// Set by NeuralRendering::SetupGeometryCategory when the drawn
 		// geometry belongs to a humanoid (ActorTypeNPC) actor. Skin, hair and
 		// eyes are claimed by their own permutations first, so this only
 		// resolves to armor, clothing and weapons - see
 		// NeuralRenderingCategories::Equipment.
-		IsHumanoidActor = 1 << 9,
+		IsHumanoidActor = 1u << 31,
 		// Set by NeuralRendering::SetupGeometryCategory when the drawn
 		// geometry belongs to a hair or facial-hair head part of its actor,
 		// whatever shader type the piece was authored with - see
 		// NeuralRenderingCategories::Hair.
-		IsHair = 1 << 12,
+		IsHair = 1u << 30,
 		// Set by Wind::OnTreeBendRenderPassBegin for tree trunk/leaf geometry that
 		// should sample per-mesh wind-bend sensitivities from PermutationCB.
-		TreeBend = 1 << 13,
-		// Reserved high bit to avoid colliding with upstream's sequential flags.
-		IsEye = 1u << 31
+		TreeBend = 1u << 29
 	};
 
 	/** @brief Bitflags describing extra feature-specific properties related to terrain displacement and material models. */

@@ -77,20 +77,22 @@ namespace Permutation
 		static const uint IsSun = (1 << 4);
 		static const uint SuppressExternalEmittance = (1 << 5);
 		static const uint AdditiveLighting = (1 << 6);
-		static const uint NoSnow = (1 << 7);
-		static const uint NoFoliageTint = (1 << 8);
+		static const uint IsEye = (1 << 7);
+		static const uint NoSnow = (1 << 8);
+		static const uint NoFoliageTint = (1 << 9);
+		// Bits above are Bottle's, verbatim. Local bits are allocated downward from
+		// bit 31 and must mirror State::ExtraShaderDescriptors (State.h).
+		//
 		// Set on any geometry belonging to a humanoid (ActorTypeNPC) actor;
 		// see NeuralRenderingCategories::Equipment.
-		static const uint IsHumanoidActor = (1 << 9);
+		static const uint IsHumanoidActor = (1u << 31);
 		// Set on geometry belonging to a hair or facial-hair head part of its
 		// actor, whatever shader type it was authored with; see
 		// NeuralRenderingCategories::Hair.
-		static const uint IsHair = (1 << 12);
+		static const uint IsHair = (1u << 30);
 		// Set on tree trunk/leaf geometry that should sample per-mesh wind-bend
 		// sensitivities from the PerShader cbuffer below; see Wind::OnTreeBendRenderPassBegin.
-		static const uint TreeBend = (1 << 13);
-		// Reserved high bit to avoid colliding with upstream's sequential flags.
-		static const uint IsEye = (1u << 31);
+		static const uint TreeBend = (1u << 29);
 	}
 
 	namespace ExtraFeatureFlags

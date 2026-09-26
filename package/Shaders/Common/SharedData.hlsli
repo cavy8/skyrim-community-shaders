@@ -534,6 +534,7 @@ namespace SharedData
 		WetnessEffectsSettings wetnessEffectsSettings;
 		SkylightingSettings skylightingSettings;
 		CloudShadowsSettings cloudShadowsSettings;
+		ProceduralSunSettings proceduralSunSettings;
 		LODBlendingSettings lodBlendingSettings;
 		HairSpecularSettings hairSpecularSettings;
 		TerrainVariationSettings terrainVariationSettings;
@@ -544,14 +545,16 @@ namespace SharedData
 		TerrainBlendingSettings terrainBlendingSettings;
 		ExponentialHeightFogSettings exponentialHeightFogSettings;
 		TruePBRSettings truePBRSettings;
-		SkinData skinData;
-		CloudRelightSettings cloudRelightSettings;
 		FoliageLightingSettings foliageLightingSettings;
+		SkinData skinData;
 		VanillaFresnelSettings vanillaFresnelSettings;
 		SnowCoverSettings snowCoverSettings;
 		PostProcessingSettings postProcessingSettings;
 		VolumetricLightingSettings volumetricLightingSettings;
-
+		// Everything above is Bottle's FeatureData, in Bottle's order. Local (non-Bottle)
+		// settings are appended below, each a 16-byte multiple, mirrored in the same order
+		// by GetFeatureBufferData() (FeatureBuffer.cpp).
+		CloudRelightSettings cloudRelightSettings;
 		// Flat field names (not a nested struct) to match WindField.hlsli/TransientWindImpulse.hlsli,
 		// which reference these directly as SharedData::WindFieldXxx. Mirrors the C++ WindSharedData
 		// struct (Features/Wind/Wind.h) byte-for-byte; see Wind::GetSharedWindData.
@@ -569,7 +572,6 @@ namespace SharedData
 		WindField::TransientWindSource WindFieldPreviousTransientImpulses[WindField::TransientImpulseCapacity];
 
 		PseudoSunBounceSettings pseudoSunBounceSettings;
-		ProceduralSunSettings proceduralSunSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);
