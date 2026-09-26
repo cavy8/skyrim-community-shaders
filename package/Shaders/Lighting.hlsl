@@ -2864,14 +2864,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
-	// Lightweight directional approximation of indirect sunlight bounce off the ground/nearest
-	// wall, lifting ambient in shadowed spots. Diffuse term only -- the faux-specular refinement
-	// upstream also computes needs wiring into the forward/deferred specular composition further
-	// down this file, which wasn't done here; see the Wind-style tracking-doc entry for this port.
 #	if defined(PSEUDO_SUN_BOUNCE)
+	float3 specularBounce = 0;
 	if (!SharedData::InInterior && inWorld && SharedData::pseudoSunBounceSettings.intensity > 0.0) {
-		SunBounce::SH2_RGB sunBounceSH = SunBounce::CalcSunBounceSH(SharedData::DirLightDirection.xyz, dirLightColor,
+		float cloudShadows = 1;
+#		if defined(CLOUD_SHADOWS)
+		cloudShadows = CloudShadows::GetCloudShadowMult(input.WorldPosition.xyz, LinearSampler);
+#		endif
+		SunBounce::SH2_RGB sunBounceSH = SunBounce::CalcSunBounceSH(SharedData::DirLightDirection.xyz, dirLightColor * cloudShadows,
 			SharedData::pseudoSunBounceSettings.groundAlbedo, SharedData::pseudoSunBounceSettings.wallAlbedo);
+
+		specularBounce = max(0, SunBounce::CalcFauxSpecularBounce(ambientNormal, viewDirection, material.Roughness, sunBounceSH)) * SharedData::pseudoSunBounceSettings.intensity;
 
 		sunBounceSH.R = SphericalHarmonics::HanningConvolution(sunBounceSH.R, SharedData::pseudoSunBounceSettings.windowWidth);
 		sunBounceSH.G = SphericalHarmonics::HanningConvolution(sunBounceSH.G, SharedData::pseudoSunBounceSettings.windowWidth);
@@ -2881,9 +2884,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		bounceLighting.r = SphericalHarmonics::Unproject(sunBounceSH.R, -ambientNormal);
 		bounceLighting.g = SphericalHarmonics::Unproject(sunBounceSH.G, -ambientNormal);
 		bounceLighting.b = SphericalHarmonics::Unproject(sunBounceSH.B, -ambientNormal);
+
 		bounceLighting = max(0, bounceLighting);
 #		if defined(SKYLIGHTING)
-		bounceLighting *= saturate(MultiBounceAO(SharedData::pseudoSunBounceSettings.groundAlbedo, skylightingDiffuse) * skylightingDiffuse);
+		float3 bouncedSkylighting = saturate(MultiBounceAO(SharedData::pseudoSunBounceSettings.groundAlbedo, skylightingDiffuse) * skylightingDiffuse);
+		bounceLighting *= bouncedSkylighting;
+		specularBounce *= bouncedSkylighting;
 #		endif
 
 		directionalAmbientColor += bounceLighting * SharedData::pseudoSunBounceSettings.intensity;
@@ -3043,6 +3049,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #			endif
 #		else
 		color.xyz += indirectLobeWeights.specular * directionalAmbientColor;
+#		endif
+#		if defined(PSEUDO_SUN_BOUNCE)
+	if (any(specularBounce > 0)) {
+		color.xyz += indirectLobeWeights.specular * specularBounce;
+#			if defined(WETNESS_EFFECTS)
+		if (waterRoughnessSpecular < 1)
+			color.xyz += wetnessReflectance * specularBounce;
+#			endif
+	}
 #		endif
 
 	color.xyz = Color::IrradianceToGamma(color.xyz);
@@ -3247,6 +3262,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// Reflection is from the water film surface; wetnessReflectance scales intensity by wetness amount.
 		screenSpaceNormal = normalize(FrameBuffer::WorldToView(wetnessNormal, false));
 		material.Roughness = waterRoughnessSpecular;
+	}
+#		endif
+
+#		if defined(PSEUDO_SUN_BOUNCE)
+	if (any(specularBounce > 0)) {
+		psout.Diffuse.xyz += indirectLobeWeights.specular * specularBounce;
 	}
 #		endif
 
