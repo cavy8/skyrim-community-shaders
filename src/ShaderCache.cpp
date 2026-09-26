@@ -1418,7 +1418,7 @@ namespace SIE
 							shader.shaderType == RE::BSShader::Type::ImageSpace ?
 								static_cast<const RE::BSImagespaceShader&>(shader).originalShaderName :
 								shader.fxpFilename);
-						const auto sourceTime = std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(shaderSourcePath, ec));
+						const auto sourceTime = std::filesystem::last_write_time(shaderSourcePath, ec);
 						if (ec) {
 							logger::debug("Failed to read source mtime for {}: {}", Util::WStringToString(shaderSourcePath), ec.message());
 						} else if (sourceTime > diskCacheTime) {
