@@ -353,7 +353,9 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport)
 	auto& upscaling = globals::features::upscaling;
 	auto jitter = upscaling.jitter;
 	slConstants.jitterOffset = { -jitter.x, -jitter.y };
-	slConstants.reset = sl::Boolean::eFalse;
+	// Neural Rendering seam: NeuralRendering::RequestHistoryReset (toggle, loading screens) raises
+	// pendingDLSSReset so DLSS SR drops its history on the same frame as the NR model.
+	slConstants.reset = upscaling.pendingDLSSReset.exchange(false, std::memory_order_acq_rel) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
 	slConstants.mvecScale = { 1.0f, 1.0f };
 	slConstants.motionVectors3D = sl::Boolean::eFalse;
