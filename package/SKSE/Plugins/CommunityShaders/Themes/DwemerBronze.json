@@ -40,11 +40,6 @@
             }
         ],
         "UseSimplePalette": false,
-        "ShowActionIcons": true,
-        "UseMonochromeIcons": true,
-        "UseMonochromeLogo": true,
-        "ShowFooter": false,
-        "CenterHeader": true,
         "TooltipHoverDelay": 0.5,
         "BackgroundBlurEnabled": true,
         "Palette": {

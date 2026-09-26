@@ -6,7 +6,6 @@
 #include "I18n/I18n.h"
 #include "Menu.h"
 #include "Menu/ThemeManager.h"
-#include "NativeMenu/NativeMenu.h"
 #include "SceneSettingsManager.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -111,7 +110,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 		{
 			for (auto it = errors.begin(); it != errors.end(); ++it) {
 				auto& errorMessage = *it;
-				RE::DebugMessageBox(std::format("Cav's Unity Shaders\n{}, will disable all hooks and features", errorMessage).c_str());
+				RE::DebugMessageBox(std::format("{}\n{}, will disable all hooks and features", Plugin::DISPLAY_NAME, errorMessage).c_str());
 			}
 
 			if (errors.empty()) {
@@ -144,8 +143,6 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				}
 
 				Feature::ForEachLoadedFeature("DataLoaded", [](Feature* feature) { feature->DataLoaded(); });
-
-				NativeMenu::Register();
 			}
 
 			break;

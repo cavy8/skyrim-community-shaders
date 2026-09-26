@@ -41,7 +41,6 @@ public:
 	 * pending feature selection requests, then draws the left-column navigation
 	 * and right-column settings content.
 	 *
-	 * @param footerHeight Height reserved for the footer area below the list.
 	 * @param selectedMenu Index of the currently selected menu item (updated on selection change).
 	 * @param featureSearch Current search filter string (updated by the search input).
 	 * @param pendingFeatureSelection Name of a feature to auto-select (cleared after processing).
@@ -50,13 +49,29 @@ public:
 	 * @param drawAdvancedSettings Callback that renders the Advanced settings page content.
 	 */
 	static void RenderFeatureList(
-		float footerHeight,
 		size_t& selectedMenu,
 		std::string& featureSearch,
 		std::string& pendingFeatureSelection,
 		std::map<std::string, bool>& categoryExpansionStates,
 		const std::function<void()>& drawGeneralSettings,
 		const std::function<void()>& drawAdvancedSettings);
+
+	/**
+	 * @brief Renders a single feature's settings page (header, action buttons and content).
+	 *
+	 * Used by the Advanced page to draw utility features as sub-tabs rather than as
+	 * entries in the left-hand feature list.
+	 *
+	 * @param feat The feature whose page should be rendered.
+	 */
+	static void RenderFeaturePage(Feature* feat);
+
+	/**
+	 * @brief Returns the in-menu utility features, sorted by display name.
+	 *
+	 * These are excluded from the feature list and rendered as Advanced sub-tabs.
+	 */
+	static std::vector<Feature*> GetUtilityFeatures();
 
 private:
 	struct ListMenuVisitor
@@ -69,6 +84,10 @@ private:
 		void operator()(const std::string& label);
 		void operator()(const CategoryHeader& header);
 		void operator()(Feature* feat);
+
+	private:
+		/** @brief Marks this entry as selected, recording both its index and its stable key. */
+		void Select(const std::string& entryKey);
 	};
 
 	struct DrawMenuVisitor
@@ -87,7 +106,6 @@ private:
 		// Helper methods for Feature rendering
 		void RenderFeatureHeader(Feature* feat, bool isDisabled, bool isLoaded, bool sceneControlled);
 		void RenderFeatureSettings(Feature* feat, bool isDisabled, bool isLoaded, bool hasFailedMessage, bool sceneControlled);
-		static void RenderRestoreDefaultsButton(Feature* feat, bool isDisabled, bool isLoaded);
 		void RenderReactiveConstraintWarningDialog();
 	};
 
@@ -97,10 +115,23 @@ private:
 		const std::function<void()>& drawGeneralSettings,
 		const std::function<void()>& drawAdvancedSettings);
 
+	/**
+	 * @brief Re-derives the selected index from the stable selection key.
+	 *
+	 * The menu list is rebuilt every frame, so collapsing a category above the
+	 * selection would otherwise shift the index onto a different entry.
+	 */
+	static void ResolveSelectionFromKey(
+		const std::vector<MenuFuncInfo>& menuList,
+		size_t& selectedMenu);
+
 	static void HandlePendingFeatureSelection(
 		std::string& pendingFeatureSelection,
 		const std::vector<MenuFuncInfo>& menuList,
 		size_t& selectedMenu);
+
+	/** @brief True when the named feature belongs to the Utility category. */
+	static bool IsUtilityFeature(const std::string& shortName);
 
 	static void RenderLeftColumn(
 		const std::vector<MenuFuncInfo>& menuList,

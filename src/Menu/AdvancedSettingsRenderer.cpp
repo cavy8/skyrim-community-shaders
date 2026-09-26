@@ -7,17 +7,32 @@
 #include <thread>
 
 #include "CSEditor/EditorWindow.h"
+#include "Feature.h"
 #include "FeatureIssues.h"
 #include "Features/PerformanceOverlay/ABTesting/ABTesting.h"
 #include "Fonts.h"
 #include "Globals.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
+#include "Menu/FeatureListRenderer.h"
+#include "Menu/ProfilingRenderer.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "Util.h"
 #include "Utils/Format.h"
 #include "Utils/UI.h"
+
+namespace
+{
+	// Short name of a utility feature whose tab should be activated on the next frame,
+	// set when navigation is requested from elsewhere in the UI.
+	std::string g_pendingUtilityTab;
+}
+
+void AdvancedSettingsRenderer::RequestUtilityTab(const std::string& featureShortName)
+{
+	g_pendingUtilityTab = featureShortName;
+}
 
 void AdvancedSettingsRenderer::RenderAdvancedSettings(
 	const std::function<void()>& drawDisableAtBootSettings)
@@ -60,6 +75,15 @@ void AdvancedSettingsRenderer::RenderAdvancedSettings(
 			ImGui::EndTabItem();
 		}
 
+		// Profiling Tab
+		if (MenuFonts::BeginTabItemWithFont(T("menu.advanced.tab_profiling", "Profiling"), Menu::FontRole::Subheading)) {
+			if (ImGui::BeginChild("##ProfilingContent", ImVec2(0, 0), false)) {
+				ProfilingRenderer::RenderStatistics();
+			}
+			ImGui::EndChild();
+			ImGui::EndTabItem();
+		}
+
 		// Testing Tab (for A/B Testing and related settings)
 		if (MenuFonts::BeginTabItemWithFont(T("menu.advanced.tab_testing", "Testing"), Menu::FontRole::Subheading)) {
 			if (ImGui::BeginChild("##Testing", ImVec2(0, 0), false)) {
@@ -69,8 +93,32 @@ void AdvancedSettingsRenderer::RenderAdvancedSettings(
 			ImGui::EndTabItem();
 		}
 
+		RenderUtilityFeatureTabs();
+
 		ImGui::EndTabBar();
 	}
+}
+
+void AdvancedSettingsRenderer::RenderUtilityFeatureTabs()
+{
+	for (Feature* feat : FeatureListRenderer::GetUtilityFeatures()) {
+		// ### keeps the tab ID stable across language changes and stage-tag churn.
+		const auto label = std::format("{}###UtilityTab_{}", feat->GetDisplayName(), feat->GetShortName());
+
+		ImGuiTabItemFlags flags = ImGuiTabItemFlags_None;
+		if (g_pendingUtilityTab == feat->GetShortName()) {
+			flags |= ImGuiTabItemFlags_SetSelected;
+			g_pendingUtilityTab.clear();
+		}
+
+		if (MenuFonts::BeginTabItemWithFont(label.c_str(), Menu::FontRole::Subheading, flags)) {
+			FeatureListRenderer::RenderFeaturePage(feat);
+			ImGui::EndTabItem();
+		}
+	}
+
+	// A request naming a feature that is no longer present must not persist across frames.
+	g_pendingUtilityTab.clear();
 }
 
 void AdvancedSettingsRenderer::RenderLoggingSection()
