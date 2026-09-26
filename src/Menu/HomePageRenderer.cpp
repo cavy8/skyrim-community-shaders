@@ -32,9 +32,6 @@ void HomePageRenderer::RenderHomePage()
 
 	RenderActiveConstraintsSection();
 
-	RenderQuickLinksSection();
-	ImGui::Spacing();
-
 	RenderFAQSection();
 
 	ImGui::EndChild();
@@ -90,93 +87,7 @@ void HomePageRenderer::RenderWelcomeSection()
 	ImGui::SetCursorPosX((windowSize.x - introSize.x) * 0.5f);
 	ImGui::TextWrapped("%s", introText);
 
-	ImGui::Spacing();
-
-	// Discord banner - centered with proper error checking
-	auto menu = Menu::GetSingleton();
-	bool discordIconAvailable = false;
-
-	// Check if menu exists, has icons, and Discord icon is loaded
-	if (menu && menu->uiIcons.discord.texture != nullptr &&
-		menu->uiIcons.discord.size.x > 0 && menu->uiIcons.discord.size.y > 0) {
-		discordIconAvailable = true;
-	}
-
-	if (discordIconAvailable) {
-		// Calculate scaled icon size based on window width, with min/max constraints
-		ImVec2 originalSize = ImVec2(menu->uiIcons.discord.size.x, menu->uiIcons.discord.size.y);
-
-		// Compute width based on window size with constraints and padding (handles very small windows)
-		float ratioWidth = windowSize.x * DISCORD_BANNER_TARGET_WIDTH_RATIO;
-		float aspectRatio = originalSize.y / originalSize.x;
-		float maxAllowed = std::max(1.0f, windowSize.x - DISCORD_BANNER_PADDING_MARGIN);
-		float upperBound = std::min(DISCORD_BANNER_MAX_WIDTH, maxAllowed);
-		float lowerBound = std::min(DISCORD_BANNER_MIN_WIDTH, upperBound);
-		float targetWidth = std::clamp(ratioWidth, lowerBound, upperBound);
-
-		ImVec2 iconSize = ImVec2(targetWidth, targetWidth * aspectRatio);
-		ImGui::SetCursorPosX((windowSize.x - iconSize.x) * 0.5f);
-
-		// Push style to remove border
-		ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));                     // Transparent background
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.1f, 0.1f, 0.1f, 0.3f));  // Subtle hover
-		ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.2f, 0.2f, 0.5f));   // Subtle click
-
-		if (ImGui::ImageButton("##DiscordButton", menu->uiIcons.discord.texture, iconSize)) {
-			ShellExecuteA(NULL, "open", DISCORD_URL, NULL, NULL, SW_SHOWNORMAL);
-		}
-
-		// Pop the style changes
-		ImGui::PopStyleColor(3);
-		ImGui::PopStyleVar();
-
-		Util::AddTooltip(T("menu.home.join_discord", "Join our Discord"));
-	} else {
-		// Fallback button when Discord icon is not available
-		float buttonWidth = DISCORD_BANNER_MIN_WIDTH * scale;
-		ImGui::SetCursorPosX((windowSize.x - buttonWidth) * 0.5f);
-		if (ImGui::Button(T("menu.home.join_discord", "Join our Discord"), ImVec2(buttonWidth, 0))) {
-			ShellExecuteA(NULL, "open", DISCORD_URL, NULL, NULL, SW_SHOWNORMAL);
-		}
-		Util::AddTooltip(T("menu.home.join_discord", "Join our Discord"));
-	}
-
 	ImGui::PopStyleVar();
-}
-
-void HomePageRenderer::RenderQuickLinksSection()
-{
-	// Quick Links title - centered
-	ImVec2 windowSize = ImGui::GetWindowSize();
-	const char* quickLinksTitle = T("menu.home.quick_links", "Quick Links");
-	ImVec2 titleSize = ImGui::CalcTextSize(quickLinksTitle);
-	ImGui::SetCursorPosX((windowSize.x - titleSize.x) * 0.5f);
-	ImGui::Text("%s", quickLinksTitle);
-
-	ImGui::Columns(4, nullptr, false);
-
-	// External links in a row
-	if (ImGui::Button(T("menu.home.nexus_mods", "Nexus Mods"), ImVec2(-1, 0))) {
-		ShellExecuteA(NULL, "open", "https://www.nexusmods.com/skyrimspecialedition/mods/86492", NULL, NULL, SW_SHOWNORMAL);
-	}
-
-	ImGui::NextColumn();
-	if (ImGui::Button(T("menu.home.github", "GitHub"), ImVec2(-1, 0))) {
-		ShellExecuteA(NULL, "open", "https://github.com/community-shaders/skyrim-community-shaders", NULL, NULL, SW_SHOWNORMAL);
-	}
-
-	ImGui::NextColumn();
-	if (ImGui::Button(T("menu.home.wiki", "Wiki"), ImVec2(-1, 0))) {
-		ShellExecuteA(NULL, "open", "https://modding.wiki/en/skyrim/developers/community-shaders", NULL, NULL, SW_SHOWNORMAL);
-	}
-
-	ImGui::NextColumn();
-	if (ImGui::Button(T("menu.home.dev_wiki", "Developer Wiki"), ImVec2(-1, 0))) {
-		ShellExecuteA(NULL, "open", "https://github.com/community-shaders/skyrim-community-shaders/wiki", NULL, NULL, SW_SHOWNORMAL);
-	}
-
-	ImGui::Columns(1);
 }
 
 void HomePageRenderer::RenderFAQSection()
@@ -240,10 +151,7 @@ void HomePageRenderer::RenderFAQSection()
 
 	if (ImGui::CollapsingHeader(T("menu.faq.q8", "I would like to help develop Cav's Unity Shaders."))) {
 		ImGui::TextWrapped("%s", T("menu.faq.a8",
-									 "We're always looking for talented developers to join the team! Check out our GitHub wiki "
-									 "for contribution guidelines and join our Discord server to connect with the development team. "
-									 "Whether you're interested in shader programming, C++ development, or documentation, there's "
-									 "always something to contribute."));
+									 "Contributions are welcome, including shader programming, C++ development, and documentation."));
 	}
 
 	if (ImGui::CollapsingHeader(T("menu.faq.q9", "Is Cav's Unity Shaders open source?"))) {

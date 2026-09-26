@@ -371,7 +371,6 @@ Menu::~Menu()
 	uiIcons.applyToGame.Release();
 	uiIcons.pauseTime.Release();
 	uiIcons.undo.Release();
-	uiIcons.discord.Release();
 	uiIcons.characters.Release();
 	uiIcons.display.Release();
 	uiIcons.grass.Release();

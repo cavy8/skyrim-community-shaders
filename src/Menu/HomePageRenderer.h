@@ -6,15 +6,13 @@
 /**
  * @brief Renders the Home page of the in-game menu with welcome info, FAQ, and first-time setup.
  *
- * Displays a welcome banner, quick links (Discord, etc.), active constraint
- * warnings, and a FAQ section. Also manages the first-time setup dialog
- * shown on initial launch.
+ * Displays a welcome banner, active constraint warnings, and a FAQ section.
+ * Also manages the first-time setup dialog shown on initial launch.
  */
 class HomePageRenderer
 {
 public:
 	// Constants
-	static constexpr const char* DISCORD_URL = "https://discord.com/invite/nkrQybAsyy";
 	static constexpr float TITLE_FONT_SCALE = 2.0f;
 	static constexpr float HOTKEY_TEXT_SCALE = 1.6f;
 	static constexpr float HOTKEY_TEXT_SCALE_CAPTURING = 2.0f;
@@ -29,13 +27,7 @@ public:
 	static constexpr float DIALOG_CORNER_ROUNDING = 6.0f;
 	static constexpr float DIALOG_LINE_TIGHTEN = 3.0f;
 
-	// Discord banner scaling constants
-	static constexpr float DISCORD_BANNER_TARGET_WIDTH_RATIO = 0.85f;
-	static constexpr float DISCORD_BANNER_MIN_WIDTH = 150.0f;
-	static constexpr float DISCORD_BANNER_MAX_WIDTH = 1200.0f;
-	static constexpr float DISCORD_BANNER_PADDING_MARGIN = 40.0f;
-
-	/** @brief Renders the full Home page including welcome, quick links, constraints, and FAQ sections. */
+	/** @brief Renders the full Home page including welcome, constraints, and FAQ sections. */
 	static void RenderHomePage();
 
 	// First-time setup management
@@ -59,7 +51,6 @@ public:
 
 private:
 	static void RenderWelcomeSection();
-	static void RenderQuickLinksSection();
 	static void RenderFAQSection();
 	static void RenderActiveConstraintsSection();
 

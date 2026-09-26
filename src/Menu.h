@@ -251,9 +251,6 @@ public:
 		UIIcon freeCamera;            // Free camera preview icon (CS editor)
 		UIIcon playMode;              // Play mode preview icon (CS editor)
 
-		// Social media/external link icons
-		UIIcon discord;
-
 		// Category icons
 		UIIcon characters;
 		UIIcon display;
