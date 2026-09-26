@@ -61,19 +61,6 @@ features:
     deferred:
       - "Character Rain parity task (tracker: moot) is SUPERSEDED by D3: Character Rain is removed for Bottle parity"
 
-  PostProcessing:
-    policy: bottle-plus-components   # D4
-    paths:
-      - src/Features/PostProcessing.cpp
-      - src/Features/PostProcessing.h
-      - src/Features/PostProcessing/
-      - features/Post Processing/
-    components:
-      dialogue_dof_menu_gate:
-        source: personal
-        paths: [src/Features/PostProcessing/DoF.cpp]
-        anchor: "DoF::GetInDialogue - menuOpen && gate on lastSpeaker"
-
   NeuralRendering:
     policy: personal                 # D5
     paths:
@@ -82,13 +69,135 @@ features:
       - src/Features/NeuralRendering/
       - features/Neural Rendering/
 
-  ReverseZ:
+  CSEditor:
     policy: bottle-exact
     paths:
-      - src/Features/ReverseZ.cpp
-      - src/Features/ReverseZ.h
-      - features/ReverseZ/
-    note: "touches many shared shaders (FrameBuffer.hlsli, DeferredCompositeCS.hlsl, Lighting.hlsl, Water.hlsl, ...); list them during the Phase 4 audit"
+      - src/Features/CSEditor.cpp
+      - src/Features/CSEditor.h
+      - features/CS Editor/
+
+  CloudRelight:
+    policy: external-maintained
+    reference: open
+    paths:
+      - src/Features/CloudRelight.cpp
+      - src/Features/CloudRelight.h
+      - features/Cloud Relight/
+    note: "local adaptation: no SupportsVR override; ini 1-1-1 behind Open's 1-2-0; Open's Tests/TestCloudRelight.hlsl not ported"
+
+  CloudShadows:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/CloudShadows.cpp
+      - src/Features/CloudShadows.h
+      - features/Cloud Shadows/
+    components:
+      mainline_layers:
+        source: mainline
+        anchor: "cloud layer rewrite + self-shadow copy (== mainline); CloudSelfShadowTexture t26 decl (== open)"
+        paths: ["features/Cloud Shadows/Shaders/CloudShadows/CloudShadows.hlsli", "features/Cloud Shadows/Shaders/Features/CloudShadows.ini", "src/Features/CloudShadows.cpp", "src/Features/CloudShadows.h"]
+    deferred:
+      - "owner decision: Bottle's Cloud Shadows (1-6-0) differs from the mainline version Personal carries; pick one"
+
+  DynamicCubemaps:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/DynamicCubemaps.cpp
+      - src/Features/DynamicCubemaps.h
+      - features/Dynamic Cubemaps/
+    components:
+      lighting_change_detection:
+        source: jiayev
+        anchor: "capture-history lighting-change detection (jiayev 49c35c6ef2, Personal 929d4ce52f)"
+        paths: ["features/Dynamic Cubemaps/Shaders/DynamicCubemaps/CaptureCommon.hlsli", "features/Dynamic Cubemaps/Shaders/DynamicCubemaps/DetectCaptureLightingCS.hlsl"]
+      split_env_textures:
+        source: mainline
+        anchor: "envTexture/envReflectionsTexture split (Bottle unified them as envFilteredTexture in 03e2b80b1b)"
+        paths: ["features/Dynamic Cubemaps/Shaders/DynamicCubemaps/BC6HEncodeCS.hlsl", "src/Features/DynamicCubemaps.cpp", "src/Features/DynamicCubemaps.h"]
+    deferred:
+      - "jiayev 49c35c6ef envTexture/envReflectionsTexture merge refactor declined (unrelated to the ported lighting detection)"
+      - "Personal keeps the nextTask reset that jiayev dropped without a stated rationale"
+      - "owner decision: adopt Bottle's unified envFilteredTexture and its cubemapValid[2] gate in PostDeferred"
+
+  Effects11:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/Effects11.cpp
+      - src/Features/Effects11.h
+      - src/Features/Effects11/
+      - features/Effects11/
+    components:
+      open_preset_hot_swap:
+        source: open
+        anchor: "preset hot-swap subsystem (PresetManager.h == open); Effects11.h/.cpp, EffectManager.cpp, MenuManager.cpp, PresetManager.cpp adapted (no SupportsVR/RegisterUxActions), branding strings, kPostProcessing category"
+        paths: ["src/Features/Effects11.cpp", "src/Features/Effects11.h", "src/Features/Effects11/EffectManager.cpp", "src/Features/Effects11/EffectManager.h", "src/Features/Effects11/MenuManager.cpp", "src/Features/Effects11/PresetManager.cpp", "src/Features/Effects11/PresetManager.h"]
+      enb_dof_without_adaptation:
+        source: personal
+        anchor: "Bottle's ENB Depth of Field (2a39ad34e9) ported without the adaptation coupling (GetApertureSRV/TextureAdaptation) (f10402f8fa)"
+        paths: ["src/Features/Effects11/Effects/ENBDepthOfField.cpp", "src/Features/Effects11/Effects/ENBDepthOfField.h", "src/Features/Effects11/Effects/ENBAdaptation.cpp", "src/Features/Effects11/Effects/ENBAdaptation.h"]
+      sky_scattering_initial:
+        source: bottle
+        anchor: "SkyScattering.hlsli == Bottle 0657cf0ab4; pin has the later moon-presence/REVERSE_Z refinement"
+        paths: ["features/Effects11/Shaders/Effects11/SkyScattering.hlsli"]
+      mainline_state:
+        source: mainline
+        anchor: "simpler technique sequencing / settings (no weather-separated save, no legacy keys), no DitherAmplitude/NaN guards, no StandardDepthCS (== mainline, merge 1ad6a16436)"
+        paths: ["features/Effects11/Shaders/Effects11/CopyPS.hlsl", "features/Effects11/Shaders/Effects11/DownsamplePS.hlsl", "features/Effects11/Shaders/Effects11/StandardDepthCS.hlsl", "src/Features/Effects11/Effects/ENBBloom.cpp", "src/Features/Effects11/Effects/ENBEffect.cpp", "src/Features/Effects11/Effects/ENBEffectPostPass.cpp", "src/Features/Effects11/Effects/ENBEffectPostPass.h", "src/Features/Effects11/Effects/ENBLens.cpp", "src/Features/Effects11/Effects/Effect.cpp", "src/Features/Effects11/Effects/Effect.h", "src/Features/Effects11/Effects/ExtendedEffect.cpp", "src/Features/Effects11/Effects/ExtendedEffect.h", "src/Features/Effects11/SettingManager.cpp", "src/Features/Effects11/SettingManager.h"]
+    deferred:
+      - "Effects11-native procedural sun coexistence is mainline/open code that Bottle dropped (26611dd183); kept"
+      - "owner decision: restore Bottle's full ENB DOF adaptation coupling?"
+      - "owner decision: adopt Bottle's SkyScattering refinement (GetMoonPresence, REVERSE_Z) past 0657cf0ab4"
+      - "owner decision: re-adopt Bottle's DitherAmplitude/NaN guards (CopyPS/DownsamplePS) and StandardDepthCS lost in the mainline merge"
+      - "water-settings half of Bottle 2a39ad34e9 ('DOF and water readd') left out; DOF half ported"
+      - "Sky Scattering and Cloud Relight can both relight cloud colour; interaction unresolved"
+      - "Bottle cloud self-shadowing (35e2151ab9, 6660d25a1b) not evaluated: Bottle partially self-reverted"
+      - "Bottle 09384077cf, 283b33399b, 1e1da45856 only skimmed, never diffed"
+      - "Bottle's REVERSE_Z handling in this feature's shaders never reached Personal (Personal's Reverse Z port was incomplete; Reverse Z is CORE and on by default) - owner decision: complete the Reverse Z port"
+
+  ExponentialHeightFog:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/ExponentialHeightFog.cpp
+      - src/Features/ExponentialHeightFog.h
+      - features/Exponential Height Fog/
+    components:
+      mainline_state:
+        source: mainline
+        anchor: "whole feature == community-shaders/dev (merge 1ad6a16436)"
+        paths: ["features/Exponential Height Fog/Shaders/ExponentialHeightFog/ExponentialHeightFog.hlsli", "features/Exponential Height Fog/Shaders/ExponentialHeightFog/VolumetricFogCSCommon.hlsli", "features/Exponential Height Fog/Shaders/ExponentialHeightFog/VolumetricFogCommon.hlsli", "features/Exponential Height Fog/Shaders/ExponentialHeightFog/VolumetricFogIntegrationCS.hlsl", "features/Exponential Height Fog/Shaders/ExponentialHeightFog/VolumetricFogLightScatteringCS.hlsl", "features/Exponential Height Fog/Shaders/ExponentialHeightFog/VolumetricFogMaterialCS.hlsl", "features/Exponential Height Fog/Shaders/Features/ExponentialHeightFog.ini", "src/Features/ExponentialHeightFog.cpp", "src/Features/ExponentialHeightFog.h"]
+    deferred:
+      - "owner decision: Bottle's Exponential Height Fog differs from mainline's; pick one"
+      - "Bottle's REVERSE_Z handling in this feature's shaders never reached Personal (Personal's Reverse Z port was incomplete; Reverse Z is CORE and on by default) - owner decision: complete the Reverse Z port"
+
+  ExtendedMaterials:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/ExtendedMaterials.cpp
+      - src/Features/ExtendedMaterials.h
+      - features/Extended Materials/
+    components:
+      mesh_tv_refinement:
+        source: personal
+        anchor: "StochasticHeightChannel for the hMid/hSecant refinement samples when applyMeshTV (b0e78b9522); whitespace"
+        paths: ["features/Extended Materials/Shaders/ExtendedMaterials/ExtendedMaterials.hlsli", "features/Extended Materials/Shaders/ExtendedMaterials/ExtendedMaterialsParallaxCore.hlsli"]
+
+  ExtendedTranslucency:
+    policy: bottle-exact
+    paths:
+      - src/Features/ExtendedTranslucency.cpp
+      - src/Features/ExtendedTranslucency.h
+      - features/Extended Translucency/
+
+  FoliageLighting:
+    policy: external-maintained
+    reference: open
+    paths:
+      - src/Features/FoliageLighting.cpp
+      - src/Features/FoliageLighting.h
+      - features/Foliage Lighting/
+    note: "local adaptations: FeatureCategories::kGrass (no kFoliage here); no SupportsVR override"
+    deferred:
+      - "Open 58fd866d2 (#677, fade scattering at shadow limits) blocked: needs a two-output LightLimitFix::GetDirectionalShadow() this tree lacks"
 
   FootstepParticles:
     policy: bottle-exact
@@ -97,26 +206,451 @@ features:
       - src/Features/FootstepParticles.h
       - features/Footstep Particles/
 
-  ProceduralSun:
+  GrassCollision:
+    policy: bottle-exact
+    paths:
+      - src/Features/GrassCollision.cpp
+      - src/Features/GrassCollision.h
+      - features/Grass Collision/
+
+  GrassLighting:
     policy: bottle-plus-components
+    paths:
+      - src/Features/GrassLighting.cpp
+      - src/Features/GrassLighting.h
+      - features/Grass Lighting/
+    components:
+      wetness_redesign:
+        source: personal
+        anchor: "drops Bottle's wrapped-lighting/transmission/ambient-floor settings for Personal's lighting-wetness redesign (632e2845fd); branding tooltip"
+        paths: ["features/Grass Lighting/Shaders/Features/GrassLighting.ini", "features/Grass Lighting/Shaders/GrassLighting/GrassLighting.hlsli", "src/Features/GrassLighting.cpp", "src/Features/GrassLighting.h"]
+    deferred:
+      - "owner decision: Bottle still ships the six removed settings; confirm the redesign supersedes them"
+
+  GrassOptimizations:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/GrassOptimizations.cpp
+      - src/Features/GrassOptimizations.h
+      - src/Features/GrassOptimizations/
+      - features/Grass Optimizations/
+    components:
+      mainline_state:
+        source: mainline
+        anchor: "== mainline (no REVERSE_Z branches)"
+        paths: ["features/Grass Optimizations/Shaders/GrassOptimizations/GrassCullingCS.hlsl", "features/Grass Optimizations/Shaders/GrassOptimizations/GrassHiZCS.hlsl", "features/Grass Optimizations/Shaders/GrassOptimizations/SPD/SPD.hlsl"]
+    deferred:
+      - "Bottle's REVERSE_Z handling in this feature's shaders never reached Personal (Personal's Reverse Z port was incomplete; Reverse Z is CORE and on by default) - owner decision: complete the Reverse Z port"
+
+  HDRDisplay:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/HDRDisplay.cpp
+      - src/Features/HDRDisplay.h
+      - features/HDR Display/
+    components:
+      ini_version:
+        source: personal
+        anchor: "Version 1-3-0 vs Bottle 1-2-2; code identical to Bottle (not lowered to avoid moving a released version backwards)"
+        paths: ["features/HDR Display/Shaders/Features/HDRDisplay.ini"]
+
+  HairSpecular:
+    policy: bottle-exact
+    paths:
+      - src/Features/HairSpecular.cpp
+      - src/Features/HairSpecular.h
+      - features/Hair Specular/
+
+  HorizonFix:
+    policy: bottle-exact
+    paths:
+      - src/Features/HorizonFix.cpp
+      - src/Features/HorizonFix.h
+      - features/HorizonFix/
+
+  IBL:
+    policy: bottle-exact
+    paths:
+      - src/Features/IBL.cpp
+      - src/Features/IBL.h
+      - features/IBL/
+
+  InteriorSun:
+    policy: bottle-exact
+    paths:
+      - src/Features/InteriorSun.cpp
+      - src/Features/InteriorSun.h
+      - features/Interior Sun/
+
+  InverseSquareLighting:
+    policy: bottle-exact
+    paths:
+      - src/Features/InverseSquareLighting.cpp
+      - src/Features/InverseSquareLighting.h
+      - src/Features/InverseSquareLighting/
+      - features/Inverse Square Lighting/
+
+  LODBlending:
+    policy: bottle-exact
+    paths:
+      - src/Features/LODBlending.cpp
+      - src/Features/LODBlending.h
+      - features/LOD Blending/
+
+  LightLimitFix:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/LightLimitFix.cpp
+      - src/Features/LightLimitFix.h
+      - features/Light Limit Fix/
+    components:
+      slice_fade_in:
+        source: personal
+        anchor: "assignedFrame + LOCAL_SHADOW_FADE_FRAMES fade-in on slice (re)assignment; empty-allow-list fix (69201a6abf)"
+        paths: ["src/Features/LightLimitFix.cpp", "src/Features/LightLimitFix.h"]
+      slice_collision_stat_ui:
+        source: personal
+        anchor: "shows Bottle's localShadowStatCollisions counter in the UI (ec4fd7399e)"
+        paths: []
+      perframe_layout:
+        source: personal
+        anchor: "PerFrame reworked to 80 bytes (533c89a734, shared buffer corruption fix)"
+        paths: []
+      cluster_aabb_far_depth:
+        source: mainline
+        anchor: "ClusterBuildingCS GetPositionVS(tc, 1.0f) (== mainline; Bottle pin is older here)"
+        paths: ["features/Light Limit Fix/Shaders/LightLimitFix/ClusterBuildingCS.hlsl"]
+      comments:
+        source: personal
+        anchor: "explanatory comments only (f10402f8fa)"
+        paths: ["features/Light Limit Fix/Shaders/LightLimitFix/LightLimitFix.hlsli"]
+    deferred:
+      - "Personal-only fade-in and collision stat UI are optional on the next Bottle re-sync"
+      - "Bottle-Compendium past the pin reworks LLF again (occlusion pyramid, shadowless-light leak fix); sync deliberately"
+
+  LinearLighting:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/LinearLighting.cpp
+      - src/Features/LinearLighting.h
+      - features/Linear Lighting/
+    components:
+      mainline_state:
+        source: mainline
+        anchor: "== mainline; lacks Bottle's ENB water-gamma exception (4495b2f8cf)"
+        paths: ["src/Features/LinearLighting.cpp"]
+    deferred:
+      - "owner decision: adopt Bottle's interior ENB water-gamma fix 4495b2f8cf"
+
+  PerformanceOverlay:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/PerformanceOverlay.cpp
+      - src/Features/PerformanceOverlay.h
+      - src/Features/PerformanceOverlay/
+      - features/Performance Overlay/
+    components:
+      branding:
+        source: personal
+        anchor: "product-name strings only"
+        paths: ["src/Features/PerformanceOverlay.cpp"]
+
+  PostProcessing:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/PostProcessing.cpp
+      - src/Features/PostProcessing.h
+      - src/Features/PostProcessing/
+      - features/Post Processing/
+    components:
+      dialogue_dof_menu_gate:
+        source: personal
+        anchor: "DoF::GetInDialogue - menuOpen && gate on lastSpeaker (a7e142722c)"
+        paths: ["src/Features/PostProcessing/DoF.cpp"]
+      disabled_by_default:
+        source: personal
+        anchor: "every pipeline effect and the feature start disabled; DisableVanillaTonemapping default 0 (90e57b9855)"
+        paths: ["features/Post Processing/SKSE/Plugins/CommunityShaders/PostProcessing/default.json", "src/Features/PostProcessing.cpp", "src/Features/PostProcessing.h"]
+      motion_blur_dynamic_height:
+        source: jiayev
+        anchor: "ExecuteHorizontalPass dispatch uses dynamicHeight at both sites (== jiayev/open)"
+        paths: ["src/Features/PostProcessing/MotionBlur.cpp"]
+      extra_textures:
+        source: jiayev
+        anchor: "rgbnoise.dds / starburst.dds (== jiayev, == open)"
+        paths: ["features/Post Processing/textures/rgbnoise.dds", "features/Post Processing/textures/starburst.dds"]
+      pre_fix_bottle_port_state:
+        source: bottle
+        anchor: "Border depth, OpenDRT gamut/hue guard, common Gamma(): Personal holds Bottle's pre-07153509e state"
+        paths: ["features/Post Processing/Shaders/PostProcessing/Border/border.cs.hlsl", "features/Post Processing/Shaders/PostProcessing/Border/border_clear_mv.cs.hlsl", "features/Post Processing/Shaders/PostProcessing/ColorGrading/Include/OpenDRT.hlsli", "features/Post Processing/Shaders/PostProcessing/common.hlsli"]
+      missing_menu_scene_state:
+        source: personal
+        anchor: "State.h lacks IsFlatWorldMapOpen/IsMainLoadingOrFlatMapOpen/IsMenuSceneOpen, so tonemap ownership, frame-gen border and auto-exposure menu hold use the older checks"
+        paths: ["src/Features/PostProcessing/HistogramAutoExposure.cpp", "src/Features/PostProcessing/HistogramAutoExposure.h"]
+      cosmetic:
+        source: personal
+        anchor: "ColorGrading.h comment fix (51c03d33b); PhysicalGlare.h branding string"
+        paths: ["src/Features/PostProcessing/ColorGrading.h", "src/Features/PostProcessing/PhysicalGlare.h"]
+    deferred:
+      - "owner decision: adopt Bottle's 07153509e fixes (Border ToStandardDepth, OpenDRT gamut/hue guard, Gamma abs) - pre_fix_bottle_port_state"
+      - "owner decision: add Bottle's IsFlatWorldMapOpen / IsMainLoadingOrFlatMapOpen / IsMenuSceneOpen to State and use them here"
+      - "owner decision: keep Post Processing disabled by default (90e57b9855)?"
+
+  ProceduralSun:
+    policy: external-maintained
+    reference: open
     paths:
       - src/Features/ProceduralSun.cpp
       - src/Features/ProceduralSun.h
       - features/Procedural Sun/
-    components: {}                   # audit (Phase 4): billboard anti-clip resize, Effects11 sun-ownership arbitration
+    note: "billboard resize, occlusion scale and Sky.hlsl Effects11 sun arbitration are Open's code (not Personal's, as an old commit message claims); ProceduralSun.hlsli PSHADER/CSHADER guard around GetSunLuminance is a Personal compile fix (29e7402ee7)"
     deferred:
       - "Bottle's removal of the Effects11-native ComputeProceduralSun (26611dd183) not carried over: would delete the ENB-preset sun path"
       - "Open sky-composition fix cluster (1c0d36c350, f537f4b9cf, a0eafffe21) not yet re-synced into Sky.hlsl"
 
-  FoliageLighting:
+  PseudoSunBounce:
+    policy: external-maintained
+    reference: jiayev
+    paths:
+      - src/Features/PseudoSunBounce.cpp
+      - src/Features/PseudoSunBounce.h
+      - features/Pseudo Sun Bounce/
+    note: "local: diffuse bounce only (CalcFauxSpecularBounce left unused); PseudoSunBounce.cpp adds Utils/Serialize.h include"
+    deferred:
+      - "faux specular bounce term not ported: needs comparison against the local specular composition first"
+      - "cloud-shadow gating not ported: Lighting.hlsl has no CloudShadows hook at the insertion point"
+
+  RemoteControl:
     policy: bottle-plus-components
     paths:
-      - src/Features/FoliageLighting.cpp
-      - src/Features/FoliageLighting.h
-      - features/Foliage Lighting/
-    components: {}                   # audit (Phase 4): Open scattering / ambient flip vs Bottle base
+      - src/Features/RemoteControl.cpp
+      - src/Features/RemoteControl.h
+      - src/Features/RemoteControl/
+      - features/Remote Control/
+    components:
+      branding:
+        source: personal
+        anchor: "product-name strings in descriptions only; communityshaders.* tool names unchanged"
+        paths: ["src/Features/RemoteControl.h", "src/Features/RemoteControl/DevBenchBridge.cpp", "src/Features/RemoteControl/DevBenchBridge.h"]
+
+  RenderDoc:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/RenderDoc.cpp
+      - src/Features/RenderDoc.h
+      - features/RenderDoc/
+    components:
+      branding:
+        source: personal
+        anchor: "product-name strings only"
+        paths: ["features/RenderDoc/Renderdoc/README.md", "src/Features/RenderDoc.cpp"]
+
+  ReverseZ:
+    policy: bottle-exact
+    paths:
+      - src/Features/ReverseZ.cpp
+      - src/Features/ReverseZ.h
+      - features/ReverseZ/
+    note: "feature-owned files match Bottle, but Bottle's REVERSE_Z handling is missing from 13 shared/other-feature files (SSGI, Screen-Space Shadows, Terrain Blending, Grass Optimizations, Exponential Height Fog, Dynamic Cubemaps, Effects11 SkyScattering/EffectManager, ShaderCache.cpp, Utils/D3D.cpp)"
     deferred:
-      - "Open 58fd866d2 (#677, fade scattering at shadow limits) blocked: needs a two-output LightLimitFix::GetDirectionalShadow() this tree lacks"
+      - "owner decision: complete the Reverse Z port in the files listed in `note` (needs in-game validation)"
+
+  ScreenSpaceGI:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/ScreenSpaceGI.cpp
+      - src/Features/ScreenSpaceGI.h
+      - features/Screen Space GI/
+    components:
+      mainline_state:
+        source: mainline
+        anchor: "== mainline (no REVERSE_Z branch in ScreenToViewDepth)"
+        paths: ["features/Screen Space GI/Shaders/ScreenSpaceGI/common.hlsli"]
+    deferred:
+      - "Bottle's REVERSE_Z handling in this feature's shaders never reached Personal (Personal's Reverse Z port was incomplete; Reverse Z is CORE and on by default) - owner decision: complete the Reverse Z port"
+
+  ScreenSpaceShadows:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/ScreenSpaceShadows.cpp
+      - src/Features/ScreenSpaceShadows.h
+      - features/Screen-Space Shadows/
+    components:
+      mainline_single_channel:
+        source: mainline
+        anchor: "single-channel contact shadows (== mainline); Personal reverted its front/back experiment (352e736e61)"
+        paths: ["features/Screen-Space Shadows/Shaders/Features/ScreenSpaceShadows.ini", "features/Screen-Space Shadows/Shaders/ScreenSpaceShadows/RaymarchCS.hlsl", "features/Screen-Space Shadows/Shaders/ScreenSpaceShadows/ScreenSpaceShadows.hlsli", "features/Screen-Space Shadows/Shaders/ScreenSpaceShadows/bend_sss_gpu.hlsli", "src/Features/ScreenSpaceShadows.cpp"]
+    deferred:
+      - "owner decision: adopt Bottle's front/back two-channel screen-space shadows + transmission (Lighting.hlsl hunk too)"
+      - "Bottle's REVERSE_Z handling in this feature's shaders never reached Personal (Personal's Reverse Z port was incomplete; Reverse Z is CORE and on by default) - owner decision: complete the Reverse Z port"
+
+  Screenshot:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/ScreenshotFeature.cpp
+      - src/Features/ScreenshotFeature.h
+      - features/Screenshot/
+    components:
+      nr_comparison_capture:
+        source: personal
+        anchor: "NeuralRenderingComparisonPath + Capture(forceCleanNoUI) for NR's A/B capture (7b0ffa8f1f); WIC_FLAGS_FORCE_SRGB fix for double-encoded SDR PNGs (7607769991)"
+        paths: ["src/Features/ScreenshotFeature.cpp", "src/Features/ScreenshotFeature.h"]
+
+  Skin:
+    policy: external-maintained
+    reference: jiayev
+    paths:
+      - src/Features/Skin.cpp
+      - src/Features/Skin.h
+      - features/Skin/
+    note: "Advanced Skin is jiayev's (4c4eb6d255, 2da0eb7a55); local: JiayeStatement promo removed, EnableSkin default false"
+
+  SkySync:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/SkySync.cpp
+      - src/Features/SkySync.h
+      - features/Sky Sync/
+    components:
+      celestial_light_weights:
+        source: open
+        anchor: "GetCelestialLightWeights() for Cloud Relight (open 1d67aaead, Personal 105a90cea2)"
+        paths: ["src/Features/SkySync.cpp", "src/Features/SkySync.h"]
+    deferred:
+      - "owner decision: adopt Bottle's broken-moon-mod compat fix (2a9ee471a2, Caster-cached celestial directions)"
+
+  Skylighting:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/Skylighting.cpp
+      - src/Features/Skylighting.h
+      - features/Skylighting/
+    components:
+      pre_cadence_state:
+        source: personal
+        anchor: "early-occluder-reject simplification (7a7276a4c5); lacks Bottle's occlusion update cadence / distance culling (open 69101322f2 via Bottle 644fbc5ee5)"
+        paths: ["features/Skylighting/Shaders/Features/Skylighting.ini", "src/Features/Skylighting.cpp", "src/Features/Skylighting.h"]
+    deferred:
+      - "owner decision: adopt Bottle's occlusion cadence/culling (644fbc5ee5) and rebase 7a7276a4c5 on it"
+
+  SnowCover:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/SnowCover.cpp
+      - src/Features/SnowCover.h
+      - features/Snow Cover/
+    components:
+      repo_conventions:
+        source: personal
+        anchor: "i18n (T/TKEY), D3D resource names, internal linkage, Doxygen, Nexus packaging block"
+        paths: ["src/Features/SnowCover.cpp", "src/Features/SnowCover.h", "features/Snow Cover/Shaders/Features/SnowCover.ini"]
+      no_tree_tint:
+        source: personal
+        anchor: "AffectTreeTint 0 in all six worldspace configs (since port 0d5c196334)"
+        paths: ["features/Snow Cover/Shaders/SnowCover/MarkarthWorld.json", "features/Snow Cover/Shaders/SnowCover/RiftenWorld.json", "features/Snow Cover/Shaders/SnowCover/SolitudeWorld.json", "features/Snow Cover/Shaders/SnowCover/Tamriel.json", "features/Snow Cover/Shaders/SnowCover/WhiterunWorld.json", "features/Snow Cover/Shaders/SnowCover/WindhelmWorld.json"]
+    deferred:
+      - "Bottle 85f2020e8 Tamriel.json AffectTreeTint default flip (0->1) not carried over (no_tree_tint)"
+      - "Bottle-Compendium past the pin re-adds fire melt (ae6af06476, 399695a5d4); decide on the next sync"
+
+  SubsurfaceScattering:
+    policy: bottle-exact
+    paths:
+      - src/Features/SubsurfaceScattering.cpp
+      - src/Features/SubsurfaceScattering.h
+      - features/Subsurface Scattering/
+
+  TerrainBlending:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/TerrainBlending.cpp
+      - src/Features/TerrainBlending.h
+      - features/Terrain Blending/
+    components:
+      mainline_state:
+        source: mainline
+        anchor: "== mainline (no REVERSE_Z branches in DepthBlend)"
+        paths: ["features/Terrain Blending/Shaders/TerrainBlending/DepthBlend.hlsl"]
+    deferred:
+      - "Bottle's REVERSE_Z handling in this feature's shaders never reached Personal (Personal's Reverse Z port was incomplete; Reverse Z is CORE and on by default) - owner decision: complete the Reverse Z port"
+
+  TerrainHelper:
+    policy: bottle-exact
+    paths:
+      - src/Features/TerrainHelper.cpp
+      - src/Features/TerrainHelper.h
+      - features/Terrain Helper/
+
+  TerrainShadows:
+    policy: bottle-exact
+    paths:
+      - src/Features/TerrainShadows.cpp
+      - src/Features/TerrainShadows.h
+      - features/Terrain Shadows/
+      - features/Terrain Shadows - Heightmaps/
+    deferred:
+      - "mainline penumbra fix 44826d2805 (seen via Bottle) not evaluated"
+
+  TerrainVariation:
+    policy: bottle-exact
+    paths:
+      - src/Features/TerrainVariation.cpp
+      - src/Features/TerrainVariation.h
+      - features/Terrain Variation/
+
+  TruePBR:
+    policy: bottle-exact
+    paths:
+      - src/TruePBR.cpp
+      - src/TruePBR.h
+      - src/TruePBR/
+      - features/TruePBR/
+
+  UnifiedWater:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/UnifiedWater.cpp
+      - src/Features/UnifiedWater.h
+      - features/Unified Water/
+    components:
+      enabled_by_default:
+        source: personal
+        anchor: "IsDisabledByDefault() override returns false (c5f10c0666, 9c8c8c1ea0)"
+        paths: ["src/Features/UnifiedWater.h"]
+
+  VanillaFresnel:
+    policy: external-maintained
+    reference: open
+    paths:
+      - src/Features/VanillaFresnel.cpp
+      - src/Features/VanillaFresnel.h
+      - features/Vanilla Fresnel/
+    note: "local adaptations: no SupportsVR override; ImGui::Checkbox instead of Open's Util::CheckboxFlag"
+
+  VolumetricLighting:
+    policy: bottle-exact
+    paths:
+      - src/Features/VolumetricLighting.cpp
+      - src/Features/VolumetricLighting.h
+      - features/Volumetric Lighting/
+
+  VolumetricShadows:
+    policy: bottle-exact
+    paths:
+      - src/Features/VolumetricShadows.cpp
+      - src/Features/VolumetricShadows.h
+      - features/Volumetric Shadows/
+
+  WaterEffects:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/WaterEffects.cpp
+      - src/Features/WaterEffects.h
+      - features/Water Effects/
+    components:
+      parallax_cleanup:
+        source: mainline
+        anchor: "WaterParallax reads NormalsAmplitude from the cbuffer (== mainline/jiayev, 4324dd3c70)"
+        paths: ["features/Water Effects/Shaders/WaterEffects/WaterParallax.hlsli"]
 
   Wind:
     policy: external-maintained
@@ -132,45 +666,7 @@ features:
       - "leaf flutter: leafAnimationStrength computed but not consumed by the leaf-normal perturbation"
       - "open 6150e8d39e: possible compute-buffer unbind bug in WindGrass/WindTrees, not yet checked"
       - "Devbench diagnostics / UX-action integration intentionally dropped (not deferred)"
-
-  PseudoSunBounce:
-    policy: external-maintained
-    reference: jiayev
-    paths:
-      - src/Features/PseudoSunBounce.cpp
-      - src/Features/PseudoSunBounce.h
-      - features/Pseudo Sun Bounce/
-    deferred:
-      - "faux specular bounce term not ported: needs comparison against the local specular composition first"
-      - "cloud-shadow gating not ported: Lighting.hlsl has no CloudShadows hook at the insertion point"
-
-  DynamicCubemaps:
-    deferred:
-      - "jiayev 49c35c6ef envTexture/envReflectionsTexture merge refactor declined (unrelated to the ported lighting detection)"
-      - "Personal keeps the nextTask reset that jiayev dropped without a stated rationale"
-    note: "policy not yet assigned; decide in the Phase 4 audit"
-
-  SnowCover:
-    deferred:
-      - "Bottle 85f2020e8 Tamriel.json AffectTreeTint default flip (0->1) not carried over"
-    note: "policy not yet assigned; decide in the Phase 4 audit"
-
-  Effects11:
-    deferred:
-      - "water-settings half of Bottle 2a39ad34e9 ('DOF and water readd') left out; DOF half ported"
-      - "Sky Scattering (0657cf0ab4) and Cloud Relight can both relight cloud colour; interaction unresolved"
-      - "Bottle cloud self-shadowing (35e2151ab9, 6660d25a1b) not evaluated: Bottle partially self-reverted"
-      - "Bottle 09384077cf, 283b33399b, 1e1da45856 only skimmed, never diffed"
-    note: "policy not yet assigned; decide in the Phase 4 audit"
-
-  LightLimitFix:
-    deferred:
-      - "Personal-only assignedFrame fade-in and localShadowStatCollisions stat kept on top of Bottle; optional on re-sync"
-    note: "policy not yet assigned; decide in the Phase 4 audit"
-
-  TerrainShadows:
-    deferred:
-      - "mainline penumbra fix 44826d2805 (seen via Bottle) not evaluated"
+      - "TreeWind.hlsli:162 raises X4008 (division by zero) in one Lighting VS permutation"
 
 project:
   deferred:
@@ -195,6 +691,10 @@ shared_integrations:
       anchor: "State::LoadFromJson, before any feature loads"
       match: ["NeuralRendering::MigrateLegacyUpscalingSettings(settings)"]
   src/State.h:
+    wind_tree_bend_bit:
+      source: open
+      anchor: "ExtraShaderDescriptors::TreeBend (local bit, allocated downward from 31)"
+      match: ["TreeBend = 1u << 29"]
     nr_extra_descriptor_bits:
       source: personal
       anchor: "ExtraShaderDescriptors: IsHumanoidActor, IsHair (local bits; see maintainability.md hot files)"
@@ -204,7 +704,25 @@ shared_integrations:
       source: personal
       anchor: "Permutation::ExtraFlags: IsHumanoidActor, IsHair - must mirror State.h"
       match: ["IsHumanoidActor", "IsHair"]
+  package/Shaders/Common/SharedData.hlsli:
+    local_feature_data:
+      source: personal
+      anchor: "FeatureData cbuffer: local structs appended after Bottle's volumetricLightingSettings (Cloud Relight, Wind fields, Pseudo Sun Bounce)"
+      match: ["CloudRelightSettings cloudRelightSettings;", "WindField::WindTuning WindFieldTuning;", "PseudoSunBounceSettings pseudoSunBounceSettings;"]
+  src/FeatureBuffer.cpp:
+    local_feature_data:
+      source: personal
+      anchor: "GetFeatureBufferData(): local entries after volumetricLighting, same order as SharedData.hlsli"
+      match: ["globals::features::cloudRelight.GetCommonBufferData()", "globals::features::wind.GetSharedWindData()", "globals::features::pseudoSunBounce.settings"]
   package/Shaders/Lighting.hlsl:
+    wind_tree_bend:
+      source: open
+      anchor: "VS TREE_ANIM trunk bend gated on ExtraFlags::TreeBend"
+      match: ['#include "Common/TreeWind.hlsli"']
+    pseudo_sun_bounce:
+      source: jiayev
+      anchor: "PSEUDO_SUN_BOUNCE diffuse bounce into directionalAmbientColor"
+      match: ['PseudoSunBounce/sunbounce.hlsli', 'SharedData::pseudoSunBounceSettings.intensity']
     nr_category_classification:
       source: personal
       anchor: "NeuralRenderingCategories include + Masks2 category pack at the end of the PS"

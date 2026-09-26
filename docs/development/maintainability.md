@@ -14,8 +14,10 @@ that is recorded. Read this before changing a feature that also exists upstream.
 -   **Most Personal features are ports, and some are composites** of Bottle, Open, Jiayev and
     mainline work. Living in Personal, or differing from Bottle, does not make code
     Personal-original.
--   **Only two things are known to be Personal-original:** the Neural Rendering feature, and the
-    dialogue Depth of Field menu gate in `DoF::GetInDialogue`.
+-   **Personal-original work is small and recorded.** The one Personal-original *feature* is Neural
+    Rendering. Everything else Personal wrote is a named component inside an imported feature (for
+    example the dialogue Depth of Field menu gate in `DoF::GetInDialogue`, Light Limit Fix's slice
+    fade-in); each is marked `personal_original: true` in `feature-provenance.yaml`.
 -   **Source comparison is authoritative.** When a record here disagrees with the code, the code
     wins and the record is fixed. Never infer provenance from a path, a commit author, a feature
     name, or a generic `feat:` subject.

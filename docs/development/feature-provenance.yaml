@@ -21,6 +21,9 @@
 #
 # A design-reference entry does not by itself make personal_original false.
 # Never infer provenance from a path, a commit author or a generic "feat:" subject.
+# Established 2026-09-25 by source comparison (file blobs and distinctive lines) against
+# bottle@dac6803377, bottle/Bottle-Compendium, open-shaders/dev, jiayev/compendium-clean and
+# community-shaders/dev (mainline). Features absent here are mainline features that match Bottle.
 
 features:
   NeuralRendering:
@@ -52,19 +55,30 @@ features:
         confidence: confirmed
         evidence: [3afd2b6277]
 
+  Upscaling:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: confirmed
+      - source: bottle
+        role: implementation       # reset to the pin; includes the FSR4 runtime upscaler
+        confidence: confirmed
+        evidence: [9ea5d7e64a]
+
   PostProcessing:
     status: present
     personal_original: false
     provenance:
       - source: jiayev
-        role: implementation
-        confidence: unresolved
-        evidence: [10d2eba1b, 51c03d33b]
-        note: archived tracker names jiayev compendium-clean; Bottle also ships Post Processing - compare both
+        role: original-implementation
+        confidence: confirmed
+        note: reached Personal through Bottle's port, not jiayev's repo directly
       - source: bottle
-        role: implementation
-        confidence: unresolved
-        note: plan seed says Bottle; confirm which fork the current sub-effects match
+        role: port                 # "port jiayev's Post Processing feature"; Personal extracted from it (263ffdf929)
+        confidence: confirmed
+        evidence: [10d2eba1b, 263ffdf929]
     components:
       dialogue_dof_menu_gate:
         personal_original: true
@@ -73,18 +87,26 @@ features:
             role: bug-fix
             confidence: confirmed
             evidence: [a7e142722c]
-
-  Upscaling:
-    status: present
-    personal_original: false
-    provenance:
-      - source: mainline
-        role: base-feature
-        confidence: likely
-      - source: bottle
-        role: implementation       # FSR4 runtime upscaler and later Bottle work
-        confidence: confirmed
-        evidence: [9ea5d7e64a]
+      disabled_by_default:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: integration-default
+            confidence: confirmed
+            evidence: [90e57b9855]
+      color_transform_fixes:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: bug-fix           # 51c03d33b is Personal's own commit, not jiayev's
+            confidence: confirmed
+            evidence: [51c03d33b]
+      motion_blur_dynamic_height:
+        personal_original: false
+        provenance:
+          - source: jiayev
+            role: bug-fix
+            confidence: confirmed   # byte-identical to jiayev and open
 
   WetnessEffects:
     status: present
@@ -92,24 +114,10 @@ features:
     provenance:
       - source: mainline
         role: base-feature
-        confidence: likely
+        confidence: confirmed
       - source: bottle
         role: implementation
         confidence: confirmed      # byte-identical to the pinned Bottle SHA after Character Rain removal
-
-  FoliageLighting:
-    status: present
-    personal_original: false
-    provenance:
-      - source: open
-        role: original-port
-        confidence: confirmed
-        evidence: [f18e9543, 09442614]
-      - source: bottle
-        role: later-merged-implementation
-        confidence: unresolved
-        evidence: [6ba0c1a1]
-        note: establish from current source which parts now match Bottle and which Open
 
   ReverseZ:
     status: present
@@ -117,9 +125,9 @@ features:
     provenance:
       - source: bottle
         role: implementation
-        confidence: unresolved
+        confidence: confirmed      # feature-owned files byte-identical to the pin
         evidence: [124bc7e22, 1698b4beb]
-        note: archived tracker records a Bottle port; confirm against source
+        note: the port never reached 13 shared/other-feature files that carry Bottle's REVERSE_Z handling
 
   FootstepParticles:
     status: present
@@ -127,70 +135,131 @@ features:
     provenance:
       - source: bottle
         role: implementation
-        confidence: unresolved
+        confidence: confirmed      # byte-identical to the pin
         evidence: [124bc7e22]
-        note: archived tracker records byte-identical to Bottle; confirm against pinned SHA
 
   ProceduralSun:
     status: present
     personal_original: false
     provenance:
       - source: open
-        role: implementation
-        confidence: unresolved
-        note: tracker cites open 470f847247 / f537f4b9cf; confirm
+        role: implementation       # incl. billboard anti-clip resize and Sky.hlsl Effects11 sun arbitration
+        confidence: confirmed
+        evidence: [b3318a9d5b, 3066a9dfa1]
       - source: bottle
-        role: implementation
-        confidence: unresolved
-        note: tracker cites Bottle 26611dd183, 31f9890f27, 05c07ee292, 343bf8cc44, 3d64571711; confirm
+        role: merged-changes
+        confidence: likely
+        evidence: [26611dd183, 31f9890f27, 05c07ee292, 343bf8cc44, 3d64571711]
+        note: tracker-cited Bottle merges; feature files now match none of Bottle's
+    components:
+      sun_luminance_stage_guard:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: compile-fix
+            confidence: confirmed
+            evidence: [29e7402ee7]
 
-  Wind:
+  FoliageLighting:
     status: present
     personal_original: false
     provenance:
       - source: open
-        role: implementation
-        confidence: unresolved
-        note: partial port, no single Personal commit cited; tracker cites open 7acc8d70ad
-
-  PseudoSunBounce:
-    status: present
-    personal_original: false
-    provenance:
-      - source: jiayev
-        role: implementation
-        confidence: unresolved
-        note: adapted port (diffuse bounce only); tracker anchor jiayev b8f93c390
-
-  SnowCover:
-    status: present
-    personal_original: false
-    provenance:
-      - source: bottle
-        role: implementation
-        confidence: unresolved
-        evidence: [0d5c19633, b8afc7b00]
-        note: tracker records a Bottle port with fire-melt removed; confirm
-
-  CloudRelight:
-    status: present
-    personal_original: false
-    provenance:
-      - source: open
-        role: implementation
-        confidence: unresolved
-        evidence: [f18e9543f, 105a90cea]
-        note: tracker cites open 1d67aaead (#681); confirm
+        role: implementation       # FoliageLighting.cpp byte-identical to open; .h adapted (kGrass, no SupportsVR)
+        confidence: confirmed
+        evidence: [f18e9543]
 
   VanillaFresnel:
     status: present
     personal_original: false
     provenance:
       - source: open
-        role: implementation
-        confidence: unresolved
-        evidence: [f18e9543f]
-        note: tracker records an Open port; confirm
+        role: implementation       # adapted: no SupportsVR, ImGui::Checkbox
+        confidence: confirmed
+        evidence: [f18e9543]
+
+  CloudRelight:
+    status: present
+    personal_original: false
+    provenance:
+      - source: open
+        role: implementation       # 4 of 6 files byte-identical to open
+        confidence: confirmed
+        evidence: [f18e9543f, 105a90cea]
+
+  Wind:
+    status: present
+    personal_original: false
+    provenance:
+      - source: open
+        role: implementation       # 32 of 42 files byte-identical to open; rest are VR/devbench removal and push-model adaptation
+        confidence: confirmed
+        evidence: [dd7e7f2ef0]
+
+  PseudoSunBounce:
+    status: present
+    personal_original: false
+    provenance:
+      - source: jiayev
+        role: implementation       # 3 of 4 files byte-identical; diffuse term only in Lighting.hlsl
+        confidence: confirmed
+
+  Skin:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: confirmed
+      - source: jiayev
+        role: implementation       # Advanced Skin; Skin.hlsli byte-identical, .cpp/.h 3 lines off
+        confidence: confirmed
+        evidence: [4c4eb6d255, 2da0eb7a55]
+
+  SnowCover:
+    status: present
+    personal_original: false
+    provenance:
+      - source: bottle
+        role: implementation       # fire melt removed in step with Bottle's own 85f2020e84
+        confidence: confirmed
+        evidence: [0d5c196334, b8afc7b001]
+    components:
+      no_tree_tint:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: config-default   # AffectTreeTint 0 in all worldspace configs since the port
+            confidence: confirmed
+            evidence: [0d5c196334]
+
+  Effects11:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature         # most effect files == mainline after merge 1ad6a16436
+        confidence: confirmed
+        evidence: [1ad6a16436]
+      - source: open
+        role: implementation       # preset hot-swap subsystem; PresetManager.h byte-identical
+        confidence: confirmed
+      - source: bottle
+        role: implementation       # ENB Depth of Field, Sky Scattering
+        confidence: confirmed
+        evidence: [2a39ad34e9, 0657cf0ab4]
+    components:
+      enb_dof_without_adaptation:
+        personal_original: false
+        provenance:
+          - source: bottle
+            role: implementation
+            confidence: confirmed
+            evidence: [2a39ad34e9]
+          - source: personal
+            role: reduction         # adaptation coupling not ported
+            confidence: confirmed
+            evidence: [f10402f8fa]
 
   LightLimitFix:
     status: present
@@ -198,22 +267,40 @@ features:
     provenance:
       - source: mainline
         role: base-feature
-        confidence: likely
+        confidence: confirmed
       - source: bottle
         role: implementation       # diet SLF, contact shadows, cache scheduler
-        confidence: unresolved
+        confidence: confirmed
         evidence: [69201a6ab, fe9228b99]
-        note: tracker records Bottle 42e236274d..6ae45a32fa chain; confirm per component
-
-  Skin:
-    status: present
-    personal_original: false
-    provenance:
-      - source: jiayev
-        role: implementation       # Advanced Skin profiles / overrides
-        confidence: unresolved
-        evidence: [4c4eb6d25, 2da0eb7a5]
-        note: tracker records a jiayev port; confirm
+    components:
+      slice_fade_in:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: enhancement
+            confidence: confirmed
+            evidence: [69201a6abf]
+      slice_collision_stat_ui:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: ui               # the counter itself is Bottle's
+            confidence: confirmed
+            evidence: [ec4fd7399e]
+      perframe_layout:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: bug-fix
+            confidence: confirmed
+            evidence: [533c89a734]
+      cluster_aabb_far_depth:
+        personal_original: false
+        provenance:
+          - source: mainline
+            role: bug-fix
+            confidence: confirmed
+            evidence: [45a71f6172]
 
   DynamicCubemaps:
     status: present
@@ -221,16 +308,15 @@ features:
     provenance:
       - source: mainline
         role: base-feature
-        confidence: likely
+        confidence: confirmed
     components:
       lighting_change_detection:
         personal_original: false
         provenance:
           - source: jiayev
             role: implementation
-            confidence: unresolved
-            evidence: [49c35c6ef]
-            note: tracker records a jiayev port; confirm
+            confidence: confirmed
+            evidence: [49c35c6ef2, 929d4ce52f]
 
   VolumetricLighting:
     status: present
@@ -238,25 +324,11 @@ features:
     provenance:
       - source: mainline
         role: base-feature
-        confidence: likely
-    components:
-      god_ray_strength_and_focus:
-        personal_original: false
-        provenance:
-          - source: bottle
-            role: implementation
-            confidence: unresolved
-            evidence: [a582a558a, 122f4e2fc]
-            note: tracker records a Bottle port; confirm
-
-  Effects11:
-    status: present
-    personal_original: false
-    provenance:
+        confidence: confirmed
       - source: bottle
-        role: implementation
-        confidence: unresolved
-        note: ENB Depth of Field (2a39ad34e9) and Sky Scattering (0657cf0ab4) recorded as Bottle ports; confirm the rest
+        role: implementation       # god-ray strength / focused rays; byte-identical to the pin
+        confidence: confirmed
+        evidence: [a582a558a, 122f4e2fc, fdb8ee7a17]
 
   TruePBR:
     status: present
@@ -264,13 +336,133 @@ features:
     provenance:
       - source: mainline
         role: base-feature
-        confidence: likely
+        confidence: confirmed
+      - source: bottle
+        role: implementation       # incl. micro shadow AO; byte-identical to the pin
+        confidence: confirmed
+        evidence: [0a69dbbc5]
+
+  SkySync:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: confirmed
     components:
-      micro_shadow_ao:
+      celestial_light_weights:
         personal_original: false
         provenance:
-          - source: bottle
+          - source: open
             role: implementation
-            confidence: unresolved
-            evidence: [0a69dbbc5]
-            note: tracker records a Bottle port; confirm
+            confidence: confirmed
+            evidence: [105a90cea2]
+
+  CloudShadows:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: implementation       # .cpp/.h byte-identical to mainline
+        confidence: confirmed
+      - source: open
+        role: implementation       # CloudShadows.hlsli byte-identical to open
+        confidence: confirmed
+
+  ExponentialHeightFog:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: implementation       # all 9 files byte-identical to mainline
+        confidence: confirmed
+        evidence: [1ad6a16436]
+
+  ScreenSpaceShadows:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: implementation       # all files byte-identical to mainline; Personal's front/back experiment reverted
+        confidence: confirmed
+        evidence: [a08a5158b4, 352e736e61]
+
+  ExtendedMaterials:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: confirmed
+    components:
+      mesh_tv_refinement:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: enhancement
+            confidence: confirmed
+            evidence: [b0e78b9522]
+
+  GrassLighting:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: confirmed
+    components:
+      wetness_redesign:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: redesign
+            confidence: confirmed
+            evidence: [ffd4c2a2c5, 632e2845fd]
+
+  Screenshot:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: confirmed
+    components:
+      nr_comparison_capture:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: implementation   # NR A/B capture path + WIC sRGB fix
+            confidence: confirmed
+            evidence: [7b0ffa8f1f, 7607769991]
+
+  UnifiedWater:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: confirmed
+    components:
+      enabled_by_default:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: integration-default
+            confidence: confirmed
+            evidence: [c5f10c0666, 9c8c8c1ea0]
+
+  Skylighting:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: confirmed
+    components:
+      early_occluder_reject:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: optimization
+            confidence: confirmed
+            evidence: [7a7276a4c5]

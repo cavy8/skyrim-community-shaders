@@ -439,8 +439,9 @@ Unreleased = True
 Bottle-Compendium (InTheBottle/Bottled-Shaders), pinned in `docs/development/upstreams.yaml`,
 is the primary maintenance baseline. This is not authorship: most Personal functionality
 was imported from other Community Shaders forks, and features may be composites of
-Bottle/Open/Jiayev/mainline code. Known Personal-original work: Neural Rendering, and the
-dialogue DOF menu gate in `DoF::GetInDialogue`. See `docs/development/maintainability.md`.
+Bottle/Open/Jiayev/mainline code. Known Personal-original work: Neural Rendering, the
+dialogue DOF menu gate in `DoF::GetInDialogue`, and the other components marked
+`personal_original: true` in `feature-provenance.yaml`. See `docs/development/maintainability.md`.
 
 Before modifying a shared feature:
 
