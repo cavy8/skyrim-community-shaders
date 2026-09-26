@@ -12,8 +12,9 @@ class ExtendedEffect : public Effect
 public:
 	void LoadWeatherData();
 	void ApplyWeatherBlending(float blendFactor, uint32_t currentWeatherID, uint32_t lastWeatherID);
-	void SyncWeatherDataFromUI(uint32_t weatherID);
+	void SyncWeatherVarFromUI(size_t index, uint32_t weatherID);
 	void ApplyTimeOfDayInterpolation();
+	void SaveWeatherOverrides() override;
 
 	void Unload() override;
 	bool IsTechniqueEnabled(TechniqueInfo& info) override;
@@ -25,6 +26,13 @@ public:
 private:
 	using WeatherValues = std::unordered_map<std::string, std::string>;
 	std::unordered_map<uint32_t, WeatherValues> weatherData;
+
+	struct DirtyWeatherFile
+	{
+		uint32_t weatherID = 0;
+		std::unordered_set<std::string> keys;
+	};
+	std::unordered_map<std::string, DirtyWeatherFile> dirtyWeatherFiles;
 
 	std::unordered_map<std::string, int> bindingCache;
 

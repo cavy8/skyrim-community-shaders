@@ -63,7 +63,13 @@ namespace SharedData
 
 		float NormalStrength;
 		float SpecularAAStrength;
-		float2 pad0;
+		bool EnableWrappedLighting;
+		float SphereNormalStrength;
+
+		float ClassicScattering;
+		float TransmissionSaturation;
+		float AmbientFloor;
+		float AmbientSkyBias;
 	};
 
 	struct CPMSettings
@@ -111,7 +117,6 @@ namespace SharedData
 		uint LocalShadowSamples;
 		float LocalShadowFilterRadius;
 		float LocalShadowTexelSize;
-		// Match LightLimitFix::PerFrame: a scalar array would consume one register per element.
 		float2 pad1;
 	};
 
@@ -295,15 +300,10 @@ namespace SharedData
 		float CloudsEdgeIntensity;
 		float CloudsEdgeMoonMultiplier;
 
-		uint EnableProceduralSun;
-		float ProceduralSunDiskRadiusSq;
-		float ProceduralSunDiskEdgeScale;
-		float ProceduralSunGlowIntensity;
-
-		float ProceduralSunCoronaFalloff;
-		float ProceduralSunCoronaScale;
 		uint UseProceduralGradientWeights;
 		float ProceduralGradientWeightCurve;
+		float LightSpriteCurve;
+		float pad1;
 
 		float ParticleIntensity;
 		float ParticleLightingInfluence;
@@ -317,6 +317,21 @@ namespace SharedData
 
 		float VolumetricRaysDesaturation;
 		float3 VolumetricRaysColorFilter;
+
+		uint EnableWater;
+		float WaterWavesAmplitude;
+		float WaterMuddiness;
+		float WaterSunLightingMultiplier;
+
+		float WaterSunSpecularMultiplier;
+		float WaterFresnelMin;
+		float WaterFresnelMax;
+		float WaterFresnelMultiplier;
+
+		float WaterReflectionAmount;
+		float WaterPad0;
+		float WaterPad1;
+		float WaterPad2;
 
 		uint EnableCloudsScattering;
 		float SkyScatteringIntensity;
@@ -340,6 +355,17 @@ namespace SharedData
 		uint EnableCloudsLightingFromMoon;
 		uint CalculateCloudsEdgeFromScattering;
 		float CloudsLightingDensity;
+
+		// Local (non-Bottle): Effects11-native procedural sun, appended after Bottle's fields.
+		// Mirrors Effects11::PerFrame; read by Sky.hlsl.
+		uint EnableProceduralSun;
+		float ProceduralSunDiskRadiusSq;
+		float ProceduralSunDiskEdgeScale;
+		float ProceduralSunGlowIntensity;
+
+		float ProceduralSunCoronaFalloff;
+		float ProceduralSunCoronaScale;
+		float2 ProceduralSunPad;
 	};
 	struct TerrainBlendingSettings
 	{
@@ -383,7 +409,20 @@ namespace SharedData
 		float volumetricSampleJitterMultiplier;
 		float volumetricUpsampleJitterMultiplier;
 		float volumetricLocalLightScatteringIntensity;
-		float2 pad0;
+		uint useVanillaFogSettings;
+		float vanillaFogMaxOpacity;
+		float vanillaFogDensity;
+		float vanillaFogNear;
+		float vanillaFogFar;
+		float vanillaFogPower;
+		float vanillaFogStrength;
+		float3 pad0;
+		float4 vanillaFogNearColor;
+		float4 vanillaFogFarColor;
+		float fogLightingInfluence;
+		float distanceHazeMaxOpacity;
+		float distanceHazeStartDistance;
+		float distanceHazeFadeDistance;
 	};
 
 	struct TruePBRSettings

@@ -57,22 +57,32 @@ namespace SkyScattering
 		return saturate(SharedData::SunColor.w) * HorizonFade(SharedData::SunDirection.z);
 	}
 
+	float GetMoonPresence()
+	{
+		float sunBelowHorizon = 1.0 - smoothstep(-0.2, -0.1, SharedData::SunDirection.z);
+		float sunFadedOut = SharedData::SunColor.w > 0.0 ? 0.0 : smoothstep(0.0, 0.1, SharedData::SunDirection.z);
+		return max(sunBelowHorizon, sunFadedOut);
+	}
+
 	Light GetLight()
 	{
 		Light light;
-		if (SharedData::SunDirection.z > -0.1) {
+		float sunWeight = GetSunWeight();
+		if (sunWeight > 0.0) {
 			light.direction = SafeNormalize(SharedData::SunDirection.xyz);
 			light.color = lerp(1.0.xxx, GetChroma(SharedData::SunColor.xyz), SharedData::enbSettings.SkyScatteringColorFromSun);
-			light.weight = GetSunWeight();
+			light.weight = sunWeight;
 		} else {
 			float masser = dot(max(SharedData::MasserColor.xyz, 0.0), 1.0 / 3.0) * HorizonFade(SharedData::MasserDirection.z);
 			float secunda = dot(max(SharedData::SecundaColor.xyz, 0.0), 1.0 / 3.0) * HorizonFade(SharedData::SecundaDirection.z);
 			bool useMasser = masser >= secunda;
 			float3 moonDirection = useMasser ? SharedData::MasserDirection.xyz : SharedData::SecundaDirection.xyz;
 			float3 moonColor = max(useMasser ? SharedData::MasserColor.xyz : SharedData::SecundaColor.xyz, 0.0);
+			float moonBrightness = max(moonColor.r, max(moonColor.g, moonColor.b));
+			float3 moonChroma = GetChroma(moonColor);
 			light.direction = SafeNormalize(moonDirection);
-			light.color = lerp(dot(moonColor, 1.0 / 3.0).xxx, moonColor, SharedData::enbSettings.SkyScatteringColorFromSun);
-			light.weight = (1.0 - smoothstep(-0.2, -0.1, SharedData::SunDirection.z)) * HorizonFade(light.direction.z) * SharedData::enbSettings.SkyScatteringMoonGlowAmount;
+			light.color = lerp(dot(moonChroma, 1.0 / 3.0).xxx, moonChroma, SharedData::enbSettings.SkyScatteringColorFromSun);
+			light.weight = GetMoonPresence() * HorizonFade(light.direction.z) * SharedData::enbSettings.SkyScatteringMoonGlowAmount * moonBrightness;
 		}
 		light.color *= SharedData::enbSettings.SkyScatteringColor * SharedData::enbSettings.SkyScatteringIntensity;
 		return light;
@@ -89,7 +99,11 @@ namespace SkyScattering
 	float GetRayLength(float3 viewDirection, float depth, float3 positionMS)
 	{
 		float cloudDistance = GetCloudLayerDistance(viewDirection);
+#ifdef REVERSE_Z
+		return depth > 0.0 ? min(length(positionMS), cloudDistance) : cloudDistance;
+#else
 		return depth < 1.0 ? min(length(positionMS), cloudDistance) : cloudDistance;
+#endif
 	}
 
 	float GetOpticalDepth(float distance, float viewZ)

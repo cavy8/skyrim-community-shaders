@@ -2,6 +2,8 @@
 
 #include "../SettingManager.h"
 #include "../TextureManager.h"
+#include "Globals.h"
+#include "State.h"
 
 void ENBDepthOfField::Execute()
 {
@@ -35,6 +37,9 @@ void ENBDepthOfField::Execute()
 	SetShaderResourceVariable("TexturePrevious", textureApertureRead.srv.get());
 	ExecuteTechnique("Aperture", textureApertureWrite);
 
+	apertureSRV = textureApertureWrite.srv.get();
+	apertureFrame = globals::state->frameCount;
+
 	SetShaderResourceVariable("TextureAperture", textureApertureWrite.srv.get());
 	ExecuteTechnique("ReadFocus", textureReadFocus);
 
@@ -45,7 +50,7 @@ void ENBDepthOfField::Execute()
 	SetShaderResourceVariable("TextureFocus", textureFocusWrite.srv.get());
 	SetShaderResourceVariable("TextureOriginal", textureMain.SRV);
 
-	auto [executed, inOutput] = ExecuteTechniqueSequence(GetSelectedTechnique(), textureMain.SRV, *textureHDRTemp, *textureHDRTemp2);
+	[[maybe_unused]] auto [executed, inOutput, inTemp] = ExecuteTechniqueSequence(GetSelectedTechnique(), textureMain.SRV, *textureHDRTemp, *textureHDRTemp2);
 
 	if (executed) {
 		auto* result = inOutput ? textureHDRTemp : textureHDRTemp2;
@@ -61,8 +66,17 @@ void ENBDepthOfField::UpdateEffectVariables()
 	if (!idsCached) {
 		idApertureTime = settingManager.GetSettingID("ApertureTime", "DEPTHOFFIELD");
 		idFocusingTime = settingManager.GetSettingID("FocusingTime", "DEPTHOFFIELD");
+		idEnableAdaptation = settingManager.GetSettingID("EnableAdaptation", "EFFECT");
 		idsCached = true;
 	}
+
+	ID3D11ShaderResourceView* adaptationSRV = nullptr;
+	if (idEnableAdaptation != 0xFFFFFFFF && settingManager.GetValue<bool>(idEnableAdaptation)) {
+		const char* previousAdaptation = (TextureManager::GetSingleton().GetTextureSwap() & 1) ? "TextureAdaptationSwap" : "TextureAdaptation";
+		auto* texture = GetCachedCommonTexture(previousAdaptation);
+		adaptationSRV = texture ? texture->srv.get() : nullptr;
+	}
+	SetShaderResourceVariable("TextureAdaptation", adaptationSRV);
 
 	const float deltaTime = globals::game::deltaTime ? (*globals::game::deltaTime) : 0.0f;
 	const float apertureTime = settingManager.GetValue<float>(idApertureTime);
@@ -73,6 +87,11 @@ void ENBDepthOfField::UpdateEffectVariables()
 	dofParameters.w = std::clamp((focusingTime > 0.0f) ? (deltaTime / focusingTime) : 1.0f, 0.0f, 1.0f);
 
 	SetVectorVariable("DofParameters", &dofParameters, sizeof(dofParameters));
+}
+
+ID3D11ShaderResourceView* ENBDepthOfField::GetApertureSRV() const
+{
+	return apertureFrame == globals::state->frameCount ? apertureSRV : nullptr;
 }
 
 void ENBDepthOfField::CreateEffectTextures()

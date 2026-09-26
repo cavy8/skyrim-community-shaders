@@ -4,6 +4,7 @@
 #include "../SettingManager.h"
 #include "../TextureManager.h"
 #include "Features/ProceduralSun.h"
+#include "Features/SkySync.h"
 #include "Globals.h"
 #include "State.h"
 #include "Utils/D3D.h"
@@ -108,15 +109,10 @@ ID3D11ShaderResourceView* ENBAdaptation::MaskProceduralSun(ID3D11ShaderResourceV
 	auto sky = globals::game::sky;
 	if (!sky || !sky->sun || !sky->sun->root || !sky->root)
 		return a_source;
-	if (sky->sun->root->GetFlags().any(RE::NiAVObject::Flag::kHidden))
+	if (ProceduralSun::GetSunVisibility() <= 0.0f)
 		return a_source;
 
-	const auto& sunPos = sky->sun->root->world.translate;
-	const auto& skyPos = sky->root->world.translate;
-	float3 sunDirection{ sunPos.x - skyPos.x, sunPos.y - skyPos.y, sunPos.z - skyPos.z };
-	if (sunDirection.LengthSquared() <= 0.0f)
-		return a_source;
-	sunDirection.Normalize();
+	const auto sunDirection = globals::features::skySync.GetCelestialDirection(sky, SkySync::Caster::Sun);
 
 	if (!EnsureSunMaskResources())
 		return a_source;

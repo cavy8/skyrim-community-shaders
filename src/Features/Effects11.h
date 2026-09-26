@@ -50,15 +50,10 @@ public:
 		float CloudsEdgeIntensity;
 		float CloudsEdgeMoonMultiplier;
 
-		uint EnableProceduralSun;
-		float ProceduralSunDiskRadiusSq;
-		float ProceduralSunDiskEdgeScale;
-		float ProceduralSunGlowIntensity;
-
-		float ProceduralSunCoronaFalloff;
-		float ProceduralSunCoronaScale;
 		uint UseProceduralGradientWeights;
 		float ProceduralGradientWeightCurve;
+		float LightSpriteCurve;
+		float pad1;
 
 		float ParticleIntensity;
 		float ParticleLightingInfluence;
@@ -72,6 +67,21 @@ public:
 
 		float VolumetricRaysDesaturation;
 		float3 VolumetricRaysColorFilter;
+
+		uint EnableWater;
+		float WaterWavesAmplitude;
+		float WaterMuddiness;
+		float WaterSunLightingMultiplier;
+
+		float WaterSunSpecularMultiplier;
+		float WaterFresnelMin;
+		float WaterFresnelMax;
+		float WaterFresnelMultiplier;
+
+		float WaterReflectionAmount;
+		float WaterPad0;
+		float WaterPad1;
+		float WaterPad2;
 
 		uint EnableCloudsScattering;
 		float SkyScatteringIntensity;
@@ -95,6 +105,17 @@ public:
 		uint EnableCloudsLightingFromMoon;
 		uint CalculateCloudsEdgeFromScattering;
 		float CloudsLightingDensity;
+
+		// Local (non-Bottle): Effects11-native procedural sun, appended after Bottle's fields.
+		// Mirrors Effects11::PerFrame; read by Sky.hlsl.
+		uint EnableProceduralSun;
+		float ProceduralSunDiskRadiusSq;
+		float ProceduralSunDiskEdgeScale;
+		float ProceduralSunGlowIntensity;
+
+		float ProceduralSunCoronaFalloff;
+		float ProceduralSunCoronaScale;
+		float ProceduralSunPad[2];
 	};
 	static_assert(sizeof(PerFrame) % 16 == 0);
 	static_assert(offsetof(PerFrame, EnableCloudsScattering) % 16 == 0);
@@ -157,13 +178,29 @@ public:
 	};
 	void OverrideAmbientLighting(DirectionalAmbientColors& DirectionalAmbientColors);
 
+	/** @brief Narrows the sky IsSun permutation to the sun disc while a preset drives the Effects11 procedural sun. */
 	void ModifySky(RE::BSRenderPass* Pass);
 	__declspec(noinline) void ModifyParticle(RE::BSRenderPass* Pass);
 	void ParticleShaderHacks();
-	/** @brief Whether Effects11 wants to claim the HDR tonemap pass this frame (preset loaded, effect chain enabled). */
+	bool IsRainEnabled();
+
+	/**
+	 * @brief Whether Effects11 wants to replace the vanilla tonemap this frame.
+	 *
+	 * Queried by State::GetTonemapOwner() to arbitrate against Post Processing. Does not
+	 * render anything; refreshes per-frame common data as a side effect.
+	 */
 	bool WantsTonemapOwnership();
-	/** @brief Renders the effect chain's tonemap pass. Only call when State::GetTonemapOwner() is kEffects11. */
+
+	/**
+	 * @brief Runs the ENB effect chain in place of the vanilla tonemap pass.
+	 * @param a_input Render target holding the scene color to tonemap.
+	 * @param a_output Render target receiving the tonemapped result.
+	 * @return True only if the chain wrote the output; false means the caller must fall
+	 *         back to the vanilla pass.
+	 */
 	bool RenderTonemap(RE::RENDER_TARGET a_input, RE::RENDER_TARGET a_output);
+
 	/** @brief True when the effect chain replaced ISHDR this frame, leaving an SDR scene for HDR Display to expand. */
 	bool ReplacedTonemapperThisFrame() const;
 

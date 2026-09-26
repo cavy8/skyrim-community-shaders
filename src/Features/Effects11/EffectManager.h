@@ -6,6 +6,7 @@
 #include "Effects/ENBEffect.h"
 #include "Effects/ENBEffectPostPass.h"
 #include "Effects/ENBLens.h"
+#include "Buffer.h"
 #include "Profiler.h"
 
 enum class TimeOfDay1Index : int
@@ -83,11 +84,20 @@ public:
 	winrt::com_ptr<ID3D11ComputeShader> colorCorrectionComputeShader;
 	winrt::com_ptr<ID3D11Buffer> colorCorrectionConstantBuffer;
 
+	// Standard-Z depth copy handed to .fx files when the scene depth is reversed
+	winrt::com_ptr<ID3D11ComputeShader> standardDepthComputeShader;
+	std::unique_ptr<Texture2D> standardDepthTexture;
+	uint32_t standardDepthFrame = 0xFFFFFFFF;
+
 	static std::string LoadShaderFile(const char* path);
 	void CreateQuadGeometry();
 	void CreateRenderStates();
 	void CreateCopyShaders();
 	void CreateColorCorrectionShader();
+	void CreateStandardDepthShader();
+
+	/** @brief Depth SRV for .fx files: the scene depth, or a standard-Z (1 - z) copy of it when Reverse Z is active. */
+	ID3D11ShaderResourceView* GetEffectDepthSRV();
 
 	void RenderEffectsList();
 
@@ -100,6 +110,10 @@ public:
 		float timeOfDay2[4];
 		float eNightDayFactor;
 		float eInteriorFactor;
+		float fieldOfView;
+		float tempInfo1[4];
+		float tempInfo2[4];
+		float lightParameters[4];
 	} commonData;
 	uint32_t frameCount = 0;
 
@@ -141,7 +155,7 @@ public:
 	void ExecuteEffect(EffectBase& effect, uint32_t enableSettingID = 0xFFFFFFFF);
 
 	// Texture copy using pixel shader
-	void CopyTexture(ID3D11ShaderResourceView* source, ID3D11RenderTargetView* destination);
+	void CopyTexture(ID3D11ShaderResourceView* source, ID3D11RenderTargetView* destination, bool dither = true);
 
 	// Color correction using compute shader
 	void ApplyColorCorrection(ID3D11UnorderedAccessView* textureUAV);
@@ -156,5 +170,15 @@ private:
 	/** @brief Logs the resolved preset location, or why no preset is in use. */
 	void LogPresetStatus() const;
 
+	void UpdateCursorData();
+	void UpdateLightParameters();
+	bool WillEffectRun(EffectBase& effect, uint32_t enableSettingID);
+
 	bool initialized = false;
+
+	RE::TESWeather* cachedLastWeather = nullptr;
+	float averageFps = 60.0f;
+	float cursorPosition[2] = { 0.5f, 0.5f };
+	float lastLeftClick[2] = { 0.5f, 0.5f };
+	float lastRightClick[2] = { 0.5f, 0.5f };
 };
