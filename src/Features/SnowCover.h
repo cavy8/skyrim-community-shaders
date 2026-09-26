@@ -6,7 +6,6 @@
 #include "TruePBR.h"
 #include "Utils/FormIdParser.h"
 
-/** @brief Renders dynamic seasonal snow accumulation on landscape, statics, trees and grass. */
 struct SnowCover : Feature
 {
 private:
@@ -186,7 +185,7 @@ public:
 
 	virtual inline void PostPostLoad() override { Hooks::Install(); }
 
-	void BSLightingShader_Setup(RE::BSRenderPass* a_pass);
+	void BSLightingShader_Setup(RE::BSRenderPass* Pass);
 	static bool IsHarvestableFlora(RE::TESObjectREFR* a_ref);
 
 	struct Hooks
