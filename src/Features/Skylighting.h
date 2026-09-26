@@ -54,6 +54,8 @@ public:
 		float MaxZenith = 3.1415926f / 2.f;  // 90 deg
 		float MinDiffuseVisibility = 0.1f;
 		float MinSpecularVisibility = 0.1f;
+		float OcclusionUpdateInterval = 33.f;
+		float OcclusionDistanceCulling = 0.f;
 	} settings;
 
 	struct SkylightingCB
@@ -99,15 +101,24 @@ public:
 	// cached variables
 	bool queuedResetSkylighting = true;
 	bool inOcclusion = false;
+	RE::NiPoint3 occlusionEyePosition;
 	REX::W32::XMFLOAT4X4 OcclusionTransform;
 	float4 OcclusionDir;
 	uint frameCount = 0;
+
+	static constexpr uint OcclusionConvergenceFrames = 16;
+	float3 lastOccCell = { 0, 0, 0 };
+	bool haveLastOccCell = false;
+	uint occlusionConvergedFrames = 0;
+
+	/** @brief Returns whether the occlusion height map needs re-rendering this frame. */
+	bool ShouldRenderOcclusion();
 
 	/** @brief Clears the accumulation frames array to force a full rebuild of skylighting probes. */
 	void ResetSkylighting();
 	void CaptureShadowCascadeSRV();
 
-	std::chrono::time_point<std::chrono::system_clock> lastUpdateTimer = std::chrono::system_clock::now();
+	std::chrono::steady_clock::time_point lastUpdateTimer = std::chrono::steady_clock::now();
 
 	//////////////////////////////////////////////////////////////////////////////////
 
