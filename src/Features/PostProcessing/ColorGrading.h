@@ -121,7 +121,7 @@ struct ColorGrading : public PostProcessFeature
 		float4 workingToXYZ[3];  // working → CIE XYZ (for white balance)
 		float4 xyzToWorking[3];  // CIE XYZ → working (for white balance)
 
-		float4 workingWhitePoint;  // .xy = D65 reference white of the adapted XYZ matrices
+		float4 workingWhitePoint;  // .xy = native white chromaticity of working space
 
 		float4 shadowsOffset;  // SMH color offsets
 		float4 midtonesOffset;

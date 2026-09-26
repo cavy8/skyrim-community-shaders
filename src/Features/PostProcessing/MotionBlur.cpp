@@ -497,7 +497,7 @@ void MotionBlur::ExecuteHorizontalPass()
 
 	// Dispatch horizontal pass: output is [GRID_SIZE × height], so dispatch covers grid width and full height
 	uint32_t dispatchX = (FixedGridSize + 7) / 8;
-	uint32_t dispatchY = (dynamicHeight + 7) / 8;
+	uint32_t dispatchY = (horizontalPassTexture->desc.Height + 7) / 8;
 	context->Dispatch(dispatchX, dispatchY, 1);
 
 	ClearComputeResources(1);
