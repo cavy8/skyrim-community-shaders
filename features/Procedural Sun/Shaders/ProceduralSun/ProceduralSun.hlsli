@@ -27,6 +27,12 @@ namespace ProceduralSun
 		return position * GetBillboardScale(outerCos, sunDistance, modelRadius * worldScale);
 	}
 
+	float GetInfluenceCos(float sunDiskCos, bool haloEnabled, float sunHaloCos, float haloIntensity)
+	{
+		bool haloActive = haloEnabled && haloIntensity > 0.0f && sunHaloCos < sunDiskCos;
+		return haloActive ? sunHaloCos : sunDiskCos;
+	}
+
 	// Hestroffer profile adapted from Physical Sky; see the accompanying MIT license.
 	// http://www.physics.hmc.edu/faculty/esin/a101/limbdarkening.pdf
 	float3 GetHestrofferLimbDarkening(float normalizedRadius)
@@ -88,13 +94,66 @@ namespace ProceduralSun
 		sunColor = premultipliedSun / max(sunCoverage, 1e-5f);
 	}
 
-	float GetCloudTransmission(float cloudOpacity, float strength)
+	float4 ToAdditiveBlend(float4 color, float radianceLimit)
 	{
-		if (strength <= 0.0f || cloudOpacity <= 0.0f)
-			return 1.0f;
-		if (cloudOpacity >= 1.0f)
+		float3 emitted = max(color.xyz, 0.0f) * saturate(color.w);
+		float peak = max(emitted.x, max(emitted.y, emitted.z));
+		if (peak <= 0.0f)
 			return 0.0f;
-		return pow(saturate(1.0f - cloudOpacity), strength);
+
+		float alpha = clamp(peak / max(radianceLimit, 1.0f), 1.0f / 256.0f, 1.0f);
+		return float4(emitted / alpha, alpha);
+	}
+
+#if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER)
+	float GetSunLuminance(float4 sunColor)
+	{
+		if (sunColor.w <= 0.0f)
+			return 0.0f;
+		return Color::RGBToLuminance(Color::Sky(sunColor.xyz / sunColor.w)) * sunColor.w;
+	}
+#endif
+
+	void EvaluateCloudExtinction(
+		float cosTheta,
+		float sunDiskCos,
+		float edgeSoftness,
+		float diskIntensity,
+		bool haloEnabled,
+		float sunHaloCos,
+		float haloIntensity,
+		float haloFalloff,
+		out float mask,
+		out float sunProfile)
+	{
+		float3 limbDarkening;
+		float discCoverage;
+		EvaluateDisc(cosTheta, sunDiskCos, edgeSoftness, limbDarkening, discCoverage);
+
+		float haloProfile = 0.0f;
+		if (haloEnabled && haloIntensity > 0.0f)
+			haloProfile = saturate(EvaluateHalo(cosTheta, sunDiskCos, sunHaloCos, haloFalloff));
+
+		mask = max(discCoverage, haloProfile);
+		sunProfile = Color::RGBToLuminance(limbDarkening) * diskIntensity * discCoverage + haloIntensity * haloProfile;
+	}
+
+	float4 ApplyCloudExtinction(float4 cloudColor, float opticalDepthScale, float sunShare)
+	{
+		float alpha = cloudColor.w;
+		if (opticalDepthScale <= 1.0f || sunShare <= 0.0f || alpha <= 0.0f || alpha >= 1.0f)
+			return cloudColor;
+
+		float extinctAlpha = lerp(alpha, 1.0f - pow(1.0f - alpha, opticalDepthScale), saturate(sunShare));
+		return float4(cloudColor.xyz * (alpha / extinctAlpha), extinctAlpha);
+	}
+
+	float GetGlareCloudTransmission(float capturedCloudOcclusion, float extinction)
+	{
+		float cloudOpacity = sqrt(saturate(capturedCloudOcclusion));
+		if (extinction <= 0.0f || cloudOpacity <= 0.0f)
+			return 1.0f;
+		return pow(saturate(1.0f - cloudOpacity), 1.0f + 0.5f * extinction);
 	}
 }
 

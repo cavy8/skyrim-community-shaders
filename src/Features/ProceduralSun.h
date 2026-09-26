@@ -14,7 +14,7 @@ struct ProceduralSun : Feature
 		float haloAngularWidth = DirectX::XMConvertToRadians(4.0f);
 		float haloIntensity = 0.4f;
 		float haloFalloff = 10.0f;
-		float cloudOcclusionStrength = 1.0f;
+		float cloudExtinction = 4.0f;
 		uint excludeFromAdaptation = true;
 	};
 
@@ -31,9 +31,10 @@ struct ProceduralSun : Feature
 		float haloIntensity;
 		float haloFalloff;
 
-		float cloudOcclusionStrength;
+		float cloudExtinction;
 		float sunQuadModelRadius = 0.0f;
-		float pad[2] = {};
+		float sunVisibility;
+		float radianceLimit;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrameData);
 	static_assert(sizeof(PerFrameData) == 48);
@@ -75,4 +76,7 @@ struct ProceduralSun : Feature
 
 	/** @brief Returns the settings uploaded to the shared feature buffer. */
 	PerFrameData GetCommonBufferData() const;
+
+	static float GetSunVisibility();
+	static float GetMainTargetRadianceLimit();
 };

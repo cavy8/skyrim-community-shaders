@@ -327,9 +327,9 @@ PS_OUTPUT main(PS_INPUT input)
 		composeAuthoredSky = false;
 		baseColor.w = sunCoverage;
 #			if defined(CLOUD_SHADOWS)
-		if (sunCoverage > 0.0f && SharedData::proceduralSunSettings.cloudOcclusionStrength > 0.0f) {
-			float cloudOpacity = CloudShadows::CloudShadowsTexture.SampleLevel(SampBaseSampler, viewDirection, 0).x;
-			baseColor.w *= ProceduralSun::GetCloudTransmission(cloudOpacity, SharedData::proceduralSunSettings.cloudOcclusionStrength);
+		if (sunCoverage > 0.0f && SharedData::proceduralSunSettings.cloudExtinction > 0.0f) {
+			float capturedCloudOcclusion = CloudShadows::CloudShadowsTexture.SampleLevel(SampBaseSampler, viewDirection, 0).x;
+			baseColor.w *= ProceduralSun::GetGlareCloudTransmission(capturedCloudOcclusion, SharedData::proceduralSunSettings.cloudExtinction);
 		}
 #			endif
 		skyScale = 0.0;
@@ -393,6 +393,11 @@ PS_OUTPUT main(PS_INPUT input)
 	psout.Color.w = input.Color.w * baseColor.w;
 	psout.Color.xyz = ComposeSkyColor(input.Color.xyz, baseColor.xyz, skyScale, composeAuthoredSky);
 
+#			if defined(PROCEDURAL_SUN) && defined(TEX) && defined(DEFERRED) && !defined(CLOUDS) && !defined(MOONMASK)
+	if (IsProceduralSunActive())
+		psout.Color = ProceduralSun::ToAdditiveBlend(psout.Color, SharedData::proceduralSunSettings.radianceLimit);
+#			endif
+
 #			if defined(CLOUDS) && defined(EFFECTS11)
 	if (SharedData::enbSettings.Enable) {
 		float3 cloudColor = psout.Color.xyz;
@@ -420,6 +425,39 @@ PS_OUTPUT main(PS_INPUT input)
 
 		psout.Color.xyz = cloudColor;
 		psout.Color.w = saturate(psout.Color.w);
+	}
+#			endif
+
+#			if defined(CLOUDS) && defined(DEFERRED) && defined(PROCEDURAL_SUN)
+	float cloudExtinction = SharedData::proceduralSunSettings.cloudExtinction * SharedData::proceduralSunSettings.sunVisibility;
+	[branch] if (SharedData::proceduralSunSettings.enabled && cloudExtinction > 0.0 &&
+		(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InWorld)) {
+		float3 cloudViewDirection = normalize(input.WorldPosition.xyz);
+		float cloudSunCosTheta = dot(cloudViewDirection, SharedData::SunDirection.xyz);
+		float influenceCos = ProceduralSun::GetInfluenceCos(
+			SharedData::proceduralSunSettings.sunDiskCos,
+			SharedData::proceduralSunSettings.haloEnabled,
+			SharedData::proceduralSunSettings.sunHaloCos,
+			SharedData::proceduralSunSettings.haloIntensity);
+
+		[branch] if (cloudSunCosTheta > influenceCos) {
+			float sunMask;
+			float sunProfile;
+			ProceduralSun::EvaluateCloudExtinction(
+				cloudSunCosTheta,
+				SharedData::proceduralSunSettings.sunDiskCos,
+				SharedData::proceduralSunSettings.edgeSoftness,
+				SharedData::proceduralSunSettings.diskIntensity,
+				SharedData::proceduralSunSettings.haloEnabled,
+				SharedData::proceduralSunSettings.sunHaloCos,
+				SharedData::proceduralSunSettings.haloIntensity,
+				SharedData::proceduralSunSettings.haloFalloff,
+				sunMask,
+				sunProfile);
+			float sunLuminance = sunProfile * ProceduralSun::GetSunLuminance(SharedData::SunColor);
+			float sunShare = sunLuminance / max(sunLuminance + Color::RGBToLuminance(max(psout.Color.xyz, 0.0)), 1e-5);
+			psout.Color = ProceduralSun::ApplyCloudExtinction(psout.Color, 1.0 + cloudExtinction * sunMask, sunShare);
+		}
 	}
 #			endif
 #		endif

@@ -510,9 +510,10 @@ namespace SharedData
 		float haloIntensity;
 		float haloFalloff;
 
-		float cloudOcclusionStrength;
+		float cloudExtinction;
 		float sunQuadModelRadius;
-		float2 pad0;
+		float sunVisibility;
+		float radianceLimit;
 	};
 
 	cbuffer FeatureData : register(b6)
