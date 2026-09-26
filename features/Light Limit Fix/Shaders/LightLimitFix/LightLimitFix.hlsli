@@ -196,7 +196,6 @@ namespace LightLimitFix
 
 	static const float CONTACT_SHADOW_MIN_RAY_DEPTH = 1.0;
 
-	// Exponential remap so steps pack toward the shaded point, where contact detail matters most.
 	static const float CONTACT_SHADOW_MARCH_EXPONENT = 2.0;
 
 	static const float CONTACT_SHADOW_RAY_END_FADE = 4.0;
@@ -216,9 +215,6 @@ namespace LightLimitFix
 		return (clipPosition.xy / clipPosition.w) * float2(0.5, -0.5) + 0.5;
 	}
 
-	// Builds a perspective-correct screen-space ray: UV interpolates linearly in t, while depth
-	// is recovered from linearly interpolated inverse depth. tMax clips the ray to the screen
-	// before it ever leaves the visible UV range, so step budgeting and the march both stay valid.
 	ContactShadowRay GetContactShadowRay(float3 viewPosition, float3 endPosition)
 	{
 		ContactShadowRay ray;

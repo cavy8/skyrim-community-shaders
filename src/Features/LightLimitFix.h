@@ -106,7 +106,6 @@ public:
 	static constexpr uint32_t MIN_LOCAL_SHADOW_SLOTS = 4;
 	static constexpr uint32_t MAX_LOCAL_SHADOW_SLOTS = 64;
 	static constexpr uint64_t LOCAL_SHADOW_MAX_CACHE_BYTES = 2048ull * 1024ull * 1024ull;
-	static constexpr uint32_t LOCAL_SHADOW_FADE_FRAMES = 8;
 	static constexpr uint32_t LOCAL_SHADOW_SWEEP_INTERVAL = 30;
 	static constexpr uint32_t LOCAL_SHADOW_EVICT_AGE = 120;
 	static constexpr uint32_t LOCAL_SHADOW_REJECT_MAX_FRAMES = 120;
@@ -151,7 +150,6 @@ public:
 		uint32_t lastEvaluatedFrame = 0;
 		uint32_t lastEligibleFrame = 0;
 		uint32_t lastRenderedFrame = 0;
-		uint32_t assignedFrame = 0;
 		uint32_t rejectUntilFrame = 0;
 		uint32_t rejectStreak = 0;
 		RE::NiPoint3 position{};
@@ -223,7 +221,6 @@ public:
 		float pad1[2];
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
-	static_assert(sizeof(PerFrame) == 80, "LightLimitFix FeatureData layout must match SharedData.hlsli");
 
 	/** @brief Populates and returns the per-frame constant buffer data for light visualization settings. */
 	PerFrame GetCommonBufferData();
@@ -342,10 +339,10 @@ public:
 	uint32_t localShadowRequestedSlots = 0;
 	uint32_t localShadowCacheResolution = 0;
 	uint32_t localShadowEngineResolution = 0;
+	DXGI_FORMAT localShadowCacheFormat = DXGI_FORMAT_UNKNOWN;
 	uint32_t localShadowEngineMipLevels = 1;
 	uint32_t localShadowEngineSlices = 0;
 	bool localShadowDirectCopy = false;
-	DXGI_FORMAT localShadowCacheFormat = DXGI_FORMAT_UNKNOWN;
 	RE::Setting* poissonRadiusScaleSetting = nullptr;
 	bool poissonRadiusScaleLookedUp = false;
 

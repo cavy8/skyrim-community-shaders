@@ -116,7 +116,7 @@ void LightLimitFix::DrawSettings()
 
 	if (ImGui::TreeNodeEx(T(TKEY("statistics"), "Statistics"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::Text(std::format("Clustered Light Count : {}", lightCount).c_str());
-		ImGui::Text(std::format("Shadow Casters : {} tracked, {} cached, {} rendered this frame, {} slice collisions", localShadowStatTracked, localShadowStatCached, localShadowStatRendered, localShadowStatCollisions).c_str());
+		ImGui::Text(std::format("Shadow Casters : {} tracked, {} cached, {} rendered this frame", localShadowStatTracked, localShadowStatCached, localShadowStatRendered).c_str());
 		if (localShadowCache) {
 			const uint64_t bytesPerTexel = localShadowCacheFormat == DXGI_FORMAT_R16_UNORM ? 2 : 4;
 			const uint64_t cacheBytes = static_cast<uint64_t>(localShadowCacheSlots) * localShadowCacheResolution * localShadowCacheResolution * bytesPerTexel;
@@ -1155,7 +1155,6 @@ namespace
 			index = static_cast<uint32_t>(next);
 		}
 	}
-
 }
 
 uint32_t LightLimitFix::GetShadowMaskIndex(RE::BSShadowLight* a_shadowLight)
@@ -1429,8 +1428,8 @@ bool LightLimitFix::FilterLocalShadowCaster(RE::BSShadowLight* a_light, const RE
 	if (a_result)
 		caster->lastEligibleFrame = localShadowFrame;
 
-	if (!a_result || localShadowAllowed.empty())
-		return a_result;
+	if (!a_result)
+		return false;
 
 	for (auto allowed : localShadowAllowed) {
 		if (allowed == a_light)
@@ -1452,7 +1451,6 @@ void LightLimitFix::ReleaseLocalShadowResources()
 	for (auto& caster : localShadowCasters) {
 		caster.slice = -1;
 		caster.lastRenderedFrame = 0;
-		caster.assignedFrame = 0;
 	}
 }
 
@@ -1618,7 +1616,6 @@ int32_t LightLimitFix::AcquireLocalShadowSlice(RE::BSShadowLight* a_light, uint3
 	if (auto* evicted = FindLocalShadowCaster(localShadowSliceOwner[evictSlice])) {
 		evicted->slice = -1;
 		evicted->lastRenderedFrame = 0;
-		evicted->assignedFrame = 0;
 	}
 	localShadowSliceOwner[evictSlice] = a_light;
 	return evictSlice;
@@ -1725,9 +1722,6 @@ void LightLimitFix::CopyLocalShadowMaps()
 			if (caster->slice < 0)
 				continue;
 		}
-		if (caster->lastRenderedFrame == 0)
-			caster->assignedFrame = frame;
-
 		if (localShadowDirectCopy) {
 			context->CopySubresourceRegion(localShadowCache->resource.get(), D3D11CalcSubresource(0, static_cast<UINT>(caster->slice), 1), 0, 0, 0,
 				depthStencil.texture, D3D11CalcSubresource(0, engineSlice, localShadowEngineMipLevels), nullptr);
@@ -1813,8 +1807,7 @@ void LightLimitFix::CopyLocalShadowMaps()
 			data.Params2.y = std::min((expectedInterval - 1.0f) * (caster.actorSpeed + LOCAL_SHADOW_ANIMATION_SPEED * frameTime), LOCAL_SHADOW_MAX_SLACK);
 		}
 		data.Origin = { eye.x, eye.y, eye.z, 0.0f };
-		const bool spot = static_cast<uint32_t>(caster.shadowParams.x) == LOCAL_SHADOW_TYPE_SPOT;
-		data.Params.w = spot ? 1.0f : std::min(1.0f, static_cast<float>(frame - caster.assignedFrame + 1) / static_cast<float>(LOCAL_SHADOW_FADE_FRAMES));
+		data.Params.w = 1.0f;
 		localShadowUpload[caster.slice] = data;
 		localShadowStatCached++;
 	}
