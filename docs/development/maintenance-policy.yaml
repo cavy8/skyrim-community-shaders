@@ -1,0 +1,160 @@
+# Maintenance policy: what each feature on the Personal branch is compared against
+# and kept synchronized with. The Bottle baseline SHA lives in upstreams.yaml.
+#
+# Answers "what do we compare against?" only. Where code came from lives in
+# feature-provenance.yaml. Neither file carries the other's fields.
+#
+# Policies:
+#   bottle-exact            must match the pinned Bottle SHA
+#   bottle-plus-components  Bottle base + named retained components (from another upstream or personal)
+#   bottle-plus-seam        Bottle base + a minimal documented hook seam for a feature owned elsewhere (Upscaling only)
+#   external-maintained     Bottle does not contain this; track `reference` directly
+#   personal                Personal-original implementation
+#
+# Per feature:
+#   paths:       feature-owned files/directories tools/bottle_sync.py compares against Bottle.
+#                Directories end in '/'. Files that also carry other features' hunks go under
+#                shared_integrations instead.
+#   components:  bottle-plus-components only; each retained component with its source and paths
+#                (or hunk anchors).
+#   seam:        bottle-plus-seam only; each allowed hunk, by path and a stable anchor.
+#   deferred:    explicit owner decisions not to sync something (yet); one line each.
+#   note:        anything else a maintainer must know; one line.
+
+features:
+  Upscaling:
+    policy: bottle-plus-seam         # D2
+    paths:
+      - src/Features/Upscaling.cpp
+      - src/Features/Upscaling.h
+      - src/Features/Upscaling/
+      - features/Upscaling/
+    seam: []                         # filled in by Phase 2 of the maintainability refactor
+    deferred:
+      - "FSR4 runtime upscaler deferral (tracker, 2026-09-25) is REVERSED by D2: Upscaling adopts Bottle incl. RuntimeUpscaler.cpp (9ea5d7e64a)"
+
+  WetnessEffects:
+    policy: bottle-exact             # D3; exact once Character Rain is removed (Phase 3)
+    paths:
+      - src/Features/WetnessEffects.cpp
+      - src/Features/WetnessEffects.h
+      - features/Wetness Effects/
+    deferred:
+      - "Character Rain parity task (tracker: moot) is SUPERSEDED by D3: Character Rain is removed for Bottle parity"
+
+  PostProcessing:
+    policy: bottle-plus-components   # D4
+    paths:
+      - src/Features/PostProcessing.cpp
+      - src/Features/PostProcessing.h
+      - src/Features/PostProcessing/
+      - features/Post Processing/
+    components:
+      dialogue_dof_menu_gate:
+        source: personal
+        paths: [src/Features/PostProcessing/DoF.cpp]
+        anchor: "DoF::GetInDialogue - menuOpen && gate on lastSpeaker"
+
+  NeuralRendering:
+    policy: personal                 # D5
+    paths:
+      - src/Features/NeuralRendering.cpp
+      - src/Features/NeuralRendering.h
+      - src/Features/NeuralRendering/
+      - features/Neural Rendering/
+
+  ReverseZ:
+    policy: bottle-exact
+    paths:
+      - src/Features/ReverseZ.cpp
+      - src/Features/ReverseZ.h
+      - features/ReverseZ/
+    note: "touches many shared shaders (FrameBuffer.hlsli, DeferredCompositeCS.hlsl, Lighting.hlsl, Water.hlsl, ...); list them during the Phase 4 audit"
+
+  FootstepParticles:
+    policy: bottle-exact
+    paths:
+      - src/Features/FootstepParticles.cpp
+      - src/Features/FootstepParticles.h
+      - features/Footstep Particles/
+
+  ProceduralSun:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/ProceduralSun.cpp
+      - src/Features/ProceduralSun.h
+      - features/Procedural Sun/
+    components: {}                   # audit (Phase 4): billboard anti-clip resize, Effects11 sun-ownership arbitration
+    deferred:
+      - "Bottle's removal of the Effects11-native ComputeProceduralSun (26611dd183) not carried over: would delete the ENB-preset sun path"
+      - "Open sky-composition fix cluster (1c0d36c350, f537f4b9cf, a0eafffe21) not yet re-synced into Sky.hlsl"
+
+  FoliageLighting:
+    policy: bottle-plus-components
+    paths:
+      - src/Features/FoliageLighting.cpp
+      - src/Features/FoliageLighting.h
+      - features/Foliage Lighting/
+    components: {}                   # audit (Phase 4): Open scattering / ambient flip vs Bottle base
+    deferred:
+      - "Open 58fd866d2 (#677, fade scattering at shadow limits) blocked: needs a two-output LightLimitFix::GetDirectionalShadow() this tree lacks"
+
+  Wind:
+    policy: external-maintained
+    reference: open
+    paths:
+      - src/Features/Wind/
+      - features/Wind/
+    deferred:
+      - "local spring-field spatial variation: compute output unbound; open f58cc4f61d finishes it, not yet pulled"
+      - "tree transient impulses: TreeWindSpring transient sampling stubbed, trees get ambient sway only"
+      - "GRASS_OPTIMIZATIONS path applies only the wind-intensity scale, not full field sampling"
+      - "Grass Collision interaction not reviewed"
+      - "leaf flutter: leafAnimationStrength computed but not consumed by the leaf-normal perturbation"
+      - "open 6150e8d39e: possible compute-buffer unbind bug in WindGrass/WindTrees, not yet checked"
+      - "Devbench diagnostics / UX-action integration intentionally dropped (not deferred)"
+
+  PseudoSunBounce:
+    policy: external-maintained
+    reference: jiayev
+    paths:
+      - src/Features/PseudoSunBounce.cpp
+      - src/Features/PseudoSunBounce.h
+      - features/Pseudo Sun Bounce/
+    deferred:
+      - "faux specular bounce term not ported: needs comparison against the local specular composition first"
+      - "cloud-shadow gating not ported: Lighting.hlsl has no CloudShadows hook at the insertion point"
+
+  DynamicCubemaps:
+    deferred:
+      - "jiayev 49c35c6ef envTexture/envReflectionsTexture merge refactor declined (unrelated to the ported lighting detection)"
+      - "Personal keeps the nextTask reset that jiayev dropped without a stated rationale"
+    note: "policy not yet assigned; decide in the Phase 4 audit"
+
+  SnowCover:
+    deferred:
+      - "Bottle 85f2020e8 Tamriel.json AffectTreeTint default flip (0->1) not carried over"
+    note: "policy not yet assigned; decide in the Phase 4 audit"
+
+  Effects11:
+    deferred:
+      - "water-settings half of Bottle 2a39ad34e9 ('DOF and water readd') left out; DOF half ported"
+      - "Sky Scattering (0657cf0ab4) and Cloud Relight can both relight cloud colour; interaction unresolved"
+      - "Bottle cloud self-shadowing (35e2151ab9, 6660d25a1b) not evaluated: Bottle partially self-reverted"
+      - "Bottle 09384077cf, 283b33399b, 1e1da45856 only skimmed, never diffed"
+    note: "policy not yet assigned; decide in the Phase 4 audit"
+
+  LightLimitFix:
+    deferred:
+      - "Personal-only assignedFrame fade-in and localShadowStatCollisions stat kept on top of Bottle; optional on re-sync"
+    note: "policy not yet assigned; decide in the Phase 4 audit"
+
+  TerrainShadows:
+    deferred:
+      - "mainline penumbra fix 44826d2805 (seen via Bottle) not evaluated"
+
+project:
+  deferred:
+    - "mainline merge: Personal is behind community-shaders/dev (tracker: b4e7b08ec4); needs a dedicated merge pass"
+
+shared_integrations: {}              # filled in per phase; see maintainability.md

@@ -1,3 +1,9 @@
+> **HISTORICAL SNAPSHOT**
+> This file contains previous port investigations and audit notes.
+> It is not authoritative for current provenance, parity, or maintenance status.
+> Current state: [maintainability.md](../maintainability.md), `upstreams.yaml`,
+> `feature-provenance.yaml`, `maintenance-policy.yaml`.
+
 # Upstream Port Tracking
 
 Features on the `Personal` branch that were **ported from other Community Shaders

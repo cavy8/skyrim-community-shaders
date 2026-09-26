@@ -1,0 +1,50 @@
+# Upstream registry for the Personal branch.
+#
+# Single source for the repositories Personal takes code from and for the pinned
+# Bottle maintenance baseline. `bottle.sha` IS the baseline: tools/bottle_sync.py
+# reads it from here. Bump it only as a deliberate sync, in the same commit that
+# brings Personal up to the new SHA.
+#
+# Pinning a SHA identifies the baseline. It says nothing about authorship; see
+# feature-provenance.yaml for that.
+
+upstreams:
+  bottle:
+    repository: InTheBottle/Bottled-Shaders
+    remote: bottle
+    branch: Bottle-Compendium
+    # Last Bottle commit Personal is synchronized to (2026-09-25 second-pass sync).
+    # Bottle-Compendium already has newer commits (3ec8c36176 at pin time); they are
+    # reported as upstream drift by bottle_sync.py until deliberately synced.
+    sha: dac6803377
+    role: primary-maintenance-baseline
+  mainline:
+    repository: community-shaders/skyrim-community-shaders
+    remote: mainline               # not yet added; `community-shaders` is cavy8's own fork
+    branch: dev
+    role: base-project
+  open:
+    repository: alandtse/open-shaders
+    remote: open-shaders
+    branch: dev
+    role: feature-source
+  jiayev:
+    repository: jiayev/skyrim-community-shaders
+    remote: jiayev
+    branch: compendium-clean
+    role: feature-source
+  ytzy:
+    repository: YtzyFvra/skyrim-community-shaders
+    remote: ytzy
+    branch: feature/dlssnr-vr
+    role: nr-watch
+  optiscaler_dlssnr:
+    repository: wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass
+    remote: optiscaler-dlssnr
+    branch: main
+    role: nr-design-reference
+  dlssnr_cost_scaler:
+    repository: xenmods/DLSSNR-Cost-Scaler
+    remote: dlssnr-cost-scaler
+    branch: main
+    role: nr-design-reference

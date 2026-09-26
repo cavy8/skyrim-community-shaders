@@ -434,6 +434,22 @@ Unreleased = True
 -   **Build Performance**: Multi-threaded compilation with job control (`hlslkit-compile --jobs N`)
 -   **Iterative Development**: Test specific shader files/directories rather than entire shader suite
 
+## Maintenance Baseline and Provenance (Personal branch)
+
+Bottle-Compendium (InTheBottle/Bottled-Shaders), pinned in `docs/development/upstreams.yaml`,
+is the primary maintenance baseline. This is not authorship: most Personal functionality
+was imported from other Community Shaders forks, and features may be composites of
+Bottle/Open/Jiayev/mainline code. Known Personal-original work: Neural Rendering, and the
+dialogue DOF menu gate in `DoF::GetInDialogue`. See `docs/development/maintainability.md`.
+
+Before modifying a shared feature:
+
+1. read its entries in `docs/development/feature-provenance.yaml` and `maintenance-policy.yaml`;
+2. compare actual current source against the pinned Bottle SHA (`tools/bottle_sync.py`);
+3. preserve every documented component, seam and `shared_integrations` hunk;
+4. never infer provenance from repository path, commit author, or a generic "feat:" subject;
+5. Upscaling must stay Bottle + the documented NR seam only.
+
 ## AI Assistant Guidelines
 
 ### Role and Expertise

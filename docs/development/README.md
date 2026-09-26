@@ -8,7 +8,8 @@
 ## Feature Internals
 
 -   **[Neural Rendering](./neural-rendering.md)** - DLSS NGX feature 18: source layout, placement modes, colour domain
--   **[Upstream Port Tracking](./upstream-port-tracking.md)** - Features ported from other CS forks (Snow Cover, Cloud Relight, Foliage Lighting, Vanilla Fresnel): what to watch upstream and how to re-sync
+-   **[Maintainability Model](./maintainability.md)** - Bottle as the maintenance baseline, provenance vs policy, and the `upstreams.yaml` / `feature-provenance.yaml` / `maintenance-policy.yaml` records
+-   **[Upstream Port Tracking (archived)](./history/upstream-port-tracking-2026-09.md)** - Historical port investigations; not authoritative
 
 ## Quick Links
 

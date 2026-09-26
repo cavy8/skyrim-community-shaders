@@ -1,0 +1,277 @@
+# Feature provenance: where code on the Personal branch came from.
+#
+# Answers "where did this come from?" only. What Personal is compared against and
+# kept in sync with lives in maintenance-policy.yaml. Neither file carries the
+# other's fields.
+#
+# Schema (see docs/development/maintainability.md):
+#   <FeatureName>:                     # the feature's GetShortName()
+#     status: present | removed        # removed = kept as a record
+#     personal_original: true | false  # true ONLY if no upstream contributed implementation
+#     provenance:
+#       - source: <upstreams.yaml key | personal>
+#         role: <short label>          # implementation, base-feature, design-reference, ...
+#         confidence: confirmed | likely | unresolved
+#         evidence: [<short sha>, ...] # optional; Personal and/or upstream commits
+#         note: <one line; required when unresolved>
+#     components:                      # only when parts genuinely have different sources
+#       <component>:
+#         personal_original: true | false
+#         provenance: [ ...same entry shape... ]
+#
+# A design-reference entry does not by itself make personal_original false.
+# Never infer provenance from a path, a commit author or a generic "feat:" subject.
+
+features:
+  NeuralRendering:
+    status: present
+    personal_original: true
+    provenance:
+      - source: personal
+        role: implementation
+        confidence: likely
+        note: confirm no code (as opposed to design) was lifted from the two NR design references
+      - source: optiscaler_dlssnr
+        role: design-reference     # Separate Upscaling deferred-residual design
+        confidence: confirmed
+        evidence: [a1eb303df8]
+      - source: dlssnr_cost_scaler
+        role: design-reference     # proxy raster / kMinimumModelExtent in Backend.cpp
+        confidence: confirmed
+
+  CharacterRain:
+    status: present                # D3: removed in Phase 3 of the maintainability refactor
+    personal_original: false
+    provenance:
+      - source: open
+        role: implementation
+        confidence: confirmed
+        evidence: [adbcd77e, 7ae52a55]
+      - source: bottle
+        role: ported-then-reverted
+        confidence: confirmed
+        evidence: [3afd2b6277]
+
+  PostProcessing:
+    status: present
+    personal_original: false
+    provenance:
+      - source: jiayev
+        role: implementation
+        confidence: unresolved
+        evidence: [10d2eba1b, 51c03d33b]
+        note: archived tracker names jiayev compendium-clean; Bottle also ships Post Processing - compare both
+      - source: bottle
+        role: implementation
+        confidence: unresolved
+        note: plan seed says Bottle; confirm which fork the current sub-effects match
+    components:
+      dialogue_dof_menu_gate:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: bug-fix
+            confidence: confirmed
+            evidence: [a7e142722c]
+
+  Upscaling:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: likely
+      - source: bottle
+        role: implementation       # FSR4 runtime upscaler and later Bottle work
+        confidence: confirmed
+        evidence: [9ea5d7e64a]
+
+  WetnessEffects:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: likely
+      - source: bottle
+        role: implementation
+        confidence: unresolved
+        note: verify which Bottle commits Personal's Wetness Effects matches after Character Rain removal
+
+  FoliageLighting:
+    status: present
+    personal_original: false
+    provenance:
+      - source: open
+        role: original-port
+        confidence: confirmed
+        evidence: [f18e9543, 09442614]
+      - source: bottle
+        role: later-merged-implementation
+        confidence: unresolved
+        evidence: [6ba0c1a1]
+        note: establish from current source which parts now match Bottle and which Open
+
+  ReverseZ:
+    status: present
+    personal_original: false
+    provenance:
+      - source: bottle
+        role: implementation
+        confidence: unresolved
+        evidence: [124bc7e22, 1698b4beb]
+        note: archived tracker records a Bottle port; confirm against source
+
+  FootstepParticles:
+    status: present
+    personal_original: false
+    provenance:
+      - source: bottle
+        role: implementation
+        confidence: unresolved
+        evidence: [124bc7e22]
+        note: archived tracker records byte-identical to Bottle; confirm against pinned SHA
+
+  ProceduralSun:
+    status: present
+    personal_original: false
+    provenance:
+      - source: open
+        role: implementation
+        confidence: unresolved
+        note: tracker cites open 470f847247 / f537f4b9cf; confirm
+      - source: bottle
+        role: implementation
+        confidence: unresolved
+        note: tracker cites Bottle 26611dd183, 31f9890f27, 05c07ee292, 343bf8cc44, 3d64571711; confirm
+
+  Wind:
+    status: present
+    personal_original: false
+    provenance:
+      - source: open
+        role: implementation
+        confidence: unresolved
+        note: partial port, no single Personal commit cited; tracker cites open 7acc8d70ad
+
+  PseudoSunBounce:
+    status: present
+    personal_original: false
+    provenance:
+      - source: jiayev
+        role: implementation
+        confidence: unresolved
+        note: adapted port (diffuse bounce only); tracker anchor jiayev b8f93c390
+
+  SnowCover:
+    status: present
+    personal_original: false
+    provenance:
+      - source: bottle
+        role: implementation
+        confidence: unresolved
+        evidence: [0d5c19633, b8afc7b00]
+        note: tracker records a Bottle port with fire-melt removed; confirm
+
+  CloudRelight:
+    status: present
+    personal_original: false
+    provenance:
+      - source: open
+        role: implementation
+        confidence: unresolved
+        evidence: [f18e9543f, 105a90cea]
+        note: tracker cites open 1d67aaead (#681); confirm
+
+  VanillaFresnel:
+    status: present
+    personal_original: false
+    provenance:
+      - source: open
+        role: implementation
+        confidence: unresolved
+        evidence: [f18e9543f]
+        note: tracker records an Open port; confirm
+
+  LightLimitFix:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: likely
+      - source: bottle
+        role: implementation       # diet SLF, contact shadows, cache scheduler
+        confidence: unresolved
+        evidence: [69201a6ab, fe9228b99]
+        note: tracker records Bottle 42e236274d..6ae45a32fa chain; confirm per component
+
+  Skin:
+    status: present
+    personal_original: false
+    provenance:
+      - source: jiayev
+        role: implementation       # Advanced Skin profiles / overrides
+        confidence: unresolved
+        evidence: [4c4eb6d25, 2da0eb7a5]
+        note: tracker records a jiayev port; confirm
+
+  DynamicCubemaps:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: likely
+    components:
+      lighting_change_detection:
+        personal_original: false
+        provenance:
+          - source: jiayev
+            role: implementation
+            confidence: unresolved
+            evidence: [49c35c6ef]
+            note: tracker records a jiayev port; confirm
+
+  VolumetricLighting:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: likely
+    components:
+      god_ray_strength_and_focus:
+        personal_original: false
+        provenance:
+          - source: bottle
+            role: implementation
+            confidence: unresolved
+            evidence: [a582a558a, 122f4e2fc]
+            note: tracker records a Bottle port; confirm
+
+  Effects11:
+    status: present
+    personal_original: false
+    provenance:
+      - source: bottle
+        role: implementation
+        confidence: unresolved
+        note: ENB Depth of Field (2a39ad34e9) and Sky Scattering (0657cf0ab4) recorded as Bottle ports; confirm the rest
+
+  TruePBR:
+    status: present
+    personal_original: false
+    provenance:
+      - source: mainline
+        role: base-feature
+        confidence: likely
+    components:
+      micro_shadow_ao:
+        personal_original: false
+        provenance:
+          - source: bottle
+            role: implementation
+            confidence: unresolved
+            evidence: [0a69dbbc5]
+            note: tracker records a Bottle port; confirm
