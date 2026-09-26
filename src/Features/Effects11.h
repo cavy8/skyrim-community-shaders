@@ -11,7 +11,7 @@ public:
 	virtual inline std::string GetName() override { return "Effects11"; }
 	virtual inline std::string GetShortName() override { return "Effects11"; }
 	virtual inline std::string GetDisplayName() override { return "Effects 11"; }
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kPostProcessing; }
+	virtual std::string_view GetCategory() const override { return "Post-Processing"; }
 	virtual inline std::string_view GetShaderDefineName() override { return "EFFECTS11"; }
 	virtual inline bool HasShaderDefine(RE::BSShader::Type) override { return true; }
 
@@ -105,17 +105,6 @@ public:
 		uint EnableCloudsLightingFromMoon;
 		uint CalculateCloudsEdgeFromScattering;
 		float CloudsLightingDensity;
-
-		// Local (non-Bottle): Effects11-native procedural sun, appended after Bottle's fields.
-		// Mirrors Effects11::PerFrame; read by Sky.hlsl.
-		uint EnableProceduralSun;
-		float ProceduralSunDiskRadiusSq;
-		float ProceduralSunDiskEdgeScale;
-		float ProceduralSunGlowIntensity;
-
-		float ProceduralSunCoronaFalloff;
-		float ProceduralSunCoronaScale;
-		float ProceduralSunPad[2];
 	};
 	static_assert(sizeof(PerFrame) % 16 == 0);
 	static_assert(offsetof(PerFrame, EnableCloudsScattering) % 16 == 0);
@@ -178,8 +167,6 @@ public:
 	};
 	void OverrideAmbientLighting(DirectionalAmbientColors& DirectionalAmbientColors);
 
-	/** @brief Narrows the sky IsSun permutation to the sun disc while a preset drives the Effects11 procedural sun. */
-	void ModifySky(RE::BSRenderPass* Pass);
 	__declspec(noinline) void ModifyParticle(RE::BSRenderPass* Pass);
 	void ParticleShaderHacks();
 	bool IsRainEnabled();

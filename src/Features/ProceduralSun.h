@@ -1,12 +1,12 @@
 #pragma once
 
-/** @brief Replaces the vanilla sun texture with an angular procedural disc. */
+/** @brief Replaces the vanilla sun disc texture with an angular procedural disc. */
 struct ProceduralSun : Feature
 {
 	/** @brief Persisted Procedural Sun settings. */
 	struct Settings
 	{
-		uint enabled = false;
+		uint enabled = true;
 		float sunDiskAngularRadius = DirectX::XMConvertToRadians(0.53f);
 		float diskIntensity = 6.0f;
 		float edgeSoftness = 0.125f;
@@ -32,9 +32,9 @@ struct ProceduralSun : Feature
 		float haloFalloff;
 
 		float cloudExtinction;
-		float sunQuadModelRadius = 0.0f;
 		float sunVisibility;
 		float radianceLimit;
+		float pad = 0.0f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrameData);
 	static_assert(sizeof(PerFrameData) == 48);

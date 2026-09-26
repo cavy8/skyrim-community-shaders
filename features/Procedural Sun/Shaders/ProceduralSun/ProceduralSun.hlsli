@@ -3,36 +3,6 @@
 
 namespace ProceduralSun
 {
-	// The engine's fixed glare-visibility sample threshold assumes this sun-base half-width.
-	static const float VANILLA_SUN_BASE_HALF_WIDTH = 425.0f;
-
-	float GetOcclusionBillboardScale(float modelRadius)
-	{
-		return modelRadius > 0.0f ? sqrt(2.0f) * VANILLA_SUN_BASE_HALF_WIDTH / modelRadius : 1.0f;
-	}
-
-	float GetBillboardScale(float outerCos, float sunDistance, float billboardRadius)
-	{
-		if (!(outerCos > 0.0f && outerCos < 1.0f && sunDistance > 0.0f && billboardRadius > 0.0f))
-			return 1.0f;
-
-		// A square billboard's bounding radius is sqrt(2) times its half-width.
-		return sunDistance * sqrt(2.0f * (1.0f - outerCos * outerCos)) / (outerCos * billboardRadius);
-	}
-
-	float3 ResizeBillboardVertex(float3 position, float4x4 world, float modelRadius, float outerCos)
-	{
-		float sunDistance = length(mul(world, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz);
-		float worldScale = length(mul(world, float4(1.0f, 0.0f, 0.0f, 0.0f)).xyz);
-		return position * GetBillboardScale(outerCos, sunDistance, modelRadius * worldScale);
-	}
-
-	float GetInfluenceCos(float sunDiskCos, bool haloEnabled, float sunHaloCos, float haloIntensity)
-	{
-		bool haloActive = haloEnabled && haloIntensity > 0.0f && sunHaloCos < sunDiskCos;
-		return haloActive ? sunHaloCos : sunDiskCos;
-	}
-
 	// Hestroffer profile adapted from Physical Sky; see the accompanying MIT license.
 	// http://www.physics.hmc.edu/faculty/esin/a101/limbdarkening.pdf
 	float3 GetHestrofferLimbDarkening(float normalizedRadius)
@@ -51,6 +21,12 @@ namespace ProceduralSun
 		float mu4 = mu2 * mu2;
 		float mu5 = mu4 * mu;
 		return max(a0 + a1 * mu + a2 * mu2 + a3 * mu3 + a4 * mu4 + a5 * mu5, 0.0f);
+	}
+
+	float GetInfluenceCos(float sunDiskCos, bool haloEnabled, float sunHaloCos, float haloIntensity)
+	{
+		bool haloActive = haloEnabled && haloIntensity > 0.0f && sunHaloCos < sunDiskCos;
+		return haloActive ? sunHaloCos : sunDiskCos;
 	}
 
 	void EvaluateDisc(float cosTheta, float sunDiskCos, float edgeSoftness, out float3 limbDarkening, out float coverage)
@@ -105,14 +81,12 @@ namespace ProceduralSun
 		return float4(emitted / alpha, alpha);
 	}
 
-#if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER)
 	float GetSunLuminance(float4 sunColor)
 	{
 		if (sunColor.w <= 0.0f)
 			return 0.0f;
 		return Color::RGBToLuminance(Color::Sky(sunColor.xyz / sunColor.w)) * sunColor.w;
 	}
-#endif
 
 	void EvaluateCloudExtinction(
 		float cosTheta,

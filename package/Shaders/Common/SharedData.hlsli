@@ -185,6 +185,24 @@ namespace SharedData
 		float3 pad0;
 	};
 
+	struct ProceduralSunSettings
+	{
+		uint enabled;
+		float sunDiskCos;
+		float diskIntensity;
+		float edgeSoftness;
+
+		uint haloEnabled;
+		float sunHaloCos;
+		float haloIntensity;
+		float haloFalloff;
+
+		float cloudExtinction;
+		float sunVisibility;
+		float radianceLimit;
+		float pad0;
+	};
+
 	struct LODBlendingSettings
 	{
 		float LODTerrainBrightness;
@@ -355,17 +373,6 @@ namespace SharedData
 		uint EnableCloudsLightingFromMoon;
 		uint CalculateCloudsEdgeFromScattering;
 		float CloudsLightingDensity;
-
-		// Local (non-Bottle): Effects11-native procedural sun, appended after Bottle's fields.
-		// Mirrors Effects11::PerFrame; read by Sky.hlsl.
-		uint EnableProceduralSun;
-		float ProceduralSunDiskRadiusSq;
-		float ProceduralSunDiskEdgeScale;
-		float ProceduralSunGlowIntensity;
-
-		float ProceduralSunCoronaFalloff;
-		float ProceduralSunCoronaScale;
-		float2 ProceduralSunPad;
 	};
 	struct TerrainBlendingSettings
 	{
@@ -433,6 +440,16 @@ namespace SharedData
 		uint pad;
 	};
 
+	struct FoliageLightingSettings
+	{
+		uint EnableFoliageScattering;
+		uint EnableFoliageAmbientBoost;
+		uint EnableFoliageAmbientFlip;
+		float FoliageAmbientAmount;
+		uint EnableGrassScattering;
+		uint3 pad;
+	};
+
 	struct SkinData
 	{
 		float4 skinParams;
@@ -442,27 +459,6 @@ namespace SharedData
 		float4 fuzzParams;
 		float4 physicalParams;
 		float4 wetParams;
-	};
-
-	struct CloudRelightSettings
-	{
-		uint enabled;
-		float cloudRelightMix;
-		float cloudOriginalMix;
-		float silverLiningMix;
-
-		float silverLiningSpread;
-		float3 celestialLightWeights;
-	};
-
-	struct FoliageLightingSettings
-	{
-		uint EnableFoliageScattering;
-		uint EnableFoliageAmbientBoost;
-		uint EnableFoliageAmbientFlip;
-		float FoliageAmbientAmount;
-		uint EnableGrassScattering;
-		uint3 pad;
 	};
 
 	struct VanillaFresnelSettings
@@ -537,30 +533,23 @@ namespace SharedData
 		float2 pad0;
 	};
 
+	struct CloudRelightSettings
+	{
+		uint enabled;
+		float cloudRelightMix;
+		float cloudOriginalMix;
+		float silverLiningMix;
+
+		float silverLiningSpread;
+		float3 celestialLightWeights;
+	};
+
 	struct PseudoSunBounceSettings
 	{
 		float3 groundAlbedo;
 		float intensity;
 		float3 wallAlbedo;
 		float windowWidth;
-	};
-
-	struct ProceduralSunSettings
-	{
-		uint enabled;
-		float sunDiskCos;
-		float diskIntensity;
-		float edgeSoftness;
-
-		uint haloEnabled;
-		float sunHaloCos;
-		float haloIntensity;
-		float haloFalloff;
-
-		float cloudExtinction;
-		float sunQuadModelRadius;
-		float sunVisibility;
-		float radianceLimit;
 	};
 
 	cbuffer FeatureData : register(b6)

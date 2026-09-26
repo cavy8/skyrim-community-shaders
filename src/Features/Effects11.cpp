@@ -12,7 +12,6 @@
 
 #include "CloudShadows.h"
 #include "Deferred.h"
-#include "Globals.h"
 #include "IBL.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -168,26 +167,6 @@ Effects11::PerFrame Effects11::GetCommonBufferData()
 	data.WaterFresnelMax = settingManager.GetValue<float>("FresnelMax", "WATER");
 	data.WaterFresnelMultiplier = settingManager.GetValue<float>("FresnelMultiplier", "WATER");
 	data.WaterReflectionAmount = settingManager.GetValue<float>("ReflectionAmount", "WATER");
-
-	data.EnableProceduralSun = enableEffect && settingManager.GetValue<bool>("EnableProceduralSun", "EFFECT");
-
-	{
-		float size = settingManager.GetValue<float>("Size", "PROCEDURALSUN");
-		float edgeSoftness = settingManager.GetValue<float>("EdgeSoftness", "PROCEDURALSUN");
-		float glowCurve = std::max(FLT_MIN, settingManager.GetInterpolatedTimeOfDayValue("GlowCurve", "PROCEDURALSUN"));
-
-		float scaledSize = size * 0.04f;
-		float diskSq = scaledSize * scaledSize;
-		float outerSpan = std::max(1.0f - diskSq, FLT_MIN);
-		float softSq = std::max(edgeSoftness * edgeSoftness, FLT_MIN);
-
-		data.ProceduralSunDiskRadiusSq = diskSq;
-		data.ProceduralSunCoronaScale = 1.0f / outerSpan;
-		data.ProceduralSunDiskEdgeScale = 1.0f / (std::max(diskSq, FLT_MIN) * softSq);
-		data.ProceduralSunCoronaFalloff = 100.0f / (outerSpan * glowCurve);
-	}
-
-	data.ProceduralSunGlowIntensity = settingManager.GetInterpolatedTimeOfDayValue("GlowIntensity", "PROCEDURALSUN");
 
 	return data;
 }
@@ -685,28 +664,6 @@ bool Effects11::ReplacedTonemapperThisFrame() const
 bool Effects11::IsRainEnabled()
 {
 	return enableEffect && raindropSRV && SettingManager::GetSingleton().GetValue<bool>("Enable", "RAIN");
-}
-
-void Effects11::ModifySky(RE::BSRenderPass* Pass)
-{
-	// State::UpdateSkyShaderPermutation ran first and already flagged both the sun disc and its
-	// glare; only narrow that to the disc when a preset is actually driving the procedural sun
-	if (!enableEffect)
-		return;
-
-	if (!Pass || !Pass->shaderProperty) {
-		return;
-	}
-
-	auto skyProperty = static_cast<const RE::BSSkyShaderProperty*>(Pass->shaderProperty);
-
-	auto state = globals::state;
-
-	state->permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsSun);
-
-	if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_SUN) {
-		state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::IsSun);
-	}
 }
 
 void Effects11::ModifyParticle(RE::BSRenderPass* Pass)

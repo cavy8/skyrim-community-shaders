@@ -73,7 +73,7 @@ void ProceduralSun::DrawSettings()
 
 	ImGui::SliderAngle(T(TKEY("angular_radius"), "Angular Radius"), &settings.sunDiskAngularRadius, 0.05f, 5.0f, "%.2f deg", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("%s", T(TKEY("angular_radius_tooltip"), "The real sun's angular radius is about 0.27 degrees. The 0.53 degree default preserves Jiaye's established procedural-sun scale."));
+		ImGui::TextWrapped("%s", T(TKEY("angular_radius_tooltip"), "Angular size of the sun disc. The real sun's angular radius is about 0.27 degrees; the 0.53 degree default reads closer to the vanilla sun."));
 
 	ImGui::SliderFloat(T(TKEY("disk_intensity"), "Disk Intensity"), &settings.diskIntensity, 0.0f, kMaximumDiskIntensity, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
@@ -132,7 +132,7 @@ void ProceduralSun::RestoreDefaultSettings()
 
 ProceduralSun::PerFrameData ProceduralSun::GetCommonBufferData() const
 {
-	PerFrameData data{
+	return {
 		.enabled = settings.enabled,
 		.sunDiskCos = std::cos(settings.sunDiskAngularRadius),
 		.diskIntensity = settings.diskIntensity,
@@ -145,13 +145,6 @@ ProceduralSun::PerFrameData ProceduralSun::GetCommonBufferData() const
 		.sunVisibility = GetSunVisibility(),
 		.radianceLimit = GetMainTargetRadianceLimit()
 	};
-	const auto* sky = globals::game::sky;
-	if (settings.enabled && sky && sky->sun && sky->sun->sunBase) {
-		const float radius = sky->sun->sunBase->GetModelData().modelBound.radius;
-		if (std::isfinite(radius) && radius > 0.0f)
-			data.sunQuadModelRadius = radius;
-	}
-	return data;
 }
 
 float ProceduralSun::GetMainTargetRadianceLimit()
