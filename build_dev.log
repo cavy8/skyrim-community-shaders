@@ -1,0 +1,26 @@
+Running build preset Dev (configure preset ALL)
+Build folder warm, skipping configure
+MSBuild version 18.4.0+6e61e96ac for .NET Framework
+
+  Checking File Globs
+  ffx_fsr3upscaler_x64.vcxproj -> D:\Repositories\skyrim-community-shaders\bin\ffx_sdk\ffx_fsr3upscaler_x64.lib
+  ffx_frameinterpolation_x64.vcxproj -> D:\Repositories\skyrim-community-shaders\bin\ffx_sdk\ffx_frameinterpolation_x64.lib
+  ffx_opticalflow_x64.vcxproj -> D:\Repositories\skyrim-community-shaders\bin\ffx_sdk\ffx_opticalflow_x64.lib
+  Scanning sources for module dependencies...
+  ffx_backend_dx11_x64.vcxproj -> D:\Repositories\skyrim-community-shaders\bin\ffx_sdk\ffx_backend_dx11_x64.lib
+  CommonLibSSE.vcxproj -> D:\Repositories\skyrim-community-shaders\build\ALL\CommonLibSSE\Release\CommonLibSSE.lib
+  ffx_fsr3_x64.vcxproj -> D:\Repositories\skyrim-community-shaders\bin\ffx_sdk\ffx_fsr3_x64.lib
+  Scanning sources for module dependencies...
+  GrassLighting.cpp
+  FeatureBuffer.cpp
+  Globals.cpp
+  GrassOptimizations.cpp
+  Feature.cpp
+  Compiling...
+  Globals.cpp
+  GrassOptimizations.cpp
+  GrassLighting.cpp
+  FeatureBuffer.cpp
+  Feature.cpp
+     Creating library D:/Repositories/skyrim-community-shaders/build/ALL/Release/CommunityShaders.lib and object D:/Repositories/skyrim-community-shaders/build/ALL/Release/CommunityShaders.exp
+  Generating code
