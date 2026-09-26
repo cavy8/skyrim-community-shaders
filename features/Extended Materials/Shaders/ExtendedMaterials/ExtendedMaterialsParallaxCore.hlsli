@@ -11,7 +11,7 @@
 	{
 		float3 viewDirTS = normalize(mul(tbn, viewDir));
 		float ndotv = saturate(viewDirTS.z);
-
+	
 #if defined(LANDSCAPE)
 		//Softened view-Z with FlattenAmount; abs + floor limit silhouette stretch.
 		float parallaxZ = max(abs(viewDirTS.z) * 0.7 + 0.3 + params[0].FlattenAmount, 0.0625);
@@ -194,12 +194,7 @@
 #if defined(LANDSCAPE)
 					hMid = GetTerrainHeight(midCoords, mipLevel, params, marchHeightBlendFactor, w1, w2, sharedOffset, weights) * terrainHeightNormMul + 0.5;
 #else
-#	if defined(TERRAIN_VARIATION)
-					if (applyMeshTV)
-						hMid = StochasticHeightChannel(tex, texSampler, midCoords, mipLevel, channel, meshOffset);
-					else
-#	endif
-						hMid = tex.SampleLevel(texSampler, midCoords, mipLevel)[channel];
+					hMid = tex.SampleLevel(texSampler, midCoords, mipLevel)[channel];
 					hMid = AdjustDisplacementNormalized(hMid, params);
 #endif
 					float fMid = hMid - tMid;
@@ -227,12 +222,7 @@
 #if defined(LANDSCAPE)
 					hSecant = GetTerrainHeight(secantCoords, mipLevel, params, marchHeightBlendFactor, w1, w2, sharedOffset, weights) * terrainHeightNormMul + 0.5;
 #else
-#	if defined(TERRAIN_VARIATION)
-					if (applyMeshTV)
-						hSecant = StochasticHeightChannel(tex, texSampler, secantCoords, mipLevel, channel, meshOffset);
-					else
-#	endif
-						hSecant = tex.SampleLevel(texSampler, secantCoords, mipLevel)[channel];
+					hSecant = tex.SampleLevel(texSampler, secantCoords, mipLevel)[channel];
 					hSecant = AdjustDisplacementNormalized(hSecant, params);
 #endif
 

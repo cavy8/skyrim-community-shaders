@@ -64,7 +64,7 @@ namespace ExtendedMaterials
 	{
 		return float4(AdjustDisplacementNormalized(displacement.x, params), AdjustDisplacementNormalized(displacement.y, params), AdjustDisplacementNormalized(displacement.z, params), AdjustDisplacementNormalized(displacement.w, params));
 	}
-
+	
 	float GetMipLevelFromDims(float2 coords, float2 textureDims)
 	{
 #	if !defined(PARALLAX) && !defined(TRUE_PBR)
