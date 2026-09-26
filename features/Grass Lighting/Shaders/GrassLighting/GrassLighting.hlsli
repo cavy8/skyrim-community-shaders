@@ -24,6 +24,48 @@ namespace GrassLighting
 		return lengthSq > 1e-12 ? v * rsqrt(lengthSq) : fallback;
 	}
 
+	float GetSoftLightMultiplier(float angle, float strength)
+	{
+		float softLightParam = saturate((strength + angle) / (1.0 + strength));
+		float wrapped = (softLightParam * softLightParam) * (3.0 - 2.0 * softLightParam);
+		float clampedAngle = saturate(angle);
+		float direct = (clampedAngle * clampedAngle) * (3.0 - 2.0 * clampedAngle);
+		return saturate(wrapped - direct);
+	}
+
+	float3 GetTransmissionTint(float3 albedo, float saturation)
+	{
+		albedo = max(albedo, 0.0);
+
+		// Leaf reflectance and transmittance have similar spectral shapes, so use
+		// the surface albedo directly and only adjust its transmission chroma.
+		float3 transmissionYCoCg = Color::RGBToYCoCg(albedo);
+
+		// Rotate green-dominant colors by up to 10 degrees toward yellow in the
+		// Co/Cg plane. Non-green or already yellowed grass keeps its original hue.
+		float maxChannel = max(max(albedo.r, albedo.g), albedo.b);
+		float greenDominance = saturate((albedo.g - max(albedo.r, albedo.b)) / max(maxChannel, 1e-4));
+		float hueSin = 0.17364818 * greenDominance;
+		float hueCos = lerp(1.0, 0.98480775, greenDominance);
+		float2 chroma = transmissionYCoCg.yz;
+		transmissionYCoCg.y = hueCos * chroma.x + hueSin * chroma.y;
+		transmissionYCoCg.z = hueCos * chroma.y - hueSin * chroma.x;
+
+		transmissionYCoCg.yz *= saturation;
+		return max(Color::YCoCgToRGB(transmissionYCoCg), 0.0);
+	}
+
+	float GetTransmissionFactor(float NdotL, float VdotL, float amount)
+	{
+		float backLight = saturate(-NdotL);
+		backLight = backLight * backLight * (3.0 - 2.0 * backLight);
+
+		float forwardScatter = saturate(-VdotL);
+		forwardScatter *= forwardScatter;
+
+		return 0.5 * amount * backLight * lerp(0.25, 1.0, forwardScatter);
+	}
+
 	float3 GetLightSpecularInput(float3 L, float3 V, float3 N, float3 lightColor, float roughness, float3 F0)
 	{
 		float3 H = normalize(V + L);
@@ -43,7 +85,6 @@ namespace GrassLighting
 #endif
 		float shininess = (1.0 - roughness) * 100.f;
 		float HdotN = saturate(dot(H, N));
-
 		float lightColorMultiplier = exp2(shininess * log2(HdotN)) * saturate(dot(N, L));
 		return lightColor * lightColorMultiplier.xxx;
 	}
