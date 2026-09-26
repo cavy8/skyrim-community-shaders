@@ -171,6 +171,7 @@ void HistogramAutoExposure::SetupResources()
 		adaptationSB = std::make_unique<StructuredBuffer>(StructuredBufferDesc<float>(1u, false), 1, "HistogramAutoExposure::Adaptation");
 		adaptationSB->CreateSRV();
 		adaptationSB->CreateUAV();
+		hasMeasuredAdaptation = false;
 	}
 
 	// Create staging buffers for histogram readback
@@ -242,10 +243,13 @@ void HistogramAutoExposure::Draw(TextureInfo& inout_tex)
 	float exposureCompensation = settings.ExposureCompensation;
 	float2 adaptationRange = settings.AdaptationRange;
 
+	const bool menuScene = state->IsMenuSceneOpen();
+	const bool holdAdaptation = menuScene && hasMeasuredAdaptation;
+
 	AutoExposureCB cbData = {
 		.AdaptArea = settings.AdaptArea,
 		.AdaptationRange = { exp2(adaptationRange.x - 3.0f), exp2(adaptationRange.y - 3.0f) },
-		.AdaptLerp = std::clamp(1.f - exp(-RE::BSTimer::GetSingleton()->realTimeDelta * settings.AdaptSpeed), 0.f, 1.f),
+		.AdaptLerp = holdAdaptation ? 0.f : std::clamp(1.f - exp(-RE::BSTimer::GetSingleton()->realTimeDelta * settings.AdaptSpeed), 0.f, 1.f),
 		.ExposureCompensation = exp2(exposureCompensation),
 		.PurkinjeStartEV = settings.PurkinjeStartEV,
 		.PurkinjeMaxEV = settings.PurkinjeMaxEV,
@@ -322,6 +326,9 @@ void HistogramAutoExposure::Draw(TextureInfo& inout_tex)
 		context->Dispatch(1, 1, 1);
 		state->EndPerfEvent();
 	}
+
+	if (!menuScene)
+		hasMeasuredAdaptation = true;
 
 	// Clean up
 	resetViews();

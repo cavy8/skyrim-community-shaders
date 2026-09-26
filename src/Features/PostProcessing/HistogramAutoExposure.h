@@ -81,4 +81,6 @@ struct HistogramAutoExposure : public PostProcessFeature
 	float adaptationValue = 0.f;
 	bool histogramReadbackRequested = false;
 	int histogramReadbackRequestFrame = -1;
+
+	bool hasMeasuredAdaptation = false;
 };

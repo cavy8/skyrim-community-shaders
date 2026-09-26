@@ -18,7 +18,7 @@ cbuffer BorderCB : register(b1)
 	if (any(DTid.xy >= uint2(dynResDim)))
 		return;
 
-	float depth = DepthTexture[DTid.xy];
+	float depth = FrameBuffer::ToStandardDepth(DepthTexture[DTid.xy]);
 	float depthThreshold = BorderColor.w;
 	if (depth > depthThreshold || depthThreshold == 0.0f) {
 		// UV relative to the dynamic resolution viewport [0, 1]
