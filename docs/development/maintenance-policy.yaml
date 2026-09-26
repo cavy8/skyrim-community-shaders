@@ -29,9 +29,28 @@ features:
       - src/Features/Upscaling.h
       - src/Features/Upscaling/
       - features/Upscaling/
-    seam: []                         # filled in by Phase 2 of the maintainability refactor
+    # The only permitted divergence from Bottle: one guarded call per placement stage into the
+    # Neural Rendering feature (no NR logic in Upscaling). bottle_sync.py accepts a hunk when
+    # every added line contains a `match` string and every removed line a `replaces` string.
+    budget: 20
+    seam:
+      - path: src/Features/Upscaling.cpp
+        anchor: "#include block"
+        match: ['#include "NeuralRendering.h"']
+      - path: src/Features/Upscaling.cpp
+        anchor: "S1 - Upscale(), DLSS branch, the streamline.Upscale() input"
+        match: ["Neural Rendering seam S1", "globals::features::neuralRendering.PrepareUpscaleInput("]
+        replaces: ["streamline.Upscale(main.texture,"]
+      - path: src/Features/Upscaling.cpp
+        anchor: "S2+S3 - PerformUpscaling(), between Upscale() and UpscaleDepth()"
+        match: ["Neural Rendering seams S2+S3", "globals::features::neuralRendering.ResolveUpscaledFrame("]
+    note: >-
+      S4 (ApplySharpening) eliminated: ResolveUpscaledFrame() copies NR's result back into
+      sharpenerTexture (one extra display-resolution CopyResource, only while After/Separate
+      Upscaling is active). Cost not yet measured in game.
     deferred:
       - "FSR4 runtime upscaler deferral (tracker, 2026-09-25) is REVERSED by D2: Upscaling adopts Bottle incl. RuntimeUpscaler.cpp (9ea5d7e64a)"
+      - "Personal-only Upscaling fixes dropped by D2 (re-propose upstream if still wanted): Streamline motionVectorsDilated=true for the pre-dilated DLSS MVs; WrappedResource D3D11/12 resource names"
 
   WetnessEffects:
     policy: bottle-exact             # D3; exact once Character Rain is removed (Phase 3)
@@ -157,4 +176,41 @@ project:
   deferred:
     - "mainline merge: Personal is behind community-shaders/dev (tracker: b4e7b08ec4); needs a dedicated merge pass"
 
-shared_integrations: {}              # filled in per phase; see maintainability.md
+shared_integrations:
+  # Neural Rendering's hooks outside its own files. `match` strings must stay present
+  # (bottle_sync.py checks them); `anchor` says where.
+  src/Hooks.cpp:
+    nr_finished_image:
+      source: personal
+      anchor: "PostProcessingExtensions::Main_HDRTonemapBlendCinematic_Render"
+      match: ["neuralRendering.CaptureDisplayTransform(", "neuralRendering.ApplyFinishedImage("]
+  src/Deferred.cpp:
+    nr_category_capture:
+      source: personal
+      anchor: "Deferred::EndDeferred (restore) and Main_RenderWorld_BlendedDecals (capture)"
+      match: ["neuralRendering.RestoreCategories()", "neuralRendering.CaptureCategories()"]
+  src/State.cpp:
+    nr_settings_migration:
+      source: personal
+      anchor: "State::LoadFromJson, before any feature loads"
+      match: ["NeuralRendering::MigrateLegacyUpscalingSettings(settings)"]
+  src/State.h:
+    nr_extra_descriptor_bits:
+      source: personal
+      anchor: "ExtraShaderDescriptors: IsHumanoidActor, IsHair (local bits; see maintainability.md hot files)"
+      match: ["IsHumanoidActor", "IsHair"]
+  package/Shaders/Common/Permutation.hlsli:
+    nr_extra_flags:
+      source: personal
+      anchor: "Permutation::ExtraFlags: IsHumanoidActor, IsHair - must mirror State.h"
+      match: ["IsHumanoidActor", "IsHair"]
+  package/Shaders/Lighting.hlsl:
+    nr_category_classification:
+      source: personal
+      anchor: "NeuralRenderingCategories include + Masks2 category pack at the end of the PS"
+      match: ['#include "Common/NeuralRenderingCategories.hlsli"', "NeuralRenderingCategories::Pack("]
+  package/Shaders/RunGrass.hlsl:
+    nr_category_classification:
+      source: personal
+      anchor: "Masks2 Foliage category pack in both PS branches"
+      match: ['#include "Common/NeuralRenderingCategories.hlsli"', "NeuralRenderingCategories::Pack("]

@@ -1,4 +1,5 @@
 #include "Streamline.h"
+#include "Features/ReverseZ.h"
 
 #include <algorithm>
 #include <cmath>
@@ -131,8 +132,8 @@ void Streamline::LoadInterposer()
 	logger::info("[Streamline] Plugin search path: {}", pluginDirAbsolute.string());
 
 	pref.engine = sl::EngineType::eCustom;
-	pref.engineVersion = EngineVersion;
-	pref.projectId = ProjectId;
+	pref.engineVersion = "1.0.0";
+	pref.projectId = "f8776929-c969-43bd-ac2b-294b4de58aac";
 
 	pref.renderAPI = sl::RenderAPI::eD3D11;
 	pref.flags = sl::PreferenceFlags::eUseManualHooking;
@@ -345,26 +346,20 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport)
 	slConstants.cameraFwd = { viewMatrix._31, viewMatrix._32, viewMatrix._33 };
 	slConstants.cameraPos = *(sl::float3*)&globals::game::frameBufferCached.GetCameraPosAdjust();
 	slConstants.cameraViewToClip = *(sl::float4x4*)&cameraViewToClip;
-	slConstants.depthInverted = sl::Boolean::eFalse;
+	slConstants.depthInverted = globals::features::reverseZ.IsActive() ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
 	recalculateCameraMatrices(slConstants);
 
 	auto& upscaling = globals::features::upscaling;
 	auto jitter = upscaling.jitter;
 	slConstants.jitterOffset = { -jitter.x, -jitter.y };
-	// Keep DLSS SR and Neural Rendering on the same history boundary after a
-	// loading transition. Reprojecting either feature across a camera/world jump
-	// leaves the other one consuming guides from an unrelated frame.
-	slConstants.reset = upscaling.dlssResetThisFrame ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+	slConstants.reset = sl::Boolean::eFalse;
 
 	slConstants.mvecScale = { 1.0f, 1.0f };
 	slConstants.motionVectors3D = sl::Boolean::eFalse;
 	slConstants.motionVectorsInvalidValue = FLT_MIN;
 	slConstants.orthographicProjection = sl::Boolean::eFalse;
-	// EncodeTexturesCS has already depth-dilated the DLSS motion-vector input.
-	// Advertising it as undilated makes Streamline perform incompatible guide
-	// preparation on a field that has already been expanded at silhouettes.
-	slConstants.motionVectorsDilated = sl::Boolean::eTrue;
+	slConstants.motionVectorsDilated = sl::Boolean::eFalse;
 	slConstants.motionVectorsJittered = sl::Boolean::eFalse;
 
 	if (SL_FAILED(res, slSetConstants(slConstants, *frameToken, p_viewport))) {

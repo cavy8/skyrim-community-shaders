@@ -767,7 +767,9 @@ ID3D11Resource* NeuralRendering::PrepareUpscaleInput(ID3D11Resource* a_color, ID
 	// temporal state and was trained on plain per-pixel vectors, so the
 	// dilated rim reads as flicker or smear along moving edges.
 	ID3D11Resource* upscaleInput = a_color;
-	globals::profiler->BeginPass("NeuralRendering::Generate");
+	// A perf event, not a profiler pass: this runs inside Upscaling's own "Upscaling::Upscale"
+	// profiler pass, and profiler passes do not nest.
+	globals::state->BeginPerfEvent("NeuralRendering::Generate");
 	if (IsPlacement(Placement::kBeforeUpscaling)) {
 		if (Evaluate(a_color,
 				output->resource.get(),
@@ -796,7 +798,7 @@ ID3D11Resource* NeuralRendering::PrepareUpscaleInput(ID3D11Resource* a_color, ID
 			nativeHeight,
 			options);
 	}
-	globals::profiler->EndPass();
+	globals::state->EndPerfEvent();
 	return upscaleInput;
 }
 
