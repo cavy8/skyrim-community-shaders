@@ -392,6 +392,7 @@ void LightLimitFix::BSLightingShader_SetupGeometry_GeometrySetupConstantPointLig
 			light.fade = runtimeData.fade;
 		}
 
+		light.lightFlags.reset(LightFlags::Shadow, LightFlags::ShadowCaster, LightFlags::LocalShadow);
 		light.fade *= bsLight->lodDimmer;
 
 		auto& effects11 = globals::features::effects11;
@@ -587,6 +588,7 @@ void LightLimitFix::UpdateLights()
 						light.fade = runtimeData.fade;
 					}
 
+					light.lightFlags.reset(LightFlags::Shadow, LightFlags::ShadowCaster, LightFlags::LocalShadow);
 					light.fade *= bsLight->lodDimmer;
 
 					auto& effects11 = globals::features::effects11;
@@ -1154,40 +1156,6 @@ namespace
 		}
 	}
 
-	uint64_t ComputeLocalShadowContentHash(RE::BSShadowLight* a_light, RE::NiLight* a_niLight, float a_posStep, float a_radiusAnchor, uint32_t& a_skinnedOut)
-	{
-		a_skinnedOut = 0;
-		uint64_t hash = 0x9e3779b97f4a7c15ull;
-		hash = Util::HashCombineFloat(hash, Util::QuantizeFloat(a_radiusAnchor, 1.0f));
-
-		const auto& translate = a_niLight->world.translate;
-		hash = Util::HashCombineFloat(hash, Util::QuantizeFloat(translate.x, a_posStep));
-		hash = Util::HashCombineFloat(hash, Util::QuantizeFloat(translate.y, a_posStep));
-		hash = Util::HashCombineFloat(hash, Util::QuantizeFloat(translate.z, a_posStep));
-
-		const auto& rotate = a_niLight->world.rotate;
-		for (uint32_t row = 0; row < 3; row++)
-			for (uint32_t column = 0; column < 3; column++)
-				hash = Util::HashCombineFloat(hash, Util::QuantizeFloat(rotate.entry[row][column], 0.01f));
-
-		for (auto& geometryPtr : a_light->geomList) {
-			auto* geometry = geometryPtr.get();
-			if (!geometry)
-				continue;
-			if (geometry->GetGeometryRuntimeData().skinInstance)
-				a_skinnedOut++;
-			const auto raw = reinterpret_cast<std::uintptr_t>(geometry);
-			hash = Util::HashCombine(hash, static_cast<uint32_t>(raw));
-			hash = Util::HashCombine(hash, static_cast<uint32_t>(raw >> 32));
-			const auto& bound = geometry->worldBound;
-			hash = Util::HashCombineFloat(hash, Util::QuantizeFloat(bound.center.x, a_posStep));
-			hash = Util::HashCombineFloat(hash, Util::QuantizeFloat(bound.center.y, a_posStep));
-			hash = Util::HashCombineFloat(hash, Util::QuantizeFloat(bound.center.z, a_posStep));
-			hash = Util::HashCombineFloat(hash, Util::QuantizeFloat(bound.radius, 1.0f));
-		}
-
-		return hash;
-	}
 }
 
 uint32_t LightLimitFix::GetShadowMaskIndex(RE::BSShadowLight* a_shadowLight)
@@ -1291,9 +1259,6 @@ void LightLimitFix::ScheduleLocalShadowCasters()
 		caster->rotation = niLight->world.rotate;
 		caster->radius = niLight->GetLightRuntimeData().radius.x;
 		caster->hidden = niLight->GetFlags().any(RE::NiAVObject::Flag::kHidden);
-		caster->radiusAnchor = caster->radiusAnchor < 0.0f ?
-		                           caster->radius :
-		                           caster->radiusAnchor + 0.15f * (caster->radius - caster->radiusAnchor);
 
 		caster->dynamic = false;
 		caster->actorImportance = 0.0f;
@@ -1311,28 +1276,6 @@ void LightLimitFix::ScheduleLocalShadowCasters()
 			const float proximity = 512.0f / std::max(actor.position.GetDistance(localShadowCameraPosition), 512.0f);
 			caster->actorImportance = std::max(caster->actorImportance, (0.25f + 0.75f * falloff) * proximity);
 		}
-
-		const float posStep = std::max(caster->radius / static_cast<float>(std::max(localShadowCacheResolution, 1u)), 1.0f);
-		const uint32_t geomCount = static_cast<uint32_t>(light->geomList.size());
-		if (caster->cachedGeomFrame == 0 || geomCount != caster->cachedGeomCount ||
-			frame - caster->cachedGeomFrame >= LOCAL_SHADOW_GEOM_REHASH_INTERVAL) {
-			caster->cachedGeomHash = ComputeLocalShadowContentHash(light, niLight, posStep, caster->radiusAnchor, caster->skinnedCasters);
-			caster->cachedGeomFrame = frame;
-			caster->cachedGeomCount = geomCount;
-		}
-
-		uint64_t contentHash = caster->cachedGeomHash;
-		if (caster->dynamic) {
-			const float actorStep = std::clamp(posStep, 1.0f, 8.0f);
-			for (const auto& actor : localShadowActors) {
-				if (actor.position.GetSquaredDistance(caster->position) >= actorRangeSquared)
-					continue;
-				contentHash = Util::HashCombineFloat(contentHash, Util::QuantizeFloat(actor.position.x, actorStep));
-				contentHash = Util::HashCombineFloat(contentHash, Util::QuantizeFloat(actor.position.y, actorStep));
-				contentHash = Util::HashCombineFloat(contentHash, Util::QuantizeFloat(actor.position.z, actorStep));
-			}
-		}
-		caster->contentHash = contentHash;
 	}
 
 	for (size_t i = 0; i < localShadowCasters.size();) {
@@ -1353,25 +1296,26 @@ void LightLimitFix::ScheduleLocalShadowCasters()
 
 	localShadowStatTracked = static_cast<uint32_t>(localShadowCasters.size());
 
-	uint32_t freeSlices = 0;
-	uint32_t oldestSliceAge = 0;
+	const bool limitAdmission = !localShadowSliceOwner.empty();
+	size_t admissionBudget = 0;
 	for (auto owner : localShadowSliceOwner) {
-		auto* ownerCaster = owner ? FindLocalShadowCaster(owner) : nullptr;
-		if (!ownerCaster) {
-			freeSlices++;
-			continue;
-		}
-		oldestSliceAge = std::max(oldestSliceAge, frame - ownerCaster->lastRenderedFrame);
+		if (IsLocalShadowSliceReclaimable(owner ? FindLocalShadowCaster(owner) : nullptr, frame))
+			admissionBudget++;
 	}
-	const bool admitNewCasters = localShadowSliceOwner.empty() || freeSlices > 0 || oldestSliceAge >= LOCAL_SHADOW_EVICT_AGE;
+
+	auto byScore = [&](uint32_t a_lhs, uint32_t a_rhs) {
+		return localShadowCasters[a_lhs].score > localShadowCasters[a_rhs].score;
+	};
 
 	static eastl::vector<uint32_t> order;
+	static eastl::vector<uint32_t> newcomers;
 	order.clear();
+	newcomers.clear();
 	bool needsSweep = false;
 	for (uint32_t i = 0; i < localShadowCasters.size(); i++) {
 		auto& caster = localShadowCasters[i];
 		caster.score = -1.0f;
-		caster.starved = false;
+		caster.importance = caster.radius / std::max(caster.position.GetDistance(localShadowCameraPosition), caster.radius);
 		if (caster.hidden || caster.radius <= 0.0f)
 			continue;
 		if (caster.lastEvaluatedFrame == 0 || frame - caster.lastEvaluatedFrame > LOCAL_SHADOW_SWEEP_INTERVAL)
@@ -1381,8 +1325,7 @@ void LightLimitFix::ScheduleLocalShadowCasters()
 
 		const bool everRendered = caster.slice >= 0 && caster.lastRenderedFrame != 0;
 		const float staleness = everRendered ? static_cast<float>(frame - caster.lastRenderedFrame) : 0.0f;
-		const float distance = caster.position.GetDistance(localShadowCameraPosition);
-		const float importance = caster.radius / std::max(distance, caster.radius);
+		const float importance = caster.importance;
 		const float moveThreshold = std::max(12.0f, caster.radius * 0.02f);
 		float axisDelta = 0.0f;
 		for (uint32_t row = 0; row < 3; row++)
@@ -1391,38 +1334,73 @@ void LightLimitFix::ScheduleLocalShadowCasters()
 		const bool moved = everRendered &&
 		                   (caster.position.GetSquaredDistance(caster.renderedPosition) > moveThreshold * moveThreshold ||
 							   caster.radius * axisDelta > moveThreshold);
-		const bool contentChanged = caster.skinnedCasters > 0 || caster.contentHash != caster.renderedContentHash;
 
 		if (frame < caster.rejectUntilFrame && !(moved && caster.rejectStreak <= 1))
-			continue;
-		if (caster.slice < 0 && !admitNewCasters)
 			continue;
 
 		if (!everRendered) {
 			caster.score = 1000000.0f + importance;
-		} else if (moved) {
+			newcomers.push_back(i);
+			continue;
+		}
+		if (moved) {
 			caster.score = 100000.0f + importance;
 		} else if (caster.dynamic) {
 			const float sticky = staleness <= 1.0f ? 0.5f : 0.0f;
-			caster.score = 1000.0f + caster.actorImportance * (1.0f + 0.15f * staleness + sticky);
-		} else if (contentChanged) {
-			caster.starved = staleness >= static_cast<float>(LOCAL_SHADOW_STATIC_STARVE_FRAMES);
-			caster.score = caster.starved ? LOCAL_SHADOW_STARVED_SCORE + staleness : 0.01f * staleness * (0.25f + importance);
-		} else if (staleness >= static_cast<float>(LOCAL_SHADOW_CLEAN_REFRESH_FRAMES)) {
-			caster.score = 0.001f * importance;
+			caster.score = LOCAL_SHADOW_ACTOR_SCORE + caster.actorImportance * (1.0f + 0.15f * staleness + sticky);
 		} else {
-			continue;
+			const float urgency = LOCAL_SHADOW_AGE_URGENCY * staleness * (0.25f + importance);
+			caster.score = LOCAL_SHADOW_ACTOR_SCORE * urgency / (urgency + LOCAL_SHADOW_ACTOR_SCORE);
 		}
 		order.push_back(i);
 	}
+
+	if (limitAdmission && newcomers.size() > admissionBudget) {
+		std::sort(newcomers.begin(), newcomers.end(), byScore);
+		const bool staticOwner = std::any_of(localShadowSliceOwner.begin(), localShadowSliceOwner.end(), [&](RE::BSShadowLight* a_owner) {
+			auto* ownerCaster = a_owner ? FindLocalShadowCaster(a_owner) : nullptr;
+			return ownerCaster && !ownerCaster->dynamic;
+		});
+		auto preempt = std::find_if(newcomers.begin() + admissionBudget, newcomers.end(), [&](uint32_t a_index) {
+			return localShadowCasters[a_index].dynamic;
+		});
+		const bool canPreempt = staticOwner && preempt != newcomers.end();
+		if (canPreempt)
+			std::swap(newcomers[admissionBudget], *preempt);
+		newcomers.resize(admissionBudget + (canPreempt ? 1 : 0));
+	}
+	order.insert(order.end(), newcomers.begin(), newcomers.end());
 
 	size_t engineCapacity = localShadowSunActive ? ENGINE_SHADOW_SLOTS - 1 : ENGINE_SHADOW_SLOTS;
 	if (needsSweep && order.size() >= engineCapacity && engineCapacity > 1)
 		engineCapacity--;
 	const size_t allowedCount = std::min<size_t>(order.size(), engineCapacity);
-	std::partial_sort(order.begin(), order.begin() + allowedCount, order.end(), [&](uint32_t a_lhs, uint32_t a_rhs) {
-		return localShadowCasters[a_lhs].score > localShadowCasters[a_rhs].score;
-	});
+	std::partial_sort(order.begin(), order.begin() + allowedCount, order.end(), byScore);
+
+	if (allowedCount > 1 && order.size() > allowedCount) {
+		bool staticAllowed = false;
+		for (size_t i = 0; i < allowedCount && !staticAllowed; i++)
+			staticAllowed = localShadowCasters[order[i]].score < LOCAL_SHADOW_ACTOR_SCORE;
+
+		auto& lastAllowed = localShadowCasters[order[allowedCount - 1]];
+		if (!staticAllowed && lastAllowed.score < 100000.0f) {
+			size_t best = order.size();
+			uint32_t bestStaleness = LOCAL_SHADOW_STATIC_STARVE_FRAMES - 1;
+			for (size_t i = allowedCount; i < order.size(); i++) {
+				const auto& caster = localShadowCasters[order[i]];
+				if (caster.score >= LOCAL_SHADOW_ACTOR_SCORE)
+					continue;
+				const uint32_t staleness = frame - caster.lastRenderedFrame;
+				if (staleness > bestStaleness) {
+					bestStaleness = staleness;
+					best = i;
+				}
+			}
+			if (best != order.size())
+				std::swap(order[allowedCount - 1], order[best]);
+		}
+	}
+
 	for (size_t i = 0; i < allowedCount; i++)
 		localShadowAllowed.push_back(localShadowCasters[order[i]].light);
 
@@ -1588,26 +1566,49 @@ void LightLimitFix::EnsureLocalShadowResources(ID3D11Texture2D* a_engineShadowMa
 		localShadowDirectCopy ? "direct copy" : "compute copy");
 }
 
+bool LightLimitFix::IsLocalShadowSliceReclaimable(const LocalShadowCaster* a_owner, uint32_t a_frame)
+{
+	if (!a_owner || a_owner->lastRenderedFrame == 0)
+		return true;
+	if (a_frame - a_owner->lastRenderedFrame < LOCAL_SHADOW_EVICT_AGE)
+		return false;
+	const bool inView = a_owner->lastEligibleFrame != 0 && a_frame - a_owner->lastEligibleFrame <= LOCAL_SHADOW_CAMERA_HOLD_FRAMES;
+	return !inView || a_owner->hidden || a_owner->radius <= 0.0f || a_frame < a_owner->rejectUntilFrame;
+}
+
 int32_t LightLimitFix::AcquireLocalShadowSlice(RE::BSShadowLight* a_light, uint32_t a_frame)
 {
 	int32_t evictSlice = -1;
 	uint32_t evictFrame = UINT32_MAX;
 	for (size_t slice = 0; slice < localShadowSliceOwner.size(); slice++) {
 		auto owner = localShadowSliceOwner[slice];
-		if (!owner) {
-			localShadowSliceOwner[slice] = a_light;
-			return static_cast<int32_t>(slice);
-		}
-		auto* ownerCaster = FindLocalShadowCaster(owner);
+		auto* ownerCaster = owner ? FindLocalShadowCaster(owner) : nullptr;
 		if (!ownerCaster) {
 			localShadowSliceOwner[slice] = a_light;
 			return static_cast<int32_t>(slice);
 		}
-		if (ownerCaster->lastRenderedFrame == a_frame)
+		if (!IsLocalShadowSliceReclaimable(ownerCaster, a_frame))
 			continue;
 		if (ownerCaster->lastRenderedFrame < evictFrame) {
 			evictFrame = ownerCaster->lastRenderedFrame;
 			evictSlice = static_cast<int32_t>(slice);
+		}
+	}
+
+	auto* acquirer = FindLocalShadowCaster(a_light);
+	if (evictSlice < 0 && acquirer && acquirer->dynamic) {
+		bool victimInView = true;
+		float victimImportance = FLT_MAX;
+		for (size_t slice = 0; slice < localShadowSliceOwner.size(); slice++) {
+			auto* ownerCaster = FindLocalShadowCaster(localShadowSliceOwner[slice]);
+			if (!ownerCaster || ownerCaster->dynamic || ownerCaster->lastRenderedFrame == a_frame)
+				continue;
+			const bool inView = ownerCaster->lastEligibleFrame != 0 && a_frame - ownerCaster->lastEligibleFrame <= LOCAL_SHADOW_CAMERA_HOLD_FRAMES;
+			if (evictSlice < 0 || (victimInView && !inView) || (inView == victimInView && ownerCaster->importance < victimImportance)) {
+				evictSlice = static_cast<int32_t>(slice);
+				victimInView = inView;
+				victimImportance = ownerCaster->importance;
+			}
 		}
 	}
 
@@ -1627,6 +1628,7 @@ void LightLimitFix::CopyLocalShadowMaps()
 {
 	localShadowStatRendered = 0;
 	localShadowStatCached = 0;
+	localShadowStatCollisions = 0;
 
 	auto smState = globals::game::smState;
 	auto renderer = globals::game::renderer;
@@ -1767,7 +1769,6 @@ void LightLimitFix::CopyLocalShadowMaps()
 		caster->lastRenderedFrame = frame;
 		caster->renderedPosition = caster->position;
 		caster->renderedRotation = caster->rotation;
-		caster->renderedContentHash = caster->contentHash;
 		caster->rejectStreak = 0;
 		localShadowStatRendered++;
 	}

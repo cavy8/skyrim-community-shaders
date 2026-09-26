@@ -111,10 +111,9 @@ public:
 	static constexpr uint32_t LOCAL_SHADOW_EVICT_AGE = 120;
 	static constexpr uint32_t LOCAL_SHADOW_REJECT_MAX_FRAMES = 120;
 	static constexpr uint32_t LOCAL_SHADOW_CAMERA_HOLD_FRAMES = 60;
-	static constexpr uint32_t LOCAL_SHADOW_GEOM_REHASH_INTERVAL = 4;
-	static constexpr uint32_t LOCAL_SHADOW_CLEAN_REFRESH_FRAMES = 300;
 	static constexpr uint32_t LOCAL_SHADOW_STATIC_STARVE_FRAMES = 60;
-	static constexpr float LOCAL_SHADOW_STARVED_SCORE = 500.0f;
+	static constexpr float LOCAL_SHADOW_AGE_URGENCY = 64.0f;
+	static constexpr float LOCAL_SHADOW_ACTOR_SCORE = 1000.0f;
 	static constexpr uint32_t LOCAL_SHADOW_TYPE_SPOT = 0;
 	static constexpr uint32_t LOCAL_SHADOW_TYPE_HEMISPHERE = 1;
 	static constexpr uint32_t LOCAL_SHADOW_TYPE_OMNI = 2;
@@ -160,20 +159,13 @@ public:
 		RE::NiMatrix3 rotation{};
 		RE::NiMatrix3 renderedRotation{};
 		float radius = 0.0f;
-		float radiusAnchor = -1.0f;
+		float importance = 0.0f;
 		float score = -1.0f;
 		float actorImportance = 0.0f;
 		float actorSpeed = 0.0f;
 		float intervalEma = 1.0f;
-		uint64_t contentHash = 0;
-		uint64_t renderedContentHash = 0;
-		uint64_t cachedGeomHash = 0;
-		uint32_t cachedGeomFrame = 0;
-		uint32_t cachedGeomCount = 0;
-		uint32_t skinnedCasters = 0;
 		bool hidden = false;
 		bool dynamic = false;
-		bool starved = false;
 		float4x4 shadowProj{};
 		float4 shadowParams{};
 		float4 shadowParams2{};
@@ -381,8 +373,10 @@ public:
 	void EnsureLocalShadowResources(ID3D11Texture2D* a_engineShadowMaps);
 	/** @brief Releases the cache resources and forgets every slice assignment. */
 	void ReleaseLocalShadowResources();
-	/** @brief Finds a free cache slice or evicts the least recently rendered caster. */
+	/** @brief Finds a free cache slice or reclaims the least recently rendered reclaimable one; an actor-lit caster may take the least important static caster's slice. */
 	int32_t AcquireLocalShadowSlice(RE::BSShadowLight* a_light, uint32_t a_frame);
+	/** @brief True when taking a slice from this owner cannot remove a shadow that is on screen. */
+	static bool IsLocalShadowSliceReclaimable(const LocalShadowCaster* a_owner, uint32_t a_frame);
 	/** @brief Looks up the tracked caster entry for a light, or nullptr. */
 	LocalShadowCaster* FindLocalShadowCaster(RE::BSShadowLight* a_light);
 	/** @brief Flags a light as an engine shadow-mask light only when it owns one of the four mask channels. */
