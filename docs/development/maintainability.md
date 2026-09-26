@@ -15,9 +15,11 @@ that is recorded. Read this before changing a feature that also exists upstream.
     mainline work. Living in Personal, or differing from Bottle, does not make code
     Personal-original.
 -   **Personal-original work is small and recorded.** The one Personal-original *feature* is Neural
-    Rendering. Everything else Personal wrote is a named component inside an imported feature (for
-    example the dialogue Depth of Field menu gate in `DoF::GetInDialogue`, Light Limit Fix's slice
-    fade-in); each is marked `personal_original: true` in `feature-provenance.yaml`.
+    Rendering. The rest is a few named components inside imported features: the dialogue Depth of
+    Field menu gate in `DoF::GetInDialogue`, the Screenshot sRGB fix, and Personal's default states
+    (Post Processing off, Unified Water on, Snow Cover tree tint off). Each is marked
+    `personal_original: true` in `feature-provenance.yaml`. Code written only to make Open and
+    Bottle work together (seams, compile fixes) is integration, not original work.
 -   **Source comparison is authoritative.** When a record here disagrees with the code, the code
     wins and the record is fixed. Never infer provenance from a path, a commit author, a feature
     name, or a generic `feat:` subject.

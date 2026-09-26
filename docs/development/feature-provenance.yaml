@@ -24,6 +24,11 @@
 # Established 2026-09-25 by source comparison (file blobs and distinctive lines) against
 # bottle@dac6803377, bottle/Bottle-Compendium, open-shaders/dev, jiayev/compendium-clean and
 # community-shaders/dev (mainline). Features absent here are mainline features that match Bottle.
+#
+# Owner ruling (2026-09-26): apart from Neural Rendering and the dialogue DoF menu gate, the only
+# Personal-original work is its default states and the Screenshot sRGB fix. Everything else that
+# differed from its upstreams came from somewhere or was a side effect of combining Open and
+# Bottle code, and was adjusted to the pinned Bottle SHA.
 
 features:
   NeuralRendering:
@@ -95,12 +100,13 @@ features:
             confidence: confirmed
             evidence: [90e57b9855]
       color_transform_fixes:
-        personal_original: true
+        personal_original: false
         provenance:
           - source: personal
-            role: bug-fix           # 51c03d33b is Personal's own commit, not jiayev's
+            role: integration       # ColorGrading.h comment only; 51c03d33b is a Personal commit, not jiayev's
             confidence: confirmed
             evidence: [51c03d33b]
+            note: not original work (owner ruling 2026-09-26)
       motion_blur_dynamic_height:
         personal_original: false
         provenance:
@@ -153,10 +159,10 @@ features:
         note: tracker-cited Bottle merges; feature files now match none of Bottle's
     components:
       sun_luminance_stage_guard:
-        personal_original: true
+        personal_original: false
         provenance:
           - source: personal
-            role: compile-fix
+            role: integration-fix   # side effect of combining Open and Bottle code (owner ruling 2026-09-26)
             confidence: confirmed
             evidence: [29e7402ee7]
 
@@ -238,28 +244,28 @@ features:
     personal_original: false
     provenance:
       - source: mainline
-        role: base-feature         # most effect files == mainline after merge 1ad6a16436
-        confidence: confirmed
-        evidence: [1ad6a16436]
-      - source: open
-        role: implementation       # preset hot-swap subsystem; PresetManager.h byte-identical
+        role: base-feature
         confidence: confirmed
       - source: bottle
-        role: implementation       # ENB Depth of Field, Sky Scattering
+        role: implementation       # reset to the pin (ENB DOF + adaptation, Sky Scattering, REVERSE_Z depth copy)
         confidence: confirmed
         evidence: [2a39ad34e9, 0657cf0ab4]
     components:
-      enb_dof_without_adaptation:
+      open_preset_hot_swap:
         personal_original: false
         provenance:
-          - source: bottle
-            role: implementation
+          - source: open
+            role: implementation    # PresetManager/MenuManager, Effects11 preset-location settings
             confidence: confirmed
-            evidence: [2a39ad34e9]
-          - source: personal
-            role: reduction         # adaptation coupling not ported
+      native_procedural_sun:
+        personal_original: false
+        provenance:
+          - source: mainline
+            role: implementation    # Effects11 PROCEDURALSUN settings + IsSun narrowing; Bottle dropped it in 26611dd183
             confidence: confirmed
-            evidence: [f10402f8fa]
+          - source: open
+            role: integration       # Sky.hlsl arbitration with the Procedural Sun feature
+            confidence: confirmed
 
   LightLimitFix:
     status: present
@@ -269,38 +275,9 @@ features:
         role: base-feature
         confidence: confirmed
       - source: bottle
-        role: implementation       # diet SLF, contact shadows, cache scheduler
+        role: implementation       # diet SLF, contact shadows, cache scheduler; reset to the pin
         confidence: confirmed
         evidence: [69201a6ab, fe9228b99]
-    components:
-      slice_fade_in:
-        personal_original: true
-        provenance:
-          - source: personal
-            role: enhancement
-            confidence: confirmed
-            evidence: [69201a6abf]
-      slice_collision_stat_ui:
-        personal_original: true
-        provenance:
-          - source: personal
-            role: ui               # the counter itself is Bottle's
-            confidence: confirmed
-            evidence: [ec4fd7399e]
-      perframe_layout:
-        personal_original: true
-        provenance:
-          - source: personal
-            role: bug-fix
-            confidence: confirmed
-            evidence: [533c89a734]
-      cluster_aabb_far_depth:
-        personal_original: false
-        provenance:
-          - source: mainline
-            role: bug-fix
-            confidence: confirmed
-            evidence: [45a71f6172]
 
   DynamicCubemaps:
     status: present
@@ -309,14 +286,14 @@ features:
       - source: mainline
         role: base-feature
         confidence: confirmed
-    components:
-      lighting_change_detection:
-        personal_original: false
-        provenance:
-          - source: jiayev
-            role: implementation
-            confidence: confirmed
-            evidence: [49c35c6ef2, 929d4ce52f]
+      - source: bottle
+        role: implementation       # unified envFilteredTexture + cubemapValid gate; reset to the pin
+        confidence: confirmed
+        evidence: [03e2b80b1b]
+      - source: jiayev
+        role: implementation       # capture-history lighting-change detection, carried in Bottle's form
+        confidence: confirmed
+        evidence: [49c35c6ef2]
 
   VolumetricLighting:
     status: present
@@ -349,6 +326,10 @@ features:
       - source: mainline
         role: base-feature
         confidence: confirmed
+      - source: bottle
+        role: implementation       # incl. broken-moon-mod compat (Caster-cached directions)
+        confidence: confirmed
+        evidence: [2a9ee471a2]
     components:
       celestial_light_weights:
         personal_original: false
@@ -363,29 +344,40 @@ features:
     personal_original: false
     provenance:
       - source: mainline
-        role: implementation       # .cpp/.h byte-identical to mainline
+        role: base-feature
         confidence: confirmed
-      - source: open
-        role: implementation       # CloudShadows.hlsli byte-identical to open
+      - source: bottle
+        role: implementation       # 1-6-0 deck chain; reset to the pin
         confidence: confirmed
+    components:
+      cloud_relight_self_shadow:
+        personal_original: false
+        provenance:
+          - source: open
+            role: integration       # t26 self-shadow input Open's Cloud Relight needs, re-expressed on Bottle's deck chain
+            confidence: confirmed
 
   ExponentialHeightFog:
     status: present
     personal_original: false
     provenance:
       - source: mainline
-        role: implementation       # all 9 files byte-identical to mainline
+        role: base-feature
         confidence: confirmed
-        evidence: [1ad6a16436]
+      - source: bottle
+        role: implementation       # reset to the pin
+        confidence: confirmed
 
   ScreenSpaceShadows:
     status: present
     personal_original: false
     provenance:
       - source: mainline
-        role: implementation       # all files byte-identical to mainline; Personal's front/back experiment reverted
+        role: base-feature
         confidence: confirmed
-        evidence: [a08a5158b4, 352e736e61]
+      - source: bottle
+        role: implementation       # front/back two-channel contact shadows + transmission; reset to the pin
+        confidence: confirmed
 
   ExtendedMaterials:
     status: present
@@ -394,14 +386,9 @@ features:
       - source: mainline
         role: base-feature
         confidence: confirmed
-    components:
-      mesh_tv_refinement:
-        personal_original: true
-        provenance:
-          - source: personal
-            role: enhancement
-            confidence: confirmed
-            evidence: [b0e78b9522]
+      - source: bottle
+        role: implementation       # reset to the pin
+        confidence: confirmed
 
   GrassLighting:
     status: present
@@ -410,14 +397,10 @@ features:
       - source: mainline
         role: base-feature
         confidence: confirmed
-    components:
-      wetness_redesign:
-        personal_original: true
-        provenance:
-          - source: personal
-            role: redesign
-            confidence: confirmed
-            evidence: [ffd4c2a2c5, 632e2845fd]
+      - source: bottle
+        role: implementation       # wrapped lighting / transmission / ambient floor; reset to the pin
+        confidence: confirmed
+        evidence: [a55bd4ba23]
 
   Screenshot:
     status: present
@@ -427,13 +410,20 @@ features:
         role: base-feature
         confidence: confirmed
     components:
+      srgb_fix:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: bug-fix           # WIC_FLAGS_FORCE_SRGB for double-encoded SDR PNGs
+            confidence: confirmed
+            evidence: [7607769991]
       nr_comparison_capture:
         personal_original: true
         provenance:
           - source: personal
-            role: implementation   # NR A/B capture path + WIC sRGB fix
+            role: implementation    # Neural Rendering's A/B capture path
             confidence: confirmed
-            evidence: [7b0ffa8f1f, 7607769991]
+            evidence: [7b0ffa8f1f]
 
   UnifiedWater:
     status: present
@@ -458,11 +448,7 @@ features:
       - source: mainline
         role: base-feature
         confidence: confirmed
-    components:
-      early_occluder_reject:
-        personal_original: true
-        provenance:
-          - source: personal
-            role: optimization
-            confidence: confirmed
-            evidence: [7a7276a4c5]
+      - source: bottle
+        role: implementation       # occlusion cadence / distance culling (open 69101322f2 via Bottle 644fbc5ee5); reset to the pin
+        confidence: confirmed
+        evidence: [644fbc5ee5]
