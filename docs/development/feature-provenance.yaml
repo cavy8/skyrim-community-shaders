@@ -40,7 +40,7 @@ features:
         confidence: confirmed
 
   CharacterRain:
-    status: present                # D3: removed in Phase 3 of the maintainability refactor
+    status: removed                # D3: removed for Bottle parity (Bottle reverted it in 3afd2b6277)
     personal_original: false
     provenance:
       - source: open
@@ -95,8 +95,7 @@ features:
         confidence: likely
       - source: bottle
         role: implementation
-        confidence: unresolved
-        note: verify which Bottle commits Personal's Wetness Effects matches after Character Rain removal
+        confidence: confirmed      # byte-identical to the pinned Bottle SHA after Character Rain removal
 
   FoliageLighting:
     status: present

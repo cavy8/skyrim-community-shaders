@@ -286,10 +286,6 @@ public:
 		// resolves to armor, clothing and weapons - see
 		// NeuralRenderingCategories::Equipment.
 		IsHumanoidActor = 1 << 9,
-		// Set on opaque character/held-weapon geometry classified for character
-		// rain drops; see CharacterRainSurfaces.
-		IsCharacterRainSurface = 1 << 10,
-		IsHeldWeapon = 1 << 11,
 		// Set by NeuralRendering::SetupGeometryCategory when the drawn
 		// geometry belongs to a hair or facial-hair head part of its actor,
 		// whatever shader type the piece was authored with - see

@@ -82,10 +82,6 @@ namespace Permutation
 		// Set on any geometry belonging to a humanoid (ActorTypeNPC) actor;
 		// see NeuralRenderingCategories::Equipment.
 		static const uint IsHumanoidActor = (1 << 9);
-		// Set on opaque character/held-weapon geometry classified for character
-		// rain drops; see CharacterRainSurfaces.
-		static const uint IsCharacterRainSurface = (1 << 10);
-		static const uint IsHeldWeapon = (1 << 11);
 		// Set on geometry belonging to a hair or facial-hair head part of its
 		// actor, whatever shader type it was authored with; see
 		// NeuralRenderingCategories::Hair.
