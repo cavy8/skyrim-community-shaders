@@ -125,6 +125,32 @@ Effects11::PerFrame Effects11::GetCommonBufferData()
 	}
 	data.VolumetricRaysSkyColorAmount = settingManager.GetInterpolatedTimeOfDayValue("SkyColorAmount", "VOLUMETRICRAYS");
 
+	data.EnableCloudsScattering = enableEffect && settingManager.GetValue<bool>("EnableCloudsScattering", "EFFECT");
+	data.SkyScatteringIntensity = settingManager.GetInterpolatedTimeOfDayValue("Intensity", "SKYSCATTERING");
+	data.SkyScatteringColorFromSun = settingManager.GetInterpolatedTimeOfDayValue("ColorFromSun", "SKYSCATTERING");
+	data.SkyScatteringShadowAmount = settingManager.GetInterpolatedTimeOfDayValue("ShadowAmount", "SKYSCATTERING");
+	{
+		auto scatteringColor = settingManager.GetInterpolatedColorTimeOfDayValue("ScatteringColor", "SKYSCATTERING");
+		data.SkyScatteringColor = { scatteringColor.x, scatteringColor.y, scatteringColor.z };
+
+		constexpr float unitsPerKilometre = 1000.0f / 0.01428f;
+		data.SkyScatteringExtinction = std::max(0.0f, settingManager.GetInterpolatedTimeOfDayValue("DustDensity", "SKYSCATTERING")) * 0.1f / unitsPerKilometre;
+		data.SkyScatteringScaleHeight = std::max(0.05f, settingManager.GetInterpolatedTimeOfDayValue("AtmosphereThickness", "SKYSCATTERING")) * 1.2f * unitsPerKilometre;
+
+		auto rangeToAnisotropy = [](float range) { return std::clamp(1.0f - 0.15f * range, 0.0f, 0.97f); };
+		data.SkyScatteringSunGlowIntensity = settingManager.GetInterpolatedTimeOfDayValue("SunGlowIntensity", "SKYSCATTERING");
+		data.SkyScatteringSunGlowAnisotropy = rangeToAnisotropy(settingManager.GetInterpolatedTimeOfDayValue("SunGlowRange", "SKYSCATTERING"));
+		data.SkyScatteringAirGlowIntensity = settingManager.GetInterpolatedTimeOfDayValue("AirGlowIntensity", "SKYSCATTERING");
+		data.SkyScatteringAirGlowAnisotropy = rangeToAnisotropy(settingManager.GetInterpolatedTimeOfDayValue("AirGlowRange", "SKYSCATTERING"));
+	}
+	data.SkyScatteringMoonGlowAmount = settingManager.GetInterpolatedTimeOfDayValue("MoonGlowAmount", "SKYSCATTERING");
+	data.CloudsLightingSunMultiplier = settingManager.GetInterpolatedTimeOfDayValue("CloudsLightingSunMultiplier", "SKYSCATTERING");
+	data.CloudsLightingSunMinIntensity = std::clamp(settingManager.GetInterpolatedTimeOfDayValue("CloudsLightingSunMinIntensity", "SKYSCATTERING"), 0.0f, 1.0f);
+	data.CloudsLightingMoonIntensity = settingManager.GetInterpolatedTimeOfDayValue("CloudsLightingMoonIntensity", "SKYSCATTERING");
+	data.EnableCloudsLightingFromMoon = settingManager.GetValue<bool>("EnableCloudsLightingFromMoon", "SKYSCATTERING");
+	data.CalculateCloudsEdgeFromScattering = settingManager.GetValue<bool>("CalculateCloudsEdgeFromScattering", "SKYSCATTERING");
+	data.CloudsLightingDensity = settingManager.GetInterpolatedTimeOfDayValue("CloudsLightingDensity", "SKYSCATTERING");
+
 	data.EnableRain = enableEffect && raindropSRV;
 	data.RainMotionStretch = settingManager.GetInterpolatedTimeOfDayValue("MotionStretch", "RAIN");
 	data.RainMotionTransparency = settingManager.GetInterpolatedTimeOfDayValue("MotionTransparency", "RAIN");
@@ -712,7 +738,9 @@ void Effects11::DrawVolumetricRays()
 		return;
 
 	auto& settingManager = SettingManager::GetSingleton();
-	if (!settingManager.GetValue<bool>("EnableVolumetricRays", "EFFECT"))
+	const bool volumetricRays = settingManager.GetValue<bool>("EnableVolumetricRays", "EFFECT");
+	const bool skyScattering = settingManager.GetValue<bool>("EnableCloudsScattering", "EFFECT");
+	if (!volumetricRays && !skyScattering)
 		return;
 
 	auto& effectManager = EffectManager::GetSingleton();
@@ -753,17 +781,19 @@ void Effects11::DrawVolumetricRays()
 			return;
 	}
 
-	if (!additiveBlendState) {
+	if (!scatteringBlendState) {
 		D3D11_BLEND_DESC blendDesc{};
 		blendDesc.RenderTarget[0].BlendEnable = TRUE;
 		blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
+		blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_SRC_ALPHA;
 		blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
 		blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
 		blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
 		blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
 		blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
-		globals::d3d::device->CreateBlendState(&blendDesc, additiveBlendState.put());
+		if (FAILED(globals::d3d::device->CreateBlendState(&blendDesc, scatteringBlendState.put())))
+			return;
+		Util::SetResourceName(scatteringBlendState.get(), "Effects11::ScatteringBlendState");
 	}
 
 	auto context = globals::d3d::context;
@@ -816,6 +846,15 @@ void Effects11::DrawVolumetricRays()
 		vlTexB->CreateSRV(srvDesc);
 		vlTexB->CreateUAV(uavDesc);
 
+		skyTexA = std::make_unique<Texture2D>(desc, "Effects11::SkyScatteringTexA");
+		skyTexA->CreateSRV(srvDesc);
+		skyTexA->CreateRTV(rtvDesc);
+		skyTexA->CreateUAV(uavDesc);
+
+		skyTexB = std::make_unique<Texture2D>(desc, "Effects11::SkyScatteringTexB");
+		skyTexB->CreateSRV(srvDesc);
+		skyTexB->CreateUAV(uavDesc);
+
 		D3D11_TEXTURE2D_DESC depthDesc = desc;
 		depthDesc.Format = DXGI_FORMAT_R32_FLOAT;
 		depthDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -847,8 +886,8 @@ void Effects11::DrawVolumetricRays()
 	{
 		profiler->BeginPass("Effects11::VolumetricRays Pass 0");
 
-		ID3D11RenderTargetView* rtvs[2] = { vlTexA->rtv.get(), vlDepthHalf->rtv.get() };
-		context->OMSetRenderTargets(2, rtvs, nullptr);
+		ID3D11RenderTargetView* rtvs[3] = { vlTexA->rtv.get(), vlDepthHalf->rtv.get(), skyTexA->rtv.get() };
+		context->OMSetRenderTargets(3, rtvs, nullptr);
 		context->RSSetViewports(1, &halfViewport);
 
 		context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
@@ -868,8 +907,8 @@ void Effects11::DrawVolumetricRays()
 
 		context->Draw(4, 0);
 
-		ID3D11RenderTargetView* nullRTVs[2] = { nullptr, nullptr };
-		context->OMSetRenderTargets(2, nullRTVs, nullptr);
+		ID3D11RenderTargetView* nullRTVs[3] = { nullptr, nullptr, nullptr };
+		context->OMSetRenderTargets(3, nullRTVs, nullptr);
 
 		profiler->EndPass();
 	}
@@ -886,51 +925,40 @@ void Effects11::DrawVolumetricRays()
 	static constexpr uint32_t blurWindow = 12;
 	static constexpr uint32_t effectiveGroupSize = tgDim - blurWindow * 2;
 
-	// Pass 2: Blur horizontal (texA → texB)
-	{
-		profiler->BeginPass("Effects11::VolumetricRays Pass 1");
-		context->CSSetShader(blurHCS, nullptr, 0);
+	auto blurPass = [&](ID3D11ComputeShader* shader, Texture2D* source, Texture2D* destination, uint32_t groupsX, uint32_t groupsY, const char* name) {
+		profiler->BeginPass(name);
+		context->CSSetShader(shader, nullptr, 0);
 
-		ID3D11ShaderResourceView* csSRVs[2] = { vlTexA->srv.get(), vlDepthHalf->srv.get() };
+		ID3D11ShaderResourceView* csSRVs[2] = { source->srv.get(), vlDepthHalf->srv.get() };
 		context->CSSetShaderResources(0, 2, csSRVs);
 
-		ID3D11UnorderedAccessView* csUAVs[1] = { vlTexB->uav.get() };
+		ID3D11UnorderedAccessView* csUAVs[1] = { destination->uav.get() };
 		context->CSSetUnorderedAccessViews(0, 1, csUAVs, nullptr);
 
 		ID3D11Buffer* csCBs[2] = { nullptr, vlBlurCB->CB() };
 		context->CSSetConstantBuffers(0, 2, csCBs);
 
-		uint32_t groupsX = (halfDynWidth + effectiveGroupSize - 1) / effectiveGroupSize;
-		context->Dispatch(groupsX, halfDynHeight, 1);
+		context->Dispatch(groupsX, groupsY, 1);
 
 		ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
 		context->CSSetShaderResources(0, 2, nullSRVs);
 		ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
 		context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 		profiler->EndPass();
+	};
+
+	const uint32_t blurGroupsX = (halfDynWidth + effectiveGroupSize - 1) / effectiveGroupSize;
+	const uint32_t blurGroupsY = (halfDynHeight + effectiveGroupSize - 1) / effectiveGroupSize;
+
+	if (volumetricRays) {
+		blurPass(blurHCS, vlTexA.get(), vlTexB.get(), blurGroupsX, halfDynHeight, "Effects11::VolumetricRays Pass 1");
+		blurPass(blurVCS, vlTexB.get(), vlTexA.get(), halfDynWidth, blurGroupsY, "Effects11::VolumetricRays Pass 2");
 	}
-
-	// Pass 3: Blur vertical (texB → texA)
-	{
-		profiler->BeginPass("Effects11::VolumetricRays Pass 2");
-		context->CSSetShader(blurVCS, nullptr, 0);
-
-		ID3D11ShaderResourceView* csSRVs[2] = { vlTexB->srv.get(), vlDepthHalf->srv.get() };
-		context->CSSetShaderResources(0, 2, csSRVs);
-
-		ID3D11UnorderedAccessView* csUAVs[1] = { vlTexA->uav.get() };
-		context->CSSetUnorderedAccessViews(0, 1, csUAVs, nullptr);
-
-		uint32_t groupsY = (halfDynHeight + effectiveGroupSize - 1) / effectiveGroupSize;
-		context->Dispatch(halfDynWidth, groupsY, 1);
-
-		ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
-		context->CSSetShaderResources(0, 2, nullSRVs);
-		ID3D11UnorderedAccessView* nullUAVs[1] = { nullptr };
-		context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
-		context->CSSetShader(nullptr, nullptr, 0);
-		profiler->EndPass();
+	if (skyScattering) {
+		blurPass(blurHCS, skyTexA.get(), skyTexB.get(), blurGroupsX, halfDynHeight, "Effects11::SkyScattering Blur H");
+		blurPass(blurVCS, skyTexB.get(), skyTexA.get(), halfDynWidth, blurGroupsY, "Effects11::SkyScattering Blur V");
 	}
+	context->CSSetShader(nullptr, nullptr, 0);
 
 	// Pass 4: Apply blurred shadow with color → main RT (additive)
 	{
@@ -939,7 +967,7 @@ void Effects11::DrawVolumetricRays()
 		context->OMSetRenderTargets(1, &rtv, nullptr);
 		context->RSSetViewports(1, &viewport);
 
-		context->OMSetBlendState(additiveBlendState.get(), nullptr, 0xFFFFFFFF);
+		context->OMSetBlendState(scatteringBlendState.get(), nullptr, 0xFFFFFFFF);
 		context->RSSetState(effectManager.rasterizerState.get());
 		context->OMSetDepthStencilState(nullptr, 0);
 
@@ -957,6 +985,7 @@ void Effects11::DrawVolumetricRays()
 		ID3D11ShaderResourceView* srvs[16]{};
 		srvs[0] = vlTexA->srv.get();
 		srvs[1] = vlDepthHalf->srv.get();
+		srvs[2] = skyTexA->srv.get();
 		if (ibl.loaded) {
 			srvs[14] = ibl.envIBLTexture->srv.get();
 			srvs[15] = ibl.skyIBLTexture->srv.get();

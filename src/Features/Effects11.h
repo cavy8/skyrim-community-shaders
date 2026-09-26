@@ -72,7 +72,34 @@ public:
 
 		float VolumetricRaysDesaturation;
 		float3 VolumetricRaysColorFilter;
+
+		uint EnableCloudsScattering;
+		float SkyScatteringIntensity;
+		float SkyScatteringColorFromSun;
+		float SkyScatteringShadowAmount;
+
+		float3 SkyScatteringColor;
+		float SkyScatteringExtinction;
+
+		float SkyScatteringScaleHeight;
+		float SkyScatteringSunGlowIntensity;
+		float SkyScatteringSunGlowAnisotropy;
+		float SkyScatteringAirGlowIntensity;
+
+		float SkyScatteringAirGlowAnisotropy;
+		float SkyScatteringMoonGlowAmount;
+		float CloudsLightingSunMultiplier;
+		float CloudsLightingSunMinIntensity;
+
+		float CloudsLightingMoonIntensity;
+		uint EnableCloudsLightingFromMoon;
+		uint CalculateCloudsEdgeFromScattering;
+		float CloudsLightingDensity;
 	};
+	static_assert(sizeof(PerFrame) % 16 == 0);
+	static_assert(offsetof(PerFrame, EnableCloudsScattering) % 16 == 0);
+	static_assert(offsetof(PerFrame, SkyScatteringColor) % 16 == 0);
+	static_assert(offsetof(PerFrame, CloudsLightingMoonIntensity) % 16 == 0);
 
 	bool enableEffect = false;
 
@@ -80,12 +107,14 @@ public:
 	ID3D11PixelShader* applyVolumetricRaysPS = nullptr;
 	ID3D11ComputeShader* blurHCS = nullptr;
 	ID3D11ComputeShader* blurVCS = nullptr;
-	winrt::com_ptr<ID3D11BlendState> additiveBlendState;
+	winrt::com_ptr<ID3D11BlendState> scatteringBlendState;
 	winrt::com_ptr<ID3D11BlendState> alphaBlendState;
 
 	std::unique_ptr<Texture2D> vlTexA;
 	std::unique_ptr<Texture2D> vlTexB;
 	std::unique_ptr<Texture2D> vlDepthHalf;
+	std::unique_ptr<Texture2D> skyTexA;
+	std::unique_ptr<Texture2D> skyTexB;
 	std::unique_ptr<ConstantBuffer> vlBlurCB;
 
 	winrt::com_ptr<ID3D11Texture2D> raindropTexture;

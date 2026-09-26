@@ -332,6 +332,29 @@ namespace SharedData
 
 		float VolumetricRaysDesaturation;
 		float3 VolumetricRaysColorFilter;
+
+		uint EnableCloudsScattering;
+		float SkyScatteringIntensity;
+		float SkyScatteringColorFromSun;
+		float SkyScatteringShadowAmount;
+
+		float3 SkyScatteringColor;
+		float SkyScatteringExtinction;
+
+		float SkyScatteringScaleHeight;
+		float SkyScatteringSunGlowIntensity;
+		float SkyScatteringSunGlowAnisotropy;
+		float SkyScatteringAirGlowIntensity;
+
+		float SkyScatteringAirGlowAnisotropy;
+		float SkyScatteringMoonGlowAmount;
+		float CloudsLightingSunMultiplier;
+		float CloudsLightingSunMinIntensity;
+
+		float CloudsLightingMoonIntensity;
+		uint EnableCloudsLightingFromMoon;
+		uint CalculateCloudsEdgeFromScattering;
+		float CloudsLightingDensity;
 	};
 	struct TerrainBlendingSettings
 	{

@@ -205,6 +205,10 @@ cbuffer AlphaTestRefCB : register(b11)
 #		include "CloudShadows/CloudShadows.hlsli"
 #	endif
 
+#	if defined(EFFECTS11) && defined(CLOUDS)
+#		include "Effects11/SkyScattering.hlsli"
+#	endif
+
 #	if defined(CLOUD_RELIGHT) && defined(CLOUD_SHADOWS) && defined(TEX) && defined(CLOUDS)
 #		define CR_CLOUDS
 #		include "CloudRelight/CloudRelight.hlsli"
@@ -411,12 +415,20 @@ PS_OUTPUT main(PS_INPUT input)
 		float masserLighting = saturate(dot(viewDirection, SharedData::MasserDirection.xyz) * 0.5 + 0.5);
 		float secundaLighting = saturate(dot(viewDirection, SharedData::SecundaDirection.xyz) * 0.5 + 0.5);
 
+		float3 edgeTransmittance = 0.0;
+		if (SharedData::enbSettings.EnableCloudsScattering) {
+			float3 scatteringTransmittance;
+			cloudColor = SkyScattering::RelightCloud(cloudColor, cloudLuminance, saturate(psout.Color.w), viewDirection, input.Position.xy, SampBaseSampler, scatteringTransmittance);
+			if (SharedData::enbSettings.CalculateCloudsEdgeFromScattering)
+				edgeTransmittance = scatteringTransmittance;
+		}
+
 		if (SharedData::enbSettings.CloudsEdgeIntensity > 0.0) {
 			float cloudsEdgeAlpha = saturate(1.0 - baseColor.w);
-			
-			float3 sunPhase = pow(sunLighting, 32.0) * SharedData::SunColor.xyz * cloudsEdgeAlpha;
-			float3 masserPhase = pow(masserLighting, 32.0) * SharedData::MasserColor.xyz * SharedData::enbSettings.CloudsEdgeMoonMultiplier * cloudsEdgeAlpha;
-			float3 secundaPhase = pow(secundaLighting, 32.0) * SharedData::SecundaColor.xyz * SharedData::enbSettings.CloudsEdgeMoonMultiplier * cloudsEdgeAlpha;
+
+			float3 sunPhase = pow(sunLighting, 32.0) * SharedData::SunColor.xyz * max(cloudsEdgeAlpha, edgeTransmittance.x);
+			float3 masserPhase = pow(masserLighting, 32.0) * SharedData::MasserColor.xyz * SharedData::enbSettings.CloudsEdgeMoonMultiplier * max(cloudsEdgeAlpha, edgeTransmittance.y);
+			float3 secundaPhase = pow(secundaLighting, 32.0) * SharedData::SecundaColor.xyz * SharedData::enbSettings.CloudsEdgeMoonMultiplier * max(cloudsEdgeAlpha, edgeTransmittance.z);
 
 			float3 cloudsScatter = (sunPhase + masserPhase + secundaPhase) * SharedData::enbSettings.CloudsEdgeIntensity;
 
