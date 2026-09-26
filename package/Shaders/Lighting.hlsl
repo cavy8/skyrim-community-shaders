@@ -2932,7 +2932,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	if defined(HAIR)
 	float3 vertexColor = lerp(1, Color::ColorToLinear(TintColor.xyz), Color::ColorToLinear(input.Color.y));
 	float vertexAO = 1;
-#		if defined(CS_HAIR)
+#		if defined(CS_HAIR_SHADING)
 	if (SharedData::hairSpecularSettings.Enabled)
 		vertexColor = 1;
 #		endif

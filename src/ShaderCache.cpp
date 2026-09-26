@@ -1410,7 +1410,7 @@ namespace SIE
 				} else if (cache.IsSkipUnchangedShaders()) {
 					// No file watcher: compare disk-cache mtime directly against the .hlsl source file mtime.
 					std::error_code ec;
-					const auto diskCacheTime = std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(diskPath, ec));
+					const auto diskCacheTime = std::filesystem::last_write_time(diskPath, ec);
 					if (ec) {
 						logger::debug("Failed to read disk cache mtime for {}: {}", Util::WStringToString(diskPath), ec.message());
 					} else {
