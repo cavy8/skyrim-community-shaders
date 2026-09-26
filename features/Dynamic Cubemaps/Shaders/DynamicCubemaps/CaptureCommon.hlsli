@@ -44,9 +44,6 @@ bool CaptureHistoryExpired(float lastSeen)
 	return CaptureDeltaTime >= CaptureHistoryLifetime || fmod(GetCaptureTime() - lastSeen + 64.0, 64.0) >= CaptureHistoryLifetime;
 }
 
-// Calculate normalized sampling direction vector based on current fragment coordinates.
-// This is essentially "inverse-sampling": we reconstruct what the sampling vector would be if we wanted it to "hit"
-// this particular fragment in a cubemap.
 float3 GetSamplingVector(uint3 texel)
 {
 	uint width, height, faces;
@@ -88,15 +85,18 @@ bool SampleCapture(uint3 texel, out float3 position, out float3 color, out float
 
 	float2 sampleUV = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv);
 	float depth = DepthTexture.SampleLevel(LinearSampler, sampleUV, 0);
-	if (SharedData::GetScreenDepth(depth) <= 16.5)  // Ignore objects which are too close
-		return false;
-#if !defined(REFLECTIONS)
-	if (depth == 1.0)  // Ignore the sky
-		return false;
+#if defined(REFLECTIONS)
+	if (SharedData::GetScreenDepth(depth) <= 16.5)
+#else
+#	ifdef REVERSE_Z
+	if (depth == 0.0 || SharedData::GetScreenDepth(depth) <= 16.5)
+#	else
+	if (depth == 1.0 || SharedData::GetScreenDepth(depth) <= 16.5)
+#	endif
 #endif
+		return false;
 
-	half4 positionCS = half4(2 * half2(sampleUV.x, -sampleUV.y + 1) - 1, depth, 1);
-	positionCS = mul(FrameBuffer::CameraViewProjInverse, positionCS);
+	float4 positionCS = mul(FrameBuffer::CameraViewProjInverse, float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), depth, 1.0));
 	position = positionCS.xyz / positionCS.w * 0.001;
 	color = Color::IrradianceToLinear(ColorTexture.SampleLevel(LinearSampler, sampleUV, 0).rgb);
 	if (!all(isfinite(position)) || !all(isfinite(color)))
