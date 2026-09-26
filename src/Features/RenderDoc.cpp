@@ -888,7 +888,7 @@ std::string RenderDoc::BuildAutomaticCaptureComments(const std::string& userComm
 
 	// Plugin version
 	auto pluginVersion = Util::GetFormattedVersion(Plugin::VERSION);
-	comments += std::format("Cav's Unity Shaders {}\n", pluginVersion);
+	comments += std::format("{} {}\n", Plugin::DISPLAY_NAME, pluginVersion);
 
 	// Enabled features
 	const auto& features = Feature::GetFeatureList();

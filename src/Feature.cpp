@@ -6,6 +6,7 @@
 #include "Features/CloudRelight.h"
 #include "Features/CloudShadows.h"
 #include "Features/DynamicCubemaps.h"
+#include "Features/ProceduralSun.h"
 #include "Features/Effects11.h"
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
@@ -25,33 +26,32 @@
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
 #include "Features/PerformanceOverlay.h"
+#include "Features/NeuralRendering.h"
 #include "Features/PostProcessing.h"
+#include "Features/PseudoSunBounce.h"
 #include "Features/RemoteControl.h"
 #include "Features/RenderDoc.h"
-#include "Features/ReverseZ.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
+#include "Features/SnowCover.h"
 #include "Features/SkySync.h"
 #include "Features/Skylighting.h"
-#include "Features/ProceduralSun.h"
-#include "Features/PseudoSunBounce.h"
-#include "Features/SnowCover.h"
-#include "Features/Wind/Wind.h"
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainHelper.h"
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
 #include "Features/UnifiedWater.h"
-#include "Features/NeuralRendering.h"
 #include "Features/Upscaling.h"
 #include "Features/VanillaFresnel.h"
 #include "Features/VolumetricLighting.h"
 #include "Features/VolumetricShadows.h"
+#include "Features/ReverseZ.h"
 #include "Features/WaterEffects.h"
 #include "Features/WetnessEffects.h"
+#include "Features/Wind/Wind.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
 #include "SettingsOverrideManager.h"
@@ -236,9 +236,9 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 {
 	static std::vector<Feature*> features = {
 		&globals::features::truePBR,
+		&globals::features::foliageLighting,
 		&globals::features::volumetricShadows,
 		&globals::features::grassLighting,
-		&globals::features::foliageLighting,
 		&globals::features::grassCollision,
 		&globals::features::grassOptimizations,
 		&globals::features::screenSpaceShadows,
@@ -247,7 +247,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::lightLimitFix,
 		&globals::features::dynamicCubemaps,
 		&globals::features::cloudShadows,
-		&globals::features::cloudRelight,
+		&globals::features::proceduralSun,
 		&globals::features::waterEffects,
 		&globals::features::performanceOverlay,
 		&globals::features::subsurfaceScattering,
@@ -268,7 +268,6 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::extendedTranslucency,
 		&globals::features::reverseZ,
 		&globals::features::upscaling,
-		&globals::features::neuralRendering,
 		&globals::features::renderDoc,
 		&globals::features::remoteControl,
 		&globals::features::csEditor,
@@ -282,10 +281,12 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::postProcessing,
 		&globals::features::skin,
 		&globals::features::snowCover,
+		&globals::features::footstepParticles,
+		// Local (non-Bottle) features follow.
+		&globals::features::cloudRelight,
+		&globals::features::neuralRendering,
 		&globals::features::wind,
-		&globals::features::pseudoSunBounce,
-		&globals::features::proceduralSun,
-		&globals::features::footstepParticles
+		&globals::features::pseudoSunBounce
 	};
 
 	return features;

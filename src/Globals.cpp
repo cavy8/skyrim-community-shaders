@@ -1,6 +1,7 @@
 #include "Globals.h"
 
 #include "Deferred.h"
+#include "Features/CSEditor.h"
 #include "Features/CloudRelight.h"
 #include "Features/CloudShadows.h"
 #include "Features/DynamicCubemaps.h"
@@ -8,8 +9,8 @@
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
-#include "Features/FoliageLighting.h"
 #include "Features/FootstepParticles.h"
+#include "Features/FoliageLighting.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/GrassOptimizations.h"
@@ -23,32 +24,31 @@
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
 #include "Features/PerformanceOverlay.h"
+#include "Features/NeuralRendering.h"
 #include "Features/PostProcessing.h"
+#include "Features/PseudoSunBounce.h"
+#include "Features/ProceduralSun.h"
 #include "Features/RemoteControl.h"
 #include "Features/RenderDoc.h"
-#include "Features/ReverseZ.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpaceShadows.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
+#include "Features/SnowCover.h"
 #include "Features/SkySync.h"
 #include "Features/Skylighting.h"
-#include "Features/SnowCover.h"
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainHelper.h"
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
 #include "Features/UnifiedWater.h"
-#include "Features/NeuralRendering.h"
 #include "Features/Upscaling.h"
 #include "Features/VanillaFresnel.h"
 #include "Features/VolumetricLighting.h"
 #include "Features/VolumetricShadows.h"
 #include "Features/WaterEffects.h"
-#include "Features/CSEditor.h"
-#include "Features/ProceduralSun.h"
-#include "Features/PseudoSunBounce.h"
+#include "Features/ReverseZ.h"
 #include "Features/WetnessEffects.h"
 #include "Features/Wind/Wind.h"
 #include "Menu.h"
@@ -71,13 +71,13 @@ namespace globals
 	namespace features
 	{
 		CloudShadows cloudShadows{};
-		CloudRelight cloudRelight{};
+		ProceduralSun proceduralSun{};
 		DynamicCubemaps dynamicCubemaps{};
 		VolumetricShadows volumetricShadows{};
 		ExtendedMaterials extendedMaterials{};
-		FoliageLighting foliageLighting{};
 		GrassCollision grassCollision{};
 		GrassLighting grassLighting{};
+		FoliageLighting foliageLighting{};
 		GrassOptimizations grassOptimizations{};
 		IBL ibl{};
 		LightLimitFix lightLimitFix{};
@@ -105,7 +105,6 @@ namespace globals
 		ExtendedTranslucency extendedTranslucency{};
 		ReverseZ reverseZ{};
 		Upscaling upscaling{};
-		NeuralRendering neuralRendering{};
 		HDRDisplay hdrDisplay{};
 		Effects11 effects11{};
 		RenderDoc renderDoc{};
@@ -117,10 +116,12 @@ namespace globals
 		PostProcessing postProcessing{};
 		Skin skin{};
 		SnowCover snowCover{};
+		FootstepParticles footstepParticles{};
+		// Local (non-Bottle) features follow.
+		CloudRelight cloudRelight{};
+		NeuralRendering neuralRendering{};
 		Wind wind{};
 		PseudoSunBounce pseudoSunBounce{};
-		ProceduralSun proceduralSun{};
-		FootstepParticles footstepParticles{};
 
 		namespace llf
 		{

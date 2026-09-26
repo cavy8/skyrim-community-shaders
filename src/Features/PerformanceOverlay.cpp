@@ -1,6 +1,6 @@
 /**
  * @file PerformanceOverlay.cpp
- * @brief Real-time performance monitoring system for Skyrim Cav's Unity Shaders
+ * @brief Real-time performance monitoring system for Cav's Unity Shaders
  *
  * This module provides comprehensive performance monitoring capabilities including:
  * - Real-time FPS and frame time tracking with configurable update intervals

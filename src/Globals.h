@@ -3,13 +3,13 @@
 #include <atomic>
 
 struct CloudShadows;
-struct CloudRelight;
+struct ProceduralSun;
 struct DynamicCubemaps;
 struct VolumetricShadows;
 struct ExtendedMaterials;
-struct FoliageLighting;
 struct GrassCollision;
 struct GrassLighting;
+struct FoliageLighting;
 struct GrassOptimizations;
 struct HairSpecular;
 struct HorizonFix;
@@ -35,9 +35,8 @@ struct WaterEffects;
 struct PerformanceOverlay;
 struct WetnessEffects;
 struct ExtendedTranslucency;
-struct FootstepParticles;
+struct ReverseZ;
 struct Upscaling;
-struct NeuralRendering;
 class Profiler;
 struct CSEditor;
 struct Effects11;
@@ -47,10 +46,11 @@ struct PostProcessing;
 struct ScreenshotFeature;
 struct Skin;
 struct SnowCover;
+struct FootstepParticles;
+struct CloudRelight;
+struct NeuralRendering;
 struct Wind;
 struct PseudoSunBounce;
-struct ProceduralSun;
-struct ReverseZ;
 
 class State;
 class Deferred;
@@ -104,13 +104,13 @@ namespace globals
 	namespace features
 	{
 		extern CloudShadows cloudShadows;
-		extern CloudRelight cloudRelight;
+		extern ProceduralSun proceduralSun;
 		extern DynamicCubemaps dynamicCubemaps;
 		extern VolumetricShadows volumetricShadows;
 		extern ExtendedMaterials extendedMaterials;
-		extern FoliageLighting foliageLighting;
 		extern GrassCollision grassCollision;
 		extern GrassLighting grassLighting;
+		extern FoliageLighting foliageLighting;
 		extern GrassOptimizations grassOptimizations;
 		extern HairSpecular hairSpecular;
 		extern HorizonFix horizonFix;
@@ -138,7 +138,6 @@ namespace globals
 		extern ExtendedTranslucency extendedTranslucency;
 		extern ReverseZ reverseZ;
 		extern Upscaling upscaling;
-		extern NeuralRendering neuralRendering;
 		extern HDRDisplay hdrDisplay;
 		extern Effects11 effects11;
 		extern RenderDoc renderDoc;
@@ -147,13 +146,15 @@ namespace globals
 		extern CSEditor csEditor;
 		extern ExponentialHeightFog exponentialHeightFog;
 		extern TruePBR truePBR;
-		extern PostProcessing postProcessing;
+	extern PostProcessing postProcessing;
 		extern Skin skin;
 		extern SnowCover snowCover;
+		extern FootstepParticles footstepParticles;
+		// Local (non-Bottle) features follow.
+		extern CloudRelight cloudRelight;
+		extern NeuralRendering neuralRendering;
 		extern Wind wind;
 		extern PseudoSunBounce pseudoSunBounce;
-		extern ProceduralSun proceduralSun;
-		extern FootstepParticles footstepParticles;
 
 	}
 

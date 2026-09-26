@@ -617,7 +617,7 @@ namespace FeatureIssues
 			ImGui::Text("%s", T("menu.issues.core_feature_installed", "Core feature already installed"));
 			if (auto _tt = Util::HoverTooltipWrapper()) {
 				ImGui::TextWrapped("%s", T("menu.issues.core_feature_installed_tooltip",
-														 "This feature is already included as part of the core Cav's Unity Shaders installation. Uninstall this feature with your mod manager."));
+											 "This feature is already included as part of the core Cav's Unity Shaders installation. Uninstall this feature with your mod manager."));
 			}
 		} else if (issue.IsVersionMismatch()) {
 			ImGui::SameLine();

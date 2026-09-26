@@ -48,7 +48,6 @@ namespace Util
 			return S_OK;
 		}
 	};
-
 	/**
 	 * @brief Look up the matching SRV for a given render target view.
 	 * @param a_rtv The render target view to look up.

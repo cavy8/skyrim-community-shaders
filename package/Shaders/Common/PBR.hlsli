@@ -183,6 +183,7 @@ namespace PBR
 				lightingOutput.transmission += material.BaseColor * foliageTransmission * detailedLightColor * kD;
 			}
 #	endif
+
 			[branch] if ((PBRFlags & Flags::Subsurface) != 0)
 #	if !defined(TREE_ANIM)
 			{
