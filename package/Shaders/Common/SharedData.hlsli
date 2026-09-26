@@ -544,6 +544,13 @@ namespace SharedData
 		float3 celestialLightWeights;
 	};
 
+	struct WindSettings
+	{
+		uint windFieldDebugEnabled;
+		uint windFieldDebugView;
+		float2 padding;
+	};
+
 	struct PseudoSunBounceSettings
 	{
 		float3 groundAlbedo;
@@ -598,6 +605,7 @@ namespace SharedData
 		uint4 WindFieldActiveCounts;     // x/y: current/previous transient impulse counts, z/w: reserved
 		WindField::TransientWindSource WindFieldTransientImpulses[WindField::TransientImpulseCapacity];
 		WindField::TransientWindSource WindFieldPreviousTransientImpulses[WindField::TransientImpulseCapacity];
+		WindSettings windSettings;
 
 		PseudoSunBounceSettings pseudoSunBounceSettings;
 	};

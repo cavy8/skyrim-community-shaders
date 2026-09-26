@@ -138,8 +138,8 @@ namespace Permutation
 		// Whole-frame wind/grass permutation defaults; see State::PermutationCB.
 		float WindIntensityOverride;
 		uint OverrideWindIntensity;
+		uint EnableGrassWindSpringBend;
 		float pad1;
-		float pad2;
 
 		float TrunkWindBendSensitivity;
 		float TreeLeafBaseWindFlutterGain;

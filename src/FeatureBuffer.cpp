@@ -81,5 +81,6 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		// Bottle's order ends here (see SharedData.hlsli FeatureData); local settings follow.
 		globals::features::cloudRelight.GetCommonBufferData(),
 		globals::features::wind.GetSharedWindData(),
+		globals::features::wind.GetCommonBufferData(),
 		globals::features::pseudoSunBounce.settings);
 }

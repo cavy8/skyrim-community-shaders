@@ -9,7 +9,6 @@
 #include "Common/Permutation.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
-#include "Common/WindField.hlsli"
 
 #define DEFERRED
 
@@ -90,12 +89,17 @@ cbuffer PerGeometry : register(b2)
 
 #ifdef VSHADER
 
+#	ifndef GRASS_OPTIMIZATIONS
+#		include "Common/GrassWindResponse.hlsli"
+#	endif
+
 #	ifdef GRASS_COLLISION
 #		include "GrassCollision\\GrassCollision.hlsli"
 #	endif  // GRASS_COLLISION
 
 #	ifdef GRASS_OPTIMIZATIONS
-// Two per instance: [0] = origin.xyz + isComplex, [1] = windCur, windPrev, fade, packed flags.
+// Four per instance: [0] = origin.xyz + isComplex, [1] = flutterCur, flutterPrev, fade, packed flags,
+// [2]/[3] = current/previous Wind response (GrassCullingCS).
 StructuredBuffer<float4> InstanceExtras : register(t2);
 #	else
 cbuffer cb7 : register(b7)
@@ -109,24 +113,25 @@ cbuffer cb8 : register(b8)
 }
 #	endif
 
-// Calculate wind displacement for a grass vertex: vanilla per-instance sway (scaled by the
-// Wind feature's intensity-override setting), plus the shared ambient wind field's contribution
-// at this instance's world position when Wind's ambient grass response is enabled.
-float3 CalculateWindDisplacement(VS_INPUT input, float windTimer, float3 worldPosition)
+float3 ApplyGrassWindResponse(VS_INPUT input, float modelHeight, float rootHeight,
+	float4 response, float flutter, out float3 bendAxis, out float bendAngle)
 {
-	float tipWeight = 0.5 * (input.Color.w * input.Color.w);
-	float windIntensityScale = GrassWind::GetWindIntensityOverrideScale();
-
-	float3 vanillaDisplacement = GrassWind::CalculateVanillaDisplacement(
-		input.InstanceData1.xy, input.Color.w, WindVector, windTimer, windIntensityScale);
-
-	float3 ambientDisplacement = 0.0;
-	if (Permutation::EnableAmbientGrassWind != 0) {
-		WindField::WindSample sample = WindField::SampleCurrent(worldPosition, 1.0, 1.0);
-		ambientDisplacement = sample.velocity * (tipWeight * max(Permutation::GrassWindSensitivity, 0.0) * windIntensityScale);
+	bendAxis = float3(response.xy, 0.0);
+	float3 displacement = 0.0f.xxx;
+	if (Permutation::EnableGrassWindSpringBend != 0u) {
+		displacement = GrassWind::CalculateAmbientDisplacement(
+			input.Color.w, modelHeight, rootHeight, bendAxis, response.z, response.w, bendAngle);
+	} else {
+		bendAngle = 0.0f;
 	}
-
-	return vanillaDisplacement + ambientDisplacement;
+	if (Permutation::EnableAmbientGrassWind != 0 && length(bendAxis) > EPSILON_WIND_RESPONSE) {
+		float3 flutterDisplacement = GrassWind::CalculateFlutterDisplacement(
+			input.Color.w, bendAxis, response.z, response.w, WindVector.xyz, flutter);
+		return displacement + GrassWind::RotateVector(flutterDisplacement, bendAxis, bendAngle);
+	}
+	float3 vanillaDisplacement = float3(WindVector.xy, 0.0) *
+	                             (WindVector.z * flutter * (0.5 * input.Color.w * input.Color.w));
+	return displacement + GrassWind::RotateVector(vanillaDisplacement, bendAxis, bendAngle);
 }
 
 #	ifdef GRASS_LIGHTING
@@ -162,8 +167,8 @@ VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 {
 	VS_OUTPUT vsout = (VS_OUTPUT)0;
 
-	const float4 e0 = InstanceExtras[instanceID * 2 + 0];
-	const float4 e1 = InstanceExtras[instanceID * 2 + 1];
+	const float4 e0 = InstanceExtras[instanceID * 4 + 0];
+	const float4 e1 = InstanceExtras[instanceID * 4 + 1];
 	vsout.IsComplex = e0.w;
 	vsout.TexCoord = input.TexCoord.xy;
 
@@ -185,6 +190,18 @@ VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 	float4 previousMsPosition = msPosition;
 #		endif
 
+	const float3 instanceRoot = input.InstanceData1.xyz + e0.xyz;
+	float3 bendAxis;
+	float bendAngle;
+	msPosition.xyz += ApplyGrassWindResponse(input, msPosition.z, instanceRoot.z,
+		InstanceExtras[instanceID * 4 + 2], e1.x, bendAxis, bendAngle);
+#		if !defined(RENDER_DEPTH)
+	float3 previousBendAxis;
+	float previousBendAngle;
+	previousMsPosition.xyz += ApplyGrassWindResponse(input, previousMsPosition.z, instanceRoot.z,
+		InstanceExtras[instanceID * 4 + 3], e1.y, previousBendAxis, previousBendAngle);
+#		endif
+
 #		ifdef GRASS_COLLISION
 	[branch] if (collisionFlag > 0.5)
 	{
@@ -200,11 +217,6 @@ VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 	}
 #		endif
 
-	// Ambient wind field sampling isn't wired into Grass Optimizations' InstanceExtras compute
-	// pass yet (deferred; see Wind's tracking-doc entry), so this path only gets the intensity
-	// override scale, not the shared field's directional/gust contribution.
-	const float vertexTerm = WindVector.z * (0.5 * (input.Color.w * input.Color.w)) * GrassWind::GetWindIntensityOverrideScale();
-	msPosition.xyz += float3(WindVector.xy, 0) * (e1.x * vertexTerm);
 	const float3 eyeRel = msPosition.xyz - FrameBuffer::CameraPosAdjust.xyz;
 	const float4 projSpacePosition = mul(FrameBuffer::CameraViewProj, float4(eyeRel, 1.0));
 	vsout.HPosition = projSpacePosition;
@@ -212,7 +224,6 @@ VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 #		if defined(RENDER_DEPTH)
 	vsout.Fade = e1.z;
 #		else
-	previousMsPosition.xyz += float3(WindVector.xy, 0) * (e1.y * vertexTerm);
 	vsout.Color = float4(input.InstanceData1.www * input.Color.xyz, e1.z);
 #			ifndef GRASS_LIGHTING
 	float3 instanceNormal = float3(input.InstanceData2.z, input.InstanceData3.zw);
@@ -223,7 +234,8 @@ VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 	vsout.IsFar = isFarFlag;
 	vsout.LodTier = lodTier;
 #			ifdef GRASS_LIGHTING
-	vsout.VertexNormal.xyz = mul(world3x3, input.Normal.xyz * 2.0 - 1.0);
+	vsout.VertexNormal.xyz = GrassWind::RotateVector(
+		mul(world3x3, input.Normal.xyz * 2.0 - 1.0), bendAxis, bendAngle);
 	vsout.VertexNormal.w = input.Color.w;
 	vsout.SphereNormal = mul(world3x3, input.Position.xyz);
 #			endif
@@ -244,19 +256,33 @@ VS_OUTPUT main(VS_INPUT input)
 	float4 msPosition = GetMSPosition(input);
 #		endif
 
+	float3 rootWorldPosition = mul(World, float4(input.InstanceData1.xyz, 1.0)).xyz + FrameBuffer::CameraPosAdjust.xyz;
+	float3 previousRootWorldPosition = mul(PreviousWorld, float4(input.InstanceData1.xyz, 1.0)).xyz +
+	                                   FrameBuffer::CameraPreviousPosAdjust.xyz;
+	float4 currentResponse, previousResponse;
+	float2 flutter;
+	GrassWindResponse::Sample(input.InstanceData1.xy, rootWorldPosition.xy, previousRootWorldPosition.xy,
+		World, PreviousWorld, WindTimer, PreviousWindTimer,
+		currentResponse, previousResponse, flutter);
+
 #		if !defined(RENDER_DEPTH)
 	// Save the undisplaced position instead of repeating the instance transform.
 	float4 previousMsPosition = msPosition;
+	float3 previousBendAxis;
+	float previousBendAngle;
+	previousMsPosition.xyz += ApplyGrassWindResponse(input, previousMsPosition.z, input.InstanceData1.z,
+		previousResponse, flutter.y, previousBendAxis, previousBendAngle);
 #		endif
+	float3 bendAxis;
+	float bendAngle;
+	msPosition.xyz += ApplyGrassWindResponse(input, msPosition.z, input.InstanceData1.z,
+		currentResponse, flutter.x, bendAxis, bendAngle);
 
 #		ifdef GRASS_COLLISION
 	float3 displacement, previousDisplacement;
 	GrassCollision::GetDisplacedPosition(input, msPosition.xyz, displacement, previousDisplacement);
 	msPosition.xyz += displacement;
 #		endif  // GRASS_COLLISION
-
-	float3 windWorldPosition = mul(World, msPosition).xyz;
-	msPosition.xyz += CalculateWindDisplacement(input, WindTimer, windWorldPosition);
 
 	float4 projSpacePosition = mul(WorldViewProj, msPosition);
 	vsout.HPosition = projSpacePosition;
@@ -275,12 +301,12 @@ VS_OUTPUT main(VS_INPUT input)
 #			ifdef GRASS_COLLISION
 	previousMsPosition.xyz += previousDisplacement;
 #			endif  // GRASS_COLLISION
-	previousMsPosition.xyz += CalculateWindDisplacement(input, PreviousWindTimer, windWorldPosition);
 	vsout.PreviousWorldPosition = mul(PreviousWorld, previousMsPosition).xyz;
 
 #			ifdef GRASS_LIGHTING
 	// Vertex normal needs to be transformed to world-space for lighting calculations.
-	vsout.VertexNormal.xyz = mul(world3x3, input.Normal.xyz * 2.0 - 1.0);
+	vsout.VertexNormal.xyz = GrassWind::RotateVector(
+		mul(world3x3, input.Normal.xyz * 2.0 - 1.0), bendAxis, bendAngle);
 	vsout.VertexNormal.w = input.Color.w;
 	vsout.SphereNormal = mul(world3x3, input.Position.xyz);
 #			else

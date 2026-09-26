@@ -16,6 +16,7 @@
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
 #include "Features/Upscaling.h"
+#include "Features/Wind/Wind.h"
 #include "Features/CSEditor.h"
 
 #include "Hooks.h"
@@ -372,6 +373,8 @@ void Deferred::DeferredPasses()
 			context->CSSetSamplers(0, 1, &linearSampler);
 
 		context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+		ID3D11ShaderResourceView* springDebugSRV = globals::features::wind.GetGrassWindSpringDebugSRV();  // Wind debug view
+		context->CSSetShaderResources(18, 1, &springDebugSRV);
 
 		ID3D11UnorderedAccessView* uavs[3]{ main.UAV, normals.UAV, motionVectors.UAV };
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
@@ -391,6 +394,7 @@ void Deferred::DeferredPasses()
 	{
 		ID3D11ShaderResourceView* views[16]{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+		context->CSSetShaderResources(18, 1, views);
 
 		ID3D11UnorderedAccessView* uavs[3]{ nullptr, nullptr, nullptr };
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);

@@ -139,17 +139,20 @@ cbuffer VS_PerFrame : register(b12)
 #	if defined(SKINNED)
 	float3 BonesPivot : packoffset(c40);
 	float3 PreviousBonesPivot : packoffset(c41);
+#	else
+	float3 CameraPosAdjust : packoffset(c40);
+	float3 CameraPreviousPosAdjust : packoffset(c41);
 #	endif  // SKINNED
 };
 
 #	if defined(TREE_ANIM)
-float2 GetTreeShiftVector(float4 position, float4 color)
+float2 GetTreeShiftVector(float4 position, float4 color, float2 animationStrength)
 {
 	precise float4 tmp1 = (TreeParams.w * TreeParams.y).xxxx * WindTimers.xxyy;
 	precise float4 tmp2 = float4(0.1, 0.25, 0.1, 0.25) * tmp1 + dot(position.xyz, 1.0.xxx).xxxx;
 	precise float4 tmp3 = abs(-1.0.xxxx + 2.0.xxxx * frac(0.5.xxxx + tmp2.xyzw));
 	precise float4 tmp4 = (tmp3 * tmp3) * (3.0.xxxx - 2.0.xxxx * tmp3);
-	return (tmp4.xz + 0.1.xx * tmp4.yw) * (TreeParams.z * color.w).xx;
+	return (tmp4.xz + 0.1.xx * tmp4.yw) * color.w.xx * animationStrength;
 }
 #	endif  // TREE_ANIM
 
@@ -159,6 +162,54 @@ VS_OUTPUT main(VS_INPUT input)
 
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
 
+	const bool treeBendEnabled = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::TreeBend) != 0;
+	TreeWind::Sample treeWindSample;
+	treeWindSample.trunkVelocity = 0.0.xxx;
+	treeWindSample.leafAnimationStrength = 0.0;
+	TreeWind::Sample previousTreeWindSample;
+	previousTreeWindSample.trunkVelocity = 0.0.xxx;
+	previousTreeWindSample.leafAnimationStrength = 0.0;
+	if (treeBendEnabled) {
+#	if defined(SKINNED)
+		float3 currentTreeWorldOffset = 0.0.xxx;
+		float3 previousTreeWorldOffset = 0.0.xxx;
+#	else
+		float3 currentTreeWorldOffset = CameraPosAdjust.xyz;
+		float3 previousTreeWorldOffset = CameraPreviousPosAdjust.xyz;
+#	endif
+		TreeWind::SamplePositions currentTreeSamplePositions =
+			TreeWind::BuildSamplePositions(World, currentTreeWorldOffset);
+		TreeWind::SamplePositions previousTreeSamplePositions =
+			TreeWind::BuildSamplePositions(PreviousWorld, previousTreeWorldOffset);
+		float2 treeTransientInfluence = float2(
+			Permutation::TreeTransientWindInfluence, Permutation::TreeLeafTransientWindInfluence);
+#	if defined(TREE_ANIM)
+#		if defined(SKINNED)
+		precise int4 treeBoneIndices = 765.01.xxxx * input.BoneIndices.xyzw;
+		float3 currentLeafWorldPosition =
+			mul(inputPosition, transpose(Skinned::GetBoneTransformMatrix(Bones, treeBoneIndices, BonesPivot, input.BoneWeights))).xyz + BonesPivot.xyz;
+		float3 previousLeafWorldPosition =
+			mul(inputPosition, transpose(Skinned::GetBoneTransformMatrix(PreviousBones, treeBoneIndices, PreviousBonesPivot, input.BoneWeights))).xyz + PreviousBonesPivot.xyz;
+#		else
+		float3 currentLeafWorldPosition =
+			mul(World, inputPosition).xyz + currentTreeWorldOffset;
+		float3 previousLeafWorldPosition =
+			mul(PreviousWorld, inputPosition).xyz + previousTreeWorldOffset;
+#		endif
+		treeWindSample = TreeWind::SampleCurrent(
+			currentTreeSamplePositions, currentLeafWorldPosition,
+			treeTransientInfluence);
+		previousTreeWindSample = TreeWind::SamplePrevious(
+			previousTreeSamplePositions, previousLeafWorldPosition,
+			treeTransientInfluence);
+#	else
+		treeWindSample = TreeWind::SampleCurrent(
+			currentTreeSamplePositions, treeTransientInfluence);
+		previousTreeWindSample = TreeWind::SamplePrevious(
+			previousTreeSamplePositions, treeTransientInfluence);
+#	endif
+	}
+
 #	if defined(LODLANDNOISE) || defined(LODLANDSCAPE)
 	inputPosition = LodLandscape::AdjustLodLandscapeVertexPositionMS(inputPosition, float4x4(World, float4(0, 0, 0, 1)), HighDetailRange);
 #	endif  // defined(LODLANDNOISE) || defined(LODLANDSCAPE)                                                                   \
@@ -166,7 +217,13 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4 previousInputPosition = inputPosition;
 
 #	if defined(TREE_ANIM)
-	precise float2 treeShiftVector = GetTreeShiftVector(input.Position, input.Color);
+	float2 leafAnimationStrength = TreeParams.z.xx;
+	if (treeBendEnabled) {
+		leafAnimationStrength = float2(
+			treeWindSample.leafAnimationStrength,
+			previousTreeWindSample.leafAnimationStrength);
+	}
+	precise float2 treeShiftVector = GetTreeShiftVector(input.Position, input.Color, leafAnimationStrength);
 	float3 normal = -1.0.xxx + 2.0.xxx * input.Normal.xyz;
 
 	inputPosition.xyz += normal.xyz * treeShiftVector.x;
@@ -193,26 +250,16 @@ VS_OUTPUT main(VS_INPUT input)
 	float4 viewPos = mul(modelView, inputPosition);
 #	endif  // SKINNED
 
+	if (treeBendEnabled) {
+		worldPosition.xy +=
+			TreeWind::GetWorldDisplacement(input.Position.z, treeWindSample.trunkVelocity.xy);
+		previousWorldPosition.xy +=
+			TreeWind::GetWorldDisplacement(input.Position.z, previousTreeWindSample.trunkVelocity.xy);
+		viewPos = mul(ViewProj, worldPosition);
+	}
+
 	const bool reverseProjection = FrameBuffer::IsReverseProjection(Proj);
 	vsout.Position = viewPos;
-
-	// Wind's per-mesh trunk bend: additive to vanilla TREE_ANIM leaf shimmer above, gated at
-	// runtime by the TreeBend descriptor bit Wind::OnTreeBendRenderPassBegin sets for qualifying
-	// (non-LOD) tree draws, so this is a no-op for every other Lighting-shader draw.
-#	if defined(TREE_ANIM) && !defined(SKINNED)
-	[branch] if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::TreeBend) {
-		TreeWind::SamplePositions treePositions = TreeWind::BuildSamplePositions(World, 0.0.xxx);
-		float2 treeTransientInfluence = float2(Permutation::TreeTransientWindInfluence, Permutation::TreeLeafTransientWindInfluence);
-		TreeWind::Sample currentTreeSample = TreeWind::SampleCurrent(treePositions, treeTransientInfluence);
-		TreeWind::Sample previousTreeSample = TreeWind::SamplePrevious(treePositions, treeTransientInfluence);
-		float2 currentTrunkDisplacement = TreeWind::GetWorldDisplacement(input.Position.z, currentTreeSample.trunkVelocity.xy);
-		float2 previousTrunkDisplacement = TreeWind::GetWorldDisplacement(input.Position.z, previousTreeSample.trunkVelocity.xy);
-		worldPosition.xyz += float3(currentTrunkDisplacement, 0.0);
-		previousWorldPosition.xyz += float3(previousTrunkDisplacement, 0.0);
-		viewPos = mul(ViewProj, worldPosition);
-		vsout.Position = viewPos;
-	}
-#	endif  // defined(TREE_ANIM) && !defined(SKINNED)
 
 #	if defined(LODLANDNOISE) || defined(LODLANDSCAPE)
 	float lodDepthBias = min(1, 1e-4 * max(0, FrameBuffer::ToStandardClipZ(viewPos, reverseProjection) - 70000)) * 0.5;

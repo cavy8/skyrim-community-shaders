@@ -1,6 +1,8 @@
 #include "GrassOptimizations.h"
 #include "GrassLighting.h"
 #include "TerrainBlending.h"  // loaded state selects the scene depth SRV's format
+#include "State.h"
+#include "Wind/Wind.h"
 
 #define I18N_KEY_PREFIX "feature.grass_optimizations."
 
@@ -510,6 +512,13 @@ void GrassOptimizations::UploadCullState(ID3D11Device* device, ID3D11DeviceConte
 		for (auto& [key, b] : bucketStore.buckets)
 			b.cullVisible = false;
 	}
+
+	// Wind (Open): the culling CS samples the per-instance wind response, so it needs Wind's
+	// spring field plus the PerShader/SharedData/FeatureData buffers.
+	if (globals::features::wind.loaded)
+		globals::features::wind.UpdateGrassWindSpring(true);
+	ID3D11Buffer* windBuffers[] = { globals::state->permutationCB->CB(), globals::state->sharedDataCB->CB(), globals::state->featureDataCB->CB() };
+	ctx->CSSetConstantBuffers(4, ARRAYSIZE(windBuffers), windBuffers);
 
 	ID3D11Buffer* paramsCB = cullParamsCB->CB();
 	ctx->CSSetConstantBuffers(0, 1, &paramsCB);

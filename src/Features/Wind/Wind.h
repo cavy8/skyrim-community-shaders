@@ -18,11 +18,12 @@
 #include <span>
 #include <vector>
 
-/** Per-frame contribution Wind makes to the FeatureData cbuffer; see Wind::GetSharedWindData and FeatureBuffer.cpp. */
+/** Per-frame contribution Wind makes to State::PermutationCB; written by Wind::UpdateWind (WindUpdate.cpp). */
 struct WindPermutationContribution
 {
 	float windIntensityOverride;
 	uint32_t overrideWindIntensity;
+	uint32_t enableGrassWindSpringBend;
 	float treeTransientWindInfluenceDefault;
 	float treeLeafTransientWindInfluenceDefault;
 	float treeLeafTransientFlutterMaximumDefault;
@@ -154,6 +155,8 @@ struct Wind : Feature
 	void OnSceneTransitionReset(bool a_opening);
 	/** @brief Injects per-mesh tree-bend sensitivities before a tree draw call; see BSLightingShader/BSUtilityShader SetupGeometry hooks in the .cpp. */
 	void OnTreeBendRenderPassBegin(RE::BSRenderPass* a_pass);
+	/** @brief Binds PermutationCB (b4) and FeatureData (b6) to the vertex stage for Wind's vertex shaders; called after every non-compute SetDirtyStates, loaded or not. */
+	void BindVertexConstantBuffers() const;
 	/** @brief Advances the shared wind field and transient impulses for the current frame. */
 	virtual void Reset() override;
 

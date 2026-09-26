@@ -404,8 +404,8 @@ public:
 		// then overridden per-mesh by Wind::OnTreeBendRenderPassBegin for qualifying draws.
 		float WindIntensityOverride;
 		uint32_t OverrideWindIntensity;
+		uint32_t EnableGrassWindSpringBend;
 		float pad1;
-		float pad2;
 
 		float TrunkWindBendSensitivity;
 		float TreeLeafBaseWindFlutterGain;
@@ -437,6 +437,7 @@ public:
 			       TreeWindProbeBase == other.TreeWindProbeBase && TreeWindProbeTop == other.TreeWindProbeTop &&
 			       WindIntensityOverride == other.WindIntensityOverride &&
 			       OverrideWindIntensity == other.OverrideWindIntensity &&
+			       EnableGrassWindSpringBend == other.EnableGrassWindSpringBend &&
 			       TrunkWindBendSensitivity == other.TrunkWindBendSensitivity &&
 			       TreeLeafBaseWindFlutterGain == other.TreeLeafBaseWindFlutterGain &&
 			       EnableAmbientGrassWind == other.EnableAmbientGrassWind &&

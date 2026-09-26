@@ -28,6 +28,22 @@ namespace
 		float speed;
 	};
 
+	float EvaluateWindResponse(float a_speed, const std::array<float, 3>& a_response)
+	{
+		const float speed = std::max(a_speed, 0.0f);
+		if (speed <= WindSettingsLimits::kWindResponseSpeeds[0])
+			return std::lerp(0.0f, a_response[0], speed / WindSettingsLimits::kWindResponseSpeeds[0]);
+		if (speed <= WindSettingsLimits::kWindResponseSpeeds[1])
+			return std::lerp(a_response[0], a_response[1],
+				(speed - WindSettingsLimits::kWindResponseSpeeds[0]) /
+					(WindSettingsLimits::kWindResponseSpeeds[1] - WindSettingsLimits::kWindResponseSpeeds[0]));
+		if (speed <= WindSettingsLimits::kWindResponseSpeeds[2])
+			return std::lerp(a_response[1], a_response[2],
+				(speed - WindSettingsLimits::kWindResponseSpeeds[1]) /
+					(WindSettingsLimits::kWindResponseSpeeds[2] - WindSettingsLimits::kWindResponseSpeeds[1]));
+		return a_response[2] * speed;
+	}
+
 	WindSelection SelectWind(const Wind& a_wind, const float3& a_ambientVelocity,
 		const float3& a_fallbackDirection)
 	{
@@ -72,15 +88,20 @@ void Wind::Reset()
 	const auto selectedWind = SelectWind(*this, ambientWindVelocity, fallbackDirection);
 	UpdateWindField(selectedWind.direction, selectedWind.speed, frameTime);
 
+	// Open writes these in State::UpdatePermutationBuffer; Bottle's State has no Wind hook, so
+	// Wind writes its whole-frame permutation defaults here and State::Update uploads them.
 	if (auto* state = globals::state) {
 		const auto contribution = GetPermutationContribution();
 		auto& permutationData = state->permutationData;
 		permutationData.WindIntensityOverride = contribution.windIntensityOverride;
 		permutationData.OverrideWindIntensity = contribution.overrideWindIntensity;
-		permutationData.TreeTransientWindInfluence = contribution.treeTransientWindInfluenceDefault;
-		permutationData.TreeLeafTransientWindInfluence = contribution.treeLeafTransientWindInfluenceDefault;
-		permutationData.TreeLeafTransientFlutterMaximum = contribution.treeLeafTransientFlutterMaximumDefault;
-		permutationData.TreeTransientMaximumBendMultiplier = contribution.treeTransientMaximumBendMultiplierDefault;
+		permutationData.EnableGrassWindSpringBend = contribution.enableGrassWindSpringBend;
+		if ((permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::TreeBend)) == 0) {
+			permutationData.TreeTransientWindInfluence = contribution.treeTransientWindInfluenceDefault;
+			permutationData.TreeLeafTransientWindInfluence = contribution.treeLeafTransientWindInfluenceDefault;
+			permutationData.TreeLeafTransientFlutterMaximum = contribution.treeLeafTransientFlutterMaximumDefault;
+			permutationData.TreeTransientMaximumBendMultiplier = contribution.treeTransientMaximumBendMultiplierDefault;
+		}
 		permutationData.TrunkWindBendSensitivity = contribution.trunkWindBendSensitivity;
 		permutationData.TreeLeafBaseWindFlutterGain = contribution.treeLeafBaseWindFlutterGain;
 		permutationData.EnableAmbientGrassWind = contribution.enableAmbientGrassWind;
@@ -124,7 +145,8 @@ void Wind::UpdateWeatherWind()
 
 void Wind::UpdateWindField(const float3& a_direction, float a_speed, float a_frameTime)
 {
-	const float gustAdvectionSpeed = a_speed * windFieldTuning.gustAdvectionBaseSpeed *
+	const float gustAdvectionSpeed = EvaluateWindResponse(a_speed, settings.windFieldGustAdvectionResponse) *
+	                                 windFieldTuning.gustAdvectionBaseSpeed *
 	                                 windFieldTuning.gustAdvectionMultiplier;
 	windFieldAdvectionSpeed = std::isfinite(gustAdvectionSpeed) ? std::max(gustAdvectionSpeed, 0.0f) : 0.0f;
 	windFieldTravelDelta = std::isfinite(a_frameTime) ? windFieldAdvectionSpeed * std::max(a_frameTime, 0.0f) : 0.0f;
@@ -181,6 +203,7 @@ WindPermutationContribution Wind::GetPermutationContribution() const
 	return {
 		settings.trunkWindIntensityOverride,
 		loaded && settings.overrideTrunkWindIntensity,
+		loaded && settings.enableGrassWindSpringBend,
 		treeDefaults.transientWindInfluence,
 		treeDefaults.leafTransientWindInfluence,
 		treeDefaults.leafTransientFlutterMaximum,

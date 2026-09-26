@@ -129,9 +129,19 @@ void Wind::SanitizeSettings(Settings& a_settings)
 		kWindFieldGustAmplitudeMin, kWindFieldGustAmplitudeMax, defaults.windFieldGustAmplitude);
 	a_settings.windFieldGustAdvectionMultiplier = ClampFiniteOrDefault(a_settings.windFieldGustAdvectionMultiplier,
 		kWindFieldGustAdvectionMultiplierMin, kWindFieldGustAdvectionMultiplierMax, defaults.windFieldGustAdvectionMultiplier);
+	for (uint32_t index = 0; index < a_settings.windFieldGustAdvectionResponse.size(); ++index)
+		a_settings.windFieldGustAdvectionResponse[index] = ClampFiniteOrDefault(
+			a_settings.windFieldGustAdvectionResponse[index], kWindResponseMin, kWindResponseMax,
+			defaults.windFieldGustAdvectionResponse[index]);
 	a_settings.windFieldDirectionTransitionDuration = ClampFiniteOrDefault(a_settings.windFieldDirectionTransitionDuration,
 		kWindFieldDirectionTransitionDurationMin, kWindFieldDirectionTransitionDurationMax,
 		defaults.windFieldDirectionTransitionDuration);
+	a_settings.grassTransientFlutterStrength = ClampFiniteOrDefault(a_settings.grassTransientFlutterStrength,
+		kGrassTransientFlutterStrengthMin, kGrassTransientFlutterStrengthMax,
+		defaults.grassTransientFlutterStrength);
+	a_settings.grassTransientFlutterFrequency = ClampFiniteOrDefault(a_settings.grassTransientFlutterFrequency,
+		kGrassTransientFlutterFrequencyMin, kGrassTransientFlutterFrequencyMax,
+		defaults.grassTransientFlutterFrequency);
 	SanitizeGrassWindSettings(a_settings);
 }
 
@@ -164,10 +174,15 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	windFieldGustCrosswindScale,
 	windFieldGustAmplitude,
 	windFieldGustAdvectionMultiplier,
+	windFieldGustAdvectionResponse,
 	windFieldDirectionTransitionDuration,
 	processMidRangeTransients,
 	processFarRangeTransients,
+	grassTransientFlutterStrength,
+	grassTransientFlutterFrequency,
 	enableAmbientGrassWind,
+	enableGrassWindSpring,
+	enableGrassWindSpringBend,
 	grassWindResponse,
 	grassWindSensitivity,
 	grassWindMaximumTilt,
@@ -177,7 +192,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	grassWindSpringDamping,
 	grassWindSpringQuality,
 	grassWindFlutterStrength,
-	grassWindFlutterFrequency)
+	grassWindFlutterFrequency,
+	grassWindFlutterAmplitudeResponse)
 
 void Wind::SetTreeWindTestEnabled(bool a_enabled)
 {
@@ -360,6 +376,30 @@ struct Wind::Hooks
 		logger::info("Wind: Installed hooks - BSLightingShader_SetupGeometry, BSUtilityShader_SetupGeometry");
 	}
 };
+
+// Bottle binds PermutationCB/SharedData/FeatureData to the pixel and compute stages only, and
+// Grass Collision owns VS b5, so Wind binds just the two buffers its vertex shaders read: b4
+// (PerShader: tree-bend and grass-wind permutation data) and b6 (FeatureData: the wind field).
+// Open does the equivalent in State::BindVertexPermutationData after every SetDirtyStates. This
+// runs even when Wind is not loaded: the grass/tree vertex shaders always read these buffers,
+// and with Wind unloaded their wind fields stay zero, which reproduces vanilla sway.
+void Wind::BindVertexConstantBuffers() const
+{
+	auto* state = globals::state;
+	auto* context = globals::d3d::context;
+	if (!state || !context || !state->currentShader)
+		return;
+
+	const auto shaderType = state->currentShader->shaderType.get();
+	if (shaderType != RE::BSShader::Type::Lighting && shaderType != RE::BSShader::Type::Utility &&
+		shaderType != RE::BSShader::Type::Grass)
+		return;
+
+	ID3D11Buffer* permutationBuffer = state->permutationCB->CB();
+	ID3D11Buffer* featureBuffer = state->featureDataCB->CB();
+	context->VSSetConstantBuffers(4, 1, &permutationBuffer);
+	context->VSSetConstantBuffers(6, 1, &featureBuffer);
+}
 
 Wind::PerFrameData Wind::GetCommonBufferData() const
 {

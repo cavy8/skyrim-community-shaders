@@ -1,4 +1,5 @@
 #include "Common/FrameBuffer.hlsli"
+#include "Common/GrassWindResponse.hlsli"
 #include "Common/Math.hlsli"
 #include "Common/Random.hlsli"
 
@@ -275,7 +276,13 @@ float WindScalar(float basis, float timer)
     const float collisionFlag = (distSq < CollisionDistSq) ? 1.0 : 0.0;
     const float farFlag = (SimpleShadingPixelSize > 0.0 && projPx < SimpleShadingPixelSize) ? 2.0 : 0.0;
 
-    const float4 e1 = float4(WindScalar(basis, TimeBase * WavePeriod), WindScalar(basis, PrevTimeBase * WavePeriod), fade, collisionFlag + farFlag);
+    // Wind: Open's per-instance response replaces the vanilla wind scalar; with Wind off its
+    // flutter term is the same waveform WindScalar computes.
+    float4 currentResponse, previousResponse;
+    float2 flutter;
+    GrassWindResponse::Sample(localXY, world.xy, world.xy, Math::IdentityMatrix, Math::IdentityMatrix,
+        TimeBase * WavePeriod, PrevTimeBase * WavePeriod, currentResponse, previousResponse, flutter);
+    const float4 e1 = float4(flutter, fade, collisionFlag + farFlag);
 
     // Dither both LOD transitions with the same value to keep tier changes gradual and ordered.
     const float h = RandFloat(rand.y);
@@ -297,23 +304,29 @@ float WindScalar(float basis, float timer)
         LODCounters.InterlockedAdd(FarLODCountOffset, 1, slot);
         FarLODCompacted.Store4(slot * 32, raw0);
         FarLODCompacted.Store4(slot * 32 + 16, raw1);
-        FarLODExtras[slot * 2 + 0] = e0;
-        FarLODExtras[slot * 2 + 1] = e1Tier;
+        FarLODExtras[slot * 4 + 0] = e0;
+        FarLODExtras[slot * 4 + 1] = e1Tier;
+        FarLODExtras[slot * 4 + 2] = currentResponse;
+        FarLODExtras[slot * 4 + 3] = previousResponse;
     }
     else if (tier == 1)
     {
         LODCounters.InterlockedAdd(MiddleLODCountOffset, 1, slot);
         MidLODCompacted.Store4(slot * 32, raw0);
         MidLODCompacted.Store4(slot * 32 + 16, raw1);
-        MidLODExtras[slot * 2 + 0] = e0;
-        MidLODExtras[slot * 2 + 1] = e1Tier;
+        MidLODExtras[slot * 4 + 0] = e0;
+        MidLODExtras[slot * 4 + 1] = e1Tier;
+        MidLODExtras[slot * 4 + 2] = currentResponse;
+        MidLODExtras[slot * 4 + 3] = previousResponse;
     }
     else
     {
         Counter.InterlockedAdd(0, 1, slot);
         Compacted.Store4(slot * 32, raw0);
         Compacted.Store4(slot * 32 + 16, raw1);
-        Extras[slot * 2 + 0] = e0;
-        Extras[slot * 2 + 1] = e1;
+        Extras[slot * 4 + 0] = e0;
+        Extras[slot * 4 + 1] = e1;
+        Extras[slot * 4 + 2] = currentResponse;
+        Extras[slot * 4 + 3] = previousResponse;
     }
 }
