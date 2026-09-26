@@ -3,7 +3,6 @@
 #include <algorithm>
 
 #include "I18n/I18n.h"
-#include "Util.h"
 
 #define I18N_KEY_PREFIX "feature.foliage_lighting."
 
@@ -30,7 +29,7 @@ void FoliageLighting::DrawSettings()
 		settings.EnableGrassScattering = enableGrassScattering;
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("enable_grass_scattering_tooltip"), "Adds wrapped, view-dependent transmission to non-PBR grass lighting."));
+		ImGui::Text("%s", T(TKEY("enable_grass_scattering_tooltip"), "Uses the wrapped, view-dependent foliage transmission model for grass instead of the\nbacklit-only vanilla model. Amplitude still follows Grass Lighting's Subsurface Scattering Amount."));
 	}
 
 	bool enableFoliageAmbientBoost = settings.EnableFoliageAmbientBoost != 0;

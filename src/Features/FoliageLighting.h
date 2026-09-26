@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Feature.h"
+#include "FeatureCategories.h"
 
 /** @brief Exposes the shared tree and grass foliage lighting controls. */
 struct FoliageLighting : Feature
@@ -21,12 +22,13 @@ struct FoliageLighting : Feature
 	static_assert(offsetof(Settings, EnableGrassScattering) == sizeof(uint) * 4);
 	static_assert(sizeof(Settings) == 32);
 
-	virtual std::string GetName() override { return "Foliage Lighting"; }
+	virtual inline std::string GetName() override { return "Foliage Lighting"; }
 	virtual std::string GetDisplayName() override { return T("feature.foliage_lighting.name", "Foliage Lighting"); }
-	virtual std::string GetShortName() override { return "FoliageLighting"; }
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kGrass; }
-	virtual bool IsCore() const override { return true; }
+	virtual inline std::string GetShortName() override { return "FoliageLighting"; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
+	virtual inline bool IsCore() const override { return true; }
 
+	/** @brief Returns a description and list of key features for the UI summary. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return { T("feature.foliage_lighting.description", "Adds inexpensive transmission and ambient controls for animated foliage."),
