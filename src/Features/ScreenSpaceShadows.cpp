@@ -1,4 +1,5 @@
 #include "ScreenSpaceShadows.h"
+#include "Features/ReverseZ.h"
 
 #include "Features/TerrainBlending.h"
 #include "I18n/I18n.h"
@@ -182,8 +183,9 @@ void ScreenSpaceShadows::DrawShadows()
 				data.WaveOffset[0] = dispatchData.WaveOffset_Shader[0];
 				data.WaveOffset[1] = dispatchData.WaveOffset_Shader[1];
 
-				data.FarDepthValue = 1.0f;
-				data.NearDepthValue = 0.0f;
+				const bool reverseZ = globals::features::reverseZ.IsActive();
+				data.FarDepthValue = reverseZ ? 0.0f : 1.0f;
+				data.NearDepthValue = reverseZ ? 1.0f : 0.0f;
 
 				data.DynamicRes = dynamicRes;
 
@@ -279,10 +281,11 @@ void ScreenSpaceShadows::SetupResources()
 		samplerDesc.MaxAnisotropy = 1;
 		samplerDesc.MinLOD = 0;
 		samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
-		samplerDesc.BorderColor[0] = 1.0f;
-		samplerDesc.BorderColor[1] = 1.0f;
-		samplerDesc.BorderColor[2] = 1.0f;
-		samplerDesc.BorderColor[3] = 1.0f;
+		const float farDepth = globals::features::reverseZ.IsActive() ? 0.0f : 1.0f;
+		samplerDesc.BorderColor[0] = farDepth;
+		samplerDesc.BorderColor[1] = farDepth;
+		samplerDesc.BorderColor[2] = farDepth;
+		samplerDesc.BorderColor[3] = farDepth;
 		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &pointBorderSampler));
 		Util::SetResourceName(pointBorderSampler, "SSS::PointBorderSampler");
 	}
@@ -297,7 +300,9 @@ void ScreenSpaceShadows::SetupResources()
 		shadowMask.texture->GetDesc(&texDesc);
 		shadowMask.SRV->GetDesc(&srvDesc);
 
-		texDesc.Format = DXGI_FORMAT_R8_UNORM;
+		// Store normal front-facing visibility and the reversed depth-offset
+		// visibility used by back-facing SSS/transmission receivers.
+		texDesc.Format = DXGI_FORMAT_R8G8_UNORM;
 		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
 		srvDesc.Format = texDesc.Format;
