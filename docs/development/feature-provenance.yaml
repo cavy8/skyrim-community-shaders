@@ -25,10 +25,12 @@
 # bottle@dac6803377, bottle/Bottle-Compendium, open-shaders/dev, jiayev/compendium-clean and
 # community-shaders/dev (mainline). Features absent here are mainline features that match Bottle.
 #
-# Owner ruling (2026-09-26): apart from Neural Rendering and the dialogue DoF menu gate, the only
-# Personal-original work is its default states and the Screenshot sRGB fix. Everything else that
-# differed from its upstreams came from somewhere or was a side effect of combining Open and
-# Bottle code, and was adjusted to the pinned Bottle SHA.
+# Owner rulings (2026-09-26): apart from Neural Rendering and the dialogue DoF menu gate, the only
+# Personal-original work is its default states, the Screenshot sRGB fix and the "Show Background
+# Compile Overlay" setting. Everything else that differed from its upstreams came from somewhere or
+# was a side effect of combining Open, mainline and Bottle code. Prefer Bottle: only the deviations a
+# port needs (Wind, Pseudo Sun Bounce, Cloud Relight, Neural Rendering), Personal's own work,
+# branding and Open's Effects11 preset hot-swap remain.
 
 features:
   NeuralRendering:
@@ -99,20 +101,6 @@ features:
             role: integration-default
             confidence: confirmed
             evidence: [90e57b9855]
-      color_transform_fixes:
-        personal_original: false
-        provenance:
-          - source: personal
-            role: integration       # ColorGrading.h comment only; 51c03d33b is a Personal commit, not jiayev's
-            confidence: confirmed
-            evidence: [51c03d33b]
-            note: not original work (owner ruling 2026-09-26)
-      motion_blur_dynamic_height:
-        personal_original: false
-        provenance:
-          - source: jiayev
-            role: bug-fix
-            confidence: confirmed   # byte-identical to jiayev and open
 
   WetnessEffects:
     status: present
@@ -148,30 +136,24 @@ features:
     status: present
     personal_original: false
     provenance:
-      - source: open
-        role: implementation       # incl. billboard anti-clip resize and Sky.hlsl Effects11 sun arbitration
-        confidence: confirmed
-        evidence: [b3318a9d5b, 3066a9dfa1]
       - source: bottle
-        role: merged-changes
-        confidence: likely
-        evidence: [26611dd183, 31f9890f27, 05c07ee292, 343bf8cc44, 3d64571711]
-        note: tracker-cited Bottle merges; feature files now match none of Bottle's
-    components:
-      sun_luminance_stage_guard:
-        personal_original: false
-        provenance:
-          - source: personal
-            role: integration-fix   # side effect of combining Open and Bottle code (owner ruling 2026-09-26)
-            confidence: confirmed
-            evidence: [29e7402ee7]
+        role: implementation       # "readd physical sun w/ e11 adaptation"; replaces Effects11's own procedural sun
+        confidence: confirmed
+        evidence: [26611dd183]
+      - source: open
+        role: earlier-port         # Open's version (billboard resize, sky composition) was replaced by Bottle's on 2026-09-26
+        confidence: confirmed
+        evidence: [3066a9dfa1, b3318a9d5b]
 
   FoliageLighting:
     status: present
     personal_original: false
     provenance:
+      - source: bottle
+        role: implementation       # byte-identical to the pin
+        confidence: confirmed
       - source: open
-        role: implementation       # FoliageLighting.cpp byte-identical to open; .h adapted (kGrass, no SupportsVR)
+        role: earlier-port         # Open's version replaced by Bottle's on 2026-09-26
         confidence: confirmed
         evidence: [f18e9543]
 
@@ -179,8 +161,11 @@ features:
     status: present
     personal_original: false
     provenance:
+      - source: bottle
+        role: implementation       # byte-identical to the pin
+        confidence: confirmed
       - source: open
-        role: implementation       # adapted: no SupportsVR, ImGui::Checkbox
+        role: earlier-port         # Open's version (i18n, default off) replaced by Bottle's on 2026-09-26
         confidence: confirmed
         evidence: [f18e9543]
 
@@ -189,25 +174,36 @@ features:
     personal_original: false
     provenance:
       - source: open
-        role: implementation       # 4 of 6 files byte-identical to open
+        role: implementation       # every file == open except the SupportsVR() override
         confidence: confirmed
-        evidence: [f18e9543f, 105a90cea]
+        evidence: [f18e9543f, 105a90cea, 1d67aaead2]
 
   Wind:
     status: present
     personal_original: false
     provenance:
       - source: open
-        role: implementation       # 32 of 42 files byte-identical to open; rest are VR/devbench removal and push-model adaptation
+        role: implementation       # own files == open-shaders/dev except documented Bottle-infrastructure adaptations
         confidence: confirmed
-        evidence: [dd7e7f2ef0]
+        evidence: [dd7e7f2ef0, 6150e8d39e, f58cc4f61d]
+    components:
+      shared_integration:
+        personal_original: false
+        provenance:
+          - source: open
+            role: implementation    # Lighting/Utility/RunGrass/DeferredCompositeCS hunks, grass-spring hook, culling-CS response
+            confidence: confirmed
+          - source: personal
+            role: integration       # vertex-stage b4/b6 binding and Grass Optimizations extras layout, re-expressed on Bottle
+            confidence: confirmed
+            note: side effect of combining Open's Wind with Bottle's State and Grass Optimizations
 
   PseudoSunBounce:
     status: present
     personal_original: false
     provenance:
       - source: jiayev
-        role: implementation       # 3 of 4 files byte-identical; diffuse term only in Lighting.hlsl
+        role: implementation       # full Lighting.hlsl integration (cloud gating, diffuse and faux specular bounce)
         confidence: confirmed
 
   Skin:
@@ -218,9 +214,17 @@ features:
         role: base-feature
         confidence: confirmed
       - source: jiayev
-        role: implementation       # Advanced Skin; Skin.hlsli byte-identical, .cpp/.h 3 lines off
+        role: implementation       # Advanced Skin, replacing Bottle's smaller Skin; promo panel removed
         confidence: confirmed
         evidence: [4c4eb6d255, 2da0eb7a55]
+    components:
+      disabled_by_default:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: integration-default
+            confidence: confirmed
+            evidence: [9c8c8c1ea0]
 
   SnowCover:
     status: present
@@ -256,15 +260,6 @@ features:
         provenance:
           - source: open
             role: implementation    # PresetManager/MenuManager, Effects11 preset-location settings
-            confidence: confirmed
-      native_procedural_sun:
-        personal_original: false
-        provenance:
-          - source: mainline
-            role: implementation    # Effects11 PROCEDURALSUN settings + IsSun narrowing; Bottle dropped it in 26611dd183
-            confidence: confirmed
-          - source: open
-            role: integration       # Sky.hlsl arbitration with the Procedural Sun feature
             confidence: confirmed
 
   LightLimitFix:
@@ -452,3 +447,29 @@ features:
         role: implementation       # occlusion cadence / distance culling (open 69101322f2 via Bottle 644fbc5ee5); reset to the pin
         confidence: confirmed
         evidence: [644fbc5ee5]
+
+core:
+  # Non-feature code that differs from Bottle; same entry shape as features.
+  background_compile_overlay:
+    status: present
+    personal_original: true
+    provenance:
+      - source: personal
+        role: implementation       # "Show Background Compile Overlay" setting + background compile throttling flag
+        confidence: confirmed
+        evidence: [a192a5a527]
+  branding:
+    status: present
+    personal_original: true
+    provenance:
+      - source: personal
+        role: branding             # "Bottled Shaders" -> "Cav's Unity Shaders" rule; fork README
+        confidence: confirmed
+        evidence: [02a4d387d7, 3348f23134]
+  neural_rendering_hotkeys:
+    status: present
+    personal_original: true
+    provenance:
+      - source: personal
+        role: implementation       # Menu toggle/compare/scale hotkeys for Neural Rendering
+        confidence: confirmed

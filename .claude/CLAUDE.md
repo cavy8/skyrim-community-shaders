@@ -449,7 +449,10 @@ Before modifying a shared feature:
 2. compare actual current source against the pinned Bottle SHA (`tools/bottle_sync.py`);
 3. preserve every documented component, seam and `shared_integrations` hunk;
 4. never infer provenance from repository path, commit author, or a generic "feat:" subject;
-5. Upscaling must stay Bottle + the documented NR seam only.
+5. Upscaling must stay Bottle + the documented NR seam only;
+6. prefer Bottle: do not keep mainline or Open changes that no port needs, and record every new
+   deviation in `maintenance-policy.yaml` in the same change (`bottle_sync.py` fails on any
+   unclaimed file or unattributed shared-file hunk).
 
 ## AI Assistant Guidelines
 
