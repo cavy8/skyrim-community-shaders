@@ -44,6 +44,7 @@
 #include "CSEditor/EditorWindow.h"
 #include "Features/CSEditor.h"
 #include "Features/Effects11.h"
+#include "Features/NeuralRendering.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/PerformanceOverlay/ABTesting/ABTestAggregator.h"
 #include "Features/PerformanceOverlay/ABTesting/ABTesting.h"
@@ -1053,13 +1054,14 @@ static std::vector<InputCombo> DeriveCSEditorKey(const std::vector<InputCombo>& 
 
 // Steps the Neural Rendering resolution scale by delta (positive = up, negative = down),
 // clamping to [0.25, 2.0] and rounding to 2 decimals to avoid float drift. Applies to the
-// uniform scale or both per-axis scales depending on neuralRenderingResolutionMode, then
+// uniform scale or both per-axis scales depending on NeuralRendering::Settings::resolutionMode, then
 // shows a HUD message with the resulting scale(s) on the game's main thread.
 static void StepNeuralRenderingScale(float delta)
 {
-	auto& upscaling = globals::features::upscaling;
-	if (!upscaling.loaded)
+	auto& neuralRendering = globals::features::neuralRendering;
+	if (!neuralRendering.loaded)
 		return;
+	auto& nrSettings = neuralRendering.settings;
 
 	auto clampRound = [](float value) {
 		value = std::clamp(value, 0.25f, 2.0f);
@@ -1067,13 +1069,13 @@ static void StepNeuralRenderingScale(float delta)
 	};
 
 	std::string hudMessage;
-	if (upscaling.settings.neuralRenderingResolutionMode == 0) {
-		upscaling.settings.neuralRenderingResolutionScale = clampRound(upscaling.settings.neuralRenderingResolutionScale + delta);
-		hudMessage = std::format("Neural Rendering Scale: {:.2f}", upscaling.settings.neuralRenderingResolutionScale);
+	if (nrSettings.resolutionMode == 0) {
+		nrSettings.resolutionScale = clampRound(nrSettings.resolutionScale + delta);
+		hudMessage = std::format("Neural Rendering Scale: {:.2f}", nrSettings.resolutionScale);
 	} else {
-		upscaling.settings.neuralRenderingResolutionScaleX = clampRound(upscaling.settings.neuralRenderingResolutionScaleX + delta);
-		upscaling.settings.neuralRenderingResolutionScaleY = clampRound(upscaling.settings.neuralRenderingResolutionScaleY + delta);
-		hudMessage = std::format("Neural Rendering Scale: {:.2f} x {:.2f}", upscaling.settings.neuralRenderingResolutionScaleX, upscaling.settings.neuralRenderingResolutionScaleY);
+		nrSettings.resolutionScaleX = clampRound(nrSettings.resolutionScaleX + delta);
+		nrSettings.resolutionScaleY = clampRound(nrSettings.resolutionScaleY + delta);
+		hudMessage = std::format("Neural Rendering Scale: {:.2f} x {:.2f}", nrSettings.resolutionScaleX, nrSettings.resolutionScaleY);
 	}
 
 	// ShowHUDMessage must run on the game's main thread.
@@ -1162,13 +1164,13 @@ void Menu::ProcessInputEventQueue()
 							 globals::features::effects11.ToggleEnabled();
 					 } },
 					{ settings.NeuralRenderingToggleKey, []() {
-						 auto& upscaling = globals::features::upscaling;
-						 if (!upscaling.loaded)
+						 auto& neuralRendering = globals::features::neuralRendering;
+						 if (!neuralRendering.loaded)
 							 return;
-						 const bool enabled = !upscaling.settings.neuralRenderingEnabled;
-						 upscaling.settings.neuralRenderingEnabled = enabled;
+						 const bool enabled = !neuralRendering.settings.enabled;
+						 neuralRendering.settings.enabled = enabled;
 						 // Reset the DLSS/NR temporal history so the toggle takes effect without a ghosting frame.
-						 upscaling.pendingDLSSReset.store(true, std::memory_order_release);
+						 neuralRendering.RequestHistoryReset();
 						 // ShowHUDMessage must run on the game's main thread.
 						 if (auto* task = SKSE::GetTaskInterface())
 							 task->AddTask([enabled]() {
@@ -1176,8 +1178,8 @@ void Menu::ProcessInputEventQueue()
 							 });
 					 } },
 					{ settings.NeuralRenderingCompareKey, []() {
-						 if (globals::features::upscaling.loaded)
-							 globals::features::upscaling.RequestNeuralRenderingComparisonCapture();
+						 if (globals::features::neuralRendering.loaded)
+							 globals::features::neuralRendering.RequestComparisonCapture();
 					 } },
 					{ settings.NeuralRenderingScaleUpKey, []() { StepNeuralRenderingScale(0.05f); } },
 					{ settings.NeuralRenderingScaleDownKey, []() { StepNeuralRenderingScale(-0.05f); } },

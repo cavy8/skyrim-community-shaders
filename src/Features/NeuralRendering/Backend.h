@@ -10,14 +10,10 @@ struct ID3D11ShaderResourceView;
 /**
  * @brief D3D11-facing driver for the DLSS Neural Rendering (NGX Feature 18) transport layer.
  *
- * This façade exists for a hard language reason, not for layering taste: the
- * transport layer declares a `NeuralRendering` **namespace**
- * (`NeuralRendering::Runtime`, `NeuralRendering::D3D12Interop`) while the public
- * feature API declares a `NeuralRendering` **class**. C++ forbids a namespace
- * and a class of the same name in one scope, so no single translation unit may
- * see both headers. `NeuralRendering.cpp` owns the class and talks to this
- * façade; this translation unit is the only one that includes the transport
- * headers.
+ * The Neural Rendering feature (`NeuralRendering.cpp`) talks only to this
+ * façade; Backend.cpp is the only translation unit that includes the transport
+ * headers (`NeuralRenderingNGX::Runtime`, `NeuralRenderingNGX::D3D12Interop`),
+ * which keeps the NGX, D3D12 and interop details out of the feature.
  *
  * The backend owns the D3D11<->D3D12 shared textures, the colour transfer and
  * depth-guide compute passes, and the failure latch that keeps a broken runtime

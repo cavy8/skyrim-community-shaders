@@ -280,7 +280,7 @@ public:
 		AdditiveLighting = 1 << 6,
 		NoSnow = 1 << 7,
 		NoFoliageTint = 1 << 8,
-		// Set by Upscaling::BSLightingShader_SetupNeuralCategory when the drawn
+		// Set by NeuralRendering::SetupGeometryCategory when the drawn
 		// geometry belongs to a humanoid (ActorTypeNPC) actor. Skin, hair and
 		// eyes are claimed by their own permutations first, so this only
 		// resolves to armor, clothing and weapons - see
@@ -290,7 +290,7 @@ public:
 		// rain drops; see CharacterRainSurfaces.
 		IsCharacterRainSurface = 1 << 10,
 		IsHeldWeapon = 1 << 11,
-		// Set by Upscaling::BSLightingShader_SetupNeuralCategory when the drawn
+		// Set by NeuralRendering::SetupGeometryCategory when the drawn
 		// geometry belongs to a hair or facial-hair head part of its actor,
 		// whatever shader type the piece was authored with - see
 		// NeuralRenderingCategories::Hair.

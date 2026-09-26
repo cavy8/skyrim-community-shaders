@@ -17,6 +17,7 @@
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
 #include "Features/LightLimitFix.h"
+#include "Features/NeuralRendering.h"
 #include "Features/PostProcessing.h"
 #include "Features/ReverseZ.h"
 #include "Features/ScreenshotFeature.h"
@@ -367,10 +368,13 @@ namespace PostProcessingExtensions
 			// Effects11 replaces the pass outright; when it does, the vanilla call is skipped
 			// and HandlePostProcessing fixes up the render-target state the pass would have set.
 			if (state->HandlePostProcessing(input, output)) {
-				// The vanilla pass did not run, so there is no ISHDR exposure/grading to replicate.
-				globals::features::upscaling.CaptureNeuralRenderingDisplayTransform(nullptr);
-				// Effects11 already wrote its finished, tonemapped frame into `output`.
-				globals::features::upscaling.ApplyNeuralRenderingFinishedImage(output);
+				auto& neuralRendering = globals::features::neuralRendering;
+				if (neuralRendering.loaded) {
+					// The vanilla pass did not run, so there is no ISHDR exposure/grading to replicate.
+					neuralRendering.CaptureDisplayTransform(nullptr);
+					// Effects11 already wrote its finished, tonemapped frame into `output`.
+					neuralRendering.ApplyFinishedImage(output);
+				}
 				return;
 			}
 
@@ -386,13 +390,16 @@ namespace PostProcessingExtensions
 			// Record the exposure and grading the vanilla pass just applied (a no-op unless the
 			// vanilla tonemap owns the frame) so next frame's pre-tonemap Neural Rendering
 			// placements can show the model the frame the way it will be displayed.
-			globals::features::upscaling.CaptureNeuralRenderingDisplayTransform(a5);
+			auto& neuralRendering = globals::features::neuralRendering;
+			if (neuralRendering.loaded)
+				neuralRendering.CaptureDisplayTransform(a5);
 
 			// `output` now holds the frame's finished, tonemapped colour regardless of who did
 			// the tonemapping - Post Processing (the vanilla call above just took its passthrough
 			// branch) or vanilla ISHDR itself. Unlike the Before/After/Separate Upscaling
 			// placements, Finished Image does not depend on any one feature owning the tonemap.
-			globals::features::upscaling.ApplyNeuralRenderingFinishedImage(output);
+			if (neuralRendering.loaded)
+				neuralRendering.ApplyFinishedImage(output);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

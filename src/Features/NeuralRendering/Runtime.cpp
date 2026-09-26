@@ -1,9 +1,8 @@
 #include "Runtime.h"
 
-#include "../../../Utils/FileSystem.h"
-#include "../../../Utils/Format.h"
-#include "../../../Utils/WinApi.h"
-#include "../Streamline.h"
+#include "Utils/FileSystem.h"
+#include "Utils/Format.h"
+#include "Utils/WinApi.h"
 
 #include <Windows.h>
 #include <Psapi.h>
@@ -18,12 +17,17 @@
 
 #include <nvsdk_ngx_helpers.h>
 
-namespace NeuralRendering
+namespace NeuralRenderingNGX
 {
 	namespace
 	{
 		constexpr wchar_t kRuntimeName[] = L"nvngx_dlssnr.dll";
 		constexpr auto kFeatureDlssNr = static_cast<NVSDK_NGX_Feature>(18);
+		// NGX project identity. Must match what Upscaling's Streamline::LoadInterposer passes
+		// (pref.projectId / pref.engineVersion): the DLSS-SR snippet this runtime initializes
+		// shares the process-wide NGX core with Streamline.
+		constexpr const char* kNgxProjectId = "f8776929-c969-43bd-ac2b-294b4de58aac";
+		constexpr const char* kNgxEngineVersion = "1.0.0";
 		constexpr std::array<const char*, 5> kRequiredExports{
 			"NVSDK_NGX_D3D12_Init_Ext",
 			"NVSDK_NGX_D3D12_CreateFeature",
@@ -323,8 +327,8 @@ namespace NeuralRendering
 		auto initializeWithApplicationId = reinterpret_cast<InitD3D12WithApplicationId>(
 			GetProcAddress(core, "NVSDK_NGX_D3D12_Init_Ext"));
 		if (initializeWithProjectId) {
-			ngxResult_ = static_cast<std::uint32_t>(initializeWithProjectId(Streamline::ProjectId,
-				NVSDK_NGX_ENGINE_TYPE_CUSTOM, Streamline::EngineVersion, writablePath.c_str(), device,
+			ngxResult_ = static_cast<std::uint32_t>(initializeWithProjectId(kNgxProjectId,
+				NVSDK_NGX_ENGINE_TYPE_CUSTOM, kNgxEngineVersion, writablePath.c_str(), device,
 				NVSDK_NGX_Version_API, &featureInfo));
 		} else if (initializeWithApplicationId) {
 			ngxResult_ = static_cast<std::uint32_t>(initializeWithApplicationId(applicationId_,

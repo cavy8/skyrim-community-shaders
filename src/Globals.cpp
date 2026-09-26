@@ -40,6 +40,7 @@
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
 #include "Features/UnifiedWater.h"
+#include "Features/NeuralRendering.h"
 #include "Features/Upscaling.h"
 #include "Features/VanillaFresnel.h"
 #include "Features/VolumetricLighting.h"
@@ -104,6 +105,7 @@ namespace globals
 		ExtendedTranslucency extendedTranslucency{};
 		ReverseZ reverseZ{};
 		Upscaling upscaling{};
+		NeuralRendering neuralRendering{};
 		HDRDisplay hdrDisplay{};
 		Effects11 effects11{};
 		RenderDoc renderDoc{};

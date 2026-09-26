@@ -87,11 +87,11 @@ namespace
 		return std::max(scaled, kMinimumModelExtent);
 	}
 
-	constexpr const wchar_t* kEncodeColorPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\EncodeColorCS.hlsl";
-	constexpr const wchar_t* kDecodeColorPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\DecodeColorCS.hlsl";
-	constexpr const wchar_t* kCopyDepthGuidePath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\CopyDepthGuideCS.hlsl";
-	constexpr const wchar_t* kEncodeResidualPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\EncodeResidualCS.hlsl";
-	constexpr const wchar_t* kApplyResidualPath = L"Data\\Shaders\\Upscaling\\NeuralRendering\\ApplyResidualCS.hlsl";
+	constexpr const wchar_t* kEncodeColorPath = L"Data\\Shaders\\NeuralRendering\\EncodeColorCS.hlsl";
+	constexpr const wchar_t* kDecodeColorPath = L"Data\\Shaders\\NeuralRendering\\DecodeColorCS.hlsl";
+	constexpr const wchar_t* kCopyDepthGuidePath = L"Data\\Shaders\\NeuralRendering\\CopyDepthGuideCS.hlsl";
+	constexpr const wchar_t* kEncodeResidualPath = L"Data\\Shaders\\NeuralRendering\\EncodeResidualCS.hlsl";
+	constexpr const wchar_t* kApplyResidualPath = L"Data\\Shaders\\NeuralRendering\\ApplyResidualCS.hlsl";
 
 	bool GetTextureDesc(ID3D11Resource* resource, D3D11_TEXTURE2D_DESC& desc)
 	{
@@ -127,7 +127,7 @@ namespace
 		return desc;
 	}
 
-	bool Matches(const NeuralRendering::SharedTexture& texture, const D3D11_TEXTURE2D_DESC& desc)
+	bool Matches(const NeuralRenderingNGX::SharedTexture& texture, const D3D11_TEXTURE2D_DESC& desc)
 	{
 		return texture.resource11 && texture.resource12 &&
 		       texture.desc.Width == desc.Width && texture.desc.Height == desc.Height &&
@@ -137,15 +137,15 @@ namespace
 
 struct NeuralRenderingBackend::State
 {
-	NeuralRendering::D3D12Interop interop;
+	NeuralRenderingNGX::D3D12Interop interop;
 
-	NeuralRendering::SharedTexture color;
-	NeuralRendering::SharedTexture depth;
-	NeuralRendering::SharedTexture motionVectors;
-	NeuralRendering::SharedTexture output;
-	NeuralRendering::SharedTexture residualInput;
-	NeuralRendering::SharedTexture residualOutput;
-	NeuralRendering::SharedTexture residualExposure;
+	NeuralRenderingNGX::SharedTexture color;
+	NeuralRenderingNGX::SharedTexture depth;
+	NeuralRenderingNGX::SharedTexture motionVectors;
+	NeuralRenderingNGX::SharedTexture output;
+	NeuralRenderingNGX::SharedTexture residualInput;
+	NeuralRenderingNGX::SharedTexture residualOutput;
+	NeuralRenderingNGX::SharedTexture residualExposure;
 
 	winrt::com_ptr<ID3D11ComputeShader> encodeColorCS;
 	winrt::com_ptr<ID3D11ComputeShader> decodeColorCS;
@@ -220,8 +220,8 @@ struct NeuralRenderingBackend::State
 	/// LocalStructureStrength/SkinStructureStrength/UseAutoMask only take effect
 	/// at feature creation (see Runtime::Execute), so a settled change here has
 	/// to force a recreate rather than just flow through to the next Execute().
-	NeuralRendering::Tuning requestedTuning{};
-	NeuralRendering::Tuning appliedTuning{};
+	NeuralRenderingNGX::Tuning requestedTuning{};
+	NeuralRenderingNGX::Tuning appliedTuning{};
 	std::uint32_t requestedTuningStableFrames = 0;
 	bool tuningInitialized = false;
 
@@ -247,12 +247,12 @@ struct NeuralRenderingBackend::State
 	{
 		if (!probeAttempted) {
 			probeAttempted = true;
-			probeSucceeded = NeuralRendering::Runtime::Instance().Probe();
+			probeSucceeded = NeuralRenderingNGX::Runtime::Instance().Probe();
 			if (!probeSucceeded && !loggedProbeFailure) {
 				loggedProbeFailure = true;
 				logger::warn("[NeuralRendering] Runtime unavailable (status={} detail={}); install a compatible nvngx_dlssnr.dll to enable Neural Rendering.",
-					NeuralRendering::ToString(NeuralRendering::Runtime::Instance().Status()),
-					NeuralRendering::Runtime::Instance().Detail());
+					NeuralRenderingNGX::ToString(NeuralRenderingNGX::Runtime::Instance().Status()),
+					NeuralRenderingNGX::Runtime::Instance().Detail());
 			}
 		}
 		return probeSucceeded;
@@ -264,8 +264,8 @@ struct NeuralRenderingBackend::State
 		featureAvailable = false;
 		logger::error("[NeuralRendering] {} failed hr/ngx=0x{:08X} status={} detail={}",
 			operation, static_cast<std::uint32_t>(error),
-			NeuralRendering::ToString(NeuralRendering::Runtime::Instance().Status()),
-			NeuralRendering::Runtime::Instance().Detail());
+			NeuralRenderingNGX::ToString(NeuralRenderingNGX::Runtime::Instance().Status()),
+			NeuralRenderingNGX::Runtime::Instance().Detail());
 		return false;
 	}
 
@@ -299,7 +299,7 @@ struct NeuralRenderingBackend::State
 
 	bool InitializeRuntime()
 	{
-		auto& runtime = NeuralRendering::Runtime::Instance();
+		auto& runtime = NeuralRenderingNGX::Runtime::Instance();
 		if (!runtime.Probe() || !runtime.Initialize(interop.Device()))
 			return LatchFailure("runtime initialization", static_cast<HRESULT>(runtime.NgxResult()));
 		logger::info("[NeuralRendering] Runtime initialized version={} appId=0x{:08X} api=0x{:X}",
@@ -350,7 +350,7 @@ struct NeuralRenderingBackend::State
 	 *         the interop queue, call Runtime::ResetFeature(), and update
 	 *         appliedTuning - never release the handle without draining first.
 	 */
-	bool SettleTuning(const NeuralRendering::Tuning& desired)
+	bool SettleTuning(const NeuralRenderingNGX::Tuning& desired)
 	{
 		if (!(desired == requestedTuning)) {
 			requestedTuning = desired;
@@ -401,7 +401,7 @@ struct NeuralRenderingBackend::State
 		// downstream of the allocation - including the NGX feature handle - is stale.
 		if (!interop.WaitForIdle())
 			return false;
-		NeuralRendering::Runtime::Instance().ResetFeature();
+		NeuralRenderingNGX::Runtime::Instance().ResetFeature();
 		separateResetPending = true;
 		separateResidualReady = false;
 		color = {};
@@ -456,7 +456,7 @@ struct NeuralRenderingBackend::State
 
 		if (!interop.WaitForIdle())
 			return false;
-		NeuralRendering::Runtime::Instance().ResetSuperResolutionFeature();
+		NeuralRenderingNGX::Runtime::Instance().ResetSuperResolutionFeature();
 		residualInput = {};
 		residualOutput = {};
 		residualExposure = {};
@@ -683,7 +683,7 @@ struct NeuralRenderingBackend::State
 		// Run() has already settled and (if it changed) recreated the feature for this
 		// frame's tuning via SettleTuning; appliedTuning is exactly what should be
 		// latched into a create and restated into an evaluate, per Runtime::Execute.
-		const NeuralRendering::Tuning& tuning = appliedTuning;
+		const NeuralRenderingNGX::Tuning& tuning = appliedTuning;
 
 		ID3D12GraphicsCommandList* commandList = nullptr;
 		if (!interop.BeginD3D12(&commandList) || !commandList)
@@ -712,7 +712,7 @@ struct NeuralRenderingBackend::State
 		// model scale is deliberately not folded in (see neural-rendering.md). In
 		// alternating-frame mode the vectors still describe one frame of motion
 		// although two elapsed since the last evaluation; this matches the proxy.
-		const bool executed = NeuralRendering::Runtime::Instance().Execute(commandList,
+		const bool executed = NeuralRenderingNGX::Runtime::Instance().Execute(commandList,
 			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
 			modelWidth, modelHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
 			static_cast<float>(guideWidth), static_cast<float>(guideHeight),
@@ -725,7 +725,7 @@ struct NeuralRenderingBackend::State
 		if (!interop.EndD3D12())
 			return LatchFailure("EndD3D12", interop.LastError());
 		if (!executed)
-			return LatchFailure("Feature 18 execution", static_cast<HRESULT>(NeuralRendering::Runtime::Instance().NgxResult()));
+			return LatchFailure("Feature 18 execution", static_cast<HRESULT>(NeuralRenderingNGX::Runtime::Instance().NgxResult()));
 		return true;
 	}
 
@@ -734,7 +734,7 @@ struct NeuralRenderingBackend::State
 		++evaluateFrameIndex;
 		if (!interop.IsInitialized() && !InitializeInterop(device, context))
 			return false;
-		if (NeuralRendering::Runtime::Instance().Status() != NeuralRendering::RuntimeStatus::Initialized &&
+		if (NeuralRenderingNGX::Runtime::Instance().Status() != NeuralRenderingNGX::RuntimeStatus::Initialized &&
 			!InitializeRuntime())
 			return false;
 		// The colour/output region is the caller's active extent: dynamic resolution
@@ -782,7 +782,7 @@ struct NeuralRenderingBackend::State
 		// resolution-scale drag, then this forces a recreate through the same
 		// GPU-idle path EnsureResources uses for a raster change - never a bare
 		// release() while the interop queue might still reference the handle.
-		NeuralRendering::Tuning desiredTuning;
+		NeuralRenderingNGX::Tuning desiredTuning;
 		desiredTuning.intensity = inputs.intensity;
 		desiredTuning.localToneStrength = inputs.localToneStrength;
 		desiredTuning.localStructureStrength = inputs.localStructureStrength;
@@ -793,7 +793,7 @@ struct NeuralRenderingBackend::State
 		if (SettleTuning(desiredTuning)) {
 			if (!interop.WaitForIdle())
 				return LatchFailure("tuning change", interop.LastError());
-			NeuralRendering::Runtime::Instance().ResetFeature();
+			NeuralRenderingNGX::Runtime::Instance().ResetFeature();
 			separateResetPending = true;
 			separateResidualReady = false;
 			resetPending = true;
@@ -967,7 +967,7 @@ struct NeuralRenderingBackend::State
 				restoreTargets();
 				return LatchFailure("private DLSS SR settings rebuild", interop.LastError());
 			}
-			NeuralRendering::Runtime::Instance().ResetSuperResolutionFeature();
+			NeuralRenderingNGX::Runtime::Instance().ResetSuperResolutionFeature();
 			separateQualityMode = inputs.superResolutionQualityMode;
 			separatePreset = inputs.superResolutionPreset;
 			separateResetPending = true;
@@ -1015,7 +1015,7 @@ struct NeuralRenderingBackend::State
 		}
 		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
 
-		const auto result = NeuralRendering::Runtime::Instance().ExecuteSuperResolution(commandList,
+		const auto result = NeuralRenderingNGX::Runtime::Instance().ExecuteSuperResolution(commandList,
 			residualInput.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(),
 			residualExposure.resource12.Get(), residualOutput.resource12.Get(),
 			inputs.width, inputs.height, inputs.outputWidth, inputs.outputHeight,
@@ -1032,10 +1032,10 @@ struct NeuralRenderingBackend::State
 		restoreTargets();
 		if (!submitted)
 			return LatchFailure("separate residual EndD3D12", interop.LastError());
-		if (result == NeuralRendering::SuperResolutionResult::Failed)
+		if (result == NeuralRenderingNGX::SuperResolutionResult::Failed)
 			return LatchFailure("private DLSS SR execution",
-				static_cast<HRESULT>(NeuralRendering::Runtime::Instance().NgxResult()));
-		if (result == NeuralRendering::SuperResolutionResult::Created) {
+				static_cast<HRESULT>(NeuralRenderingNGX::Runtime::Instance().NgxResult()));
+		if (result == NeuralRenderingNGX::SuperResolutionResult::Created) {
 			logger::info("[NeuralRendering] Private DLSS SR created; clean main-SR frame retained during initialization");
 			return false;
 		}
@@ -1185,7 +1185,7 @@ struct NeuralRenderingBackend::State
 		// core while the game is rendering (and has been observed to fault inside
 		// NVSDK_NGX_D3D12_Shutdown1). Retire only the two private feature histories;
 		// the runtime and interop device remain valid for the next placement.
-		NeuralRendering::Runtime::Instance().ResetFeature();
+		NeuralRenderingNGX::Runtime::Instance().ResetFeature();
 		ReleaseGpuResources();
 	}
 };

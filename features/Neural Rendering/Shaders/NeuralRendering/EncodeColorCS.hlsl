@@ -1,4 +1,4 @@
-#include "Upscaling/NeuralRendering/ColorTransfer.hlsli"
+#include "NeuralRendering/ColorTransfer.hlsli"
 
 cbuffer TransferParams : register(b0)
 {

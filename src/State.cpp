@@ -12,6 +12,7 @@
 #include "Features/ExponentialHeightFog.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
+#include "Features/NeuralRendering.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/PostProcessing.h"
 #include "Features/Skin.h"
@@ -617,6 +618,10 @@ void State::LoadFromJson(nlohmann::json& settings)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const auto shaderCache = globals::shaderCache;
+
+	// One-off shim: Neural Rendering settings used to live inside the Upscaling section.
+	// Runs before any feature loads (State::Load calls this before Feature::Load).
+	NeuralRendering::MigrateLegacyUpscalingSettings(settings);
 
 	// Load Menu settings
 	if (settings.contains("Menu") && settings["Menu"].is_object()) {

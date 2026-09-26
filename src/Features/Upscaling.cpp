@@ -4,10 +4,8 @@
 #include "Deferred.h"
 #include "HDRDisplay.h"
 #include "Hooks.h"
-#include "LinearLighting.h"
+#include "NeuralRendering.h"
 #include "PostProcessing.h"
-#include "PostProcessing/HistogramAutoExposure.h"
-#include "ScreenshotFeature.h"
 #include "State.h"
 #include "Upscaling/DX12SwapChain.h"
 #include "Upscaling/FidelityFX.h"
@@ -23,13 +21,6 @@
 #include <format>
 
 #define I18N_KEY_PREFIX "feature.upscaling."
-
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-	NeuralRendering::CategoryStrengths,
-	colorStrength,
-	transferStrength,
-	luminosityStrength,
-	hueGuard);
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Upscaling::Settings,
@@ -49,35 +40,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	reflexLowLatencyBoost,
 	reflexUseMarkersToOptimize,
 	reflexUseFPSLimit,
-	reflexFPSLimit,
-	neuralRenderingEnabled,
-	neuralRenderingPlacement,
-	neuralRenderingStyle,
-	neuralRenderingIntensity,
-	neuralRenderingColorStrength,
-	neuralRenderingLocalToneStrength,
-	neuralRenderingLocalStructureStrength,
-	neuralRenderingSkinStructureStrength,
-	neuralRenderingAutomaticMask,
-	neuralRenderingResolutionMode,
-	neuralRenderingResolutionScale,
-	neuralRenderingResolutionScaleX,
-	neuralRenderingResolutionScaleY,
-	neuralRenderingTransferStrength,
-	neuralRenderingLuminosityStrength,
-	neuralRenderingMaxRatio,
-	neuralRenderingRatioGuardEnabled,
-	neuralRenderingEverythingElseStrengths,
-	neuralRenderingSkinStrengths,
-	neuralRenderingHairStrengths,
-	neuralRenderingEyesStrengths,
-	neuralRenderingFoliageStrengths,
-	neuralRenderingLandscapeStrengths,
-	neuralRenderingEquipmentStrengths,
-	neuralRenderingDepthAwareResolve,
-	neuralRenderingAlternateFrames,
-	neuralRenderingDebugCategoryView,
-	neuralRenderingRawModelOutput);
+	reflexFPSLimit);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
 
@@ -220,24 +183,6 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 }
 
 void Upscaling::DrawSettings()
-{
-	if (!ImGui::BeginTabBar("##UpscalingSettingsTabs"))
-		return;
-
-	if (ImGui::BeginTabItem(T(TKEY("tab_upscaling"), "Upscaling"))) {
-		DrawUpscalingSettings();
-		ImGui::EndTabItem();
-	}
-
-	if (ImGui::BeginTabItem(T(TKEY("tab_neural_rendering"), "Neural Rendering"))) {
-		DrawNeuralRenderingSettings();
-		ImGui::EndTabItem();
-	}
-
-	ImGui::EndTabBar();
-}
-
-void Upscaling::DrawUpscalingSettings()
 {
 	// Display upscaling options in the UI
 	std::vector<std::string> upscaleModes = {
@@ -521,278 +466,6 @@ void Upscaling::DrawUpscalingSettings()
 	}
 }
 
-void Upscaling::DrawNeuralRenderingSettings()
-{
-	if (GetUpscaleMethod() != UpscaleMethod::kDLSS) {
-		ImGui::TextDisabled("%s", T(TKEY("neural_rendering_requires_dlss"),
-			"DLSS Neural Rendering requires the DLSS upscaling method. Select DLSS on the Upscaling tab first."));
-		return;
-	}
-
-	const bool neuralRenderingBackendAvailable = neuralRendering.IsAvailable();
-	const bool neuralRenderingFeatureAvailable = neuralRendering.IsFeatureAvailable();
-	if (!neuralRenderingBackendAvailable) {
-		ImGui::TextDisabled("%s", T(TKEY("neural_rendering_unavailable"),
-			"DLSS Neural Rendering is unavailable. Install a compatible user-supplied nvngx_dlssnr.dll."));
-	} else if (neuralRenderingFeatureAvailable) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_available"), "DLSS Neural Rendering is available."));
-	} else {
-		ImGui::TextDisabled("%s", T(TKEY("neural_rendering_backend_ready"),
-			"NGX backend ready; feature support will be tested when enabled."));
-	}
-
-	ImGui::Checkbox(T(TKEY("neural_rendering_enabled"), "Enable Neural Rendering"), &settings.neuralRenderingEnabled);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_enabled_tooltip"),
-			"Applies DLSS 5 Neural Rendering to the upscaled image. A compatible user-supplied nvngx_dlssnr.dll is required."));
-	}
-
-	ImGui::BeginDisabled(!neuralRenderingBackendAvailable);
-	if (ImGui::Button(T(TKEY("neural_rendering_compare_screenshot"), "Take Comparison Screenshot"))) {
-		RequestNeuralRenderingComparisonCapture();
-	}
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_compare_screenshot_tooltip"),
-			"Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on "
-			"- with no HUD or menu, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off."));
-	}
-
-	const bool neuralRenderingControlsAvailable = settings.neuralRenderingEnabled && neuralRenderingBackendAvailable;
-	if (!neuralRenderingControlsAvailable)
-		ImGui::BeginDisabled();
-
-	// --- Pipeline: where, and at what resolution, Neural Rendering runs ---
-	const char* placementLabels[] = {
-		T(TKEY("neural_rendering_placement_before"), "Before Upscaling"),
-		T(TKEY("neural_rendering_placement_after"), "After Upscaling"),
-		T(TKEY("neural_rendering_placement_separate"), "Separate Upscaling (Experimental)"),
-		T(TKEY("neural_rendering_placement_finished_image"), "Finished Image")
-	};
-	int placement = static_cast<int>(settings.neuralRenderingPlacement);
-	if (ImGui::Combo(T(TKEY("neural_rendering_placement"), "Placement"), &placement, placementLabels, IM_ARRAYSIZE(placementLabels)))
-		settings.neuralRenderingPlacement = static_cast<uint>(std::clamp(placement, 0, 3));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_placement_tooltip"),
-			"Before Upscaling lets the game's DLSS reconstruct the NR-edited scene. After Upscaling runs NR at display resolution.\n"
-			"Separate Upscaling runs NR at render resolution, sends only its signed contribution through a second private DLSS history, "
-			"then applies it to the clean main-DLSS result. This experimental mode costs another DLSS evaluation and additional VRAM.\n"
-			"Finished Image runs NR last, after the frame's tonemap - Effects11's, Post Processing's, or vanilla's, whichever owned "
-			"it - instead of the linear HDR scene the other placements approximate with a proxy. Depth of Field and Motion Blur "
-			"already ran earlier in Post Processing's own pipeline (it tonemaps last, not them), so this does not run before them. "
-			"Disabled over the main menu and loading screens."));
-	}
-
-	const char* resolutionModeLabels[] = {
-		T(TKEY("neural_rendering_resolution_mode_uniform"), "Uniform"),
-		T(TKEY("neural_rendering_resolution_mode_per_axis"), "Per-Axis (Experimental)")
-	};
-	int resolutionMode = static_cast<int>(settings.neuralRenderingResolutionMode);
-	if (ImGui::Combo(T(TKEY("neural_rendering_resolution_mode"), "Model Resolution"), &resolutionMode, resolutionModeLabels, IM_ARRAYSIZE(resolutionModeLabels)))
-		settings.neuralRenderingResolutionMode = static_cast<uint>(std::clamp(resolutionMode, 0, 1));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_mode_tooltip"),
-			"Uniform runs the model at one scale of the frame it processes.\n"
-			"Per-Axis scales width and height independently (for example 0.65 x 0.85), trading a little "
-			"horizontal detail for a larger reduction of the neural workload."));
-	}
-	if (settings.neuralRenderingResolutionMode == 0) {
-		ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale"), "Resolution Scale"), &settings.neuralRenderingResolutionScale, 0.25f, 2.0f, "%.2f");
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_tooltip"),
-				"Resolution the model runs at, relative to the frame it processes.\n"
-				"Below 1.0 the model works on a downsampled copy and only its lighting and colour edit is applied "
-				"to the full-resolution frame, so fine detail is kept; 0.75-0.85 cuts the neural cost by roughly a "
-				"third with little visible loss. Above 1.0 supersamples the model input.\n"
-				"Changes apply once the slider settles."));
-		}
-	} else {
-		ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale_x"), "Horizontal Scale"), &settings.neuralRenderingResolutionScaleX, 0.25f, 2.0f, "%.2f");
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_x_tooltip"),
-				"Model width relative to the frame width. Changes apply once the slider settles."));
-		}
-		ImGui::SliderFloat(T(TKEY("neural_rendering_resolution_scale_y"), "Vertical Scale"), &settings.neuralRenderingResolutionScaleY, 0.25f, 2.0f, "%.2f");
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("neural_rendering_resolution_scale_y_tooltip"),
-				"Model height relative to the frame height. Changes apply once the slider settles."));
-		}
-	}
-	ImGui::Checkbox(T(TKEY("neural_rendering_depth_aware_resolve"), "Depth-Aware Silhouette Preservation"), &settings.neuralRenderingDepthAwareResolve);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_depth_aware_resolve_tooltip"),
-			"When the model runs below full resolution, fades its edit across depth edges so background "
-			"changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0."));
-	}
-	ImGui::Checkbox(T(TKEY("neural_rendering_alternate_frames"), "Alternate Frames (Experimental)"), &settings.neuralRenderingAlternateFrames);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_alternate_frames_tooltip"),
-			"Runs the model every other frame and re-applies its previous result to the frames in between, "
-			"fading it wherever the image changed. Halves the neural cost, but fast motion may show a "
-			"one-frame lag in the model's lighting and detail changes."));
-	}
-
-	// --- Model tuning: information handed to the DLSS Neural Rendering model itself ---
-	ImGui::Separator();
-	ImGui::TextUnformatted(T(TKEY("neural_rendering_model_inputs"), "Model Tuning"));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_model_inputs_tooltip"),
-			"These are handed to the DLSS Neural Rendering model itself, guiding what it does to the frame. "
-			"The strengths further down control how much of its answer Cav's Unity Shaders actually applies."));
-	}
-
-	const char* neuralStyles[] = {
-		T(TKEY("neural_rendering_style_default"), "Default"),
-		T(TKEY("neural_rendering_style_natural"), "Natural"),
-		T(TKEY("neural_rendering_style_cinematic"), "Cinematic")
-	};
-	int neuralStyle = static_cast<int>(settings.neuralRenderingStyle);
-	if (ImGui::Combo(T(TKEY("neural_rendering_style"), "NR Style"), &neuralStyle, neuralStyles, IM_ARRAYSIZE(neuralStyles)))
-		settings.neuralRenderingStyle = static_cast<uint>(std::clamp(neuralStyle, 0, 2));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_style_tooltip"), "Choose the Neural Rendering visual style."));
-	}
-
-	ImGui::SliderFloat(T(TKEY("neural_rendering_intensity"), "NR Intensity"), &settings.neuralRenderingIntensity, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_intensity_tooltip"), "Adjust the overall Neural Rendering intensity."));
-	}
-	ImGui::SliderFloat(T(TKEY("neural_rendering_local_tone"), "Local Tone Strength"), &settings.neuralRenderingLocalToneStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_local_tone_tooltip"), "Adjust local tone detail."));
-	}
-	ImGui::SliderFloat(T(TKEY("neural_rendering_local_structure"), "Local Structure Strength"), &settings.neuralRenderingLocalStructureStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_local_structure_tooltip"), "Adjust local structure detail."));
-	}
-	ImGui::SliderFloat(T(TKEY("neural_rendering_skin_structure"), "Skin Structure Strength"), &settings.neuralRenderingSkinStructureStrength, -1.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_skin_structure_tooltip"), "Adjust skin structure detail. -1 disables this control."));
-	}
-	ImGui::Checkbox(T(TKEY("neural_rendering_automatic_mask"), "Automatic Mask"), &settings.neuralRenderingAutomaticMask);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_automatic_mask_tooltip"), "Generates the skin mask automatically."));
-	}
-
-	// --- Strengths: how much of the model's answer Cav's Unity Shaders applies ---
-	ImGui::Separator();
-	ImGui::TextUnformatted(T(TKEY("neural_rendering_strengths"), "Strengths"));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_strengths_tooltip"),
-			"How much of the model's answer is actually applied to the frame. The per-category overrides "
-			"below multiply on top of these as a final adjustment layer."));
-	}
-
-	ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"), &settings.neuralRenderingColorStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_color_strength_tooltip"),
-			"Blend the model's color changes independently of its bounded lighting and detail changes. 1 is the "
-			"model's own color change; above 1 extrapolates the same change further."));
-	}
-	ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"), &settings.neuralRenderingTransferStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_transfer_strength_tooltip"),
-			"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
-			"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
-	}
-	ImGui::SliderFloat(T(TKEY("neural_rendering_luminosity_strength"), "Luminosity Strength"), &settings.neuralRenderingLuminosityStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_luminosity_strength_tooltip"),
-			"Scales only the model's light/dark change, on top of Transfer Strength; its color and detail edit "
-			"are unaffected. Lower it if Neural Rendering reads as too contrasty without giving up its color work."));
-	}
-	ImGui::Checkbox(T(TKEY("neural_rendering_ratio_guard_enabled"), "Enable Ratio Guard"), &settings.neuralRenderingRatioGuardEnabled);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_ratio_guard_enabled_tooltip"),
-			"Off by default: the model's light/dark change is applied exactly as it computed it, however far it "
-			"swings - including turning a lit surface fully into shadow. Turn this on to cap that swing with Max "
-			"Ratio below, if a specific scene flashes or flickers; capping it can also crush shadow detail the "
-			"model was correctly reproducing."));
-	}
-	if (settings.neuralRenderingRatioGuardEnabled) {
-		ImGui::SliderFloat(T(TKEY("neural_rendering_max_ratio"), "Max Ratio"), &settings.neuralRenderingMaxRatio, 1.0f, 8.0f, "%.2f");
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("neural_rendering_max_ratio_tooltip"),
-				"How far the model's light/dark change is allowed to push a pixel, as a multiple of its original "
-				"brightness in either direction (2 means at most half as dark or twice as bright). 1 disables any "
-				"brightness change. Lower this if a specific scene flashes or flickers; raising it further "
-				"re-approaches the guard being off."));
-		}
-	}
-
-	// --- Per-category overrides, each with its own hue guard ---
-	ImGui::Separator();
-	ImGui::TextUnformatted(T(TKEY("neural_rendering_category_overrides"), "Per-Category Overrides"));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_category_overrides_tooltip"),
-			"Override the strengths above, and toggle hue guard, independently for each material category. "
-			"The strengths above still apply afterwards as a final multiplier over every category."));
-	}
-
-	const auto drawCategoryStrengths = [&](const char* id, const char* label,
-										   NeuralRendering::CategoryStrengths& strengths, const char* tooltip = nullptr) {
-		if (!ImGui::TreeNodeEx(id, ImGuiTreeNodeFlags_None, "%s", label))
-			return;
-		if (tooltip) {
-			if (auto _tt = Util::HoverTooltipWrapper())
-				ImGui::TextUnformatted(tooltip);
-		}
-		ImGui::SliderFloat(T(TKEY("neural_rendering_color_strength"), "Color Strength"),
-			&strengths.colorStrength, 0.0f, 2.0f, "%.2f");
-		ImGui::SliderFloat(T(TKEY("neural_rendering_transfer_strength"), "Transfer Strength"),
-			&strengths.transferStrength, 0.0f, 2.0f, "%.2f");
-		ImGui::SliderFloat(T(TKEY("neural_rendering_luminosity_strength"), "Luminosity Strength"),
-			&strengths.luminosityStrength, 0.0f, 2.0f, "%.2f");
-		ImGui::Checkbox(T(TKEY("neural_rendering_hue_guard"), "Neutral Colour Guard"), &strengths.hueGuard);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("neural_rendering_hue_guard_tooltip"),
-				"Stops the model from tinting this category's renderer-neutral shading (grey, or near-grey "
-				"shadows) with its own colour bias. Surfaces the model already recolours are unaffected. "
-				"Only Hair guards by default."));
-		}
-		ImGui::TreePop();
-	};
-
-	drawCategoryStrengths("Skin", T(TKEY("neural_rendering_category_skin"), "Skin"), settings.neuralRenderingSkinStrengths);
-	drawCategoryStrengths("Hair", T(TKEY("neural_rendering_category_hair"), "Hair"), settings.neuralRenderingHairStrengths);
-	drawCategoryStrengths("Eyes", T(TKEY("neural_rendering_category_eyes"), "Eyes"), settings.neuralRenderingEyesStrengths);
-	drawCategoryStrengths("Foliage", T(TKEY("neural_rendering_category_foliage"), "Foliage"), settings.neuralRenderingFoliageStrengths,
-		T(TKEY("neural_rendering_category_foliage_tooltip"), "Trees and grass."));
-	drawCategoryStrengths("Landscape", T(TKEY("neural_rendering_category_landscape"), "Landscape"), settings.neuralRenderingLandscapeStrengths);
-	drawCategoryStrengths("Equipment", T(TKEY("neural_rendering_category_equipment"), "Equipment"), settings.neuralRenderingEquipmentStrengths,
-		T(TKEY("neural_rendering_category_equipment_tooltip"), "Armor, clothing, and weapons worn or wielded by humanoid actors. Bare skin counts as Skin."));
-	drawCategoryStrengths("EverythingElse", T(TKEY("neural_rendering_category_everything_else"), "Everything Else"),
-		settings.neuralRenderingEverythingElseStrengths,
-		T(TKEY("neural_rendering_category_everything_else_tooltip"),
-			"Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above."));
-
-	// --- Debug: inspect the category classification itself ---
-	ImGui::Separator();
-	ImGui::TextUnformatted(T(TKEY("neural_rendering_debug"), "Debug"));
-
-	ImGui::Checkbox(T(TKEY("neural_rendering_debug_category_view"), "Show Material Categories"), &settings.neuralRenderingDebugCategoryView);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_debug_category_view_tooltip"),
-			"Replaces the frame with a flat colour per classified material category (red Skin, orange Hair, "
-			"yellow Eyes, green Foliage, cyan Landscape, purple Equipment, near-black Everything Else). Shows "
-			"the raw per-pixel classification, not the per-category strengths above. Neural Rendering still "
-			"evaluates normally underneath, so this costs the same as leaving it off."));
-	}
-
-	ImGui::BeginDisabled(settings.neuralRenderingPlacement != 3);
-	ImGui::Checkbox(T(TKEY("neural_rendering_raw_model_output"), "Raw Model Output"), &settings.neuralRenderingRawModelOutput);
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("neural_rendering_raw_model_output_tooltip"),
-			"Finished Image only. Writes what the DLSS model actually produced straight to the screen, skipping "
-			"every strength, guard, and blend above entirely. Useful for telling apart a weak model answer from "
-			"an over-conservative resolve - not meant to be left on."));
-	}
-
-	if (!neuralRenderingControlsAvailable)
-		ImGui::EndDisabled();
-}
-
 void Upscaling::SaveSettings(json& o_json)
 {
 	o_json = settings;
@@ -843,41 +516,6 @@ void Upscaling::LoadSettings(json& o_json)
 			clampedReflexFPSLimit);
 	}
 	settings.reflexFPSLimit = clampedReflexFPSLimit;
-	if (settings.neuralRenderingPlacement > 3) {
-		logger::warn("[Upscaling] Loaded neuralRenderingPlacement {} out of range, clamping to 1", settings.neuralRenderingPlacement);
-		settings.neuralRenderingPlacement = 1;
-	}
-	if (settings.neuralRenderingStyle > 2)
-		settings.neuralRenderingStyle = 2;
-	const auto sanitizeNeuralFloat = [](float& value, float fallback, float min, float max) {
-		if (!std::isfinite(value))
-			value = fallback;
-		value = std::clamp(value, min, max);
-	};
-	sanitizeNeuralFloat(settings.neuralRenderingIntensity, 0.8f, 0.0f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingColorStrength, 1.0f, 0.0f, 1.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingLocalToneStrength, 1.0f, 0.0f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingLocalStructureStrength, 1.0f, 0.0f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingSkinStructureStrength, -1.0f, -1.0f, 2.0f);
-	if (settings.neuralRenderingResolutionMode > 1)
-		settings.neuralRenderingResolutionMode = 1;
-	sanitizeNeuralFloat(settings.neuralRenderingResolutionScale, 1.0f, 0.25f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleX, 1.0f, 0.25f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingResolutionScaleY, 1.0f, 0.25f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingTransferStrength, 1.0f, 0.0f, 2.0f);
-	sanitizeNeuralFloat(settings.neuralRenderingLuminosityStrength, 1.0f, 0.0f, 2.0f);
-	const auto sanitizeCategoryStrengths = [&](NeuralRendering::CategoryStrengths& strengths) {
-		sanitizeNeuralFloat(strengths.colorStrength, 1.0f, 0.0f, 1.0f);
-		sanitizeNeuralFloat(strengths.transferStrength, 1.0f, 0.0f, 2.0f);
-		sanitizeNeuralFloat(strengths.luminosityStrength, 1.0f, 0.0f, 2.0f);
-	};
-	sanitizeCategoryStrengths(settings.neuralRenderingEverythingElseStrengths);
-	sanitizeCategoryStrengths(settings.neuralRenderingSkinStrengths);
-	sanitizeCategoryStrengths(settings.neuralRenderingHairStrengths);
-	sanitizeCategoryStrengths(settings.neuralRenderingEyesStrengths);
-	sanitizeCategoryStrengths(settings.neuralRenderingFoliageStrengths);
-	sanitizeCategoryStrengths(settings.neuralRenderingLandscapeStrengths);
-	sanitizeCategoryStrengths(settings.neuralRenderingEquipmentStrengths);
 	auto iniSettingCollection = globals::game::iniPrefSettingCollection;
 	if (iniSettingCollection) {
 		auto setting = iniSettingCollection->GetSetting("bUseTAA:Display");
@@ -900,12 +538,6 @@ void Upscaling::DataLoaded()
 	// The game defaults this to a non-zero value
 	static auto fDRClampOffset = RE::GetINISetting("fDRClampOffset:Display");
 	fDRClampOffset->data.f = 0.0f;
-
-	// Vanilla keyword on every playable/NPC race; creatures lack it.
-	if (auto form = RE::TESForm::LookupByEditorID("ActorTypeNPC"))
-		actorTypeNPCKeyword = form->As<RE::BGSKeyword>();
-	if (!actorTypeNPCKeyword)
-		logger::warn("[Upscaling] ActorTypeNPC keyword not found; Neural Rendering Equipment category will be empty");
 }
 
 void Upscaling::Load()
@@ -922,16 +554,6 @@ struct BSImageSpace_Init_FXAA
 		// Force FXAA off safely
 		auto fxaaEnabled = reinterpret_cast<bool*>(REL::RelocationID(513281, 391028).address());
 		*fxaaEnabled = false;
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
-struct BSLightingShader_SetupGeometry_NeuralCategory
-{
-	static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
-	{
-		globals::features::upscaling.BSLightingShader_SetupNeuralCategory(Pass);
-		func(This, Pass, RenderFlags);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -958,15 +580,6 @@ void Upscaling::PostPostLoad()
 
 	// Forces FXAA off
 	stl::detour_thunk<BSImageSpace_Init_FXAA>(REL::RelocationID(98974, 105626));
-
-	// Flags geometry belonging to humanoid actors for
-	// NeuralRenderingCategories::Equipment (see BSLightingShader_SetupNeuralCategory).
-	stl::write_vfunc<0x6, BSLightingShader_SetupGeometry_NeuralCategory>(RE::VTABLE_BSLightingShader[0]);
-
-	// Lets forward (post-deferred) lighting draws - sorted alpha geometry such as
-	// hair, and the first-person view - write their Neural Rendering category
-	// (see RestoreNeuralRenderingCategories).
-	stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
 
 	if (!MenuOpenCloseEventHandler::Register())
 		logger::warn("[Upscaling] MenuOpenCloseEventHandler registration failed; temporal history may survive loading transitions");
@@ -1055,23 +668,6 @@ void Upscaling::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 			sharpenerTexture->CreateUAV(uavDesc);
 		}
 
-		// Neural Rendering output is always a full-size, non-aliasing texture matching kMAIN.
-		if (!neuralRenderingTexture) {
-			main.texture->GetDesc(&texDesc);
-			main.SRV->GetDesc(&srvDesc);
-			main.UAV->GetDesc(&uavDesc);
-			texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-			neuralRenderingTexture = new Texture2D(texDesc, "Upscaling::NeuralRenderingTexture");
-			neuralRenderingTexture->CreateSRV(srvDesc);
-			neuralRenderingTexture->CreateUAV(uavDesc);
-		}
-
-		// materialCategoriesSnapshot is deliberately NOT created here: this function
-		// runs from BSShaderRenderTargets_Create, during the game's own render-target
-		// (re)creation, and Masks2 (a repurposed native target - see MASKS2 in
-		// Deferred.h) is not guaranteed to exist yet at that point. It's created
-		// lazily in CaptureNeuralRenderingCategories() instead, which only ever runs
-		// mid-frame after Masks2 has genuinely been rendered into.
 	}
 }
 
@@ -1119,35 +715,6 @@ void Upscaling::DestroyUpscalingTextureResources(UpscaleMethod a_upscalemethod)
 			delete sharpenerTexture;
 			sharpenerTexture = nullptr;
 		}
-		if (neuralRenderingTexture) {
-			neuralRenderingTexture->srv = nullptr;
-			neuralRenderingTexture->uav = nullptr;
-			neuralRenderingTexture->resource = nullptr;
-
-			delete neuralRenderingTexture;
-			neuralRenderingTexture = nullptr;
-		}
-		if (neuralRenderingFinishedImageTexture) {
-			neuralRenderingFinishedImageTexture->resource = nullptr;
-
-			delete neuralRenderingFinishedImageTexture;
-			neuralRenderingFinishedImageTexture = nullptr;
-		}
-		if (neuralRenderingFinishedImageDepthSnapshot) {
-			neuralRenderingFinishedImageDepthSnapshot->srv = nullptr;
-			neuralRenderingFinishedImageDepthSnapshot->resource = nullptr;
-
-			delete neuralRenderingFinishedImageDepthSnapshot;
-			neuralRenderingFinishedImageDepthSnapshot = nullptr;
-		}
-		neuralRenderingFinishedImageGuidesReady = false;
-		if (materialCategoriesSnapshot) {
-			materialCategoriesSnapshot->srv = nullptr;
-			materialCategoriesSnapshot->resource = nullptr;
-
-			delete materialCategoriesSnapshot;
-			materialCategoriesSnapshot = nullptr;
-		}
 	}
 }
 
@@ -1172,8 +739,6 @@ void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 			if (previousUpscaleMode == UpscaleMethod::kDLSS) {
 				if (previousUpscalingWasActive || streamline.featureDLSS)
 					streamline.DestroyDLSSResources();
-				neuralRendering.DestroyResources();
-				neuralRenderingResourcesActive = false;
 			} else if (previousUpscalingWasActive && previousUpscaleMode == UpscaleMethod::kFSR)
 				fidelityFX.DestroyFSRResources();
 			if (a_upscalemethod == UpscaleMethod::kFSR)
@@ -1800,20 +1365,7 @@ void Upscaling::Upscale()
 {
 	ZoneScoped;
 	auto upscaleMethod = GetUpscaleMethod();
-	neuralRenderingResultValid = false;
-	neuralRenderingResetThisFrame = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
-	if (settings.neuralRenderingEnabled && neuralRenderingActivePlacement != settings.neuralRenderingPlacement) {
-		if (neuralRenderingActivePlacement != UINT_MAX && neuralRenderingResourcesActive) {
-			neuralRendering.DestroyResources();
-			neuralRenderingResourcesActive = false;
-		}
-		neuralRenderingActivePlacement = settings.neuralRenderingPlacement;
-	}
-	if (!settings.neuralRenderingEnabled && neuralRenderingResourcesActive) {
-		neuralRendering.DestroyResources();
-		neuralRenderingResourcesActive = false;
-		neuralRenderingActivePlacement = UINT_MAX;
-	}
+	dlssResetThisFrame = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
 
 	auto state = globals::state;
 	auto context = globals::d3d::context;
@@ -1879,65 +1431,8 @@ void Upscaling::Upscale()
 		TracyD3D11Zone(globals::state->tracyCtx, "Upscaling Dispatch");
 
 		if (upscaleMethod == UpscaleMethod::kDLSS) {
-			auto renderSize = Util::ConvertToDynamic(float2{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
-			uint32_t renderWidth = static_cast<uint32_t>(renderSize.x);
-			uint32_t renderHeight = static_cast<uint32_t>(renderSize.y);
-			ID3D11Resource* dlssInput = main.texture;
-			if (settings.neuralRenderingEnabled &&
-				(settings.neuralRenderingPlacement == 0 || settings.neuralRenderingPlacement == 2) &&
-				neuralRendering.IsAvailable() && neuralRenderingTexture) {
-				neuralRenderingResourcesActive = true;
-				NeuralRendering::Options neuralOptions = MakeNeuralRenderingOptions();
-				// Before the upscaler colour and guides are both at render resolution,
-				// and the colour is the jittered raster DLSS is about to de-jitter. Hand
-				// the model the same offset Streamline gets so it can see a stable framing.
-				neuralOptions.guideWidth = renderWidth;
-				neuralOptions.guideHeight = renderHeight;
-				neuralOptions.jitterOffsetX = -jitter.x;
-				neuralOptions.jitterOffsetY = -jitter.y;
-				// Pre-tonemap: show the model the frame exposed and graded as it will be displayed.
-				neuralOptions.display = MakeNeuralRenderingDisplayTransform();
-				const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-				// The pre-blended-decals snapshot, not the live Masks2 - see
-				// CaptureNeuralRenderingCategories.
-				auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
-				// Hand the model the game's raw motion-vector target, not the 5x5
-				// dilated ghosting-reduction copy Streamline gets below. That copy
-				// tags a two-texel rim of background with foreground motion, which
-				// is a deliberate lie for DLSS's history rejection. The model feeds
-				// its own temporal state and was trained on plain per-pixel vectors,
-				// so the dilated rim reads as flicker or smear along moving edges.
-				globals::profiler->BeginPass("Upscaling::NeuralRenderingGenerate");
-				if (settings.neuralRenderingPlacement == 0) {
-					if (neuralRendering.Evaluate(main.texture,
-							neuralRenderingTexture->resource.get(),
-							depth.texture,
-							depth.depthSRV,
-							materialCategoriesSRV,
-							motionVector.texture,
-							renderWidth,
-							renderHeight,
-							neuralOptions)) {
-						dlssInput = neuralRenderingTexture->resource.get();
-					}
-				} else {
-					const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
-					const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
-					neuralRendering.PrepareSeparateUpscaling(main.texture,
-						neuralRenderingTexture->resource.get(),
-						depth.texture,
-						depth.depthSRV,
-						materialCategoriesSRV,
-						motionVector.texture,
-						motionVectorCopyTexture->resource.get(),
-						renderWidth,
-						renderHeight,
-						nativeWidth,
-						nativeHeight,
-						neuralOptions);
-				}
-				globals::profiler->EndPass();
-			}
+			// Neural Rendering seam S1 (Before / Separate Upscaling): may substitute the DLSS input.
+			ID3D11Resource* dlssInput = globals::features::neuralRendering.PrepareUpscaleInput(main.texture, motionVectorCopyTexture->resource.get());
 			globals::profiler->BeginPass("Upscaling::Upscale");
 			streamline.Upscale(dlssInput, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get());
 			globals::profiler->EndPass();
@@ -1951,684 +1446,16 @@ void Upscaling::Upscale()
 	}
 }
 
-namespace
-{
-	bool IsHairHeadPart(const RE::BGSHeadPart* a_part)
-	{
-		using HeadPartType = RE::BGSHeadPart::HeadPartType;
-		return a_part && (a_part->type == HeadPartType::kHair || a_part->type == HeadPartType::kFacialHair);
-	}
-
-	// Whether any of a_parts, or one of their extra parts (hairlines ride along
-	// as extra parts of their hair), is a hair head part named a_partName.
-	bool MatchesHairHeadPart(RE::BGSHeadPart** a_parts, std::uint32_t a_count, const RE::BSFixedString& a_partName)
-	{
-		if (!a_parts)
-			return false;
-		for (std::uint32_t i = 0; i < a_count; ++i) {
-			const auto* part = a_parts[i];
-			if (!IsHairHeadPart(part))
-				continue;
-			if (part->formEditorID == a_partName)
-				return true;
-			for (const auto* extra : part->extraParts) {
-				if (extra && extra->formEditorID == a_partName)
-					return true;
-			}
-		}
-		return false;
-	}
-
-	// Hair by shader authoring: the hair-tint material (which the HAIR technique
-	// already covers) or the hair soft-lighting property flag on any other
-	// material. This is what identifies wigs and other hair worn as equipment,
-	// which have no head part to match.
-	bool IsHairTintShader(const RE::BSRenderPass* a_pass)
-	{
-		if (!a_pass->shaderProperty || a_pass->shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
-			return false;
-		const auto* lightingProperty = static_cast<const RE::BSLightingShaderProperty*>(a_pass->shaderProperty);
-		return (lightingProperty->material && lightingProperty->material->GetFeature() == RE::BSShaderMaterial::Feature::kHairTint) ||
-		       lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kHairTint);
-	}
-
-	// Head parts hang directly under the actor's skinned face node, each as a
-	// child named by the part's editor ID (what Actor::GetHeadPartObject looks
-	// up), so the head part a geometry belongs to is its ancestor sitting right
-	// under that node. Classifying hair from the NPC record rather than the
-	// material catches the hairlines, braids and loose strands that hair mods
-	// author with the default or skin-tint shader type instead of hair tint.
-	bool IsHairHeadPartGeometry(RE::Actor* a_actor, const RE::BSGeometry* a_geometry)
-	{
-		const auto* faceNode = a_actor->GetFaceNodeSkinned();
-		if (!faceNode)
-			return false;
-
-		const RE::NiAVObject* partRoot = a_geometry;
-		while (partRoot && partRoot->parent != faceNode)
-			partRoot = partRoot->parent;
-		if (!partRoot)
-			return false;
-
-		auto* npc = a_actor->GetActorBase();
-		if (!npc)
-			return false;
-		if (npc->HasOverlays() && MatchesHairHeadPart(npc->GetBaseOverlays(), npc->GetNumBaseOverlays(), partRoot->name))
-			return true;
-		return MatchesHairHeadPart(npc->headParts, static_cast<std::uint32_t>(std::max<std::int8_t>(npc->numHeadParts, 0)), partRoot->name);
-	}
-}
-
-void Upscaling::BSLightingShader_SetupNeuralCategory(RE::BSRenderPass* a_pass)
-{
-	auto deferred = globals::deferred;
-	auto state = globals::state;
-	constexpr auto humanoidFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsHumanoidActor);
-	constexpr auto hairFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsHair);
-
-	// Every lighting draw that writes Masks2: the deferred pass and the forward
-	// draws between RestoreNeuralRenderingCategories and
-	// FinishNeuralRenderingCategoryCapture. A forward draw seen with cleared
-	// flags would land skinned armor in Skin and rigid armor in Everything Else.
-	const bool writesCategories = deferred->deferredPass || neuralRenderingForwardCaptureActive;
-
-	bool isHumanoidActor = false;
-	bool isHair = false;
-	if (writesCategories && settings.neuralRenderingEnabled && actorTypeNPCKeyword && a_pass->geometry) {
-		// Hair by shader authoring (wigs) or by head part (hairlines, braids and
-		// strands authored with other shader types); see Lighting.hlsl.
-		isHair = IsHairTintShader(a_pass);
-		if (auto userData = a_pass->geometry->GetUserData()) {
-			if (auto actor = userData->As<RE::Actor>()) {
-				// Any geometry owned by a humanoid actor - skinned armor/clothing
-				// as well as rigid weapons, shields and helmets attached to its
-				// skeleton. Skin (body and face) and eyes are claimed by their own
-				// material permutations before the shader consults this flag.
-				if (auto race = actor->GetRace())
-					isHumanoidActor = race->HasKeyword(actorTypeNPCKeyword);
-				isHair = isHair || IsHairHeadPartGeometry(actor, a_pass->geometry);
-			}
-		}
-	}
-
-	auto& descriptor = state->permutationData.ExtraShaderDescriptor;
-	descriptor &= ~(humanoidFlag | hairFlag);
-	if (isHumanoidActor)
-		descriptor |= humanoidFlag;
-	if (isHair)
-		descriptor |= hairFlag;
-}
-
-void Upscaling::CaptureNeuralRenderingCategories()
-{
-	// A new frame's opaque categories supersede any forward capture still armed
-	// from a frame that never reached Main_PostProcessing.
-	neuralRenderingForwardCaptureActive = false;
-
-	// Only paid for when Neural Rendering can actually consume it: DLSS-only.
-	// The decode shader always samples the category texture now, since each
-	// category's hue guard toggle needs to know which material a pixel is.
-	if (!settings.neuralRenderingEnabled)
-		return;
-	if (GetUpscaleMethod() != UpscaleMethod::kDLSS)
-		return;
-
-	auto renderer = globals::game::renderer;
-	auto& masks2 = renderer->GetRuntimeData().renderTargets[MASKS2];
-	if (!masks2.texture)
-		return;
-
-	// Created lazily here rather than in CreateUpscalingTextureResources: this
-	// function only ever runs mid-frame (from Deferred's blended-decals hook),
-	// after Masks2 has genuinely been (re)created and rendered into.
-	// CreateUpscalingTextureResources runs during BSShaderRenderTargets_Create,
-	// the game's own render-target (re)creation, where Masks2 (a repurposed
-	// native target - see MASKS2 in Deferred.h) is not yet guaranteed to exist.
-	if (!materialCategoriesSnapshot) {
-		D3D11_TEXTURE2D_DESC texDesc{};
-		masks2.texture->GetDesc(&texDesc);
-		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-		srvDesc.Format = texDesc.Format;
-		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-		srvDesc.Texture2D.MostDetailedMip = 0;
-		srvDesc.Texture2D.MipLevels = 1;
-
-		materialCategoriesSnapshot = new Texture2D(texDesc, "Upscaling::MaterialCategoriesSnapshot");
-		materialCategoriesSnapshot->CreateSRV(srvDesc);
-	}
-
-	globals::profiler->BeginPass("Upscaling::NeuralRenderingCategoryCapture");
-	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
-	globals::profiler->EndPass();
-}
-
-void Upscaling::RestoreNeuralRenderingCategories()
-{
-	neuralRenderingForwardCaptureActive = false;
-	if (!materialCategoriesSnapshot || !settings.neuralRenderingEnabled || GetUpscaleMethod() != UpscaleMethod::kDLSS)
-		return;
-
-	auto& masks2 = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
-	if (!masks2.texture)
-		return;
-
-	// Masks2 is unbound here (EndDeferred cleared the OM before DeferredPasses),
-	// and the composite has already read the decal-blended AO it held.
-	globals::profiler->BeginPass("Upscaling::NeuralRenderingCategoryCapture");
-	globals::d3d::context->CopyResource(masks2.texture, materialCategoriesSnapshot->resource.get());
-	globals::profiler->EndPass();
-	neuralRenderingForwardCaptureActive = true;
-}
-
-void Upscaling::FinishNeuralRenderingCategoryCapture()
-{
-	if (!neuralRenderingForwardCaptureActive)
-		return;
-	neuralRenderingForwardCaptureActive = false;
-
-	auto& masks2 = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
-	if (!materialCategoriesSnapshot || !masks2.texture)
-		return;
-
-	globals::profiler->BeginPass("Upscaling::NeuralRenderingCategoryCapture");
-	globals::d3d::context->CopyResource(materialCategoriesSnapshot->resource.get(), masks2.texture);
-	globals::profiler->EndPass();
-}
-
-void Upscaling::BSBatchRenderer_RenderPassImmediately::thunk(RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags)
-{
-	auto& upscaling = globals::features::upscaling;
-	auto* deferred = globals::deferred;
-	auto* state = globals::state;
-	auto& runtimeData = globals::game::shadowState->GetRuntimeData();
-
-	// Only the forward lighting draws of the main world view, into the same
-	// full-resolution colour target the deferred pass restored: a cubemap
-	// face or reflection target in slot 0 would fail OMSetRenderTargets
-	// against a render-resolution Masks2.
-	const bool bindCategories = upscaling.neuralRenderingForwardCaptureActive &&
-	                            !deferred->deferredPass && state->inWorld &&
-	                            a_pass && a_pass->shader &&
-	                            a_pass->shader->shaderType.get() == RE::BSShader::Type::Lighting &&
-	                            !(state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) &&
-	                            runtimeData.renderTargets[0] == deferred->forwardRenderTargets[0];
-
-	if (!bindCategories) {
-		func(a_pass, a_technique, a_alphaTest, a_renderFlags);
-		return;
-	}
-
-	runtimeData.renderTargets[7] = MASKS2;
-	runtimeData.setRenderTargetMode[7] = RE::BSGraphics::SetRenderTargetMode::SRTM_NO_CLEAR;
-	runtimeData.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
-
-	func(a_pass, a_technique, a_alphaTest, a_renderFlags);
-
-	runtimeData.renderTargets[7] = RE::RENDER_TARGET::kNONE;
-	runtimeData.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
-}
-
-NeuralRendering::Options Upscaling::MakeNeuralRenderingOptions() const
-{
-	NeuralRendering::Options options{};
-	options.style = settings.neuralRenderingStyle;
-	options.intensity = settings.neuralRenderingIntensity;
-	options.colorStrength = settings.neuralRenderingColorStrength;
-	options.transferStrength = settings.neuralRenderingTransferStrength;
-	options.luminosityStrength = settings.neuralRenderingLuminosityStrength;
-	options.maxRatio = settings.neuralRenderingMaxRatio;
-	options.ratioGuardEnabled = settings.neuralRenderingRatioGuardEnabled;
-	using MaterialCategory = NeuralRendering::MaterialCategory;
-	const auto setCategoryStrengths = [&](MaterialCategory category, const NeuralRendering::CategoryStrengths& strengths) {
-		options.categoryStrengths[static_cast<std::size_t>(category)] = strengths;
-	};
-	setCategoryStrengths(MaterialCategory::kEverythingElse, settings.neuralRenderingEverythingElseStrengths);
-	setCategoryStrengths(MaterialCategory::kSkin, settings.neuralRenderingSkinStrengths);
-	setCategoryStrengths(MaterialCategory::kHair, settings.neuralRenderingHairStrengths);
-	setCategoryStrengths(MaterialCategory::kEyes, settings.neuralRenderingEyesStrengths);
-	setCategoryStrengths(MaterialCategory::kFoliage, settings.neuralRenderingFoliageStrengths);
-	setCategoryStrengths(MaterialCategory::kLandscape, settings.neuralRenderingLandscapeStrengths);
-	setCategoryStrengths(MaterialCategory::kEquipment, settings.neuralRenderingEquipmentStrengths);
-	options.depthAwareResolve = settings.neuralRenderingDepthAwareResolve;
-	options.alternateFrames = settings.neuralRenderingAlternateFrames;
-	options.localToneStrength = settings.neuralRenderingLocalToneStrength;
-	options.localStructureStrength = settings.neuralRenderingLocalStructureStrength;
-	options.skinStructureStrength = settings.neuralRenderingSkinStructureStrength;
-	options.automaticMask = settings.neuralRenderingAutomaticMask;
-	options.debugCategoryView = settings.neuralRenderingDebugCategoryView;
-	options.rawModelOutput = settings.neuralRenderingRawModelOutput;
-	options.reset = neuralRenderingResetThisFrame;
-	const bool perAxis = settings.neuralRenderingResolutionMode == 1;
-	options.resolutionScaleX = perAxis ? settings.neuralRenderingResolutionScaleX : settings.neuralRenderingResolutionScale;
-	options.resolutionScaleY = perAxis ? settings.neuralRenderingResolutionScaleY : settings.neuralRenderingResolutionScale;
-	options.superResolutionQualityMode = settings.qualityMode;
-	options.superResolutionPreset = settings.presetDLSS;
-	return options;
-}
-
-void Upscaling::CaptureNeuralRenderingDisplayTransform(RE::ImageSpaceShaderParam* a_param)
-{
-	auto& capture = neuralRenderingDisplayCapture;
-	capture.valid = false;
-	capture.adaptationSRV = nullptr;
-	if (!settings.neuralRenderingEnabled || !a_param || !globals::d3d::context ||
-		globals::state->GetTonemapOwner() != State::TonemapOwner::kVanilla)
-		return;
-
-	// ISHDR.hlsl's PerGeometry constants, as float4 slots of the pass's pixel constant group:
-	// Flags c0, TimingData c1, Param c2, Cinematic c3, Tint c4 (Fade and the blur data follow).
-	constexpr std::uint32_t kParamOffset = 8;
-	constexpr std::uint32_t kCinematicOffset = 12;
-	constexpr std::uint32_t kTintOffset = 16;
-	constexpr std::uint32_t kRequiredFloats = kTintOffset + 4;
-	if (!a_param->pixelConstantGroup || a_param->pixelConstantGroupSize < kRequiredFloats)
-		return;
-	std::copy_n(a_param->pixelConstantGroup + kParamOffset, 4, capture.param);
-	std::copy_n(a_param->pixelConstantGroup + kCinematicOffset, 4, capture.cinematic);
-	std::copy_n(a_param->pixelConstantGroup + kTintOffset, 4, capture.tint);
-
-	// Values outside what an imagespace can express mean the layout above is not what this
-	// pass carries; fall back to the plain proxy rather than grade the model's view with noise.
-	const auto within = [](float value, float low, float high) {
-		return std::isfinite(value) && value >= low && value <= high;
-	};
-	const bool plausible = within(capture.param[1], 0.0f, 1000.0f) &&
-	                       within(capture.cinematic[0], 0.0f, 4.0f) &&
-	                       within(capture.cinematic[2], 0.1f, 4.0f) &&
-	                       within(capture.cinematic[3], 0.1f, 4.0f) &&
-	                       within(capture.tint[0], 0.0f, 4.0f) && within(capture.tint[1], 0.0f, 4.0f) &&
-	                       within(capture.tint[2], 0.0f, 4.0f) && within(capture.tint[3], 0.0f, 1.0f);
-	if (!plausible) {
-		if (!neuralRenderingDisplayCaptureLogged) {
-			neuralRenderingDisplayCaptureLogged = true;
-			logger::warn("[Upscaling] Neural Rendering display transform: implausible ISHDR constants "
-						 "(white {:.3f}, saturation {:.3f}, contrast {:.3f}, brightness {:.3f}, tint amount {:.3f}); "
-						 "using the plain proxy",
-				capture.param[1], capture.cinematic[0], capture.cinematic[2], capture.cinematic[3], capture.tint[3]);
-		}
-		return;
-	}
-
-	// The vanilla pass samples its adaptation texture (AvgTex) at pixel-shader slot 2 and leaves
-	// it bound. It is a tiny, uniform target; anything larger is not the adaptation.
-	winrt::com_ptr<ID3D11ShaderResourceView> adaptationSRV;
-	globals::d3d::context->PSGetShaderResources(2, 1, adaptationSRV.put());
-	if (!adaptationSRV)
-		return;
-	winrt::com_ptr<ID3D11Resource> resource;
-	adaptationSRV->GetResource(resource.put());
-	const auto texture = resource ? resource.try_as<ID3D11Texture2D>() : nullptr;
-	if (!texture)
-		return;
-	D3D11_TEXTURE2D_DESC desc{};
-	texture->GetDesc(&desc);
-	constexpr UINT kMaxAdaptationExtent = 64;
-	if (!desc.Width || !desc.Height || desc.Width > kMaxAdaptationExtent || desc.Height > kMaxAdaptationExtent)
-		return;
-
-	capture.adaptationSRV = adaptationSRV;
-	capture.valid = true;
-	if (!neuralRenderingDisplayCaptureLogged) {
-		neuralRenderingDisplayCaptureLogged = true;
-		logger::info("[Upscaling] Neural Rendering display transform captured: adaptation {}x{} format {}, "
-					 "white {:.3f} filmic {:.0f}, saturation {:.3f} contrast {:.3f} brightness {:.3f}, "
-					 "tint ({:.3f}, {:.3f}, {:.3f}) x {:.3f}",
-			desc.Width, desc.Height, static_cast<int>(desc.Format),
-			capture.param[1], capture.param[2], capture.cinematic[0], capture.cinematic[2], capture.cinematic[3],
-			capture.tint[0], capture.tint[1], capture.tint[2], capture.tint[3]);
-	}
-}
-
-NeuralRendering::DisplayTransform Upscaling::MakeNeuralRenderingDisplayTransform() const
-{
-	NeuralRendering::DisplayTransform display{};
-
-	const auto& capture = neuralRenderingDisplayCapture;
-	if (capture.valid && capture.adaptationSRV) {
-		display.vanillaGrading = true;
-		display.vanillaAdaptationSRV = capture.adaptationSRV.get();
-		std::copy_n(capture.param, 4, display.param);
-		std::copy_n(capture.cinematic, 4, display.cinematic);
-		std::copy_n(capture.tint, 4, display.tint);
-	}
-
-	// Post Processing's Composite applies its auto exposure downstream of every pre-tonemap
-	// placement whether or not it owns the tonemap; mirror its formula (composite.ps.hlsl).
-	auto& postProcessing = globals::features::postProcessing;
-	if (postProcessing.loaded && !postProcessing.bypass && !postProcessing.IsTonemapOwnedByEffects11()) {
-		auto* autoExposure = postProcessing.GetPipelineFeature<HistogramAutoExposure>(PostProcessing::FeaturePipelineIndex::AutoExposure);
-		if (autoExposure && autoExposure->enabled && autoExposure->GetAdaptationSRV()) {
-			display.postProcessExposure = true;
-			display.postProcessAdaptationSRV = autoExposure->GetAdaptationSRV();
-			display.postProcessExposureScale = 0.18f * std::exp2(autoExposure->settings.ExposureCompensation);
-			display.postProcessAdaptationRange[0] = std::exp2(autoExposure->settings.AdaptationRange.x - 3.0f);
-			display.postProcessAdaptationRange[1] = std::exp2(autoExposure->settings.AdaptationRange.y - 3.0f);
-		}
-	}
-	return display;
-}
-
-bool Upscaling::EvaluateNeuralRenderingFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11ShaderResourceView* a_colorInSRV,
-	ID3D11Texture2D* a_colorOut)
-{
-	if (!settings.neuralRenderingEnabled || settings.neuralRenderingPlacement != 3)
-		return false;
-
-	// Past this point the user has clearly opted into this placement, so every remaining
-	// early-out is logged at debug level - this placement is new and the fail-closed checks
-	// below are silent by design, which otherwise looks identical to "doing nothing".
-	if (GetUpscaleMethod() != UpscaleMethod::kDLSS) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: upscale method is not DLSS");
-		return false;
-	}
-	if (!neuralRendering.IsAvailable()) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: backend unavailable");
-		return false;
-	}
-	if (!a_colorIn || !a_colorInSRV || !a_colorOut) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: missing colour input or output texture");
-		return false;
-	}
-	if (!neuralRenderingTexture) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: neuralRenderingTexture not created (DLSS not yet active?)");
-		return false;
-	}
-
-	auto renderer = globals::game::renderer;
-	// Guides captured for this upscaled frame by CaptureNeuralRenderingFinishedImageGuides().
-	// Consuming them means a later tonemap-pass call this frame (a different colour target)
-	// cannot re-run the model, which would reset its temporal history every frame.
-	if (!neuralRenderingFinishedImageGuidesReady || !neuralRenderingFinishedImageDepthSnapshot) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: no guides captured for this frame");
-		return false;
-	}
-	neuralRenderingFinishedImageGuidesReady = false;
-
-	auto* depthTexture = neuralRenderingFinishedImageDepthSnapshot->resource.get();
-	auto* depthSRV = neuralRenderingFinishedImageDepthSnapshot->srv.get();
-	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-	if (!depthTexture || !depthSRV || !motionVector.texture || !motionVector.SRV) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: depth or motion-vector guide missing "
-					  "(depthSnapshot={} depthSnapshotSRV={} motionVector.texture={} motionVector.SRV={})",
-			(void*)depthTexture, (void*)depthSRV, (void*)motionVector.texture, (void*)motionVector.SRV);
-		return false;
-	}
-
-	// The authoritative active resolution, same as every other Neural Rendering call site
-	// (e.g. the After Upscaling placement above) - not each resource's own GetDesc(), which can
-	// legitimately be a larger, differently-padded allocation than the frame's active region.
-	// This is the colour extent only; the guides' render-resolution extent was captured with them.
-	const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
-	const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
-	if (!nativeWidth || !nativeHeight) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: zero screen size ({}x{})", nativeWidth, nativeHeight);
-		return false;
-	}
-
-	// The category snapshot (opaque categories captured before decals, forward categories added after), not the live Masks2 - see CaptureNeuralRenderingCategories.
-	auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
-
-	// Same guide contract as the After Upscaling placement: the colour is display resolution and
-	// already resolved onto the unjittered grid, while depth (the pre-UpscaleDepth snapshot),
-	// motion vectors and the category snapshot are render resolution and still carry this
-	// frame's TAA jitter. Without these the model's motion vectors and every guide lookup are
-	// misscaled below native and swing with the jitter phase every frame.
-	NeuralRendering::Options options = MakeNeuralRenderingOptions();
-	options.guideWidth = neuralRenderingFinishedImageGuideWidth;
-	options.guideHeight = neuralRenderingFinishedImageGuideHeight;
-	options.guideJitterOffsetX = -jitter.x;
-	options.guideJitterOffsetY = -jitter.y;
-
-	// The tonemap output is gamma-encoded display colour, except when HDR Display has redirected
-	// kFRAMEBUFFER to its float16 texture and the scene arriving there is linear - the same test
-	// HDROutputCS applies (isSceneLinear || postProcessOutput). Post Processing owning the tonemap
-	// is its effective DisableVanillaTonemapping (see PostProcessing::GetCommonBufferData()).
-	const auto& hdrDisplay = globals::features::hdrDisplay;
-	const bool sceneLinear = hdrDisplay.loaded && hdrDisplay.framebufferRedirected &&
-	                         (globals::features::linearLighting.settings.enableLinearLighting ||
-								 globals::state->GetTonemapOwner() == State::TonemapOwner::kPostProcessing);
-	options.colorDomain = sceneLinear ? NeuralRendering::ColorDomain::kSceneLinear : NeuralRendering::ColorDomain::kDisplayGamma;
-
-	globals::profiler->BeginPass("Upscaling::NeuralRenderingGenerate");
-	const bool evaluated = neuralRendering.Evaluate(a_colorIn, a_colorOut,
-		depthTexture, depthSRV, materialCategoriesSRV, motionVector.texture,
-		nativeWidth, nativeHeight, options);
-	globals::profiler->EndPass();
-	if (!evaluated) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: Evaluate() returned false "
-					  "(see preceding [NeuralRendering] log lines for the reason)");
-		return false;
-	}
-
-	neuralRenderingResourcesActive = true;
-	return true;
-}
-
-void Upscaling::CaptureNeuralRenderingFinishedImageGuides()
-{
-	neuralRenderingFinishedImageGuidesReady = false;
-	if (GetUpscaleMethod() != UpscaleMethod::kDLSS || !settings.neuralRenderingEnabled || settings.neuralRenderingPlacement != 3)
-		return;
-
-	auto& depth = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-	if (!depth.texture || !depth.depthSRV)
-		return;
-
-	D3D11_TEXTURE2D_DESC depthDesc{};
-	depth.texture->GetDesc(&depthDesc);
-	auto*& snapshot = neuralRenderingFinishedImageDepthSnapshot;
-	if (snapshot && (snapshot->desc.Width != depthDesc.Width || snapshot->desc.Height != depthDesc.Height ||
-						snapshot->desc.Format != depthDesc.Format)) {
-		snapshot->srv = nullptr;
-		snapshot->resource = nullptr;
-		delete snapshot;
-		snapshot = nullptr;
-	}
-	if (!snapshot) {
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-		depth.depthSRV->GetDesc(&srvDesc);
-		try {
-			// The source's own description, bind flags included, the same way kMAIN_COPY's depth
-			// mirrors kMAIN's, so the whole-resource copy below is valid for a depth-stencil source.
-			snapshot = new Texture2D(depthDesc, "Upscaling::NeuralRenderingFinishedImageDepth");
-			snapshot->CreateSRV(srvDesc);
-		} catch (const std::exception& e) {
-			static bool loggedFailure = false;
-			if (!loggedFailure) {
-				loggedFailure = true;
-				logger::warn("[Upscaling] Finished Image Neural Rendering disabled: depth snapshot creation failed ({})", e.what());
-			}
-			delete snapshot;
-			snapshot = nullptr;
-			return;
-		}
-	}
-
-	globals::d3d::context->CopyResource(snapshot->resource.get(), depth.texture);
-
-	// The same render-resolution extent the After Upscaling placement passes, computed at the
-	// same point in the frame - before dynamicResolutionLock turns dynamic resolution off.
-	const auto guideSize = Util::ConvertToDynamic(float2{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
-	neuralRenderingFinishedImageGuideWidth = static_cast<uint32_t>(guideSize.x);
-	neuralRenderingFinishedImageGuideHeight = static_cast<uint32_t>(guideSize.y);
-	neuralRenderingFinishedImageGuidesReady = true;
-}
-
-Texture2D* Upscaling::EnsureNeuralRenderingFinishedImageTexture(const D3D11_TEXTURE2D_DESC& a_targetDesc)
-{
-	auto*& texture = neuralRenderingFinishedImageTexture;
-	if (texture && texture->desc.Width == a_targetDesc.Width && texture->desc.Height == a_targetDesc.Height &&
-		texture->desc.Format == a_targetDesc.Format && texture->desc.SampleDesc.Count == a_targetDesc.SampleDesc.Count)
-		return texture;
-
-	if (texture) {
-		texture->resource = nullptr;
-		delete texture;
-		texture = nullptr;
-	}
-
-	// The backend writes the edit through a typed UAV and the caller copies it back with
-	// CopyResource, which needs a matching single-sample texture. sRGB, typeless and
-	// multisampled targets can't do both, so fail closed rather than write wrong colours.
-	auto device = globals::d3d::device;
-	D3D11_FEATURE_DATA_FORMAT_SUPPORT2 support2{ a_targetDesc.Format, 0 };
-	const bool uavCapable = SUCCEEDED(device->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &support2, sizeof(support2))) &&
-	                        (support2.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE);
-	if (!uavCapable || a_targetDesc.SampleDesc.Count != 1) {
-		if (neuralRenderingFinishedImageRejectedFormat != a_targetDesc.Format) {
-			neuralRenderingFinishedImageRejectedFormat = a_targetDesc.Format;
-			logger::warn("[Upscaling] Finished Image Neural Rendering disabled: tonemap output format {} (samples {}) "
-						 "cannot be written through a UAV",
-				static_cast<int>(a_targetDesc.Format), a_targetDesc.SampleDesc.Count);
-		}
-		return nullptr;
-	}
-
-	D3D11_TEXTURE2D_DESC desc{};
-	desc.Width = a_targetDesc.Width;
-	desc.Height = a_targetDesc.Height;
-	desc.MipLevels = 1;
-	desc.ArraySize = 1;
-	desc.Format = a_targetDesc.Format;
-	desc.SampleDesc.Count = 1;
-	desc.Usage = D3D11_USAGE_DEFAULT;
-	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-
-	try {
-		// Only the resource is needed: the backend creates and caches its own UAV over it.
-		texture = new Texture2D(desc, "Upscaling::NeuralRenderingFinishedImageTexture");
-	} catch (const std::exception& e) {
-		logger::warn("[Upscaling] Finished Image Neural Rendering disabled: output texture creation failed ({})", e.what());
-		texture = nullptr;
-		return nullptr;
-	}
-
-	logger::debug("[Upscaling] Finished Image Neural Rendering output allocated {}x{} format {}",
-		desc.Width, desc.Height, static_cast<int>(desc.Format));
-	return texture;
-}
-
-void Upscaling::ApplyNeuralRenderingFinishedImage(RE::RENDER_TARGET a_target)
-{
-	if (!settings.neuralRenderingEnabled || settings.neuralRenderingPlacement != 3)
-		return;
-	// Matches every pipeline pass's own DisableInMainLoadingMenu()-style guard - nothing should
-	// be editing the main menu background or a loading screen.
-	if (globals::state->IsMainOrLoadingMenuOpen()) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: main menu or loading screen open");
-		return;
-	}
-
-	auto& targetRT = globals::game::renderer->GetRuntimeData().renderTargets[a_target];
-	if (!targetRT.SRV) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: render target {} has no SRV",
-			static_cast<int>(a_target));
-		return;
-	}
-
-	// kFRAMEBUFFER on flat can alias the swap-chain backbuffer through its views alone, with a
-	// null texture pointer (see ScreenshotFeature's ResolveSlotTexture); recover it from the SRV.
-	winrt::com_ptr<ID3D11Texture2D> targetTextureHolder;
-	ID3D11Texture2D* targetTexture = targetRT.texture;
-	if (!targetTexture) {
-		winrt::com_ptr<ID3D11Resource> resource;
-		targetRT.SRV->GetResource(resource.put());
-		if (resource)
-			targetTextureHolder = resource.try_as<ID3D11Texture2D>();
-		targetTexture = targetTextureHolder.get();
-	}
-	if (!targetTexture) {
-		logger::debug("[Upscaling] Finished Image Neural Rendering skipped: render target {} has no 2D texture",
-			static_cast<int>(a_target));
-		return;
-	}
-
-	// The tonemap output is kFRAMEBUFFER (or HDR Display's float16 redirect of it), whose format
-	// differs from kMAIN. CopyResource between mismatched formats is silently dropped, so the
-	// edit goes into a texture matching this target exactly rather than neuralRenderingTexture.
-	D3D11_TEXTURE2D_DESC targetDesc{};
-	targetTexture->GetDesc(&targetDesc);
-	auto* finishedImageTexture = EnsureNeuralRenderingFinishedImageTexture(targetDesc);
-	if (!finishedImageTexture)
-		return;
-
-	if (!EvaluateNeuralRenderingFinishedImage(targetTexture, targetRT.SRV, finishedImageTexture->resource.get()))
-		return;
-
-	globals::d3d::context->CopyResource(targetTexture, finishedImageTexture->resource.get());
-}
-
-void Upscaling::RequestNeuralRenderingComparisonCapture()
-{
-	neuralRenderingComparePending.store(true, std::memory_order_release);
-}
-
 void Upscaling::PerformUpscaling()
 {
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Upscaling");
 	Upscale();
 
-	if (GetUpscaleMethod() == UpscaleMethod::kDLSS && settings.neuralRenderingEnabled && settings.neuralRenderingPlacement == 1 && neuralRendering.IsAvailable() && neuralRenderingTexture && sharpenerTexture) {
-		neuralRenderingResourcesActive = true;
-		auto renderer = globals::game::renderer;
-		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-		// The category snapshot (opaque categories captured before decals, forward categories added after), not the live Masks2 - see CaptureNeuralRenderingCategories.
-		auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
-		auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
-		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
-		// After the upscaler the colour input is display resolution, but depth and
-		// motion vectors are still the game's render-resolution targets.
-		const auto guideSize = Util::ConvertToDynamic(float2{ (float)nativeWidth, (float)nativeHeight });
-		NeuralRendering::Options neuralOptions = MakeNeuralRenderingOptions();
-		neuralOptions.guideWidth = static_cast<uint32_t>(guideSize.x);
-		neuralOptions.guideHeight = static_cast<uint32_t>(guideSize.y);
-		// Those guides are also still jittered, while the colour here is the frame
-		// DLSS has already resolved onto the unjittered grid. Uncorrected, a guide
-		// lookup indexes the unjittered grid but reads a texel whose sample sits up
-		// to half a texel away, and that error swings coherently across the image
-		// every frame as the jitter phase advances - flickering the per-category
-		// strength and the silhouette fade along every category and depth boundary,
-		// worst where the two sides' strengths differ most (the hairline, and thin
-		// strands, which are boundary along their whole length). Before the upscaler
-		// colour and guides are jittered alike, so that path leaves this zero.
-		neuralOptions.guideJitterOffsetX = -jitter.x;
-		neuralOptions.guideJitterOffsetY = -jitter.y;
-		// Pre-tonemap: show the model the frame exposed and graded as it will be displayed.
-		neuralOptions.display = MakeNeuralRenderingDisplayTransform();
-		// Raw game motion-vector target, not the dilated ghosting-reduction copy
-		// DLSS consumes; see the matching note in Upscale() for the reasoning.
-		globals::profiler->BeginPass("Upscaling::NeuralRenderingGenerate");
-		neuralRenderingResultValid = neuralRendering.Evaluate(sharpenerTexture->resource.get(),
-			neuralRenderingTexture->resource.get(),
-			depth.texture,
-			depth.depthSRV,
-			materialCategoriesSRV,
-			motionVector.texture,
-			nativeWidth,
-			nativeHeight,
-			neuralOptions);
-		globals::profiler->EndPass();
-	} else if (GetUpscaleMethod() == UpscaleMethod::kDLSS && settings.neuralRenderingEnabled &&
-		settings.neuralRenderingPlacement == 2 && neuralRenderingTexture && sharpenerTexture) {
-		const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
-		const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
-		globals::profiler->BeginPass("Upscaling::NeuralRenderingGenerate");
-		neuralRenderingResultValid = neuralRendering.ResolveSeparateUpscaling(
-			sharpenerTexture->resource.get(), neuralRenderingTexture->resource.get(), nativeWidth, nativeHeight);
-		globals::profiler->EndPass();
-	}
+	// Neural Rendering seams S2 + S3 (After / Separate Upscaling, Finished Image guides):
+	// runs on the DLSS output before UpscaleDepth() expands the render-resolution depth.
+	globals::features::neuralRendering.ResolveUpscaledFrame(sharpenerTexture);
 
-	// Finished Image evaluates later, at the tonemap, so it snapshots depth now
-	// for the same reason After Upscaling evaluates before the expansion below.
-	CaptureNeuralRenderingFinishedImageGuides();
-
-	// Neural Rendering consumes the same render-resolution depth and motion
-	// guides that produced the DLSS frame. Expand depth only after NR has read
-	// them; doing this first paired native depth data with render-size metadata.
 	UpscaleDepth();
 
 	auto& runtimeData = globals::game::graphicsState->GetRuntimeData();
@@ -2807,8 +1634,7 @@ void Upscaling::ApplySharpening()
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Upscaling - Sharpening");
 
-	Texture2D* sharpeningTexture = neuralRenderingResultValid ? neuralRenderingTexture : sharpenerTexture;
-	if (!sharpeningTexture)
+	if (!sharpenerTexture)
 		return;
 
 	auto context = globals::d3d::context;
@@ -2827,11 +1653,11 @@ void Upscaling::ApplySharpening()
 		float currentSharpness = (-2.0f * settings.sharpnessDLSS) + 2.0f;
 		currentSharpness = exp2(-currentSharpness);
 
-		// DLSS has already written to the intermediate texture; sharpen directly into kMAIN.UAV.
-		rcas.ApplySharpen(sharpeningTexture->srv.get(), main.UAV, currentSharpness);
+		// DLSS has already written to sharpenerTexture; sharpen directly into kMAIN.UAV.
+		rcas.ApplySharpen(sharpenerTexture->srv.get(), main.UAV, currentSharpness);
 	} else {
-		// Sharpening is disabled: resolve the DLSS/Neural Rendering output without altering it.
-		context->CopyResource(main.texture, sharpeningTexture->resource.get());
+		// Sharpening is disabled: resolve the DLSS output without altering it.
+		context->CopyResource(main.texture, sharpenerTexture->resource.get());
 	}
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
@@ -2859,98 +1685,10 @@ void Upscaling::MenuManagerDrawInterfaceStartHook::thunk(int64_t a1)
 	func(a1);
 }
 
-namespace
-{
-	// ShowHUDMessage must run on the game's main thread; Main_PostProcessing is the render thread.
-	void ShowHUDMessageDeferred(const char* a_message)
-	{
-		if (auto* task = SKSE::GetTaskInterface())
-			task->AddTask([msg = std::string(a_message)]() { RE::SendHUDMessage::ShowHUDMessage(msg.c_str(), nullptr, true); });
-		else
-			RE::SendHUDMessage::ShowHUDMessage(a_message, nullptr, true);
-	}
-}
-
-// Drives the Neural Rendering comparison capture from Main_PostProcessing. Called at the
-// very start of the thunk so the forced Neural Rendering state is in place before the
-// frame's upscaling pass runs, and again at the end to queue the matching screenshot /
-// advance the state machine. Four frames, symmetric so the pair is a fair A/B:
-//
-//   step 1: Neural Rendering OFF, DLSS history reset   -> warm-up, discarded
-//   step 2: Neural Rendering OFF, converged one frame  -> queue "_NR-off"
-//   step 3: Neural Rendering ON,  DLSS history reset    -> warm-up, discarded
-//   step 4: Neural Rendering ON,  converged one frame   -> queue "_NR-on", restore setting
-//
-// The warm-up frames matter because Feature 18 needs one successful evaluation before it
-// contributes and DLSS needs a frame to settle after a reset; without them the two halves
-// would be captured at different points of convergence.
-void Upscaling::ServiceNeuralRenderingComparison(UpscaleMethod a_upscaleMethod, bool a_framePhaseStart)
-{
-	if (a_framePhaseStart) {
-		if (neuralRenderingCompareStep == 0 && neuralRenderingComparePending.exchange(false, std::memory_order_acq_rel)) {
-			const bool canCompare = a_upscaleMethod == UpscaleMethod::kDLSS &&
-			                        !ShouldUseFrameGenerationThisFrame() &&
-			                        neuralRendering.IsAvailable() &&
-			                        globals::features::screenshotFeature.loaded;
-			if (!canCompare) {
-				ShowHUDMessageDeferred("Neural Rendering comparison needs DLSS active and Frame Generation off");
-				return;
-			}
-
-			SYSTEMTIME st;
-			GetLocalTime(&st);
-			neuralRenderingCompareStamp = std::format("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}_{:03}",
-				st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-			neuralRenderingCompareUserSetting = settings.neuralRenderingEnabled;
-
-			neuralRenderingCompareStep = 1;
-			settings.neuralRenderingEnabled = false;  // frame 1: OFF, warm-up
-			pendingDLSSReset.store(true, std::memory_order_release);
-		}
-		return;
-	}
-
-	// Frame phase end: post-processing is done and the game UI has not been drawn yet, so
-	// a capture here has no HUD and no CS menu. Grab the frame where applicable, then set
-	// up the next step.
-	switch (neuralRenderingCompareStep) {
-	case 1:
-		neuralRenderingCompareStep = 2;
-		settings.neuralRenderingEnabled = false;  // frame 2: OFF, capture
-		break;
-	case 2:
-		// Runs at the end of Main_PostProcessing, before the game UI is drawn -> no HUD, no CS menu.
-		globals::features::screenshotFeature.Capture(
-			ScreenshotFeature::NeuralRenderingComparisonPath(neuralRenderingCompareStamp, "_NR-off"), /*forceCleanNoUI=*/true);
-		neuralRenderingCompareStep = 3;
-		settings.neuralRenderingEnabled = true;  // frame 3: ON, warm-up
-		pendingDLSSReset.store(true, std::memory_order_release);
-		break;
-	case 3:
-		neuralRenderingCompareStep = 4;
-		settings.neuralRenderingEnabled = true;  // frame 4: ON, capture
-		break;
-	case 4:
-		globals::features::screenshotFeature.Capture(
-			ScreenshotFeature::NeuralRenderingComparisonPath(neuralRenderingCompareStamp, "_NR-on"), /*forceCleanNoUI=*/true);
-		settings.neuralRenderingEnabled = neuralRenderingCompareUserSetting;  // restore
-		pendingDLSSReset.store(true, std::memory_order_release);
-		neuralRenderingCompareStep = 0;
-		ShowHUDMessageDeferred("Saved Neural Rendering comparison to Data/DLSS 5 Screenshots");
-		break;
-	default:
-		break;
-	}
-}
-
 void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32_t a3, RE::RENDER_TARGET a_target, void* a_4, bool a_5)
 {
 	auto& upscaling = globals::features::upscaling;
 	auto upscaleMethod = upscaling.GetUpscaleMethod();
-
-	// World and first-person geometry are done; take the categories the forward
-	// lighting draws added before anything below reads the snapshot.
-	upscaling.FinishNeuralRenderingCategoryCapture();
 
 	if (upscaling.ShouldUseFrameGenerationThisFrame()) {
 		auto& postProcessing = globals::features::postProcessing;
@@ -2958,8 +1696,6 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 			postProcessing.ClearBorderMotionVectorsForFrameGen();
 		upscaling.CopySharedD3D12Resources();
 	}
-
-	upscaling.ServiceNeuralRenderingComparison(upscaleMethod, /*framePhaseStart=*/true);
 
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA)
 		upscaling.PerformUpscaling();
@@ -2982,8 +1718,6 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		globals::features::hdrDisplay.RestoreFramebuffer();
 
 	Util::SetTemporal(false);
-
-	upscaling.ServiceNeuralRenderingComparison(upscaleMethod, /*framePhaseStart=*/false);
 }
 
 void Upscaling::Main_RenderPrecipitation::thunk()

@@ -1,13 +1,13 @@
 #include "D3D12Interop.h"
 
-#include "../../../Utils/D3D.h"
+#include "Utils/D3D.h"
 
 #include <algorithm>
 #include <utility>
 
 #include <Windows.h>
 
-namespace NeuralRendering
+namespace NeuralRenderingNGX
 {
 	D3D12Interop::~D3D12Interop() { Shutdown(); }
 

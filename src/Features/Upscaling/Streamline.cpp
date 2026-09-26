@@ -355,7 +355,7 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport)
 	// Keep DLSS SR and Neural Rendering on the same history boundary after a
 	// loading transition. Reprojecting either feature across a camera/world jump
 	// leaves the other one consuming guides from an unrelated frame.
-	slConstants.reset = upscaling.neuralRenderingResetThisFrame ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+	slConstants.reset = upscaling.dlssResetThisFrame ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
 	slConstants.mvecScale = { 1.0f, 1.0f };
 	slConstants.motionVectors3D = sl::Boolean::eFalse;

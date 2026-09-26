@@ -8,7 +8,7 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 
-namespace NeuralRendering
+namespace NeuralRenderingNGX
 {
 	/**
 	 * @brief A texture created on D3D11 and opened as a shared D3D12 resource.

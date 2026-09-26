@@ -1,27 +1,49 @@
 # DLSS Neural Rendering (NGX Feature 18)
 
-Community Shaders drives NVIDIA's DLSS Neural Rendering model (`nvngx_dlssnr.dll`,
-NGX feature 18) directly, as part of the Upscaling feature. NVIDIA ships no public
-integration for it; the runtime DLL is proprietary and user-supplied, and the
-parameter contract (`DLSSNR.*` string keys) is reverse-engineered, not documented.
+Neural Rendering is Personal-original and owned by the Neural Rendering feature. It consumes
+renderer/Upscaling resources at several pipeline stages through a minimal documented seam, but is
+not part of the Bottle-owned Upscaling feature. Its Separate Upscaling design follows wilsjo2's
+OptiScaler deferred-residual experiment, and its proxy raster follows xenmods' DLSSNR-Cost-Scaler.
+
+It drives NVIDIA's DLSS Neural Rendering model (`nvngx_dlssnr.dll`, NGX feature 18) directly.
+NVIDIA ships no public integration for it; the runtime DLL is proprietary and user-supplied, and
+the parameter contract (`DLSSNR.*` string keys) is reverse-engineered, not documented.
 
 Source layout:
 
 | Path | Role |
 |---|---|
-| `src/Features/Upscaling/NeuralRendering.{h,cpp}` | public `NeuralRendering` class; thin adapter to the backend |
-| `src/Features/Upscaling/NeuralRendering/Backend.{h,cpp}` | `NeuralRenderingBackend` - owns the D3D11↔D3D12 shared textures, the colour/guide transfer passes, the failure latch |
-| `src/Features/Upscaling/NeuralRendering/Runtime.{h,cpp}` | `NeuralRendering::Runtime` - loads the snippet DLL, drives NGX feature 18 create/evaluate/release, the `GetModuleFileNameW` caller-gate hook |
-| `src/Features/Upscaling/NeuralRendering/D3D12Interop.{h,cpp}` | private D3D12 device/queue, shared-fence ping-pong with the game's D3D11 context |
-| `features/Upscaling/Shaders/Upscaling/NeuralRendering/` | `EncodeColorCS` / `DecodeColorCS` / `CopyDepthGuideCS` and `ColorTransfer.hlsli` |
+| `src/Features/NeuralRendering.{h,cpp}` | the `NeuralRendering` feature: settings and UI, placement logic, category capture, Finished Image, comparison capture, hooks; thin adapter to the backend |
+| `src/Features/NeuralRendering/Backend.{h,cpp}` | `NeuralRenderingBackend` - owns the D3D11↔D3D12 shared textures, the colour/guide transfer passes, the failure latch |
+| `src/Features/NeuralRendering/Runtime.{h,cpp}` | `NeuralRenderingNGX::Runtime` - loads the snippet DLL, drives NGX feature 18 create/evaluate/release, the `GetModuleFileNameW` caller-gate hook |
+| `src/Features/NeuralRendering/D3D12Interop.{h,cpp}` | private D3D12 device/queue, shared-fence ping-pong with the game's D3D11 context |
+| `features/Neural Rendering/Shaders/NeuralRendering/` | `EncodeColorCS` / `DecodeColorCS` / `CopyDepthGuideCS` / `EncodeResidualCS` / `ApplyResidualCS` and `ColorTransfer.hlsli` |
+
+Where it hooks into the frame:
+
+| Site | Call | Purpose |
+|---|---|---|
+| Upscaling seam S1: `Upscaling::Upscale()`, DLSS branch | `NeuralRendering::PrepareUpscaleInput()` | Before Upscaling (substitutes the DLSS input), Separate Upscaling (prepares the private residual) |
+| Upscaling seam S2+S3: `Upscaling::PerformUpscaling()`, between `Upscale()` and `UpscaleDepth()` | `NeuralRendering::ResolveUpscaledFrame()` | After / Separate Upscaling (result written back into Upscaling's sharpener input), Finished Image depth snapshot |
+| `Main_PostProcessing` call site, chained on Upscaling's hook | `NeuralRendering::Main_PostProcessing` | forward category capture finish, history reset, placement changes, comparison capture |
+| `Hooks.cpp` tonemap hook | `CaptureDisplayTransform()`, `ApplyFinishedImage()` | display-matched proxy, Finished Image |
+| `Deferred.cpp` | `CaptureCategories()`, `RestoreCategories()` | material-category snapshot around decals |
+| `BSLightingShader::SetupGeometry`, `BSBatchRenderer::RenderPassImmediately` | own hooks | humanoid/hair flags, forward-draw category writes |
+| `LoadingMenu` close | own `MenuOpenCloseEvent` sink | temporal history reset |
+
+Settings live in the "Neural Rendering" section of the settings JSON. Builds before the split
+stored them as `neuralRendering*` keys in the "Upscaling" section; `State::LoadFromJson`
+migrates those once (`NeuralRendering::MigrateLegacyUpscalingSettings`). Shaders moved from
+`Data\Shaders\Upscaling\NeuralRendering\` to `Data\Shaders\NeuralRendering\`; stale copies in the
+old folder are unused.
 
 ## Placement
 
 The `Placement` setting chooses where in the frame the model runs.
 
-### Before Upscaling (`neuralRenderingPlacement == 0`)
+### Before Upscaling (`placement == 0`)
 
-Runs inside `Upscaling::Upscale()`, on the render-resolution colour that is about
+Runs from seam S1 in `Upscaling::Upscale()`, on the render-resolution colour that is about
 to be handed to DLSS. The model's output replaces the DLSS input colour; DLSS then
 upscales the enhanced render-resolution frame to display resolution as normal.
 Colour and the depth/motion guides are all at render resolution.
@@ -29,18 +51,18 @@ Colour and the depth/motion guides are all at render resolution.
 The render-resolution colour is the game's *jittered* raster: every frame is
 projected with the sub-pixel Halton offset DLSS later removes. Feature 18 has no
 jitter parameter (neither does OptiScaler's pre-SR path), so the backend
-compensates for it itself; see *Jitter* below. `Upscaling::Upscale()` passes the
+compensates for it itself; see *Jitter* below. `NeuralRendering::PrepareUpscaleInput()` passes the
 same offset Streamline receives (`-jitter`) through `NeuralRendering::Options`.
 
-### After Upscaling (`neuralRenderingPlacement == 1`)
+### After Upscaling (`placement == 1`)
 
-Runs in `Upscaling::PerformUpscaling()` after the colour upscale and before
+Runs from seam S2 in `Upscaling::PerformUpscaling()` after the colour upscale and before
 `UpscaleDepth()`, on the display-resolution upscaled frame, before RCAS
 sharpening / copy-back. Depth and motion therefore remain the exact
 render-resolution guides used for the colour upscale. The backend tracks the
 colour region and guide region separately (`FrameInputs::guideWidth/guideHeight`).
 
-### Separate Upscaling (`neuralRenderingPlacement == 2`, experimental)
+### Separate Upscaling (`placement == 2`, experimental)
 
 This follows the deferred residual experiment in
 [`wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass`](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/blob/main/docs/DEFERRED-NR-DLSS.md).
@@ -62,7 +84,7 @@ The private D3D12 device is initialized through the resident NGX core with the
 same project identity as Streamline and the Streamline directory in its feature
 path; initializing only through the Feature 18 snippet cannot load DLSS-SR.
 
-### Finished Image (`neuralRenderingPlacement == 3`, default)
+### Finished Image (`placement == 3`, default)
 
 Runs from `PostProcessingExtensions::Main_HDRTonemapBlendCinematic_Render` (`src/Hooks.cpp`),
 the single hook point that sees every path the frame's tonemap can take: right after
@@ -71,7 +93,7 @@ itself, and right after the vanilla tonemap/passthrough call otherwise - which c
 Processing owning the tonemap too, since in that case the vanilla call just takes its
 passthrough branch over Post Processing's already-finished result (see
 `PostProcessing::PreProcess()`'s own comment). Either way, by the time
-`Upscaling::ApplyNeuralRenderingFinishedImage()` runs, the game render target it's given
+`NeuralRendering::ApplyFinishedImage()` runs, the game render target it's given
 (`output` - `kFRAMEBUFFER`, or HDR Display's float16 texture while it redirects that slot
 around ISHDR; never `kMAIN`) holds a genuinely finished, display-referred frame -
 not the linear HDR scene colour the Before/After Upscaling placements have to approximate with
@@ -86,10 +108,10 @@ resolution in the top-left of their allocations, carrying the frame's TAA jitter
 version treated all three as native and unjittered, which misscaled the model's motion vectors
 and every guide lookup below native and swung them with the jitter phase - flicker plus edits
 landing offset from the silhouettes they belonged to. So
-`Upscaling::CaptureNeuralRenderingFinishedImageGuides()` runs in `PerformUpscaling()` just before
+`NeuralRendering::CaptureFinishedImageGuides()` runs in `PerformUpscaling()` just before
 `UpscaleDepth()`: it copies `kMAIN` depth into a private snapshot while it is still on the
 motion-vector raster and records that render-resolution extent (before
-`dynamicResolutionLock = 1`). `Upscaling::EvaluateNeuralRenderingFinishedImage()` then passes the
+`dynamicResolutionLock = 1`). `NeuralRendering::EvaluateFinishedImage()` then passes the
 snapshot as depth and sets the guide extent and guide jitter exactly as the After Upscaling
 placement does. The captured guides are consumed on use, so the model runs at most once per
 upscaled frame: a second tonemap-pass call with a different colour target would otherwise reset
@@ -100,22 +122,22 @@ differently-padded allocation than the frame's active region, so comparing them 
 other for a "do these agree" fail-closed check is a false alarm waiting to happen (an earlier
 version of this placement did exactly that and silently no-op'd every frame as a result).
 
-The output resource is **not** the `neuralRenderingTexture` the After Upscaling and Separate
+The output resource is **not** the `outputTexture` the After Upscaling and Separate
 Upscaling placements use: that one matches `kMAIN`, whose format differs from `kFRAMEBUFFER`
 (UNORM in SDR) and from HDR Display's float16 redirect, and `CopyResource` between mismatched
 formats is silently dropped by D3D11 - a second earlier version of this placement ran the model
 every frame and discarded the result exactly that way. Instead
-`Upscaling::EnsureNeuralRenderingFinishedImageTexture()` lazily allocates
-`neuralRenderingFinishedImageTexture` to match `output`'s own width, height, format and sample
-count (recreated when any change), and `ApplyNeuralRenderingFinishedImage()` copies it back into
+`NeuralRendering::EnsureFinishedImageTexture()` lazily allocates
+`finishedImageTexture` to match `output`'s own width, height, format and sample
+count (recreated when any change), and `ApplyFinishedImage()` copies it back into
 `output` in place on success. When `kFRAMEBUFFER`'s slot has a null texture pointer (it can alias
 the swap-chain backbuffer through its views alone), the texture is recovered from its SRV. A
 target that cannot take a typed UAV write - sRGB, typeless or multisampled - fails closed with a
 one-time warning naming the format.
 
-**Fails closed.** `EvaluateNeuralRenderingFinishedImage()` returns false - leaving the caller's
+**Fails closed.** `EvaluateFinishedImage()` returns false - leaving the caller's
 buffer untouched - unless Finished Image is the active placement, the backend is available, and
-the depth/motion guides exist. `ApplyNeuralRenderingFinishedImage()` additionally skips while a
+the depth/motion guides exist. `ApplyFinishedImage()` additionally skips while a
 main menu or loading screen is open, matching every pipeline pass's own
 `DisableInMainLoadingMenu()`-style guard.
 
@@ -289,7 +311,7 @@ linear colour; the exposure cancels out of that ratio, and the relative chroma
 transfer (above) is what keeps the proxy's baked-in saturation and tint from
 being read back as a model edit and applied a second time.
 
-**Where the inputs come from.** `Upscaling::CaptureNeuralRenderingDisplayTransform()`
+**Where the inputs come from.** `NeuralRendering::CaptureDisplayTransform()`
 runs from the `Main_HDRTonemapBlendCinematic_Render` hook right after the vanilla
 pass: it reads `Param`, `Cinematic` and `Tint` from the pass's
 `ImageSpaceShaderParam::pixelConstantGroup` (float4 slots c2-c4 of ISHDR's
@@ -483,7 +505,7 @@ layer of adjustment. Unlike the old opt-in `Per-Category Strengths` checkbox,
 category lookup is unconditional now: each category's hue guard needs to know
 which material a pixel is on every pixel, so `materialCategoriesSRV` is a hard
 requirement of `ValidateInputs` rather than only when per-category strengths
-were enabled, and `CaptureNeuralRenderingCategories` runs whenever Neural
+were enabled, and `CaptureCategories` runs whenever Neural
 Rendering is enabled rather than only when that checkbox was set.
 
 Only Hair hue-guards by default (`CategoryStrengths::hueGuard`); the other six
@@ -519,9 +541,9 @@ face's Skin under the roots and the background's Everything Else under the
 blended mid-section while only the alpha-tested core read as Hair. The capture
 is therefore three steps, all in `Upscaling`:
 
-1. `CaptureNeuralRenderingCategories` (Deferred's blended-decals hook) copies
+1. `CaptureCategories` (Deferred's blended-decals hook) copies
    the opaque categories out of `Masks2` before decals alpha-blend into it.
-2. `RestoreNeuralRenderingCategories` (end of `Deferred::EndDeferred`, after
+2. `RestoreCategories` (end of `Deferred::EndDeferred`, after
    `DeferredPasses` has consumed the decal-blended vertex AO) copies that
    snapshot back into `Masks2` and arms the forward capture. From here
    `BSBatchRenderer_RenderPassImmediately` binds `Masks2` to `SV_Target7` around
@@ -530,7 +552,7 @@ is therefore three steps, all in `Upscaling`:
    deferred pass restored, since a mismatched size would fail
    `OMSetRenderTargets`), and the forward `PS_OUTPUT` carries the same packed
    category write with the same 0/1 coverage.
-3. `FinishNeuralRenderingCategoryCapture` (start of `Main_PostProcessing`)
+3. `FinishCategoryCapture` (start of `Main_PostProcessing`)
    re-snapshots `Masks2` so every Neural Rendering evaluation keeps reading the
    snapshot texture, now with both the opaque and the forward categories.
 
@@ -539,7 +561,7 @@ nearest-neighbour maps it to the active colour raster, and selects the category
 multipliers before calling `ResolveNeuralColor`.
 
 **Debug view.** The Neural Rendering settings tab's Debug section has a "Show
-Material Categories" checkbox (`Upscaling::Settings::neuralRenderingDebugCategoryView`,
+Material Categories" checkbox (`NeuralRendering::Settings::debugCategoryView`,
 threaded through `NeuralRendering::Options::debugCategoryView` and
 `NeuralRenderingBackend::FrameInputs::debugCategoryView` into the `TransferParams`
 cbuffer's `DebugCategoryView` flag). When set, `DecodeColorCS` skips the resolve
@@ -552,7 +574,7 @@ normally underneath, so it carries the full Neural Rendering cost rather than
 being a cheap preview.
 
 Two categories cannot be derived from the shader permutation alone, and
-`Upscaling::BSLightingShader_SetupNeuralCategory` (hooked onto
+`NeuralRendering::SetupGeometryCategory` (hooked onto
 `BSLightingShader::SetupGeometry`, for every lighting draw that writes `Masks2`:
 the deferred pass and the forward draws described above) resolves them per pass
 from the geometry's owning actor:

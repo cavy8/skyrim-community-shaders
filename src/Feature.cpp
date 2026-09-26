@@ -45,6 +45,7 @@
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
 #include "Features/UnifiedWater.h"
+#include "Features/NeuralRendering.h"
 #include "Features/Upscaling.h"
 #include "Features/VanillaFresnel.h"
 #include "Features/VolumetricLighting.h"
@@ -267,6 +268,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::extendedTranslucency,
 		&globals::features::reverseZ,
 		&globals::features::upscaling,
+		&globals::features::neuralRendering,
 		&globals::features::renderDoc,
 		&globals::features::remoteControl,
 		&globals::features::csEditor,

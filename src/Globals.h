@@ -37,6 +37,7 @@ struct WetnessEffects;
 struct ExtendedTranslucency;
 struct FootstepParticles;
 struct Upscaling;
+struct NeuralRendering;
 class Profiler;
 struct CSEditor;
 struct Effects11;
@@ -137,6 +138,7 @@ namespace globals
 		extern ExtendedTranslucency extendedTranslucency;
 		extern ReverseZ reverseZ;
 		extern Upscaling upscaling;
+		extern NeuralRendering neuralRendering;
 		extern HDRDisplay hdrDisplay;
 		extern Effects11 effects11;
 		extern RenderDoc renderDoc;
