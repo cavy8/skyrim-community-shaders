@@ -14,10 +14,15 @@ namespace LodLandscape
 		return positionMS;
 	}
 
+	float4 AdjustLodLandscapeVertexPositionCS(float4 positionCS, bool reverseProjection)
+	{
+		float lodDepthBias = min(1, 1e-4 * max(0, FrameBuffer::ToStandardClipZ(positionCS, reverseProjection) - 70000)) * 0.5;
+		return FrameBuffer::OffsetClipDepth(positionCS, lodDepthBias, reverseProjection);
+	}
+
 	float4 AdjustLodLandscapeVertexPositionCS(float4 positionCS)
 	{
-		positionCS.z += min(1, 1e-4 * max(0, positionCS.z - 70000)) * 0.5;
-		return positionCS;
+		return AdjustLodLandscapeVertexPositionCS(positionCS, FrameBuffer::IsReverseProjection());
 	}
 }
 

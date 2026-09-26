@@ -1,5 +1,6 @@
 #include "D3D.h"
 
+#include "Features/ReverseZ.h"
 #include "Features/TerrainBlending.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -123,6 +124,9 @@ namespace Util
 				logger::error("Failed to process shader defines for {}", str);
 			}
 		}
+
+		if (globals::features::reverseZ.IsActive())
+			macros.push_back({ "REVERSE_Z", "" });
 
 		if (globals::state->IsDeveloperMode()) {
 			macros.push_back({ "D3DCOMPILE_SKIP_OPTIMIZATION", "" });

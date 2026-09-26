@@ -114,7 +114,11 @@ void SpdStore(int2 pix, float value, uint index)
 
 float SpdReduce4(float a, float b, float c, float d)
 {
+#ifdef REVERSE_Z
+    return min(min(a, b), min(c, d));
+#else
     return max(max(a, b), max(c, d));
+#endif
 }
 
 void SpdStoreIntermediate(uint x, uint y, float value)

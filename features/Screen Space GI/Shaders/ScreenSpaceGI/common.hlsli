@@ -126,7 +126,11 @@ float3 ScreenToViewPosition(const float2 screenPos, const float viewspaceDepth)
 
 float ScreenToViewDepth(const float screenDepth)
 {
+#ifdef REVERSE_Z
+	return (SharedData::CameraData.w / (screenDepth * SharedData::CameraData.z + SharedData::CameraData.y));
+#else
 	return (SharedData::CameraData.w / (-screenDepth * SharedData::CameraData.z + SharedData::CameraData.x));
+#endif
 }
 
 float3 ViewToWorldPosition(const float3 pos, const float4x4 invView)

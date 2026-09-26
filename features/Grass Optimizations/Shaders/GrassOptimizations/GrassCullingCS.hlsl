@@ -212,7 +212,11 @@ float WindScalar(float basis, float timer)
             const float4 clipN = mul(FrameBuffer::CameraViewProj, float4(dvNear, 1.0));
             const float nearZ = clipN.z / max(clipN.w, 1e-4);
 
+#ifdef REVERSE_Z
+            float tileMax = 1.0;
+#else
             float tileMax = 0.0;
+#endif
 			[unroll] for (int y = 0; y < 3; ++y)
             {
 				[unroll] for (int x = 0; x < 3; ++x)
@@ -220,13 +224,21 @@ float WindScalar(float basis, float timer)
                     if (t0.x + x <= t1.x && t0.y + y <= t1.y)
                     {
                         const int2 t = clamp(t0 + int2(x, y), int2(0, 0), dimL - 1);
+#ifdef REVERSE_Z
+                        tileMax = min(tileMax, HiZ.Load(int3(t, level)));
+#else
                         tileMax = max(tileMax, HiZ.Load(int3(t, level)));
+#endif
                     }
                 }
             }
 
             // Cull only when the sphere is behind every sampled tile, allowing for depth error.
+#ifdef REVERSE_Z
+            if (nearZ < tileMax - OcclusionBias)
+#else
             if (nearZ > tileMax + OcclusionBias)
+#endif
                 return;
             }
         }
