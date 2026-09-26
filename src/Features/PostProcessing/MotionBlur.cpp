@@ -1,6 +1,7 @@
 #include "MotionBlur.h"
 #include "Features/Upscaling.h"
 #include "ShaderCache.h"
+#include "State.h"
 #include "Util.h"
 
 #pragma warning(disable: 4324)
@@ -335,6 +336,11 @@ bool MotionBlur::CheckAndResizeResources(const TextureInfo& inout_tex)
 			blurOutputTexture = eastl::make_unique<Texture2D>(blurDesc, "MotionBlur::BlurOutput");
 			blurOutputTexture->CreateSRV(blurSrvDesc);
 			blurOutputTexture->CreateUAV(blurUavDesc);
+
+			if (auto context = globals::d3d::context; context && blurOutputTexture->uav) {
+				const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+				context->ClearUnorderedAccessViewFloat(blurOutputTexture->uav.get(), clearColor);
+			}
 		} catch (const std::exception& e) {
 			logger::error("Motion blur error creating textures: {}", e.what());
 			return false;
@@ -541,6 +547,9 @@ void MotionBlur::ExecuteBlurPass(TextureInfo& inout_tex)
 	ID3D11SamplerState* samplers[] = { linearSampler.get(), pointSampler.get() };
 	context->CSSetSamplers(0, 2, samplers);
 
+	auto* sharedDataBuf = globals::state->sharedDataCB->CB();
+	context->CSSetConstantBuffers(5, 1, &sharedDataBuf);
+
 	// Setup blur pass
 	ID3D11ShaderResourceView* srvs[] = { inout_tex.srv, velocitySRV, neighborMaxTexture->srv.get(), depthSRV };
 	ID3D11Buffer* blurCB = blurConstantBufferObj->CB();
@@ -550,6 +559,13 @@ void MotionBlur::ExecuteBlurPass(TextureInfo& inout_tex)
 	// Dispatch blur pass at dynamic resolution (full-screen blur)
 	uint32_t dispatchX = (dynamicWidth + 7) / 8;
 	uint32_t dispatchY = (dynamicHeight + 7) / 8;
+	if (dispatchX == 0 || dispatchY == 0) {
+		ClearComputeResources(4);
+		ID3D11SamplerState* nullSamplersEarly[2] = { nullptr, nullptr };
+		context->CSSetSamplers(0, 2, nullSamplersEarly);
+		context->CSSetShader(nullptr, nullptr, 0);
+		return;
+	}
 	context->Dispatch(dispatchX, dispatchY, 1);
 
 	// Cleanup

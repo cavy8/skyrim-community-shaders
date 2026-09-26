@@ -17,7 +17,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	haloAngularWidth,
 	haloIntensity,
 	haloFalloff,
-	cloudOcclusionStrength)
+	cloudOcclusionStrength,
+	excludeFromAdaptation)
 
 namespace
 {
@@ -38,6 +39,7 @@ namespace
 		const ProceduralSun::Settings defaults;
 		settings.enabled = settings.enabled != 0;
 		settings.haloEnabled = settings.haloEnabled != 0;
+		settings.excludeFromAdaptation = settings.excludeFromAdaptation != 0;
 		if (!std::isfinite(settings.sunDiskAngularRadius))
 			settings.sunDiskAngularRadius = defaults.sunDiskAngularRadius;
 		if (!std::isfinite(settings.diskIntensity))
@@ -84,6 +86,12 @@ void ProceduralSun::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("cloud_occlusion_strength"), "Cloud Occlusion Strength"), &settings.cloudOcclusionStrength, 0.0f, kMaximumCloudOcclusionStrength, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextWrapped("%s", T(TKEY("cloud_occlusion_strength_tooltip"), "Additional fading of the disc and halo behind clouds. 0 preserves normal cloud blending; higher values hide the sun more strongly. Clear sky is unchanged."));
+
+	bool excludeFromAdaptation = settings.excludeFromAdaptation != 0;
+	if (ImGui::Checkbox(T(TKEY("exclude_from_adaptation"), "Hide From Effects11 Adaptation"), &excludeFromAdaptation))
+		settings.excludeFromAdaptation = excludeFromAdaptation;
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextWrapped("%s", T(TKEY("exclude_from_adaptation_tooltip"), "Replaces the sun disc with the surrounding sky in the image Effects11 eye adaptation measures, so the bright disc does not darken the whole frame. Bloom and lens effects still see the full disc. No effect without Effects11."));
 
 	bool haloEnabled = settings.haloEnabled != 0;
 	if (ImGui::Checkbox(T(TKEY("halo_enabled"), "Enable Halo"), &haloEnabled))

@@ -94,9 +94,9 @@ float2 ExtractVelocity(float4 colorSample)
 	// Encode velocity for output
 	// R: normalized x direction mapped to 0..1
 	// G: normalized y direction mapped to 0..1
-	// B: velocity magnitude scaled to 0..1
+	// B: velocity magnitude scaled by 1/20
 	float2 normalizedDir = maxVelocityMagnitude > 0.001f ? normalize(maxVelocity) : float2(0.0f, 0.0f);
-	float encodedMagnitude = saturate(maxVelocityMagnitude * 0.05f);
+	float encodedMagnitude = maxVelocityMagnitude * 0.05f;
 
 	// Create output color
 	float4 outputColor = float4(

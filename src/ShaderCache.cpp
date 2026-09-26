@@ -14,6 +14,7 @@
 #include "Utils/D3D.h"
 
 #include "Features/DynamicCubemaps.h"
+#include "Features/ReverseZ.h"
 
 #include "Plugin.h"
 
@@ -1395,7 +1396,9 @@ namespace SIE
 			auto diskPath = GetDiskPath(shader.fxpFilename, descriptor, shaderClass);
 			ID3DBlob* shaderBlob = nullptr;
 
-			if (useDiskCache && std::filesystem::exists(diskPath)) {
+			// A failed filesystem probe is a cache miss, not a failed compilation task.
+			std::error_code diskCacheProbeError;
+			if (useDiskCache && std::filesystem::exists(diskPath, diskCacheProbeError)) {
 				// Determine whether the disk-cached shader is still valid.
 				bool diskCacheOutdated = false;
 				if (cache.UseFileWatcher()) {
@@ -1415,14 +1418,12 @@ namespace SIE
 							shader.shaderType == RE::BSShader::Type::ImageSpace ?
 								static_cast<const RE::BSImagespaceShader&>(shader).originalShaderName :
 								shader.fxpFilename);
-						if (std::filesystem::exists(shaderSourcePath)) {
-							const auto sourceTime = std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(shaderSourcePath, ec));
-							if (ec) {
-								logger::debug("Failed to read source mtime for {}: {}", Util::WStringToString(shaderSourcePath), ec.message());
-							} else if (sourceTime > diskCacheTime) {
-								diskCacheOutdated = true;
-								logger::debug("Disk-cached shader {} outdated: source is newer than cache", SIE::SShaderCache::GetShaderString(shaderClass, shader, descriptor, true));
-							}
+						const auto sourceTime = std::chrono::clock_cast<std::chrono::system_clock>(std::filesystem::last_write_time(shaderSourcePath, ec));
+						if (ec) {
+							logger::debug("Failed to read source mtime for {}: {}", Util::WStringToString(shaderSourcePath), ec.message());
+						} else if (sourceTime > diskCacheTime) {
+							diskCacheOutdated = true;
+							logger::debug("Disk-cached shader {} outdated: source is newer than cache", SIE::SShaderCache::GetShaderString(shaderClass, shader, descriptor, true));
 						}
 					}
 				}
@@ -1810,9 +1811,9 @@ namespace SIE
 				// { "BSISWaterWadingHeightmap", RE::ImageSpaceManager::GetCurrentIndex(ISWaterWadingHeightmap) },
 				// { "BSImagespaceShaderMap", RE::ImageSpaceManager::GetCurrentIndex(ISMap) },
 				// { "BSImagespaceShaderMap", RE::ImageSpaceManager::GetCurrentIndex(ISMap) },
-				// { "BSImagespaceShaderWorldMap", RE::ImageSpaceManager::GetCurrentIndex(ISWorldMap) },
-				// { "BSImagespaceShaderWorldMapNoSkyBlur",
-				// 	RE::ImageSpaceManager::GetCurrentIndex(ISWorldMapNoSkyBlur) },
+				{ "BSImagespaceShaderWorldMap", RE::ImageSpaceManager::GetCurrentIndex(ISWorldMap) },
+				{ "BSImagespaceShaderWorldMapNoSkyBlur",
+					RE::ImageSpaceManager::GetCurrentIndex(ISWorldMapNoSkyBlur) },
 				{ "BSImagespaceShaderISMinify", RE::ImageSpaceManager::GetCurrentIndex(ISMinify) },
 				{ "BSImagespaceShaderISMinifyContrast", RE::ImageSpaceManager::GetCurrentIndex(ISMinifyContrast) },
 				// { "BSImagespaceShaderNoiseNormalmap", RE::ImageSpaceManager::GetCurrentIndex(ISNoiseNormalmap) },
@@ -1825,9 +1826,9 @@ namespace SIE
 				{ "BSImagespaceShaderISSAOCompositeSAO", RE::ImageSpaceManager::GetCurrentIndex(ISSAOCompositeSAO) },
 				{ "BSImagespaceShaderISSAOCompositeFog", RE::ImageSpaceManager::GetCurrentIndex(ISSAOCompositeFog) },
 				{ "BSImagespaceShaderISSAOCompositeSAOFog", RE::ImageSpaceManager::GetCurrentIndex(ISSAOCompositeSAOFog) },
-				// { "BSImagespaceShaderISSAOCameraZ", RE::ImageSpaceManager::GetCurrentIndex(ISSAOCameraZ) },
+				{ "BSImagespaceShaderISSAOCameraZ", RE::ImageSpaceManager::GetCurrentIndex(ISSAOCameraZ) },
 				// { "BSImagespaceShaderISSILComposite", RE::ImageSpaceManager::GetCurrentIndex(ISSILComposite) },
-				// { "BSImagespaceShaderISSnowSSS", RE::ImageSpaceManager::GetCurrentIndex(ISSnowSSS) },
+				{ "BSImagespaceShaderISSnowSSS", RE::ImageSpaceManager::GetCurrentIndex(ISSnowSSS) },
 				// { "BSImagespaceShaderISSAOBlurH", RE::ImageSpaceManager::GetCurrentIndex(ISSAOBlurH) },
 				// { "BSImagespaceShaderISSAOBlurV", RE::ImageSpaceManager::GetCurrentIndex(ISSAOBlurV) },
 				// { "BSImagespaceShaderISUnderwaterMask", RE::ImageSpaceManager::GetCurrentIndex(ISUnderwaterMask) },
@@ -1855,6 +1856,11 @@ namespace SIE
 
 			auto it = descriptors.find(imagespaceShader.name);
 			if (it == descriptors.cend()) {
+				return false;
+			}
+			static constexpr std::string_view reverseZOnly[] = { "BSImagespaceShaderWorldMap", "BSImagespaceShaderWorldMapNoSkyBlur" };
+			auto& reverseZ = globals::features::reverseZ;
+			if (!(reverseZ.loaded && reverseZ.HasShaderDefine(RE::BSShader::Type::ImageSpace)) && std::ranges::find(reverseZOnly, it->first) != std::end(reverseZOnly)) {
 				return false;
 			}
 			descriptor = it->second;
@@ -2471,6 +2477,9 @@ namespace SIE
 					return;
 				}
 
+				if (globals::features::reverseZ.IsActive())
+					defines.emplace_back("REVERSE_Z", "");
+
 				std::string defineSlug;
 				for (const auto& d : defines) {
 					if (!d.first || !d.first[0])
@@ -2524,7 +2533,8 @@ namespace SIE
 					}
 				};
 
-				if (IsDiskCache() && std::filesystem::exists(diskPath)) {
+				std::error_code standaloneDiskCacheProbeError;
+				if (IsDiskCache() && std::filesystem::exists(diskPath, standaloneDiskCacheProbeError)) {
 					// This repo has no shader-manifest digest; reuse the main cache's
 					// mtime-based invalidation policy instead.
 					std::error_code ec;
@@ -2686,6 +2696,16 @@ namespace SIE
 	void ShaderCache::SetSkipUnchangedShaders(bool value)
 	{
 		isSkipUnchangedShaders = value;
+	}
+
+	void ShaderCache::SetBackgroundCompilation(bool value)
+	{
+		{
+			// Serialize with WaitTake's predicate check and transition into wait.
+			std::scoped_lock lock{ compilationSet.compilationMutex };
+			backgroundCompilation = value;
+		}
+		compilationSet.conditionVariable.notify_one();
 	}
 
 	void ShaderCache::DeleteDiskCache()

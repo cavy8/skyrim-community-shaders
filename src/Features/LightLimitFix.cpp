@@ -23,16 +23,14 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	EnableContactShadows,
 	ContactShadowMaxSteps,
 	ContactShadowMaxDistance,
-	ContactShadowStride,
-	ContactShadowThickness,
-	ContactShadowDepthFade,
+	ContactShadowLength,
+	ContactShadowDepthThickness,
 	ContactShadowStrength,
 	EnableLocalShadows,
 	LocalShadowSlots,
 	LocalShadowResolution,
 	LocalShadowSamples,
-	LocalShadowFilterScale,
-	LocalShadowBiasScale)
+	LocalShadowFilterScale)
 
 static constexpr uint CLUSTER_MAX_LIGHTS = 128;
 
@@ -79,11 +77,6 @@ void LightLimitFix::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("local_shadow_filter_scale_tooltip"), "Scales the softening radius set by fPoissonRadiusScale in the game INI. 1.0 matches the game's own shadow-casting lights."));
 		}
-
-		ImGui::SliderFloat(T(TKEY("local_shadow_bias"), "Shadow Bias Scale"), &settings.LocalShadowBiasScale, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("local_shadow_bias_tooltip"), "Scales the depth bias of every light. Raise it if surfaces show striped self-shadowing, lower it if shadows detach from their casters."));
-		}
 	}
 
 	ImGui::SeparatorText(T(TKEY("contact_shadows"), "Contact Shadows"));
@@ -98,7 +91,7 @@ void LightLimitFix::DrawSettings()
 	if (settings.EnableContactShadows) {
 		ImGui::SliderInt(T(TKEY("contact_shadow_max_steps"), "Max Steps"), (int*)&settings.ContactShadowMaxSteps, 1, 32, "%d", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("contact_shadow_max_steps_tooltip"), "Samples per light for surfaces near the camera. Above four, rays that never approach an occluder are rejected early, so higher counts cost less than they look."));
+			ImGui::Text("%s", T(TKEY("contact_shadow_max_steps_tooltip"), "Samples per light for surfaces near the camera, packed toward the shaded point. Above four, rays that never approach an occluder are rejected early."));
 		}
 
 		ImGui::SliderFloat(T(TKEY("contact_shadow_max_distance"), "Max Distance"), &settings.ContactShadowMaxDistance, 64.0f, 8192.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
@@ -106,19 +99,14 @@ void LightLimitFix::DrawSettings()
 			ImGui::Text("%s", T(TKEY("contact_shadow_max_distance_tooltip"), "Distance from the camera at which contact shadows fade out completely."));
 		}
 
-		ImGui::SliderFloat(T(TKEY("contact_shadow_stride"), "Stride"), &settings.ContactShadowStride, 0.5f, 16.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("contact_shadow_length"), "Length"), &settings.ContactShadowLength, 1.0f, 256.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("contact_shadow_stride_tooltip"), "Distance between samples near the camera. Longer strides reach further but can skip thin occluders."));
+			ImGui::Text("%s", T(TKEY("contact_shadow_length_tooltip"), "Length of the ray traced toward each light near the camera. Farther away it grows with distance so shadows keep their size on screen."));
 		}
 
-		ImGui::SliderFloat(T(TKEY("contact_shadow_thickness"), "Thickness"), &settings.ContactShadowThickness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("contact_shadow_thickness"), "Thickness"), &settings.ContactShadowDepthThickness, 1.0f, 128.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("contact_shadow_thickness_tooltip"), "How quickly a depth difference counts as an occluder. Higher values react to thinner objects."));
-		}
-
-		ImGui::SliderFloat(T(TKEY("contact_shadow_depth_fade"), "Depth Fade"), &settings.ContactShadowDepthFade, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("contact_shadow_depth_fade_tooltip"), "How quickly occluders far behind the ray stop counting. Lower values shadow across larger depth gaps."));
+			ImGui::Text("%s", T(TKEY("contact_shadow_thickness_tooltip"), "Assumed thickness of every surface. Rays passing further behind a surface than this go around it instead of being shadowed."));
 		}
 
 		ImGui::SliderFloat(T(TKEY("contact_shadow_strength"), "Strength"), &settings.ContactShadowStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -193,9 +181,8 @@ LightLimitFix::PerFrame LightLimitFix::GetCommonBufferData()
 	perFrame.EnableContactShadows = settings.EnableContactShadows;
 	perFrame.ContactShadowMaxSteps = std::clamp<uint>(settings.ContactShadowMaxSteps, 1u, 32u);
 	perFrame.ContactShadowMaxDistance = sanitize(settings.ContactShadowMaxDistance, 64.0f, 8192.0f);
-	perFrame.ContactShadowStride = sanitize(settings.ContactShadowStride, 0.5f, 16.0f);
-	perFrame.ContactShadowThickness = sanitize(settings.ContactShadowThickness, 0.0f, 1.0f);
-	perFrame.ContactShadowDepthFade = sanitize(settings.ContactShadowDepthFade, 0.0f, 1.0f);
+	perFrame.ContactShadowLength = sanitize(settings.ContactShadowLength, 1.0f, 256.0f);
+	perFrame.ContactShadowDepthThickness = sanitize(settings.ContactShadowDepthThickness, 1.0f, 128.0f);
 	perFrame.ContactShadowStrength = sanitize(settings.ContactShadowStrength, 0.0f, 1.0f);
 
 	const float texelSize = 1.0f / static_cast<float>(std::max(localShadowCacheResolution, 1u));
@@ -1773,7 +1760,7 @@ void LightLimitFix::CopyLocalShadowMaps()
 		}
 
 		const float biasTexelScale = static_cast<float>(scale);
-		caster->shadowParams = { static_cast<float>(type), caster->radius, info.biasScale * 0.00025f * biasTexelScale * std::clamp(settings.LocalShadowBiasScale, 0.0f, 4.0f), 1.0f };
+		caster->shadowParams = { static_cast<float>(type), caster->radius, info.biasScale * 0.00025f * biasTexelScale, 1.0f };
 		caster->shadowParams2 = { spotFalloff, 0.0f, 0.0f, 0.0f };
 		if (caster->lastRenderedFrame != 0)
 			caster->intervalEma += 0.3f * (std::min(static_cast<float>(frame - caster->lastRenderedFrame), 60.0f) - caster->intervalEma);

@@ -182,17 +182,12 @@ namespace LightLimitFix
 		return lerp(1.0, rawShadow, fade);
 	}
 
-	bool IsSaturated(float2 value)
-	{
-		return all(value == saturate(value));
-	}
-
 	// The first-person viewmodel renders in a compressed depth range below this linearized
 	// value; occluders there are not part of the world.
 	static const float CONTACT_SHADOW_FIRST_PERSON_MAX_DEPTH = 16.5;
 
-	// Reference view-space depth for perspective-correct stride. Beyond it, stride and the
-	// depth-delta band scale linearly with depth so each step covers ~constant screen distance.
+	// Reference view-space depth for perspective-correct rays. Beyond it, ray length and
+	// thickness scale linearly with depth so each ray covers ~constant screen distance.
 	static const float CONTACT_SHADOW_REFERENCE_DEPTH = 100.0;
 
 	static const uint CONTACT_SHADOW_COARSE_STEPS = 4;
@@ -201,13 +196,19 @@ namespace LightLimitFix
 
 	static const float CONTACT_SHADOW_MIN_RAY_DEPTH = 1.0;
 
-	static const uint CONTACT_SHADOW_BILINEAR_STEPS = 2;
+	// Exponential remap so steps pack toward the shaded point, where contact detail matters most.
+	static const float CONTACT_SHADOW_MARCH_EXPONENT = 2.0;
+
+	static const float CONTACT_SHADOW_RAY_END_FADE = 4.0;
+
+	static const float CONTACT_SHADOW_DEPTH_BIAS = 2.0 / 65536.0;
 
 	struct ContactShadowRay
 	{
-		float4 clipOrigin;
-		float4 clipStep;
-		float2 viewDepth;
+		float2 uvOrigin;
+		float2 uvDelta;
+		float2 inverseDepth;
+		float tMax;
 	};
 
 	float2 ClipToUV(float4 clipPosition)
@@ -215,74 +216,82 @@ namespace LightLimitFix
 		return (clipPosition.xy / clipPosition.w) * float2(0.5, -0.5) + 0.5;
 	}
 
+	// Builds a perspective-correct screen-space ray: UV interpolates linearly in t, while depth
+	// is recovered from linearly interpolated inverse depth. tMax clips the ray to the screen
+	// before it ever leaves the visible UV range, so step budgeting and the march both stay valid.
+	ContactShadowRay GetContactShadowRay(float3 viewPosition, float3 endPosition)
+	{
+		ContactShadowRay ray;
+		ray.uvOrigin = ClipToUV(mul(FrameBuffer::CameraProj, float4(viewPosition, 1.0)));
+		ray.uvDelta = ClipToUV(mul(FrameBuffer::CameraProj, float4(endPosition, 1.0))) - ray.uvOrigin;
+		ray.inverseDepth.x = rcp(viewPosition.z);
+		ray.inverseDepth.y = rcp(endPosition.z) - ray.inverseDepth.x;
+
+		const float2 room = saturate(ray.uvDelta >= 0.0 ? 1.0 - ray.uvOrigin : ray.uvOrigin);
+		const float2 axisT = room / max(abs(ray.uvDelta), 1e-7);
+		ray.tMax = min(1.0, min(axisT.x, axisT.y));
+		return ray;
+	}
+
+	float GetContactShadowRayT(ContactShadowRay ray, float u)
+	{
+		return ray.tMax * pow(u, CONTACT_SHADOW_MARCH_EXPONENT);
+	}
+
+	float GetContactShadowRayDepth(ContactShadowRay ray, float t)
+	{
+		return rcp(ray.inverseDepth.x + ray.inverseDepth.y * t);
+	}
+
 	uint GetPixelLimitedSteps(ContactShadowRay ray, uint requestedSteps)
 	{
 		const float2 pixelScale = FrameBuffer::DynamicResolutionParams1.xy * SharedData::BufferDim.xy;
-		const float2 stepPixels = (ClipToUV(ray.clipOrigin + ray.clipStep) - ClipToUV(ray.clipOrigin)) * pixelScale;
-		const float rayPixels = length(stepPixels) * float(requestedSteps);
+		const float rayPixels = length(ray.uvDelta * ray.tMax * pixelScale);
 
 		return min(requestedSteps, (uint)max(2.0, floor(rayPixels / CONTACT_SHADOW_MIN_PIXELS_PER_STEP)));
 	}
 
-	float2 GetScreenDepthPair(float2 uv)
+	float2 GetContactShadowSceneDepths(SamplerState samp, float2 uv)
 	{
-		const float2 pixel = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv) * SharedData::BufferDim.xy - 0.5;
-		const float2 pixelFloor = floor(pixel);
-		const float2 weight = pixel - pixelFloor;
+		const float2 texel = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv) * SharedData::BufferDim.xy - 0.5;
+		const float2 maxBase = floor(FrameBuffer::DynamicResolutionParams1.xy * SharedData::BufferDim.xy) - 2.0;
+		const float2 base = clamp(floor(texel), 0.0, maxBase);
+		const float2 weight = saturate(texel - base);
 
-		const int2 maxCoord = int2(FrameBuffer::DynamicResolutionParams1.xy * SharedData::BufferDim.xy) - 1;
-		const int2 base = clamp(int2(pixelFloor), int2(0, 0), maxCoord);
-		const int2 next = min(base + 1, maxCoord);
+		const float4 depths = SharedData::DepthTexture.GatherRed(samp, (base + 1.0) * SharedData::BufferDim.zw);
+		const float filtered = lerp(lerp(depths.w, depths.z, weight.x), lerp(depths.x, depths.y, weight.x), weight.y);
+		const float nearest = weight.x < 0.5 ? (weight.y < 0.5 ? depths.w : depths.x) : (weight.y < 0.5 ? depths.z : depths.y);
 
-		const float d00 = SharedData::DepthTexture.Load(int3(base.x, base.y, 0)).x;
-		const float d10 = SharedData::DepthTexture.Load(int3(next.x, base.y, 0)).x;
-		const float d01 = SharedData::DepthTexture.Load(int3(base.x, next.y, 0)).x;
-		const float d11 = SharedData::DepthTexture.Load(int3(next.x, next.y, 0)).x;
-
-		const float filtered = lerp(lerp(d00, d10, weight.x), lerp(d01, d11, weight.x), weight.y);
-		const float nearest = weight.x < 0.5 ? (weight.y < 0.5 ? d00 : d01) : (weight.y < 0.5 ? d10 : d11);
-
-		const float2 depths = SharedData::GetScreenDepths(float4(filtered, nearest, 0, 0)).xy;
-		return float2(max(depths.x, depths.y), min(depths.x, depths.y));
+		const float2 linearDepths = SharedData::GetScreenDepths(float4(filtered, nearest, 0, 0)).xy;
+		return float2(max(linearDepths.x, linearDepths.y), min(linearDepths.x, linearDepths.y));
 	}
 
-	// Coarse rejection prepass: samples the ray at four evenly spaced points and reports whether
-	// any interval can intersect the occlusion band. Rays that never come near an occluder skip
-	// the fine march entirely, so cost scales with penumbra coverage instead of step count.
-	bool MayBeOccluded(ContactShadowRay ray, uint fineSteps, float bandWidth)
+	// Coarse rejection prepass: samples the ray at four points and reports whether any interval
+	// can intersect the occlusion band. Rays that never come near an occluder skip the fine
+	// march entirely, so cost scales with penumbra coverage instead of step count.
+	bool MayBeOccluded(ContactShadowRay ray, float thickness)
 	{
-		const float coarseScale = float(fineSteps) / float(CONTACT_SHADOW_COARSE_STEPS);
-		const float4 coarseStep = ray.clipStep * coarseScale;
-		const float coarseDepthStep = ray.viewDepth.y * coarseScale;
-		const float slack = abs(coarseDepthStep);
-		float4 clipPosition = ray.clipOrigin;
-		float rayDepth = ray.viewDepth.x;
+		float previousRayDepth = rcp(ray.inverseDepth.x);
 		float previousDelta = 0.0;
 		bool havePrevious = false;
 
 		[unroll] for (uint i = 0; i < CONTACT_SHADOW_COARSE_STEPS; i++)
 		{
-			clipPosition += coarseStep;
-			rayDepth += coarseDepthStep;
+			const float t = GetContactShadowRayT(ray, float(i + 1) / float(CONTACT_SHADOW_COARSE_STEPS));
+			const float rayDepth = GetContactShadowRayDepth(ray, t);
+			const float slack = abs(rayDepth - previousRayDepth);
+			previousRayDepth = rayDepth;
 
-			float2 uv = ClipToUV(clipPosition);
-			if (!IsSaturated(uv))
-				return true;
-
-			float sceneDepth = SharedData::GetScreenDepth(uv);
+			const float sceneDepth = SharedData::GetScreenDepth(ray.uvOrigin + ray.uvDelta * t);
 			if (sceneDepth <= CONTACT_SHADOW_FIRST_PERSON_MAX_DEPTH)
 				return true;
 
-			float delta = rayDepth - sceneDepth;
-			if (delta > -slack && delta < bandWidth + slack)
+			const float delta = rayDepth - sceneDepth;
+			if (delta > -slack && delta < thickness + slack)
 				return true;
 
-			if (havePrevious) {
-				float spanMin = min(previousDelta, delta);
-				float spanMax = max(previousDelta, delta);
-				if (spanMin < bandWidth && spanMax > 0.0)
-					return true;
-			}
+			if (havePrevious && min(previousDelta, delta) < thickness && max(previousDelta, delta) > 0.0)
+				return true;
 			previousDelta = delta;
 			havePrevious = true;
 		}
@@ -291,69 +300,48 @@ namespace LightLimitFix
 
 	// Screen-space contact shadow for a local light: marches the depth buffer from the shaded
 	// point toward the light and returns a visibility multiplier in [0, 1].
-	float ContactShadows(float3 viewPosition, float noise, float3 lightVectorVS, float lightDistance, uint contactShadowSteps, float strengthScale)
+	float ContactShadows(SamplerState samp, float3 viewPosition, float noise, float3 lightVectorVS, float lightDistance, uint contactShadowSteps, float strengthScale)
 	{
-		float contactShadow = 0.0;
-
-		const float perspectiveScale = max(viewPosition.z, CONTACT_SHADOW_REFERENCE_DEPTH) / CONTACT_SHADOW_REFERENCE_DEPTH;
-		const float depthDeltaThickness = SharedData::lightLimitFixSettings.ContactShadowThickness / perspectiveScale;
-		const float depthDeltaFade = SharedData::lightLimitFixSettings.ContactShadowDepthFade / perspectiveScale;
+		float occlusion = 0.0;
 
 		[branch] if (contactShadowSteps > 0)
 		{
+			const float perspectiveScale = max(viewPosition.z, CONTACT_SHADOW_REFERENCE_DEPTH) / CONTACT_SHADOW_REFERENCE_DEPTH;
+			const float thickness = SharedData::lightLimitFixSettings.ContactShadowDepthThickness * perspectiveScale;
+			const float depthBias = CONTACT_SHADOW_DEPTH_BIAS * SharedData::CameraData.z / SharedData::CameraData.w;
+
 			const float3 lightDirectionVS = lightVectorVS * rcp(max(lightDistance, 1e-3));
-			const float sampleSpan = float(contactShadowSteps + 1);
-			float stepLength = min(SharedData::lightLimitFixSettings.ContactShadowStride * perspectiveScale, lightDistance / sampleSpan);
-			stepLength = min(stepLength, (viewPosition.z - CONTACT_SHADOW_MIN_RAY_DEPTH) / (sampleSpan * max(-lightDirectionVS.z, 1e-6)));
-			const float3 stepVS = lightDirectionVS * max(stepLength, 0.0);
+			float rayLength = min(SharedData::lightLimitFixSettings.ContactShadowLength * perspectiveScale, lightDistance);
+			rayLength = min(rayLength, (viewPosition.z - CONTACT_SHADOW_MIN_RAY_DEPTH) / max(-lightDirectionVS.z, 1e-6));
 
-			ContactShadowRay ray;
-			ray.clipOrigin = mul(FrameBuffer::CameraProj, float4(viewPosition, 1.0));
-			ray.clipStep = mul(FrameBuffer::CameraProj, float4(stepVS, 0.0));
-			ray.viewDepth = float2(viewPosition.z, stepVS.z);
-
+			const ContactShadowRay ray = GetContactShadowRay(viewPosition, viewPosition + lightDirectionVS * max(rayLength, 0.0));
 			const uint marchSteps = GetPixelLimitedSteps(ray, contactShadowSteps);
-			const float stepScale = float(contactShadowSteps) / float(marchSteps);
-			ray.clipStep *= stepScale;
-			ray.viewDepth.y *= stepScale;
 
 			bool march = true;
 			[branch] if (marchSteps > CONTACT_SHADOW_COARSE_STEPS)
-				march = MayBeOccluded(ray, marchSteps, 1.0 / max(depthDeltaFade, 1e-5));
+				march = MayBeOccluded(ray, thickness);
 
 			[branch] if (march)
 			{
-				const float rayEndFadeScale = float(CONTACT_SHADOW_COARSE_STEPS) / float(marchSteps);
+				const float jitter = 1.0 - noise;
+				const float stepScale = rcp(float(marchSteps));
 				[loop] for (uint i = 0; i < marchSteps; i++)
 				{
-					const float s = noise + float(i + 1);
-					const float rayDepth = ray.viewDepth.x + ray.viewDepth.y * s;
+					const float t = GetContactShadowRayT(ray, (float(i) + jitter) * stepScale);
+					const float rayDepth = GetContactShadowRayDepth(ray, t);
+					const float2 sceneDepths = GetContactShadowSceneDepths(samp, ray.uvOrigin + ray.uvDelta * t);
 
-					float2 rayUV = ClipToUV(ray.clipOrigin + ray.clipStep * s);
-					if (!IsSaturated(rayUV))
+					const bool behindSurface = rayDepth > sceneDepths.x * (1.0 + sceneDepths.x * depthBias);
+					const bool withinThickness = rayDepth - sceneDepths.y < thickness;
+					if (sceneDepths.y > CONTACT_SHADOW_FIRST_PERSON_MAX_DEPTH && behindSurface && withinThickness) {
+						occlusion = saturate((1.0 - t) * CONTACT_SHADOW_RAY_END_FADE);
 						break;
-
-					float2 rayDepths;
-					[branch] if (i < CONTACT_SHADOW_BILINEAR_STEPS) {
-						rayDepths = GetScreenDepthPair(rayUV);
-					} else {
-						float sceneDepth = SharedData::GetScreenDepth(rayUV);
-						rayDepths = float2(sceneDepth, sceneDepth);
 					}
-
-					float occlusionDelta = rayDepth - rayDepths.x;
-					float penetrationDelta = rayDepth - rayDepths.y;
-					if (rayDepths.y > CONTACT_SHADOW_FIRST_PERSON_MAX_DEPTH) {
-						float occlusion = saturate(occlusionDelta * depthDeltaThickness) - saturate(penetrationDelta * depthDeltaFade);
-						contactShadow = max(contactShadow, occlusion * saturate(float(marchSteps - i) * rayEndFadeScale));
-					}
-					if (contactShadow >= 1.0)
-						break;
 				}
 			}
 		}
 
-		return 1.0 - saturate(contactShadow) * SharedData::lightLimitFixSettings.ContactShadowStrength * strengthScale;
+		return 1.0 - occlusion * SharedData::lightLimitFixSettings.ContactShadowStrength * strengthScale;
 	}
 
 	uint GetContactShadowSteps(float viewDepth, out float strengthScale)

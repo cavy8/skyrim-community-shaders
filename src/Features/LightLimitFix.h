@@ -221,15 +221,14 @@ public:
 		uint EnableContactShadows;
 		uint ContactShadowMaxSteps;
 		float ContactShadowMaxDistance;
-		float ContactShadowStride;
-		float ContactShadowThickness;
-		float ContactShadowDepthFade;
+		float ContactShadowLength;
+		float ContactShadowDepthThickness;
 		float ContactShadowStrength;
 		uint EnableLocalShadows;
 		uint LocalShadowSamples;
 		float LocalShadowFilterRadius;
 		float LocalShadowTexelSize;
-		float pad1;
+		float pad1[2];
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
 
@@ -415,16 +414,14 @@ public:
 		bool EnableContactShadows = true;
 		uint ContactShadowMaxSteps = 4;
 		float ContactShadowMaxDistance = 1024.0f;
-		float ContactShadowStride = 2.0f;
-		float ContactShadowThickness = 0.2f;
-		float ContactShadowDepthFade = 0.05f;
+		float ContactShadowLength = 8.0f;
+		float ContactShadowDepthThickness = 16.0f;
 		float ContactShadowStrength = 1.0f;
 		bool EnableLocalShadows = true;
 		uint LocalShadowSlots = 16;
 		uint LocalShadowResolution = 0;
 		uint LocalShadowSamples = 8;
 		float LocalShadowFilterScale = 1.0f;
-		float LocalShadowBiasScale = 0.25f;
 	};
 
 	uint clusterSize[3] = { 16 };

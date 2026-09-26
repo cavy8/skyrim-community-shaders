@@ -19,8 +19,9 @@ Ported so far:
 | TruePBR micro shadow AO | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `0a69dbbc5` |
 | Volumetric Lighting god ray strength / focused rays | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `a582a558a` (base strength/shaft-definition/priority), `122f4e2fc` (sun focus) |
 | Dynamic Cubemaps lighting-change detection | `jiayev/skyrim-community-shaders` | `compendium-clean` | `49c35c6ef` |
-| Reverse Z | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `124bc7e22` (feature), `1698b4beb` (depth-convention edits across `FrameBuffer.hlsli`/`DeferredCompositeCS.hlsl`/`Effect.hlsl`/`IS*.hlsl`/`Lighting.hlsl`/`Utility.hlsl`/`Water.hlsl`/`LightLimitFix.hlsli`); undocumented until the 2026-09-25 review — see §3 |
-| Footstep Particles | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `124bc7e22`; undocumented until the 2026-09-25 review — see §3 |
+| Reverse Z | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `124bc7e22` (feature), `1698b4beb` (depth-convention edits across `FrameBuffer.hlsli`/`DeferredCompositeCS.hlsl`/`Effect.hlsl`/`IS*.hlsl`/`Lighting.hlsl`/`Utility.hlsl`/`Water.hlsl`/`LightLimitFix.hlsli`); undocumented until the 2026-09-25 review — see §3; residual follow-ups (`9a6d3b2426`, `0a9f8f8ac0`, `3b9a9dc3c9`) closed in the 2026-09-25 implementation pass, see §3 |
+| Footstep Particles | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `124bc7e22`; undocumented until the 2026-09-25 review — see §3; re-checked in the 2026-09-25 implementation pass, byte-identical to Bottle head, no drift |
+| ENB Depth of Field (Effects11) | `InTheBottle/skyrim-community-shaders` | `Bottle-Compendium` | `2a39ad34e9` (DOF half of "DOF and water readd" — the bundled water-settings half was left out, out of scope); ported 2026-09-25, see §3 |
 
 > The port commits did **not** record the exact upstream SHA they were taken
 > from. Baselines *audited on 2026-09-25* against the actual source trees (this is a
@@ -53,9 +54,10 @@ Ported so far:
 >   in Dynamic Cubemaps lighting-detection or Pseudo Sun Bounce. Advanced Skin's TRUE_PBR guard
 >   coverage (`25161eb4f3`) confirmed already fully present locally, line-by-line — no action needed
 >   beyond a cosmetic `Skin.ini` version bump upstream took that Personal hasn't (not a functional
->   gap). Post Processing: two `src/ShaderCache.cpp` robustness fixes not yet re-synced (disk-cache
->   probe exception handling, `backgroundCompilation` atomic+notify) — see the Post Processing
->   section in §3. (A prior note here claiming jiayev was missing from the README's
+>   gap). Post Processing: two `src/ShaderCache.cpp` robustness fixes (disk-cache probe exception
+>   handling, `backgroundCompilation` atomic+notify) ported 2026-09-25 — see the Post Processing
+>   section in §3; the same source commit's SSS null-guard fix ported alongside it, see the
+>   Subsurface Scattering section in §3. (A prior note here claiming jiayev was missing from the README's
 >   [Branch-Specific Credits](../../README.md#branch-specific-credits) was stale — it's listed there.)
 > - `community-shaders/dev` (mainline, via the `cavy8` fork's synced `dev` branch) — `aebf01c2ef`.
 >   `Personal` is fully merged through local `dev` (`66369e5c58`); mainline is one trivial commit
@@ -152,13 +154,23 @@ mainline, re-verify each feature's hunks below still apply and still compile
 with the feature define forced (see [shader-workflow.md](shader-workflow.md) and
 the porting notes in `.claude` memory).
 
-**2026-09-25 status:** `Personal` is fully merged through local `dev` (`66369e5c58` — verified via
-`git merge-base Personal dev` equalling `dev`'s tip). Mainline (`community-shaders/dev`, the
-`cavy8` fork's synced copy of the upstream `community-shaders/skyrim-community-shaders` `dev`
-branch) is one trivial commit ahead: `aebf01c2ef` "feat: detect Dll version causing grass stutter
-(#2716)" — a 1-line removal in `RunGrass.hlsl` (`dirDetailedShadow += ShadowClampValue * (1.0 -
-dirDetailedShadow);`, unrelated to any ported hunk) plus a 24-line addition to `XSEPlugin.cpp`. Low
-risk; just needs local `dev` fetched/merged forward.
+**2026-09-25 status (superseded same day, see correction below):** `Personal` is fully merged
+through local `dev` (`66369e5c58` — verified via `git merge-base Personal dev` equalling `dev`'s
+tip). Mainline (`community-shaders/dev`) was one trivial commit ahead: `aebf01c2ef` "feat: detect
+Dll version causing grass stutter (#2716)".
+
+**Correction, later the same day (2026-09-25 implementation pass):** re-checking
+`community-shaders/dev` mid-pass found it had jumped to `b4e7b08ec4` — **73 commits** ahead of local
+`dev`, not one. The `aebf01c2ef` baseline above was accurate at the time it was recorded a few hours
+earlier; the fork's mirror of upstream mainline caught up in between (this environment's editor
+auto-fetches remotes periodically, so the jump was observed rather than triggered by anything in
+this pass). `git log dev..community-shaders/dev --oneline` lists all 73; skimmed titles include
+several `fix(effects11)`/`fix(shadercache)`/`fix(shadows)` items and the sortable-profiler-tables
+feature already cross-referenced in §7's Bottle section. **Not merged in this pass** — 73
+unreviewed upstream commits is a substantial, separate undertaking (conflict resolution across
+whatever files they touch, then a full re-verify of every §2 hot file per this section's own
+standing instruction), not something to fold into a Bottle-focused sync pass. Local `dev`/`Personal`
+should get a dedicated mainline-merge pass soon; the gap will only grow.
 
 ---
 
@@ -226,34 +238,64 @@ so a re-sync here is always a genuine comparison against current Bottle head, ne
 - **Present (as of the 2026-09-17 pass only)** — describes exactly which Bottle-head improvements
   from that pass were pulled forward; **superseded by further Bottle movement, see below.**
 
-**2026-09-25 review — significant further Bottle movement, re-sync not yet done:**
+**2026-09-25 review — significant further Bottle movement, found pending re-sync:**
 
 Bottle kept reworking diet-SLF after both the 2026-09-17 re-sync above and the undocumented
 2026-09-23 Reverse Z/Footstep Particles port (which itself touched 95 lines of
-`LightLimitFix.hlsli` for the reverse-Z depth convention — already captured). None of the following
-is reflected locally. Direct file-diff against current Bottle head (`dac6803377`) confirms
-`LightLimitFix.cpp` diverges 308 lines, `LightLimitFix.h` 56 lines, `LightLimitFix.hlsli` 229 lines:
+`LightLimitFix.hlsli` for the reverse-Z depth convention — already captured). Direct file-diff
+against current Bottle head (`dac6803377`) confirmed `LightLimitFix.cpp` diverged 308 lines,
+`LightLimitFix.h` 56 lines, `LightLimitFix.hlsli` 229 lines:
 
-- **`d05a80bb00`** "chore: improve contact shadows" (95 lines, `LightLimitFix.hlsli`) and
-  **`dac6803377`** "feat: tiny glade like contact shadows" (178 lines `LightLimitFix.hlsli`, 25/12
-  lines `LightLimitFix.cpp/h`, current Bottle head) — a full rewrite of the contact-shadow ray
-  representation the 2026-09-17 pass ported: replaces `ContactShadowRay{clipOrigin,clipStep,
-  viewDepth}` with a UV-space `{uvOrigin,uvDelta,inverseDepth,tMax}` form, exponential march
-  (`CONTACT_SHADOW_MARCH_EXPONENT`), and a new end-fade constant. **Depends on
-  `FrameBuffer::CameraProj`/`DynamicResolutionParams1`** — i.e. it's coupled to the already-ported
-  Reverse Z work (see the Reverse Z section below); re-sync this only after confirming Reverse Z
-  itself is fully current, not before.
+- **`d05a80bb00`** "chore: improve contact shadows" and **`dac6803377`** "feat: tiny glade like
+  contact shadows" — a full rewrite of the contact-shadow ray representation the 2026-09-17 pass
+  ported: replaces `ContactShadowRay{clipOrigin,clipStep, viewDepth}` with a UV-space
+  `{uvOrigin,uvDelta,inverseDepth,tMax}` form, exponential march (`CONTACT_SHADOW_MARCH_EXPONENT`),
+  and a new end-fade constant. **Ported 2026-09-25** (see below) — depended on
+  `FrameBuffer::CameraProj`/`DynamicResolutionParams1`, i.e. the already-ported Reverse Z work, and
+  was done after confirming Reverse Z was fully current.
 - **`6ae45a32fa`** "fix: SLF shadow flicker" (185/20 lines `LightLimitFix.cpp/h`) — replaces the
   starvation/`contentHash`/`cachedGeomHash`/`LOCAL_SHADOW_STARVED_SCORE` cache-invalidation model the
   2026-09-17 pass ported with a different reclaim-priority model (`LOCAL_SHADOW_ACTOR_SCORE = 1000`,
-  `LOCAL_SHADOW_AGE_URGENCY = 64`, a static `IsLocalShadowSliceReclaimable()` helper). This directly
-  supersedes what's documented as "Present" above — needs a full re-diff against current Bottle,
-  not a patch on top of the 2026-09-17 work.
-- **`a0ac9312e8`** "fix: unforce bias LLS" (10/1 lines) — small, removes a forced-bias code path.
-- **Priority: highest item in the 2026-09-25 review.** Largest architecturally-significant
-  outstanding gap of anything found this pass, and the one most likely to cause visible regressions
-  (contact-shadow behavior, cache flicker) if left unsynced. Status pending a fresh re-sync pass —
-  do not describe as "Present" until this is done.
+  `LOCAL_SHADOW_AGE_URGENCY = 64`, a static `IsLocalShadowSliceReclaimable()` helper). **Not yet
+  re-synced** — this directly supersedes what's documented as "Present" in the 2026-09-17 pass above
+  and still needs a full re-diff against current Bottle, not a patch on top of the 2026-09-17 work.
+  Deferred out of the 2026-09-25 pass to keep that pass's contact-shadow rework reviewable on its
+  own; still the single largest outstanding LLF gap.
+- **`a0ac9312e8`** "fix: unforce bias LLS" — **ported 2026-09-25** (see below).
+
+**2026-09-25 implementation pass — contact-shadow rewrite ported.**
+
+Replaced `ContactShadowRay`/`GetPixelLimitedSteps`/`MayBeOccluded`/`ContactShadows` in
+`LightLimitFix.hlsli` with Bottle's current-head algorithm verbatim (perspective-correct UV-space
+ray with linearly-interpolated inverse depth, `tMax` clipping the ray to the screen up front instead
+of an in-loop `IsSaturated` bailout, exponential step packing toward the shaded point, a relative
+depth bias to fight acne, a single-hit ray-end-fade occlusion model replacing the old
+accumulate-and-max one, and `GatherRed` instead of four `Load()`s for the bilinear scene-depth pair).
+Dropped the now-unused `IsSaturated()` helper, matching Bottle. `ContactShadows()`/
+`GetContactShadowSceneDepths()`/`MayBeOccluded()` now take a `SamplerState` parameter (`GatherRed`
+needs one); the `Lighting.hlsl` call site passes `LinearSampler` (already in scope there, used by the
+adjacent `GetLocalShadow()` call).
+
+Settings-schema changes that came with it (byte-matched on both the C++ and HLSL sides, `pad1`
+widened to `float[2]` to keep `LightLimitFix::PerFrame`/`LightLimitFixSettings` at the same 80-byte
+size so every field after it in `FeatureData` keeps its offset — see §2):
+- `ContactShadowStride` (per-step distance, default 2.0) → `ContactShadowLength` (total ray length,
+  default 8.0) — the new ray is built once from a length, not accumulated step-by-step.
+- `ContactShadowThickness` (0–1 fractional, default 0.2) → `ContactShadowDepthThickness` (1–128 game
+  units, default 16.0) — thickness is now compared directly against absolute depth deltas.
+- `ContactShadowDepthFade` **removed** — the old accumulate-and-max falloff model it fed doesn't
+  exist anymore; the new model's single ray-end fade (`CONTACT_SHADOW_RAY_END_FADE`) replaces it.
+- Also folded in `a0ac9312e8` "fix: unforce bias LLS" while touching the same settings list:
+  removed `LocalShadowBiasScale` (default 0.25) and its UI slider — local-shadow depth bias is no
+  longer user-scaled, matching Bottle.
+- `LightLimitFix.ini` bumped `3-3-0` → `3-4-0`. i18n re-extracted/sorted; `contact_shadow_stride`/
+  `contact_shadow_depth_fade`/`local_shadow_bias` keys are gone, `contact_shadow_length` is new,
+  `contact_shadow_thickness`'s tooltip text changed under the same key.
+
+Verified: `BuildDevFast` clean (no new warnings); `Lighting.hlsl` force-compiled with `fxc` for
+`PSHADER+LIGHT_LIMIT_FIX+DEFERRED` (with and without `REVERSE_Z`) and the non-deferred forward path.
+Not tested in-game. **`d05a80bb00`/`dac6803377`'s contact-shadow rework and `a0ac9312e8`: Present.**
+`6ae45a32fa`'s scheduling/cache-invalidation rework: still **Deferred**, see above.
 
 ### Reverse Z  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
 
@@ -267,21 +309,51 @@ Ported `124bc7e22` (feature) + `1698b4beb` (shared depth-convention edits), 2026
 `Lighting.hlsl`/`SharedData.hlsli` on any future Bottle diff is likely Reverse Z, not a separate
 feature — check here first before assuming a new port target.
 
-**2026-09-25 review — residual follow-up fixes, not yet captured:**
+**2026-09-25 review — residual follow-up fixes — closed in the 2026-09-25 implementation pass:**
 
-- `src/ShaderCache.cpp` diverges 86 lines from Bottle head (`9a6d3b2426` "fix: reverse z map",
-  `0a9f8f8ac0` "fix: reverse z imagespaces", `3b9a9dc3c9` "fix: Motion blur and DOF PP z" also
-  touches this file).
-- `package/Shaders/Effect.hlsl` diverges 45 lines (`42d5129c75` "fix: reverse z effect shaders").
+- `src/ShaderCache.cpp` diverged 86 lines from Bottle head. **`9a6d3b2426`** "fix: reverse z map" —
+  ported: un-commented the `BSImagespaceShaderWorldMap`/`BSImagespaceShaderWorldMapNoSkyBlur`/
+  `BSImagespaceShaderISSnowSSS` descriptor-table entries and added the `reverseZOnly` guard in
+  `GetImagespaceShaderDescriptor()` that rejects the first two unless Reverse Z is active (needed
+  `#include "Features/ReverseZ.h"` for the full type). **`0a9f8f8ac0`** "fix: reverse z
+  imagespaces" — un-commented `BSImagespaceShaderISSAOCameraZ` in the same table (a same-evening
+  sister commit to the one above, not a separate imagespace concern). **`3b9a9dc3c9`**'s
+  `ShaderCache.cpp` piece — ported: `EnqueueStandaloneShaderCompile` now pushes a `REVERSE_Z` define
+  when `globals::features::reverseZ.IsActive()`, since Post Processing's standalone compile path
+  (unlike the main permutation matrix) never went through the generic per-feature `HasShaderDefine`
+  loop. One divergence investigated and **left alone**: Bottle's `GetUtilityShaderDefines()` pushes
+  a `REVERSE_Z` define for `BSShader::Type::Utility` that Personal lacks — confirmed a no-op here,
+  since Personal's `Utility.hlsl` gets its Reverse-Z awareness from runtime `FrameBuffer::
+  IsReverseProjection()` calls inside `FrameBuffer::ToNativeDepth()`/`ToStandardClip()`/etc., not
+  from a `#ifdef REVERSE_Z` branch — grepped and confirmed `Utility.hlsl` has zero references to the
+  macro on either branch. Adding the define would do nothing; not ported.
+- `package/Shaders/Effect.hlsl` diverged 45 lines total, but investigated down to the single commit
+  (`42d5129c75` "fix: reverse z effect shaders") that's actually Reverse-Z-scoped: the `SKY_OBJECT`
+  view-proj depth-row fix (`skyObjectDepthRow`) — confirmed **already present, byte-identical**. The
+  remaining ~40 lines of divergence are unrelated, not-yet-ported Effects11 particle-intensity/
+  light-sprite and Exponential Height Fog `useVanillaFogSettings` work from the same file region;
+  out of scope for this pass, not a Reverse Z gap.
 - `package/Shaders/PostProcessing/MotionBlur/motionblur_*.cs.hlsl` (4 files) +
-  `src/Features/PostProcessing/MotionBlur.cpp`, from `3b9a9dc3c9` — not individually diffed, but
-  same commit as the `ShaderCache.cpp` divergence above, so very likely also outstanding.
+  `src/Features/PostProcessing/MotionBlur.cpp`, from `3b9a9dc3c9` "fix: Motion blur and DOF PP z" —
+  ported. `motionblur_blurpass.cs.hlsl` had never picked up depth linearization at all (matches
+  jiayev's own upstream, which still samples `TexDepth` raw) — replaced with
+  `SharedData::GetScreenDepth(...)` (Reverse-Z-aware), added the `VelocityToBlurPixels()` helper,
+  fixed `sampleCount` clamping/`pixelToSampleUnitsScale`/`offsetLen` math bugs, and renamed
+  `MB_SOFTZ_INCHES`→`MB_SOFTZ_GAME_UNITS`; whole-file diff against Bottle head confirmed this was the
+  *only* divergence, so the file was replaced wholesale rather than hand-patched. The other three
+  `.cs.hlsl` files each had one bug: `saturate()` was incorrectly clamping the encoded velocity
+  magnitude to 0..1 before it's later multiplied back out — removed, matching Bottle. Also found and
+  fixed two further `MotionBlur.cpp` gaps while diffing against Bottle head that predate
+  `3b9a9dc3c9` (not Reverse-Z-scoped, just previously-missed correctness issues): a missing
+  `ClearUnorderedAccessViewFloat` on `blurOutputTexture` at (re)creation, and a missing
+  zero-dispatch guard before `context->Dispatch()`. (One further Bottle difference —
+  `dispatchY` computed from `horizontalPassTexture->desc.Height` instead of `dynamicHeight` —
+  was investigated and is a **regression in Bottle**, not a gap in Personal: Personal already uses
+  `dynamicHeight` consistently for dynamic-resolution correctness; left as-is, not "fixed" to match
+  Bottle.)
 - `src/Features/ReverseZ.cpp` itself is confirmed **byte-identical** to current Bottle head — the
-  `1e88b27471` "fix: reverse z interior perk menu" fix (68 lines) is already captured. Only the
-  follow-up fixes above are outstanding.
-- Size: small-medium, mechanical re-application of a handful of hunks in files Personal already
-  owns from the port. Lower priority than the Light Limit Fix contact-shadow rework above, but that
-  rework itself depends on Reverse Z being current, so do this first.
+  `1e88b27471` "fix: reverse z interior perk menu" fix (68 lines) is already captured.
+- Verified: `BuildDevFast` clean (no new warnings).
 
 ### Footstep Particles  (`InTheBottle/skyrim-community-shaders@Bottle-Compendium`)
 
@@ -511,28 +583,46 @@ is still owed on the next re-sync pass.
   not by hlslkit) — force-compile with `fxc` rather than trusting a green hlslkit run alone.
 - Marked alpha at port time — confirm current release stage in
   `features/Post Processing/Shaders/Features/PostProcessing.ini` before assuming defaults.
-- **2026-09-25 review: two `src/ShaderCache.cpp` robustness fixes not yet re-synced**, both from
-  **`c321154fa4`** "fix: shader wakeups, cache probes and SSS guards" (#2722, 2026-09-21):
-  - **Disk-cache probe exception safety.** Upstream changes `std::filesystem::exists(diskPath)`
-    (the throwing overload) to the `std::error_code`-taking overload, with the rationale "a failed
-    filesystem probe is a cache miss, not a failed compilation task." Personal's `ShaderCache.cpp`
-    (currently ~L1398 and ~L2527) still uses the throwing overload — a filesystem hiccup (AV lock,
-    permission error, network drive) here throws uncaught into the compile path instead of
-    degrading to a cache miss. Trivial fix (add an `std::error_code` out-param); medium urgency,
-    rare trigger.
-  - **`backgroundCompilation` synchronization.** Upstream replaces the plain
-    `bool backgroundCompilation` with `std::atomic_bool` plus a new
-    `ShaderCache::SetBackgroundCompilation(bool)` that locks `compilationMutex` and notifies
-    `conditionVariable` — because `Complete()` erases the entry before notifying, flipping the mode
-    while the dispatcher thread is parked in `conditionVariable.wait()` previously wouldn't wake it.
-    Personal (`ShaderCache.h` ~L621) still has a plain `bool`, written directly with no lock/notify
-    from `src/Menu.cpp` (`SkipCompilationKey` handler, ~L1138) and `src/XSEPlugin.cpp` (~L131) — the
-    skip-compilation hotkey and boot-time background-mode toggle can silently fail to take effect
-    promptly. Medium urgency.
+- **2026-09-25 review: two `src/ShaderCache.cpp` robustness fixes, both from `c321154fa4` "fix:
+  shader wakeups, cache probes and SSS guards" (#2722, 2026-09-21) — ported in the 2026-09-25
+  implementation pass:**
+  - **Disk-cache probe exception safety.** Changed `std::filesystem::exists(diskPath)` (the
+    throwing overload) to the `std::error_code`-taking overload at both call sites — the main
+    permutation-matrix disk-cache check (~L1398) and, additionally, Personal's own
+    `EnqueueStandaloneShaderCompile` disk-cache check (~L2536, not from this upstream commit — it's
+    Personal-only code with the identical bug pattern, fixed the same way) — "a failed filesystem
+    probe is a cache miss, not a failed compilation task." Also removed a redundant inner
+    `std::filesystem::exists(shaderSourcePath)` throwing check, since the immediately-following
+    `last_write_time(shaderSourcePath, ec)` already reports the same failure via `ec`.
+  - **`backgroundCompilation` synchronization.** `bool backgroundCompilation` → `std::atomic_bool`,
+    plus a new `ShaderCache::SetBackgroundCompilation(bool)` that locks `compilationMutex`, sets the
+    flag, and notifies `conditionVariable` — `CompilationSet` gained `friend class ShaderCache;` so
+    the setter can reach its private `conditionVariable`. `Complete()` erases the entry before
+    notifying, so flipping the mode while the dispatcher thread is parked in
+    `conditionVariable.wait()` previously wouldn't wake it. Only `src/Menu.cpp`'s
+    `SkipCompilationKey` hotkey handler was switched to the setter (matching upstream's own scope);
+    `src/XSEPlugin.cpp`'s boot-time toggle was left as a plain `= true` assignment — upstream doesn't
+    touch it either, and `std::atomic_bool` still supports direct assignment (it just skips the
+    wake, which doesn't matter at boot before the dispatcher is parked waiting).
   - **Not applicable:** the same commit also swaps `TryTakeNext`'s admission-budget check from
     `compilationPool.get_tasks_total()` to `tasksInProgress.size()` to fix a related race — Personal's
     `TryTakeNext` already uses a dedicated `std::atomic<uint32_t> dispatchedTasksInFlight` counter (a
     different, race-free mechanism), so this part doesn't apply.
+  - The same commit's third component, **SSS guards**, is not Post-Processing-scoped — see
+    Subsurface Scattering below.
+  - Verified: `BuildDevFast` clean (no new warnings).
+
+### Subsurface Scattering  (`jiayev/skyrim-community-shaders@compendium-clean`, via the same `c321154fa4` commit as Post Processing above)
+
+Not a tracked port — Subsurface Scattering is native to Personal, not sourced from any fork — but
+`c321154fa4` "fix: shader wakeups, cache probes and SSS guards" (#2722) also carried a crash fix in
+`src/Features/SubsurfaceScattering.cpp` that applied here unmodified: `DataLoaded()` called
+`RE::TESForm::LookupByEditorID("IsBeastRace")->As<RE::BGSKeyword>()` unconditionally — a null-pointer
+dereference if a mod ever removes or renames that keyword. **Ported 2026-09-25**: null-checks the
+`LookupByEditorID` result before dereferencing, logs a warning and falls back to
+`isBeastRaceKeyword = nullptr` when missing, and `BSLightingShader_SetupSkin` now skips the
+`HasKeyword(isBeastRaceKeyword)` branch entirely when the keyword never resolved (previously would
+have called `HasKeyword(nullptr)`). Verified: `BuildDevFast` clean.
 
 ### Advanced Skin profiles / overrides  (`jiayev/skyrim-community-shaders@compendium-clean`)
 
@@ -931,6 +1021,52 @@ Out-of-scope note: `47f5e45630` "feat(utility): expand atmosphere controls" (#74
 `Sky.hlsl`/`SharedData.hlsli` in the same area (CS Utility's own `cloudBrightness`/
 `cloudSaturation`/`sunGlareIntensity` fields) — CS Utility itself remains out of scope for this
 repo, but it will textually interleave with any `Sky.hlsl` re-sync of the three commits above.
+**Still outstanding** — the 2026-09-25 implementation pass below resolved a different Procedural
+Sun question (Bottle's competing implementation) and did not touch this bug-fix cluster; `Sky.hlsl`
+still needs the `1c0d36c350`/`f537f4b9cf`/`a0eafffe21` re-sync described above.
+
+**2026-09-25 implementation pass — Bottle's competing "Physical Sun" implementation, resolved by
+merging its one genuine improvement rather than replacing this feature.**
+
+Bottle carries its **own, separately-lineaged** copy of a feature also named "Procedural Sun"
+(`26611dd183` "feat: readd physical sun w/ e11 adaptation"), re-added after Bottle had dropped it
+earlier. It occupies the exact same feature slot as this one (`GetName()`/`GetShortName()` are both
+`"Procedural Sun"`/`"ProceduralSun"` on both branches) but the two lineages have diverged:
+
+- **What Bottle's version has that this one lacked**: `excludeFromAdaptation` — a setting that masks
+  the sun disc out of the image Effects11's eye-adaptation (auto-exposure) pass measures, via a new
+  `ENBAdaptation::MaskProceduralSun()` screen-space pass (`AdaptationSunMaskPS.hlsl`) that resamples
+  the surrounding sky in the sun's angular position instead of the sun itself. This is the "links to
+  Effects11" integration.
+- **What this repo's version has that Bottle's lacks**: the `f537f4b9cf` anti-clipping fix ported
+  from `open-shaders` on 2026-09-17 (`sunQuadModelRadius`, `GetOcclusionBillboardScale`/
+  `GetBillboardScale`/`ResizeBillboardVertex`) — Bottle's `26611dd183` predates that fix and doesn't
+  have it.
+- **Critically, Bottle's commit also deletes Effects11's own native screen-space procedural sun**
+  (`ComputeProceduralSun()` in `Sky.hlsl`, driven by the ENB-preset `EnableProceduralSun`/`Size`/
+  `EdgeSoftness`/`GlowIntensity`/`GlowCurve` settings) and makes its own standalone feature the sole
+  sun-rendering path, with no coexistence arbitration at all. This repo's existing coexistence
+  design (`effects11OwnsSun`, ported from `open-shaders`, documented above) was built specifically
+  to avoid that outcome and is called out by name in this doc and in the original implementation
+  brief as something **"do not remove."** A literal adoption of Bottle's patch — the
+  literal reading of "strip ours out in favor of Bottle's" — would silently delete that
+  ENB-preset-driven capability, i.e. it breaks another feature, not just this one.
+
+**Resolution**: kept this repo's existing standalone Procedural Sun (open-shaders lineage, anti-clip
+fix intact) and Effects11's native `ComputeProceduralSun()` coexistence exactly as they were, and
+merged only Bottle's purely-additive value — the adaptation-exclusion capability — onto this
+feature: added `excludeFromAdaptation` to `ProceduralSun::Settings`/JSON/UI (checkbox + tooltip,
+default on, matching Bottle), and ported `ENBAdaptation`'s `MaskProceduralSun()`/
+`EnsureSunMaskResources()`/`ClearShaderCache()` plus `AdaptationSunMaskPS.hlsl` verbatim — this part
+is self-contained (its own cbuffer, no `SharedData.hlsli` dependency) and reads
+`globals::features::proceduralSun.settings.{enabled,excludeFromAdaptation,sunDiskAngularRadius}`
+directly rather than going through the GPU-side settings struct. `Effects11::ClearShaderCache()` now
+also calls `enbAdaptation.ClearShaderCache()` to release the mask pixel shader. This gets the
+Effects11 integration the "likely preferred" framing was after, without the destructive side effect.
+Verified: `BuildDevFast` clean; `AdaptationSunMaskPS.hlsl` force-compiled standalone with `fxc`.
+**Flagged as a conflict, not auto-resolved**: if the literal Bottle behavior (no Effects11-native
+procedural sun at all) is actually wanted, that's a separate, deliberate call — say so and it's a
+small removal from here.
 
 ---
 
@@ -1059,33 +1195,58 @@ supersedes the 2026-09-17 "Present" record and is the highest-priority item from
 **Genuinely new, unported Bottle subsystems found this pass** (none have any local counterpart;
 ranked by rough size):
 
-- **Light Limit Fix contact-shadow/scheduling rework** — see above, not a separate feature but
-  large enough to call out again here.
+- **Light Limit Fix contact-shadow/scheduling rework** — the contact-shadow half is ported (see the
+  Light Limit Fix section in §3); the scheduling/cache-invalidation half (`6ae45a32fa`) is still
+  outstanding, still the largest remaining LLF gap.
 - **Sky Scattering rework for Effects11** (`0657cf0ab4` "feat: rework sky scattering for effects
-  11") — medium-large. Adds `features/Effects11/Shaders/Effects11/SkyScattering.hlsli` (new, 237
-  lines; confirmed absent locally), reworks `ApplyVolumetricRaysPS.hlsl`/
+  11") — medium-large, **still not ported**. Adds `features/Effects11/Shaders/Effects11/
+  SkyScattering.hlsli` (new, 237 lines; confirmed absent locally), reworks `ApplyVolumetricRaysPS.hlsl`/
   `RaymarchVolumetricRaysPS.hlsl`, a 5-line `CloudShadows/CloudShadows.hlsli` hook, 20 lines of
   `Sky.hlsl`, 23 new `SharedData.hlsli` struct fields, 103/30 lines of `Effects11.cpp/h`, 21 lines
   of `EffectManager.cpp`. A from-scratch Effects11 atmospheric-scattering model, independent of
   Personal's Cloud Relight/Procedural Sun ports but touching the same shared `Sky.hlsl`/
-  `SharedData.hlsli` hot files.
+  `SharedData.hlsli` hot files, and coupled to `VolumetricLighting::ClaimEffects11Intensity()`'s
+  existing Effects11 ownership arbitration (§3, Volumetric Lighting) since it reworks the same
+  `ApplyVolumetricRaysPS.hlsl`/`RaymarchVolumetricRaysPS.hlsl` files that arbitration governs.
+  Deliberately deferred this pass: large enough, and coupled enough to existing arbitration and to
+  Cloud Relight/Procedural Sun's `Sky.hlsl` hooks, to warrant its own dedicated session with in-game
+  verification rather than a same-session addition alongside the LLF/Reverse-Z/Post-Processing work
+  above.
 - **Physical Sun / Effects11 sun-adaptation integration** (`26611dd183` "feat: readd physical sun w
-  e11 adaptation") — medium. Extends Bottle's **own, separately-lineaged** copy of a
-  similarly-named `features/Procedural Sun/` feature (settings diverge from Personal's
-  open-shaders-sourced version: Bottle has `cloudExtinction`/`excludeFromAdaptation`, Personal has
-  `cloudOcclusionStrength` — confirmed different upstream lineages, not the same code under a
-  shared name). New: `features/Effects11/Shaders/Effects11/AdaptationSunMaskPS.hlsl` (45 lines,
-  confirmed absent locally) plus Effects11 sun-ownership wiring in `Effects11.cpp/h`/
-  `EffectManager.cpp`. Would need disambiguation against Personal's existing open-shaders
-  `ProceduralSun` (does it coexist via the same `effects11OwnsSun`-style arbitration Procedural Sun
-  already resolved, or does Bottle's version replace that arbitration?) before porting.
-- **`ENBDepthOfField`** (`src/Features/Effects11/Effects/ENBDepthOfField.cpp/h`) — small,
-  self-contained new `EffectBase` subclass (aperture/focus-time IDs, one SRV,
-  `enbdepthoffield.fx`). Confirmed absent locally.
+  e11 adaptation") — the disambiguation this item called for is done; see the Procedural Sun section
+  in §3 for the resolution (the `excludeFromAdaptation`/`AdaptationSunMaskPS.hlsl` piece was merged
+  onto Personal's existing standalone Procedural Sun; Bottle's *removal* of Effects11's native
+  `ComputeProceduralSun()` was **not** carried over — flagged as a conflict, not auto-applied).
+- **`ENBDepthOfField`** (`src/Features/Effects11/Effects/ENBDepthOfField.cpp/h`) — **ported
+  2026-09-25**. Small, self-contained `EffectBase` subclass (aperture/focus-time IDs, five 1×1/16×16
+  SRVs for the aperture/focus ping-pong state, `enbdepthoffield.fx` resolved at runtime like every
+  other ENB effect — no `.fx` file ships with this repo or with Bottle; it comes from the user's own
+  ENB preset). Source commit (`2a39ad34e9` "feat: DOF and water readd") bundles an unrelated water
+  settings/color feature in the same `Effects11.cpp/h`/`EffectManager.cpp` hunks — confirmed the two
+  are cleanly separable (the water half touches only `Effects11::PerFrame`/`GetCommonBufferData()`/
+  `OverrideWeather()` and `Water.hlsl`/`WaterParallax.hlsli`, none of which DOF's wiring needs) and
+  left the water half out, out of scope for this pass. Ported: the new `ENBDepthOfField.cpp/h` files
+  verbatim; `EffectManager.h`'s `enbDepthOfField` member, its `useDepthOfField` setting ID, and its
+  slot in every `allEffects[]` enumeration (`GetFailedEffectCount`/`GetAllErrors`/`Apply`/`Load`/
+  `RenderEffectsList` — 5 call sites); `EffectManager.cpp`'s `enbDepthOfField.Apply()`/`.Save()`
+  calls, the `EnableDepthOfField`/`FocusingTime`/`ApertureTime` setting registrations, and
+  `ExecuteEffect(enbDepthOfField, ids.useDepthOfField)` placed first in `ExecuteEffects()` (before
+  `UpdateDownsampledTexture`, matching Bottle's ordering — DOF runs before the rest of the ENB chain
+  samples the frame). No settings-schema changes to any feature Personal already owns; no i18n keys
+  (ENB effect settings aren't routed through `T()`, matching every other `ENB*` effect here).
+  Verified: `BuildDevFast` clean, no new warnings. Not tested in-game (needs an ENB preset that ships
+  an `enbdepthoffield.fx` to exercise at all — the feature is inert without one, same as every other
+  `ENB*` effect wrapper).
 - **FSR4/FSR3 runtime-upscaler split** (`src/Features/Upscaling/FidelityFX/RuntimeUpscaler.cpp`,
-  new file, references `../../ReverseZ.h`) — confirmed absent locally. Coupled to both the
-  FidelityFX upscaling path and the already-ported Reverse Z work; worth checking whether Personal's
-  current `FidelityFX.cpp` needs this split now that Reverse Z is in.
+  new file, references `../../ReverseZ.h`) — **still not ported**, deliberately. Investigated the
+  source commit (`9ea5d7e64a` "feat: FSR4 support from OS"): 2953 insertions across a new
+  1842-line `RuntimeUpscaler.cpp`, 222/215 lines of `FidelityFX.cpp/h` changes, 119/22 lines of
+  `Upscaling.cpp/h`, new `cmake/FidelityFX-Runtime.cmake`/`cmake/FeaturePackaging.cmake` build-system
+  files, a new vendored `include/FidelityFX/upscalers/` SDK header set, and a shipped-DLL swap
+  (`amd_fidelityfx_framegeneration_dx12.dll`/`amd_fidelityfx_loader_dx12.dll` removed in favor of the
+  new headers). This is a full FSR4 SDK integration, not a code-level port — multi-session scope of
+  its own (build-system changes, new binary dependencies, needs an actual FSR4-capable GPU to verify
+  at all). Recorded here with full scope so a future dedicated pass doesn't have to re-derive it.
 - **Cloud self-shadowing** (`35e2151ab9` "feat: cloud self shadowing and cloud improvements") — low
   priority, uncertain net upstream state: Bottle **partially reverted this itself** two commits
   later (`6660d25a1b` "revert" removes the 60-line `CloudShadows.hlsli` self-shadow addition and

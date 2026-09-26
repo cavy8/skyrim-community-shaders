@@ -2745,7 +2745,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		[branch] if (contactShadowSteps > 0 && shadowComponent > 0.0 && lightAngle > 0.0 && !(light.lightFlags & LightLimitFix::LightFlags::Simple))
 		{
 			float3 lightVectorVS = mul((float3x3)FrameBuffer::CameraView, lightDirection);
-			float contactShadow = LightLimitFix::ContactShadows(viewPosition, screenNoise, lightVectorVS, lightDist, contactShadowSteps, contactShadowStrengthScale);
+			float contactShadow = LightLimitFix::ContactShadows(LinearSampler, viewPosition, screenNoise, lightVectorVS, lightDist, contactShadowSteps, contactShadowStrengthScale);
 			shadowComponent *= contactShadow;
 			lightShadow *= contactShadow;
 		}

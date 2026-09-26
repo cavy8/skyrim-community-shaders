@@ -15,6 +15,7 @@ struct ProceduralSun : Feature
 		float haloIntensity = 0.4f;
 		float haloFalloff = 10.0f;
 		float cloudOcclusionStrength = 1.0f;
+		uint excludeFromAdaptation = true;
 	};
 
 	/** @brief Per-frame Procedural Sun settings shared with HLSL. */

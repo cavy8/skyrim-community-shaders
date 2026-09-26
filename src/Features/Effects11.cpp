@@ -275,7 +275,9 @@ void Effects11::ClearShaderCache()
 		blurVCS = nullptr;
 	}
 
-	EffectManager::GetSingleton().ReloadShaders();
+	auto& effectManager = EffectManager::GetSingleton();
+	effectManager.enbAdaptation.ClearShaderCache();
+	effectManager.ReloadShaders();
 }
 
 void Effects11::Prepass()

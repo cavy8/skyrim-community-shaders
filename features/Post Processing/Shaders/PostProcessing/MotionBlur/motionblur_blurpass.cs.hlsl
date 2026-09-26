@@ -7,6 +7,7 @@
 
 #include "Common/FrameBuffer.hlsli"
 #include "Common/MotionBlur.hlsli"
+#include "Common/SharedData.hlsli"
 #include "PostProcessing/common.hlsli"
 
 // Textures and buffers
@@ -31,7 +32,7 @@ cbuffer MotionBlurCB : register(b0)
 static const uint GRID_SIZE = 20;  // Fixed grid size
 static const float g_MaxBlurRadius = 40.0f;
 #define PI 3.14159265359f
-#define MB_SOFTZ_INCHES 1.0f
+#define MB_SOFTZ_GAME_UNITS 1.0f
 
 // Extract velocity from encoded color
 float2 ExtractVelocity(float4 colorSample)
@@ -100,6 +101,11 @@ float2 GetVelocityTexCoord(float2 targetTexCoord)
 	return clamp(targetTexCoord * uvScale, minUV, maxUV);
 }
 
+float VelocityToBlurPixels(float velocityLength)
+{
+	return min(velocityLength * rsqrt(g_VelocityParams.x / 300.0f), g_MaxBlurRadius);
+}
+
 // Main function
 [numthreads(8, 8, 1)] void main(uint3 DTid : SV_DispatchThreadID) {
 	// Get dimensions and check bounds
@@ -114,7 +120,7 @@ float2 GetVelocityTexCoord(float2 targetTexCoord)
 	// Sample center pixel data
 	float2 texCoord = (pixelPos + 0.5f) / float2(dimensions);
 	float4 centerColor = TexColor.SampleLevel(LinearSampler, texCoord, 0);
-	float centerDepth = TexDepth.SampleLevel(PointSampler, texCoord, 0);
+	float centerDepth = SharedData::GetScreenDepth(TexDepth.SampleLevel(PointSampler, texCoord, 0));
 	float2 centerVelocity = TexVelocity.SampleLevel(PointSampler, GetVelocityTexCoord(texCoord), 0).xy;
 
 	centerVelocity *= g_VelocityParams.x;
@@ -136,7 +142,7 @@ float2 GetVelocityTexCoord(float2 targetTexCoord)
 	// Determine blur direction and length
 	float2 blurDir = length(neighborMaxVelocity) > 0.001f ? normalize(neighborMaxVelocity) : float2(0.0f, 0.0f);
 	// Scale blur length down for higher velocity scales to prevent over-blurring
-	float blurLength = min(length(neighborMaxVelocity) / sqrt(g_VelocityParams.x / 300.0f), g_MaxBlurRadius);
+	float blurLength = VelocityToBlurPixels(length(neighborMaxVelocity));
 
 	// Skip if no motion
 	if (blurLength < 0.5f) {
@@ -144,13 +150,13 @@ float2 GetVelocityTexCoord(float2 targetTexCoord)
 		return;
 	}
 
-	float centerVelocityLen = length(centerVelocity);
+	float centerVelocityLen = VelocityToBlurPixels(length(centerVelocity));
 
 	// Initialize for sampling
 	float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
-	uint sampleCount = uint(g_SampleCount);
+	uint sampleCount = (uint)(clamp(g_SampleCount, 2, 32) & ~1);
 	uint halfSampleCount = sampleCount / 2u;
-	float pixelToSampleUnitsScale = float(g_SampleCount) / blurLength;
+	float pixelToSampleUnitsScale = float(halfSampleCount) / blurLength;
 
 	// Sample in pairs (mirrored)
 	for (uint i = 0; i < halfSampleCount; i++) {
@@ -166,8 +172,8 @@ float2 GetVelocityTexCoord(float2 targetTexCoord)
 		float2 sampleTexCoordsBck = (pixelPos + pixelOffsetBck + 0.5f) / float2(dimensions);
 
 		// Sample depth and velocity
-		float sampleDepthFwd = TexDepth.SampleLevel(PointSampler, sampleTexCoordsFwd, 0);
-		float sampleDepthBck = TexDepth.SampleLevel(PointSampler, sampleTexCoordsBck, 0);
+		float sampleDepthFwd = SharedData::GetScreenDepth(TexDepth.SampleLevel(PointSampler, sampleTexCoordsFwd, 0));
+		float sampleDepthBck = SharedData::GetScreenDepth(TexDepth.SampleLevel(PointSampler, sampleTexCoordsBck, 0));
 
 		float4 rawVelocityDepthFwd = TexVelocity.SampleLevel(PointSampler, GetVelocityTexCoord(sampleTexCoordsFwd), 0);
 		float4 rawVelocityDepthBck = TexVelocity.SampleLevel(PointSampler, GetVelocityTexCoord(sampleTexCoordsBck), 0);
@@ -175,19 +181,19 @@ float2 GetVelocityTexCoord(float2 targetTexCoord)
 		float2 sampleVelocityFwd = rawVelocityDepthFwd.xy * g_VelocityParams.x;
 		float2 sampleVelocityBck = rawVelocityDepthBck.xy * g_VelocityParams.x;
 
-		float sampleVelocityLenFwd = length(sampleVelocityFwd);
-		float sampleVelocityLenBck = length(sampleVelocityBck);
+		float sampleVelocityLenFwd = VelocityToBlurPixels(length(sampleVelocityFwd));
+		float sampleVelocityLenBck = VelocityToBlurPixels(length(sampleVelocityBck));
 
-		float offsetLen = offset;
+		float offsetLen = offset * pixelToSampleUnitsScale;
 
 		// Calculate sample weights
 		float weightFwd = SampleWeight(
 			centerDepth, sampleDepthFwd, offsetLen, centerVelocityLen, sampleVelocityLenFwd,
-			pixelToSampleUnitsScale, MB_SOFTZ_INCHES);
+			pixelToSampleUnitsScale, MB_SOFTZ_GAME_UNITS);
 
 		float weightBck = SampleWeight(
 			centerDepth, sampleDepthBck, offsetLen, centerVelocityLen, sampleVelocityLenBck,
-			pixelToSampleUnitsScale, MB_SOFTZ_INCHES);
+			pixelToSampleUnitsScale, MB_SOFTZ_GAME_UNITS);
 
 		// Sample colors and accumulate
 		float4 sampleColorFwd = TexColor.SampleLevel(LinearSampler, sampleTexCoordsFwd, 0);
