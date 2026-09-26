@@ -111,7 +111,8 @@ namespace SharedData
 		uint LocalShadowSamples;
 		float LocalShadowFilterRadius;
 		float LocalShadowTexelSize;
-		float pad1[2];
+		// Match LightLimitFix::PerFrame: a scalar array would consume one register per element.
+		float2 pad1;
 	};
 
 	struct WetnessEffectsSettings

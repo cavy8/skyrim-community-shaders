@@ -223,6 +223,7 @@ public:
 		float pad1[2];
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
+	static_assert(sizeof(PerFrame) == 80, "LightLimitFix FeatureData layout must match SharedData.hlsli");
 
 	/** @brief Populates and returns the per-frame constant buffer data for light visualization settings. */
 	PerFrame GetCommonBufferData();
