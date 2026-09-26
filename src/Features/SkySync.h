@@ -80,6 +80,15 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	enum class Caster : uint8_t
+	{
+		Sun,
+		Masser,
+		Secunda,
+		None
+	};
+
+	RE::NiPoint3 GetCelestialDirection(const RE::Sky* sky, Caster caster) const;
 
 private:
 	enum class CellFlagExt : uint16_t
@@ -93,14 +102,6 @@ private:
 		Masser,
 		Secunda,
 		Count
-	};
-
-	enum class Caster : uint8_t
-	{
-		Sun,
-		Masser,
-		Secunda,
-		None
 	};
 
 	enum class SunPath : uint8_t
@@ -165,6 +166,7 @@ private:
 	bool immediateTransitionReady = false;
 
 	float4 colors[3] = {};
+	RE::NiPoint3 celestialDirections[3] = {};
 	float currentDim = 1.0f;
 	bool sunSetting = false;
 	bool sunRising = false;

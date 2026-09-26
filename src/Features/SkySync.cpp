@@ -268,7 +268,9 @@ void SkySync::PreparePendingTransitions()
 
 bool SkySync::Update(const RE::Sky* sky)
 {
+	std::fill(std::begin(celestialDirections), std::end(celestialDirections), RE::NiPoint3{});
 	celestialLightingValid = false;
+
 	if (!settings.Enabled) {
 		currentDim = 1.0f;
 		const bool transitionCompleted = immediateTransitionReady;
@@ -362,6 +364,7 @@ bool SkySync::Update(const RE::Sky* sky)
 	ProcessSun(sky, directions, intensities);
 	ProcessMoon(sky, Caster::Masser, directions, intensities);
 	ProcessMoon(sky, Caster::Secunda, directions, intensities);
+	std::copy(std::begin(directions), std::end(directions), std::begin(celestialDirections));
 
 	const auto calendar = globals::game::calendar;
 	const auto deltaTime = globals::game::deltaTime;
@@ -472,6 +475,25 @@ void SkySync::ProcessMoon(const RE::Sky* sky, const Caster type, RE::NiPoint3 di
 		return;
 
 	intensities[idx] = color.w;
+}
+
+RE::NiPoint3 SkySync::GetCelestialDirection(const RE::Sky* sky, const Caster caster) const
+{
+	const auto idx = static_cast<size_t>(caster);
+	if (!sky || !sky->root || idx >= std::size(celestialDirections))
+		return { 0.0f, 0.0f, 1.0f };
+
+	RE::NiPoint3 dir = celestialDirections[idx];
+	if (dir.SqrLength() > 0.0f)
+		dir = sky->root->world.rotate * dir;
+	else if (caster == Caster::Sun)
+		dir = sky->sun && sky->sun->root ? sky->sun->root->world.translate - sky->root->world.translate : RE::NiPoint3{};
+	else
+		dir = Util::Moon::GetDirection(caster == Caster::Masser ? sky->masser : sky->secunda);
+
+	if (dir.Unitize() <= FLT_EPSILON)
+		return { 0.0f, 0.0f, 1.0f };
+	return dir;
 }
 
 inline void SkySync::CalculateSunDirectionAndDistance(const RE::Sun* sun, RE::NiPoint3& outDir, float& outDistance)

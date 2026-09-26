@@ -82,22 +82,15 @@ namespace Util::Moon
 	/**
 	 * @brief Get the normalised world-space direction vector towards a moon.
 	 * @param moon The moon object to query.
-	 * @param applyMoonAndStarsCompat When true, applies axis swapping for Moon and Stars mod compatibility.
 	 * @return The unit direction vector, or straight up (0,0,1) if the moon is invalid.
 	 */
-	inline RE::NiPoint3 GetDirection(const RE::Moon* moon, bool applyMoonAndStarsCompat = false)
+	inline RE::NiPoint3 GetDirection(const RE::Moon* moon)
 	{
 		if (!moon || !moon->root)
 			return { 0.0f, 0.0f, 1.0f };
 
 		auto dir = moon->root->world.rotate.GetVectorY();
 		dir.Unitize();
-
-		if (applyMoonAndStarsCompat) {
-			std::swap(dir.x, dir.y);
-			dir.x = -dir.x;
-		}
-
 		return dir;
 	}
 
