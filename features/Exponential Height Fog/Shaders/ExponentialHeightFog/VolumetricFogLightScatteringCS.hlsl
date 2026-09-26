@@ -83,7 +83,8 @@ float3 ComputeHistoryVolumeUVAndDepth(float3 positionWS, out bool validHistory, 
 	float historyZ = ExponentialHeightFog::ComputeVolumetricNormalizedSlice(previousViewDepth);
 	float3 volumeUV = float3(historyUV, historyZ);
 	validHistory = !any(volumeUV < 0.0f) && !any(volumeUV >= 1.0f);
-	return saturate(volumeUV);
+	float3 texelCenter = 0.5f * VolumetricFogInvGridSize;
+	return clamp(volumeUV, texelCenter, 1.0f.xxx - texelCenter);
 }
 
 float3 ComputeHistoryVolumeUV(float3 positionWS, out bool validHistory)
@@ -209,7 +210,7 @@ float SampleDirectionalWorldShadow(float3 positionWS)
 	return worldShadow;
 }
 
-float3 ComputeSkyLightScattering(float3 positionWS, float3 viewDirection)
+float3 ComputeSkyLightScattering(float3 positionWS, float3 viewDirection, out float3 unoccludedLighting)
 {
 	float phaseG = SharedData::exponentialHeightFogSettings.volumetricFogScatteringDistribution;
 	float3 skyDirection = abs(phaseG) > 0.001f ? normalize(-viewDirection * phaseG) : 0.0f.xxx;
@@ -221,15 +222,21 @@ float3 ComputeSkyLightScattering(float3 positionWS, float3 viewDirection)
 		skyVisibility = Skylighting::EvaluateDiffuse(skylightingSH, skyVisibilityDirection, Skylighting::GetFadeOutFactor(skylightingPosition));
 	}
 
-	float3 skyLighting =
-		SharedData::exponentialHeightFogSettings.fogInscatteringColor.rgb *
-		SharedData::exponentialHeightFogSettings.fogInscatteringColor.a *
-		skyVisibility;
+	bool weatherLighting = SharedData::exponentialHeightFogSettings.useVanillaFogSettings != 0;
+	float3 ambient = weatherLighting ? ExponentialHeightFog::GetFogAmbientColor(length(positionWS)) :
+	                                   SharedData::exponentialHeightFogSettings.fogInscatteringColor.rgb *
+	                                       SharedData::exponentialHeightFogSettings.fogInscatteringColor.a;
+	float3 skyLighting = ambient * skyVisibility;
+	unoccludedLighting = ambient;
 	[branch] if (VolumetricFogHasIBL)
-		skyLighting = ImageBasedLighting::GetIBLColorOccluded(skyDirection, skyVisibility);
-
-	return skyLighting *
-	       SharedData::exponentialHeightFogSettings.volumetricSkyLightingIntensity;
+	{
+		float3 envIBL = ImageBasedLighting::GetEnvIBLColor(skyDirection);
+		float3 skyIBL = ImageBasedLighting::GetSkyIBLColor(skyDirection);
+		skyLighting = envIBL + skyIBL * skyVisibility;
+		unoccludedLighting = envIBL + skyIBL;
+	}
+	unoccludedLighting *= SharedData::exponentialHeightFogSettings.volumetricSkyLightingIntensity;
+	return skyLighting * SharedData::exponentialHeightFogSettings.volumetricSkyLightingIntensity;
 }
 
 #if defined(LIGHT_LIMIT_FIX)
@@ -250,8 +257,7 @@ float3 AccumulateLocalLightScattering(
 	float3 cellOffset,
 	float3 positionWS,
 	float viewDepth,
-	float3 viewDirection,
-	float3 materialScattering)
+	float3 viewDirection)
 {
 	if (!VolumetricFogHasLocalLights)
 		return 0.0f.xxx;
@@ -267,7 +273,7 @@ float3 AccumulateLocalLightScattering(
 	uint lightCount = min(grid.lightCount, (uint)MAX_CLUSTER_LIGHTS);
 
 	float cornerViewDepth;
-	float3 cellCornerWS = ExponentialHeightFog::ComputeCellWorldPosition(coord + uint3(1, 1, 1), cellOffset, cornerViewDepth);
+	float3 cellCornerWS = ExponentialHeightFog::ComputeCellWorldPosition(coord, cellOffset + 1.0f.xxx, cornerViewDepth);
 	float cellRadius = max(length(cellCornerWS - positionWS), 1.0f);
 
 	float phaseG = SharedData::exponentialHeightFogSettings.volumetricFogScatteringDistribution;
@@ -298,8 +304,7 @@ float3 AccumulateLocalLightScattering(
 	}
 
 	return localScattering *
-	       SharedData::exponentialHeightFogSettings.volumetricLocalLightScatteringIntensity *
-	       materialScattering;
+	       SharedData::exponentialHeightFogSettings.volumetricLocalLightScatteringIntensity;
 }
 #else
 float3 AccumulateLocalLightScattering(
@@ -307,8 +312,7 @@ float3 AccumulateLocalLightScattering(
 	float3 cellOffset,
 	float3 positionWS,
 	float viewDepth,
-	float3 viewDirection,
-	float3 materialScattering)
+	float3 viewDirection)
 {
 	return 0.0f.xxx;
 }
@@ -323,35 +327,45 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 	float extinction = materialScatteringAndExtinction.w;
 
 	float3 viewDirection = normalize(positionWS);
+	float3 localScattering = AccumulateLocalLightScattering(
+		coord,
+		cellOffset,
+		positionWS,
+		viewDepth,
+		viewDirection);
+
 	float phase = ExponentialHeightFog::HenyeyGreenstein(
 		dot(normalize(SharedData::DirLightDirection.xyz), viewDirection),
 		SharedData::exponentialHeightFogSettings.volumetricFogScatteringDistribution);
 
 	float directionalShadow = SampleDirectionalShadow(positionWS) *
 	                          SampleDirectionalWorldShadow(positionWS);
+	float3 directionalLighting = SharedData::DirLightColor.xyz *
+	                             SharedData::exponentialHeightFogSettings.volumetricDirectionalScatteringIntensity;
 	float3 directionalScattering =
-		SharedData::DirLightColor.xyz *
-		SharedData::exponentialHeightFogSettings.volumetricDirectionalScatteringIntensity *
+		directionalLighting *
 		directionalShadow *
-		phase *
-		materialScatteringAndExtinction.rgb;
+		phase;
 
-	float3 skyScattering = ComputeSkyLightScattering(positionWS, viewDirection) *
-	                       materialScatteringAndExtinction.rgb;
-
-	float3 localScattering = AccumulateLocalLightScattering(
-		coord,
-		cellOffset,
-		positionWS,
-		viewDepth,
-		viewDirection,
-		materialScatteringAndExtinction.rgb);
+	float3 unoccludedSky;
+	float3 skyLighting = ComputeSkyLightScattering(positionWS, viewDirection, unoccludedSky);
 
 	float3 emissive = SharedData::exponentialHeightFogSettings.volumetricFogEmissive.rgb *
 	                  SharedData::exponentialHeightFogSettings.volumetricFogEmissive.a *
 	                  extinction;
 
-	return float4(max(directionalScattering + skyScattering + localScattering + emissive, 0.0f.xxx), extinction);
+	float3 scattering;
+	if (SharedData::exponentialHeightFogSettings.useVanillaFogSettings != 0) {
+		float3 referenceLighting = unoccludedSky + directionalLighting / (4.0f * Math::PI);
+		float3 actualLighting = skyLighting + directionalScattering;
+		float3 modulation = referenceLighting > EPSILON_DIVISION ? clamp(actualLighting / max(referenceLighting, EPSILON_DIVISION.xxx), 0.0f, 2.0f) : 1.0f.xxx;
+		float influence = saturate(SharedData::exponentialHeightFogSettings.fogLightingInfluence);
+		scattering = ExponentialHeightFog::GetFogAmbientColor(length(positionWS)) * lerp(1.0f.xxx, modulation, influence) + localScattering * influence;
+	} else {
+		scattering = directionalScattering + skyLighting + localScattering;
+	}
+	scattering *= materialScatteringAndExtinction.rgb;
+	return float4(max(scattering + emissive, 0.0f.xxx), extinction);
 }
 
 [numthreads(8, 8, 4)] void main(uint3 dispatchID : SV_DispatchThreadID) {
@@ -406,7 +420,10 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 		float4 history = LightScatteringHistory.SampleLevel(LinearSampler, historyUV, 0);
 		// Sanitize history to prevent NaN/Inf propagation in the temporal chain
 		history = MakePositiveFinite(history);
-		scatteringAndExtinction = lerp(scatteringAndExtinction, history, historyAlpha);
+		float3 historyLighting = history.rgb * (scatteringAndExtinction.w / max(history.w, ExponentialHeightFog::kMinimumExtinction));
+		static const float kMinimumHistoryExtinction = 1e-8f;
+		float lightingHistoryWeight = history.w > kMinimumHistoryExtinction ? historyAlpha : 0.0f;
+		scatteringAndExtinction.rgb = lerp(scatteringAndExtinction.rgb, historyLighting, lightingHistoryWeight);
 	}
 
 	LightScattering[dispatchID] = MakePositiveFinite(scatteringAndExtinction);
