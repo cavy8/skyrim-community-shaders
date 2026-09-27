@@ -10,6 +10,8 @@
 # exactly three things - the Neural Rendering feature, the Screenshot SDR fix and the "Show
 # Background Compile Overlay" toggle - and its own docs/tooling. Everything else that used to
 # differ was removed; see removed-features.md. Any file not claimed below must match Bottle exactly.
+# Owner-approved exception (2026-09-26): Upscaling fix F1 (Streamline motionVectorsDilated), a
+# DLSS correctness fix Bottle lacks; see the Upscaling entry.
 #
 # Policies:
 #   bottle-plus-components  Bottle base + named retained components (from another upstream or personal)
@@ -30,9 +32,9 @@ features:
       - src/Features/Upscaling.h
       - src/Features/Upscaling/
       - features/Upscaling/
-    # The only permitted divergence from Bottle: guarded calls into the Neural Rendering feature (no
-    # NR logic in Upscaling). bottle_sync.py accepts a hunk when every added line contains a `match`
-    # string and every removed line a `replaces` string.
+    # Permitted divergence from Bottle: guarded calls into the Neural Rendering feature (no NR logic
+    # in Upscaling), plus the owner-approved fix F1. bottle_sync.py accepts a hunk when every added
+    # line contains a `match` string and every removed line a `replaces` string.
     budget: 20
     seam:
       - path: src/Features/Upscaling.cpp
@@ -49,9 +51,18 @@ features:
         anchor: "S5 - Streamline constants: slConstants.reset takes Upscaling::pendingDLSSReset (Bottle declares it, nothing reads it)"
         match: ["Neural Rendering seam", "pendingDLSSReset"]
         replaces: ["slConstants.reset = sl::Boolean::eFalse;"]
+      - path: src/Features/Upscaling/Streamline.cpp
+        anchor: "F1 - Streamline constants: motionVectorsDilated = eTrue (Personal fix, not an NR hook)"
+        match: ["Personal fix F1", "motionVectorsDilated = sl::Boolean::eTrue;"]
+        replaces: ["motionVectorsDilated = sl::Boolean::eFalse;"]
     note: >-
       S4 (ApplySharpening) eliminated: ResolveUpscaledFrame() copies NR's result back into
       sharpenerTexture. S5 keeps DLSS SR on NR's history boundary (NR toggle, loading screens).
+      F1 is not part of the NR seam: Bottle's EncodeTexturesCS writes a 5x5 depth-dilated field
+      into motionVectorCopyTexture for DLSS but tells Streamline it is undilated, so DLSS dilates
+      it a second time and the foreground-motion rim at silhouettes shimmers. Originally Personal
+      5947cf63af, dropped by the Bottle reset 9a4a770f43, restored 2026-09-26 after edge flicker
+      was traced to it. Drop F1 if Bottle adopts it.
 
   NeuralRendering:
     policy: personal

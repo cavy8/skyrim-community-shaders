@@ -439,8 +439,8 @@ Unreleased = True
 Bottle-Compendium (InTheBottle/Bottled-Shaders), pinned in `docs/development/upstreams.yaml`,
 is the primary maintenance baseline. Since the 2026-09-26 simplification, Personal is Bottle
 plus exactly: the Neural Rendering feature (and its seams/hotkeys), the Screenshot SDR fix, the
-"Show Background Compile Overlay" toggle, `BuildPersonal.bat`, and its own docs/tooling.
-Everything else that used to differ is listed in `docs/development/removed-features.md`.
+"Show Background Compile Overlay" toggle, `BuildPersonal.bat`, and its own docs/tooling, plus
+one owner-approved Upscaling fix (F1: Streamline `motionVectorsDilated`). Everything else that used to differ is listed in `docs/development/removed-features.md`.
 See `docs/development/maintainability.md`.
 
 Before modifying a shared feature:
@@ -449,7 +449,7 @@ Before modifying a shared feature:
 2. compare actual current source against the pinned Bottle SHA (`tools/bottle_sync.py`);
 3. preserve every documented component, seam and `shared_integrations` hunk;
 4. never infer provenance from repository path, commit author, or a generic "feat:" subject;
-5. Upscaling must stay Bottle + the documented NR seam only;
+5. Upscaling must stay Bottle + the documented NR seam and fix F1 only;
 6. prefer Bottle: record every new deviation in `maintenance-policy.yaml` in the same change
    (`bottle_sync.py` fails on any unclaimed file or unattributed shared-file hunk).
 

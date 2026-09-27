@@ -68,6 +68,14 @@ features:
 
 core:
   # Non-feature code that differs from Bottle; same entry shape as features.
+  upscaling_dilated_motion_vectors:
+    status: present
+    personal_original: true
+    provenance:
+      - source: personal
+        role: implementation       # Upscaling fix F1: Streamline motionVectorsDilated = eTrue
+        confidence: confirmed
+        evidence: [5947cf63af]
   background_compile_overlay:
     status: present
     personal_original: true

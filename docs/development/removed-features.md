@@ -50,6 +50,7 @@ that, add the item back to `maintenance-policy.yaml` and `feature-provenance.yam
 ## Removed before this reset
 
 - **Character Rain** (Open): removed for Bottle parity, because Bottle reverted it in `3afd2b6277`.
-- **Personal-only Upscaling fixes** (Streamline `motionVectorsDilated`, `WrappedResource` names,
-  `qualityMode` clamp, Upscaling's own loading-screen reset): dropped when Upscaling was reset to
-  Bottle. Neural Rendering resets DLSS through seam S5 instead.
+- **Personal-only Upscaling fixes** (`WrappedResource` names, `qualityMode` clamp, Upscaling's own
+  loading-screen reset): dropped when Upscaling was reset to Bottle. Neural Rendering resets DLSS
+  through seam S5 instead. Streamline `motionVectorsDilated` was restored on 2026-09-26 as
+  Upscaling fix F1 (`maintenance-policy.yaml`).

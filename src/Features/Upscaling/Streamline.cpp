@@ -361,7 +361,8 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport)
 	slConstants.motionVectors3D = sl::Boolean::eFalse;
 	slConstants.motionVectorsInvalidValue = FLT_MIN;
 	slConstants.orthographicProjection = sl::Boolean::eFalse;
-	slConstants.motionVectorsDilated = sl::Boolean::eFalse;
+	// Personal fix F1: EncodeTexturesCS already dilates these; eFalse makes DLSS dilate twice (edge shimmer).
+	slConstants.motionVectorsDilated = sl::Boolean::eTrue;
 	slConstants.motionVectorsJittered = sl::Boolean::eFalse;
 
 	if (SL_FAILED(res, slSetConstants(slConstants, *frameToken, p_viewport))) {
