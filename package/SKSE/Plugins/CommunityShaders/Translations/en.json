@@ -1406,7 +1406,7 @@
     "feature.neural_rendering.debug": "Debug",
     "feature.neural_rendering.debug_category_view": "Show Material Categories",
     "feature.neural_rendering.debug_category_view_tooltip": "Replaces the frame with a flat colour per classified material category (red Skin, orange Hair, yellow Eyes, green Foliage, cyan Landscape, purple Equipment, near-black Everything Else). Shows the raw per-pixel classification, not the per-category strengths above. Neural Rendering still evaluates normally underneath, so this costs the same as leaving it off.",
-    "feature.neural_rendering.depth_aware_resolve": "Depth-Aware Silhouette Preservation",
+    "feature.neural_rendering.depth_aware_resolve": "Depth-Aware Silhouette Preservation (Experimental)",
     "feature.neural_rendering.depth_aware_resolve_tooltip": "When the model runs below full resolution, fades its edit across depth edges so background changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0.",
     "feature.neural_rendering.description": "DLSS 5 Neural Rendering (NGX Feature 18) with a user-supplied nvngx_dlssnr.dll",
     "feature.neural_rendering.enabled": "Enable Neural Rendering",

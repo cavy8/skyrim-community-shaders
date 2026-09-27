@@ -149,10 +149,11 @@ struct NeuralRendering : Feature
 		/// adjustment layer, and each category's own hue guard toggle replaces a
 		/// single master switch (see CategoryStrengths::hueGuard).
 		CategoryStrengthArray categoryStrengths{};
-		/// When the model runs below the colour resolution, fade its edit across
-		/// depth silhouettes so a bilinearly upsampled background edit does not
-		/// bleed into thin foreground geometry. No effect at native scale.
-		bool depthAwareResolve = true;
+		/// Experimental, off by default: when the model runs below the colour
+		/// resolution, fade its edit across depth silhouettes so a bilinearly
+		/// upsampled background edit does not bleed into thin foreground
+		/// geometry. No effect at native scale.
+		bool depthAwareResolve = false;
 		/// Experimental: evaluate the model every other frame and re-apply its
 		/// previous answer to the fresh frame in between, fading it where the
 		/// content under a pixel changed. Halves the neural cost; the model's
@@ -264,7 +265,7 @@ struct NeuralRendering : Feature
 		CategoryStrengths foliageStrengths;
 		CategoryStrengths landscapeStrengths;
 		CategoryStrengths equipmentStrengths;
-		bool depthAwareResolve = true;
+		bool depthAwareResolve = false;  // Experimental; see Options::depthAwareResolve.
 		bool alternateFrames = false;
 		/// Debug view: render each pixel's classified material category as a flat colour instead
 		/// of the model's edit. See Options::debugCategoryView.

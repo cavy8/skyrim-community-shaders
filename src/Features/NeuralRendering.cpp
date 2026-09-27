@@ -365,7 +365,7 @@ void NeuralRendering::DrawSettings()
 				"Model height relative to the frame height. Changes apply once the slider settles."));
 		}
 	}
-	ImGui::Checkbox(T(TKEY("depth_aware_resolve"), "Depth-Aware Silhouette Preservation"), &settings.depthAwareResolve);
+	ImGui::Checkbox(T(TKEY("depth_aware_resolve"), "Depth-Aware Silhouette Preservation (Experimental)"), &settings.depthAwareResolve);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("depth_aware_resolve_tooltip"),
 			"When the model runs below full resolution, fades its edit across depth edges so background "

@@ -628,6 +628,9 @@ from the geometry's owning actor:
 
 ## Depth-aware silhouette preservation
 
+Experimental and off by default (`depthAwareResolve = false`) since 2026-09-26;
+the UI labels it "(Experimental)". Saved settings keep the user's own choice.
+
 With the model below the colour resolution its edit is bilinearly upsampled,
 so at a geometric silhouette the background's edit bleeds a texel or two into
 thin foreground geometry. `NeuralSilhouetteWeight` (`ColorTransfer.hlsli`) ports

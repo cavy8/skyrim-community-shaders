@@ -110,9 +110,9 @@ public:
 		/// Per-category hue guard (see ColorTransfer.hlsli, ResolveNeuralColor). Indexed by
 		/// NeuralRendering::MaterialCategory; only Hair (index 2) defaults on.
 		std::array<bool, 7> categoryHueGuard{ false, false, true, false, false, false, false };
-		/// Fade the edit across depth silhouettes when the model runs below the
-		/// colour resolution; no effect at native scale.
-		bool depthAwareResolve = true;
+		/// Experimental, off by default: fade the edit across depth silhouettes when
+		/// the model runs below the colour resolution; no effect at native scale.
+		bool depthAwareResolve = false;
 		/// Run the model every other frame and re-apply its previous answer to the
 		/// fresh frame in between (experimental; halves the neural cost).
 		bool alternateFrames = false;
