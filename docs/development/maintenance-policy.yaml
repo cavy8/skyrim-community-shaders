@@ -10,8 +10,9 @@
 # exactly three things - the Neural Rendering feature, the Screenshot SDR fix and the "Show
 # Background Compile Overlay" toggle - and its own docs/tooling. Everything else that used to
 # differ was removed; see removed-features.md. Any file not claimed below must match Bottle exactly.
-# Owner-approved exception (2026-09-26): Upscaling fix F1 (Streamline motionVectorsDilated), a
-# DLSS correctness fix Bottle lacks; see the Upscaling entry.
+# Owner-approved exceptions (2026-09-26), each documented in its feature's entry: Upscaling fix F1
+# (Streamline motionVectorsDilated), a DLSS correctness fix Bottle lacks; Post Processing P1
+# (feature on by default, every pipeline effect off).
 #
 # Policies:
 #   bottle-plus-components  Bottle base + named retained components (from another upstream or personal)
@@ -63,6 +64,39 @@ features:
       it a second time and the foreground-motion rim at silhouettes shimmers. Originally Personal
       5947cf63af, dropped by the Bottle reset 9a4a770f43, restored 2026-09-26 after edge flicker
       was traced to it. Drop F1 if Bottle adopts it.
+
+  PostProcessing:
+    policy: bottle-plus-seam
+    paths:
+      - src/Features/PostProcessing.cpp
+      - src/Features/PostProcessing.h
+      - src/Features/PostProcessing/
+      - features/Post Processing/
+    # Owner-approved Personal changes to a Bottle feature (not a hook for another feature). Every
+    # hunk is either a true->false/1->0 default flip or carries its "Personal ..." tag.
+    budget: 40
+    seam:
+      - path: features/Post Processing/SKSE/Plugins/CommunityShaders/PostProcessing/default.json
+        anchor: "P1 - shipped default preset: every effect \"enabled\": false, DisableVanillaTonemapping 0"
+        match: ['"enabled": false,', '"DisableVanillaTonemapping": 0']
+        replaces: ['"enabled": true,', '"DisableVanillaTonemapping": 1']
+      - path: src/Features/PostProcessing.cpp
+        anchor: "P1 - IsPipelineFeatureEnabledByDefault() fallback and SetupResources() initial enabled flags"
+        match: ["Personal default P1", "->enabled = false;"]
+        replaces: ["return true;", "->enabled = true;"]
+      - path: src/Features/PostProcessing.h
+        anchor: "P1 - IsDisabledByDefault() false; Settings::DisableVanillaTonemapping 0"
+        match: ["Personal default P1"]
+        replaces: ["IsDisabledByDefault() const override { return true; }", "DisableVanillaTonemapping = 1;"]
+    note: >-
+      P1 (2026-09-26): Post Processing is enabled at boot but ships with every pipeline effect
+      off and DisableVanillaTonemapping 0, so a fresh install looks vanilla until the user opts
+      into effects. Bottle disables the whole feature by default and turns eight effects on.
+      With DisableVanillaTonemapping 0 an enabled Color Grading pass grades on top of the vanilla
+      tonemap until the user ticks "Disable Vanilla Tonemapping". Personal carried a stricter variant
+      (feature off too) as 90e57b9855 before the Bottle reset; the other presets in
+      features/Post Processing/ are Bottle's, unmodified. When Bottle adds a pipeline effect,
+      default it off in all three places.
 
   NeuralRendering:
     policy: personal

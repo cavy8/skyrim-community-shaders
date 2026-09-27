@@ -11,8 +11,9 @@ that is recorded. Read this before changing a feature that also exists upstream.
 -   **Bottle plus three things.** Since the 2026-09-26 simplification Personal differs from the
     pin only by: the Neural Rendering feature and its seams, the Screenshot SDR fix, the "Show
     Background Compile Overlay" toggle, and Personal's own docs, tooling and `BuildPersonal.bat`.
-    One owner-approved exception sits on top: Upscaling fix F1 (Streamline is told DLSS motion
-    vectors are pre-dilated, which Bottle's `EncodeTexturesCS` already does).
+    Owner-approved changes to Bottle features sit on top: Upscaling fix F1 (Streamline is told
+    DLSS motion vectors are pre-dilated, which Bottle's `EncodeTexturesCS` already does) and
+    Post Processing P1 (the feature is on by default with every pipeline effect off).
     Everything else that used to differ (Wind, Cloud Relight, Pseudo Sun Bounce, Advanced Skin,
     Effects11 preset hot-swap, default states, branding, ...) was removed and is listed in
     [`removed-features.md`](./removed-features.md) for later re-adding.
@@ -51,7 +52,7 @@ written as `confidence: unresolved` with a one-line note, never guessed.
 | Policy | Meaning |
 | --- | --- |
 | `bottle-plus-components` | Bottle base plus named retained components (Screenshot: the sRGB fix and NR's comparison capture). |
-| `bottle-plus-seam` | Bottle base plus a minimal documented hook seam for a feature owned elsewhere. Upscaling only: it carries the Neural Rendering seam and fix F1. |
+| `bottle-plus-seam` | Bottle base plus a minimal documented hook seam for a feature owned elsewhere. Upscaling carries the Neural Rendering seam and fix F1; Post Processing carries its Personal default states (P1). |
 | `personal` | Personal-original implementation (Neural Rendering). |
 
 A feature with no entry must match Bottle exactly: `bottle_sync.py` reports any differing file that

@@ -34,7 +34,7 @@ that, add the item back to `maintenance-policy.yaml` and `feature-provenance.yam
 
 | Item | Commit(s) |
 | --- | --- |
-| Post Processing: the feature and every pipeline effect off by default, `DisableVanillaTonemapping` 0 | `90e57b9855` |
+| Post Processing: the feature and every pipeline effect off by default, `DisableVanillaTonemapping` 0. Re-added 2026-09-26 as Post Processing P1 with the feature itself on (`maintenance-policy.yaml`). | `90e57b9855` |
 | Unified Water enabled by default (`IsDisabledByDefault()` returns false) | `c5f10c0666`, `9c8c8c1ea0` |
 | Advanced Skin disabled by default | `9c8c8c1ea0` |
 | Snow Cover `AffectTreeTint 0` in every worldspace config (Bottle sets 1 in five of them) | `0d5c196334` |

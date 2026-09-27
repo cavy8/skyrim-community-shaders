@@ -66,6 +66,23 @@ features:
             confidence: confirmed
             evidence: [7b0ffa8f1f]
 
+  PostProcessing:
+    status: present
+    personal_original: false
+    provenance:
+      - source: bottle
+        role: base-feature
+        confidence: unresolved
+        note: shipped by the pinned Bottle; authorship before Bottle not traced
+    components:
+      default_states:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: default-states    # P1: feature on, every pipeline effect off, DisableVanillaTonemapping 0
+            confidence: confirmed
+            evidence: [90e57b9855]
+
 core:
   # Non-feature code that differs from Bottle; same entry shape as features.
   upscaling_dilated_motion_vectors:
