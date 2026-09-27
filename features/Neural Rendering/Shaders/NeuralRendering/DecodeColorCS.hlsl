@@ -26,7 +26,8 @@ cbuffer TransferParams : register(b0)
 	float MaxRatio;            // Two-sided guard on the model/proxy luminance ratio (1/MaxRatio..MaxRatio); see ResolveNeuralColor.
 	uint RawModelOutput;       // Non-zero: write Feature 18's answer directly, bypassing the resolve entirely (Finished Image diagnostic).
 	float HighlightWhite;      // Display gamma: display peak for the HDR highlight shoulder (NeuralHighlightRolloff); 0 = none.
-	uint3 Reserved;
+	float WipePosition;        // Split-screen comparison: split as a fraction of the active width; negative = off.
+	uint2 Reserved;
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
@@ -52,6 +53,30 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	uint2 active = min(ActiveSize, min(uint2(width, height), uint2(originalWidth, originalHeight)));
 	if (any(dispatchThreadID.xy >= active) || any(ActiveSize == 0))
 		return;
+
+	// Split-screen comparison ("Compare: Split Screen", runtime only): left of the split the
+	// frame passes through exactly as it arrived - no edit, no debug view - and a two-pixel
+	// black/white divider marks the split so it reads on both bright and dark content. White
+	// is display white: 1.0 in the display-gamma domain, and in scene linear the value the
+	// display transform exposes to roughly mid-bright.
+	if (WipePosition >= 0.0) {
+		float offset = float(dispatchThreadID.x) + 0.5 - WipePosition * float(active.x);
+		float4 passthrough = OriginalColor[dispatchThreadID.xy];
+		if (abs(offset) < 1.0) {
+			float white = 1.0;
+			if (ColorDomain != kNeuralColorDomainDisplayGamma) {
+				NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
+					VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite);
+				white = 1.0 / max(display.exposure, 1e-4);
+			}
+			DestinationColor[dispatchThreadID.xy] = float4((offset < 0.0 ? 0.0 : white).xxx, passthrough.a);
+			return;
+		}
+		if (offset < 0.0) {
+			DestinationColor[dispatchThreadID.xy] = passthrough;
+			return;
+		}
+	}
 
 	// "Show Material Categories" debug view: render the classification itself, nearest-neighbour,
 	// instead of blending the model's edit. This skips the resolve entirely rather than reusing the

@@ -235,6 +235,12 @@ struct NeuralRendering : Feature
 		/// targets and in the scene-linear domain, which keep their previous encode.
 		float highlightWhite = 0.0f;
 
+		/// Split-screen comparison split as a fraction of the frame width (see CompareView);
+		/// negative disables it.
+		float wipePosition = -1.0f;
+		/// The frame is a held one (Frame Hold): hand the model zero motion.
+		bool staticMotion = false;
+
 		/// DLSS-SR quality/preset selections mirrored from Upscaling settings when
 		/// Separate Upscaling is active. They are ignored by the other placements.
 		uint32_t superResolutionQualityMode = 1;
@@ -280,6 +286,18 @@ struct NeuralRendering : Feature
 	};
 
 	Settings settings;
+
+	/**
+	 * Runtime-only comparison aids - never saved, so neither can be left on by accident
+	 * across sessions. See neural-rendering.md, "Comparison aids".
+	 */
+	struct CompareView
+	{
+		bool wipe = false;          ///< Split screen: left of wipePosition shows the frame without Neural Rendering.
+		float wipePosition = 0.5f;  ///< Split position as a fraction of the frame width.
+		bool frameHold = false;     ///< Finished Image: keep re-evaluating one captured frame (see EvaluateFinishedImage).
+	};
+	CompareView compareView;
 
 	NeuralRendering();
 	~NeuralRendering();
@@ -590,6 +608,16 @@ private:
 		ID3D11Texture2D* a_colorOut);
 
 	/**
+	 * @brief Copies this frame's Finished Image colour, depth snapshot and category snapshot
+	 *        into the Frame Hold textures, (re)creating them to match.
+	 * @return False (the frame stays live) when a copy cannot be made.
+	 */
+	bool CaptureFrameHold(ID3D11Texture2D* a_colorIn);
+
+	/** @brief Releases the Frame Hold textures and resets the model's history if a frame was held. */
+	void ReleaseFrameHold();
+
+	/**
 	 * @brief Start of the frame bracket: history reset, placement changes, and leaving DLSS.
 	 *
 	 * Called from the Main_PostProcessing hook before Upscaling's own pass runs.
@@ -630,6 +658,19 @@ private:
 	uint32_t finishedImageGuideHeight = 0;
 	/** Set by the capture, consumed by the next Finished Image evaluation - one evaluation per upscaled frame. */
 	bool finishedImageGuidesReady = false;
+
+	/**
+	 * Frame Hold (CompareView::frameHold): the finished colour, depth snapshot and category
+	 * snapshot of the held frame, plus its guide extent and jitter. Finished Image evaluates
+	 * these every frame instead of the live ones until the hold is released.
+	 */
+	Texture2D* heldColor = nullptr;
+	Texture2D* heldDepth = nullptr;
+	Texture2D* heldCategories = nullptr;
+	uint32_t heldGuideWidth = 0;
+	uint32_t heldGuideHeight = 0;
+	float heldGuideJitterX = 0.0f;
+	float heldGuideJitterY = 0.0f;
 
 	/** Last vanilla tonemap pass inputs captured by CaptureDisplayTransform(). */
 	struct DisplayCapture

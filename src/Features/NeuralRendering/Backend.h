@@ -99,6 +99,12 @@ public:
 		/// units (HDR Display's redirect: peak nits / paper white). Above one the proxy
 		/// rolls highlights off softly up to it instead of scaling them down; zero on SDR.
 		float highlightWhite = 0.0f;
+		/// Split-screen comparison: the decode passes the input through left of this fraction
+		/// of the width; negative disables it. See NeuralRendering::CompareView.
+		float wipePosition = -1.0f;
+		/// The colour and guides are one held frame re-evaluated every frame (Frame Hold): the
+		/// model gets zero motion and alternating-frame skips are off.
+		bool staticMotion = false;
 		float intensity = 0.8f;
 		float colorStrength = 1.0f;
 		/// Overall weight of the model's edit (0..2); one applies it exactly.

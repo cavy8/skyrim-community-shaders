@@ -49,7 +49,8 @@ namespace
 		float maxRatio = 2.0f;                ///< Two-sided guard on the model/proxy luminance ratio (1/maxRatio..maxRatio).
 		std::uint32_t rawModelOutput = 0;     ///< Non-zero: the decode writes Feature 18's answer directly (Finished Image diagnostic).
 		float highlightWhite = 0.0f;          ///< Display gamma: display peak for the HDR highlight shoulder; 0 = none.
-		std::uint32_t reserved[3]{};
+		float wipePosition = -1.0f;           ///< Split-screen comparison split (fraction of the width); negative = off.
+		std::uint32_t reserved[2]{};
 	};
 	static_assert(sizeof(TransferParams) == 256);
 
@@ -638,6 +639,7 @@ struct NeuralRenderingBackend::State
 		const bool finite = std::isfinite(inputs.intensity) && std::isfinite(inputs.colorStrength) &&
 		                    std::isfinite(inputs.transferStrength) && std::isfinite(inputs.luminosityStrength) &&
 		                    std::isfinite(inputs.maxRatio) && std::isfinite(inputs.highlightWhite) &&
+		                    std::isfinite(inputs.wipePosition) &&
 		                    std::isfinite(inputs.jitterOffsetX) && std::isfinite(inputs.jitterOffsetY) &&
 		                    std::isfinite(inputs.resolutionScaleX) && std::isfinite(inputs.resolutionScaleY) &&
 		                    std::isfinite(inputs.localToneStrength) &&
@@ -690,8 +692,16 @@ struct NeuralRenderingBackend::State
 		DispatchTransfer(context, guideShader, { inputs.depthSRV }, depth.uav11.Get(),
 			nullptr, nullptr, guideWidth, guideHeight);
 
-		const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
-		context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
+		// A held frame (Frame Hold) is the same image every evaluation, so it has no motion:
+		// hand the model zero vectors rather than the live frame's, which describe a scene
+		// that has moved on.
+		if (inputs.staticMotion) {
+			const float zeroMotion[4]{};
+			context->ClearUnorderedAccessViewFloat(motionVectors.uav11.Get(), zeroMotion);
+		} else {
+			const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
+			context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
+		}
 
 		// Run() has already settled and (if it changed) recreated the feature for this
 		// frame's tuning via SettleTuning; appliedTuning is exactly what should be
@@ -822,8 +832,8 @@ struct NeuralRenderingBackend::State
 		// submitted. The first frame after a history reset, a raster change or a
 		// failure always evaluates, and so does every frame when there is no
 		// motion-vector view to reproject through.
-		const bool skipFrame = inputs.alternateFrames && inputs.motionVectorsSRV && featureAvailable &&
-		                       !resetPending && !inputs.reset && (evaluateFrameIndex % 2) == 1;
+		const bool skipFrame = inputs.alternateFrames && inputs.motionVectorsSRV && !inputs.staticMotion &&
+		                       featureAvailable && !resetPending && !inputs.reset && (evaluateFrameIndex % 2) == 1;
 
 		auto* encodeShader = GetShader(encodeColorCS, encodeColorAttempted, kEncodeColorPath, "EncodeColorCS");
 		auto* decodeShader = GetShader(decodeColorCS, decodeColorAttempted, kDecodeColorPath, "DecodeColorCS");
@@ -920,6 +930,7 @@ struct NeuralRenderingBackend::State
 		// Only meaningful for a finished frame on an HDR target; the shader ignores
 		// anything at or below one (no headroom) and the scene-linear domain.
 		transferParams.highlightWhite = transferParams.colorDomain == 1u ? std::clamp(inputs.highlightWhite, 0.0f, 100.0f) : 0.0f;
+		transferParams.wipePosition = inputs.wipePosition >= 0.0f ? std::min(inputs.wipePosition, 1.0f) : -1.0f;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		if (!skipFrame) {

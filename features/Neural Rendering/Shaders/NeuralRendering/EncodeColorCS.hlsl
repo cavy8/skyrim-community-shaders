@@ -25,7 +25,8 @@ cbuffer TransferParams : register(b0)
 	float MaxRatio;            // Unused here; layout shared with DecodeColorCS.
 	uint RawModelOutput;       // Unused here; layout shared with DecodeColorCS.
 	float HighlightWhite;      // Display gamma: display peak for the HDR highlight shoulder (NeuralHighlightRolloff); 0 = none.
-	uint3 Reserved;
+	float WipePosition;        // Unused here; layout shared with DecodeColorCS.
+	uint2 Reserved;
 };
 
 Texture2D<float4> SourceColor : register(t0);

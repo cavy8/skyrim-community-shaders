@@ -92,6 +92,8 @@ namespace
 		inputs.display.postProcessAdaptationSRV = options.display.postProcessAdaptationSRV;
 		inputs.display.postProcessExposureScale = options.display.postProcessExposureScale;
 		inputs.highlightWhite = options.highlightWhite;
+		inputs.wipePosition = options.wipePosition;
+		inputs.staticMotion = options.staticMotion;
 		std::copy_n(options.display.postProcessAdaptationRange, 2, inputs.display.postProcessAdaptationRange);
 		inputs.intensity = options.intensity;
 		inputs.colorStrength = options.colorStrength;
@@ -493,6 +495,28 @@ void NeuralRendering::DrawSettings()
 		T(TKEY("category_everything_else_tooltip"),
 			"Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above."));
 
+	// --- Compare: runtime-only aids for judging the edit (never saved) ---
+	ImGui::Separator();
+	ImGui::TextUnformatted(T(TKEY("compare"), "Compare"));
+	ImGui::Checkbox(T(TKEY("compare_wipe"), "Split Screen"), &compareView.wipe);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("compare_wipe_tooltip"),
+			"Shows the frame without Neural Rendering left of the split and with it on the right, divided "
+			"by a black and white line. Not saved."));
+	}
+	if (compareView.wipe)
+		ImGui::SliderFloat(T(TKEY("compare_wipe_position"), "Split Position"), &compareView.wipePosition, 0.0f, 1.0f, "%.2f");
+	ImGui::BeginDisabled(!IsPlacement(Placement::kFinishedImage));
+	ImGui::Checkbox(T(TKEY("frame_hold"), "Frame Hold"), &compareView.frameHold);
+	ImGui::EndDisabled();
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("frame_hold_tooltip"),
+			"Finished Image only. Freezes the current frame and keeps running the model on it, so strength "
+			"and tuning changes can be judged on an identical image while the game keeps running underneath "
+			"(the HUD stays live). Combine with Split Screen for an on/off comparison of the held frame. "
+			"Not saved."));
+	}
+
 	// --- Debug: inspect the category classification itself ---
 	ImGui::Separator();
 	ImGui::TextUnformatted(T(TKEY("debug"), "Debug"));
@@ -685,6 +709,9 @@ void NeuralRendering::DestroyFrameResources()
 	ReleaseTexture(finishedImageDepthSnapshot);
 	finishedImageGuidesReady = false;
 	ReleaseTexture(materialCategoriesSnapshot);
+	ReleaseTexture(heldColor);
+	ReleaseTexture(heldDepth);
+	ReleaseTexture(heldCategories);
 }
 
 void NeuralRendering::BeginFrame()
@@ -710,6 +737,10 @@ void NeuralRendering::BeginFrame()
 		resourcesActive = false;
 		activePlacement = UINT_MAX;
 	}
+
+	// A held frame only means something while Finished Image is running on it.
+	if (heldColor && (!compareView.frameHold || !settings.enabled || !IsPlacement(Placement::kFinishedImage)))
+		ReleaseFrameHold();
 }
 
 Texture2D* NeuralRendering::EnsureOutputTexture()
@@ -1071,6 +1102,7 @@ NeuralRendering::Options NeuralRendering::MakeOptions() const
 	options.automaticMask = settings.automaticMask;
 	options.debugCategoryView = settings.debugCategoryView;
 	options.rawModelOutput = settings.rawModelOutput;
+	options.wipePosition = compareView.wipe ? std::clamp(compareView.wipePosition, 0.0f, 1.0f) : -1.0f;
 	options.reset = resetThisFrame;
 	const bool perAxis = settings.resolutionMode == 1;
 	options.resolutionScaleX = perAxis ? settings.resolutionScaleX : settings.resolutionScale;
@@ -1263,6 +1295,36 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	                         (globals::features::linearLighting.settings.enableLinearLighting ||
 								 globals::state->GetTonemapOwner() == State::TonemapOwner::kPostProcessing);
 	options.colorDomain = sceneLinear ? ColorDomain::kSceneLinear : ColorDomain::kDisplayGamma;
+
+	// Frame Hold: evaluate one captured frame every frame instead of the live one. The live
+	// guides were still consumed above, so the one-evaluation-per-frame contract holds.
+	ID3D11Resource* colorIn = a_colorIn;
+	if (compareView.frameHold) {
+		D3D11_TEXTURE2D_DESC liveDesc{};
+		a_colorIn->GetDesc(&liveDesc);
+		const bool heldMatches = heldColor && heldColor->desc.Width == liveDesc.Width &&
+		                         heldColor->desc.Height == liveDesc.Height && heldColor->desc.Format == liveDesc.Format;
+		if (heldColor && !heldMatches)
+			ReleaseFrameHold();
+		if (!heldColor && CaptureFrameHold(a_colorIn)) {
+			heldGuideWidth = finishedImageGuideWidth;
+			heldGuideHeight = finishedImageGuideHeight;
+			heldGuideJitterX = options.guideJitterOffsetX;
+			heldGuideJitterY = options.guideJitterOffsetY;
+			options.reset = true;
+		}
+		if (heldColor) {
+			colorIn = heldColor->resource.get();
+			depthTexture = heldDepth->resource.get();
+			depthSRV = heldDepth->srv.get();
+			materialCategoriesSRV = heldCategories->srv.get();
+			options.guideWidth = heldGuideWidth;
+			options.guideHeight = heldGuideHeight;
+			options.guideJitterOffsetX = heldGuideJitterX;
+			options.guideJitterOffsetY = heldGuideJitterY;
+			options.staticMotion = true;
+		}
+	}
 	// A gamma-encoded frame on the HDR redirect carries highlights up to the display's peak,
 	// with 1.0 at paper white (HDROutputCS PQ-encodes it against paperWhite). Tell the proxy
 	// where that peak is so it rolls highlights off instead of flattening them.
@@ -1270,7 +1332,7 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 		options.highlightWhite = static_cast<float>(hdrDisplay.settings.hdrPeakNits) / static_cast<float>(hdrDisplay.settings.hdrPaperWhite);
 
 	globals::profiler->BeginPass("NeuralRendering::Generate");
-	const bool evaluated = Evaluate(a_colorIn, a_colorOut,
+	const bool evaluated = Evaluate(colorIn, a_colorOut,
 		depthTexture, depthSRV, materialCategoriesSRV, motionVector.texture, motionVector.SRV,
 		nativeWidth, nativeHeight, options);
 	globals::profiler->EndPass();
@@ -1282,6 +1344,66 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 
 	resourcesActive = true;
 	return true;
+}
+
+bool NeuralRendering::CaptureFrameHold(ID3D11Texture2D* a_colorIn)
+{
+	if (!a_colorIn || !finishedImageDepthSnapshot || !finishedImageDepthSnapshot->srv ||
+		!materialCategoriesSnapshot || !materialCategoriesSnapshot->srv)
+		return false;
+
+	// Each copy mirrors its source's own description (bind flags included, as the depth
+	// snapshot itself does) so the whole-resource CopyResource is valid; the colour copy only
+	// needs to be readable, the backend creates its own view over it.
+	const auto makeCopy = [](const D3D11_TEXTURE2D_DESC& a_desc, ID3D11ShaderResourceView* a_sourceSRV,
+							  const char* a_name) -> Texture2D* {
+		try {
+			auto* copy = new Texture2D(a_desc, a_name);
+			if (a_sourceSRV) {
+				D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+				a_sourceSRV->GetDesc(&srvDesc);
+				copy->CreateSRV(srvDesc);
+			}
+			return copy;
+		} catch (const std::exception& e) {
+			logger::warn("[NeuralRendering] Frame Hold: {} creation failed ({})", a_name, e.what());
+			return nullptr;
+		}
+	};
+
+	D3D11_TEXTURE2D_DESC colorDesc{};
+	a_colorIn->GetDesc(&colorDesc);
+	colorDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	colorDesc.Usage = D3D11_USAGE_DEFAULT;
+	colorDesc.CPUAccessFlags = 0;
+	colorDesc.MiscFlags = 0;
+
+	heldColor = makeCopy(colorDesc, nullptr, "NeuralRendering::HeldColor");
+	heldDepth = makeCopy(finishedImageDepthSnapshot->desc, finishedImageDepthSnapshot->srv.get(), "NeuralRendering::HeldDepth");
+	heldCategories = makeCopy(materialCategoriesSnapshot->desc, materialCategoriesSnapshot->srv.get(), "NeuralRendering::HeldCategories");
+	if (!heldColor || !heldDepth || !heldCategories) {
+		ReleaseTexture(heldColor);
+		ReleaseTexture(heldDepth);
+		ReleaseTexture(heldCategories);
+		return false;
+	}
+
+	auto* context = globals::d3d::context;
+	context->CopyResource(heldColor->resource.get(), a_colorIn);
+	context->CopyResource(heldDepth->resource.get(), finishedImageDepthSnapshot->resource.get());
+	context->CopyResource(heldCategories->resource.get(), materialCategoriesSnapshot->resource.get());
+	return true;
+}
+
+void NeuralRendering::ReleaseFrameHold()
+{
+	const bool wasHeld = heldColor != nullptr;
+	ReleaseTexture(heldColor);
+	ReleaseTexture(heldDepth);
+	ReleaseTexture(heldCategories);
+	// The model's history is of the held frame; the live frame it returns to is unrelated.
+	if (wasHeld)
+		RequestHistoryReset();
 }
 
 void NeuralRendering::CaptureFinishedImageGuides()

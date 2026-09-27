@@ -421,6 +421,48 @@ tuning are fine and the attenuation is in the transfer/compositing math above;
 if it looks weak too, the problem is upstream of the resolve entirely (model
 input, guides, or colour-domain conversion). Not meant to be left on.
 
+## Comparison aids
+
+Besides the four-frame comparison screenshot (`ServiceComparison`), the settings
+tab's **Compare** section has two runtime-only aids. They live in
+`NeuralRendering::CompareView`, not `Settings`, so they are never saved and
+cannot be left on by accident across sessions.
+
+**Split Screen** (`CompareView::wipe`, `wipePosition`). `MakeOptions` passes the
+split as `Options::wipePosition` (negative = off) -> `TransferParams.WipePosition`.
+`DecodeColorCS` handles it before anything else: left of the split it writes the
+input pixel through untouched (no edit and no debug view), and a two-pixel
+black/white divider marks the split so it reads on bright and dark content alike.
+The divider's white is 1.0 in the display-gamma domain and `1 / exposure` of the
+proxy's display transform in scene linear, i.e. roughly mid-bright once the frame
+is tonemapped. It works in every placement. Before Upscaling feeds DLSS a split
+frame, which is fine for a visual comparison. The model still evaluates the whole
+frame, so the right half is exactly what the full-screen result would be.
+
+**Frame Hold** (`CompareView::frameHold`, Finished Image only). The model's tuning
+parameters rebuild the feature and its history when they change, and the live
+scene keeps moving, so judging a slider change by eye is unreliable. Frame Hold
+freezes the input instead: on its first frame `CaptureFrameHold` copies the
+finished colour, the depth snapshot and the category snapshot into `heldColor` /
+`heldDepth` / `heldCategories` (each mirroring its source's description so a
+whole-resource `CopyResource` is valid) and records the guide extent and guide
+jitter. From then on `EvaluateFinishedImage` evaluates those instead of the live
+frame, every frame, with a history reset on capture. The live guides are still
+consumed, so the one-evaluation-per-frame contract is unchanged, and the result
+still goes through `ApplyFinishedImage`'s copy-back. The screen therefore shows the
+held frame with the current strengths and tuning while the game keeps running
+underneath. The HUD is drawn later and stays live.
+
+A held frame has no motion, so `Options::staticMotion` makes `EvaluateModel` clear
+the shared motion-vector texture to zero instead of copying the live vectors
+(which describe a scene that has moved on). It also disables alternating-frame
+skips. The hold is released - with a history reset, since the model's history is
+of the held frame - when the checkbox is cleared, Neural Rendering is disabled,
+the placement changes, or the colour target's size or format changes (the next
+frame then recaptures). Combining Frame Hold with Split Screen gives an on/off
+comparison of one fixed frame, the equivalent of OptiScaler DLSSNR's frame hold
+with "Apply the model" toggled.
+
 ## Jitter
 
 The model re-decides its local tone and structure whenever the framing changes
