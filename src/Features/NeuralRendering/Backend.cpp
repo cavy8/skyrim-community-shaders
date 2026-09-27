@@ -227,6 +227,10 @@ struct NeuralRenderingBackend::State
 
 	/// Counts Run() calls; odd frames are skipped in alternating-frame mode.
 	std::uint64_t evaluateFrameIndex = 0;
+	/// evaluateFrameIndex of the last frame Feature 18 actually ran on (zero: none since
+	/// the resources were built). Tells an evaluation how many frames of motion the
+	/// model's temporal history has to bridge.
+	std::uint64_t lastEvaluatedFrameIndex = 0;
 
 	bool loggedProbeFailure = false;
 	bool loggedInvalidInputs = false;
@@ -660,10 +664,14 @@ struct NeuralRenderingBackend::State
 	 * Everything the model needs for one evaluation: the colour encode at the
 	 * model raster, the depth-guide copy, the motion-vector copy, and the D3D12
 	 * submission. Failures latch. The caller decodes the answer afterwards.
+	 *
+	 * @param motionFrames Frames elapsed since the model's previous evaluation; the
+	 *        one-frame game motion vectors are scaled by it (see Run).
 	 */
 	bool EvaluateModel(const FrameInputs& inputs, ID3D11DeviceContext* context,
 		ID3D11ComputeShader* encodeShader, ID3D11ComputeShader* guideShader, ID3D11ShaderResourceView* colorInView,
-		std::uint32_t modelWidth, std::uint32_t modelHeight, std::uint32_t guideWidth, std::uint32_t guideHeight)
+		std::uint32_t modelWidth, std::uint32_t modelHeight, std::uint32_t guideWidth, std::uint32_t guideHeight,
+		float motionFrames)
 	{
 		// (b) Colour moves through compute passes rather than CopyResource. The
 		// encode resamples the frame onto the unjittered pixel grid at the model
@@ -709,13 +717,15 @@ struct NeuralRenderingBackend::State
 		// motion-vector scale is the guide resolution because Skyrim stores vectors
 		// as normalized UV displacement; the NGX scale converts them to guide pixels
 		// and the model bridges guide and colour rasters from the subrects, so the
-		// model scale is deliberately not folded in (see neural-rendering.md). In
-		// alternating-frame mode the vectors still describe one frame of motion
-		// although two elapsed since the last evaluation; this matches the proxy.
+		// model scale is deliberately not folded in (see neural-rendering.md). The
+		// game's vectors describe one frame of motion, but the model's history is
+		// from its previous evaluation, which alternating-frame mode leaves two frames
+		// back, so the scale also carries the frames elapsed (constant-velocity
+		// extrapolation of this frame's motion).
 		const bool executed = NeuralRenderingNGX::Runtime::Instance().Execute(commandList,
 			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
 			modelWidth, modelHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
-			static_cast<float>(guideWidth), static_cast<float>(guideHeight),
+			static_cast<float>(guideWidth) * motionFrames, static_cast<float>(guideHeight) * motionFrames,
 			tuning, inputs.reset || resetPending, inputs.depthInverted);
 
 		for (auto& barrier : barriers)
@@ -904,9 +914,19 @@ struct NeuralRenderingBackend::State
 		transferParams.rawModelOutput = inputs.rawModelOutput ? 1u : 0u;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
-		if (!skipFrame && !EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,
-							  modelWidth, modelHeight, guideWidth, guideHeight))
-			return false;
+		if (!skipFrame) {
+			// Only alternating-frame mode leaves a gap between evaluations; a reset
+			// discards the history the scale would describe, so it keeps one frame.
+			// Anything past two frames (Run not called while a menu paused the
+			// game) is not a skip and is not extrapolated.
+			const bool historyValid = !resetPending && !inputs.reset && lastEvaluatedFrameIndex != 0;
+			const bool bridgedSkip = inputs.alternateFrames && historyValid &&
+			                         evaluateFrameIndex - lastEvaluatedFrameIndex == 2;
+			if (!EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,
+					modelWidth, modelHeight, guideWidth, guideHeight, bridgedSkip ? 2.0f : 1.0f))
+				return false;
+			lastEvaluatedFrameIndex = evaluateFrameIndex;
+		}
 
 		// Re-anchor the model's bounded luminance to the untouched source, then
 		// restore its chromaticity through the independently controlled colour pass.
@@ -1174,6 +1194,7 @@ struct NeuralRenderingBackend::State
 		requestedModelHeight = 0;
 		requestedModelStableFrames = 0;
 		evaluateFrameIndex = 0;
+		lastEvaluatedFrameIndex = 0;
 
 		loggedInvalidInputs = false;
 		loggedShaderFailure = false;

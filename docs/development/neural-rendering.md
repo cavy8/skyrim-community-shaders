@@ -681,10 +681,15 @@ between enhanced and unenhanced at half the frame rate. The backend only skips
 an evaluation when it has a motion-vector view to reproject through
 (`FrameInputs::motionVectorsSRV`); every placement passes the game's.
 
-Two known compromises, both shared with the proxy: the model's own temporal
-state sees every second frame, and the motion vectors it is given describe one
-frame of motion although two elapsed. Doubling the motion-vector scale on
-evaluated frames would be the obvious refinement and has not been tried.
+**Motion across the skipped frame.** The model's own temporal state sees every
+second frame, but the game's motion vectors describe one frame of motion. On an
+evaluated frame whose previous evaluation was exactly two frames back
+(`State::lastEvaluatedFrameIndex`), `EvaluateModel` therefore doubles
+`DLSSNR.MVecScaleX/Y` - a constant-velocity extrapolation of this frame's motion
+across the skipped one. A history reset keeps the plain one-frame scale (there is
+no history to bridge), and a gap longer than two frames is not treated as a skip:
+it only happens when `Run` was not called at all, e.g. while a menu paused the
+game. The proxy does not do this; it hands the model one frame of motion for two.
 
 ## Model tuning parameters
 
