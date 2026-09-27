@@ -82,6 +82,13 @@ features:
             role: default-states    # P1: feature on, every pipeline effect off, DisableVanillaTonemapping 0
             confidence: confirmed
             evidence: [90e57b9855]
+      dof_active_target_gate:
+        personal_original: true
+        provenance:
+          - source: personal
+            role: bug-fix           # P2: DoF target focus only while a dialogue/TDM lock/console target is live
+            confidence: confirmed
+            evidence: [a7e142722c]
 
 core:
   # Non-feature code that differs from Bottle; same entry shape as features.

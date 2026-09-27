@@ -12,7 +12,8 @@
 # differ was removed; see removed-features.md. Any file not claimed below must match Bottle exactly.
 # Owner-approved exceptions (2026-09-26), each documented in its feature's entry: Upscaling fix F1
 # (Streamline motionVectorsDilated), a DLSS correctness fix Bottle lacks; Post Processing P1
-# (feature on by default, every pipeline effect off).
+# (feature on by default, every pipeline effect off) and P2 (DoF target focus only while actively
+# targeting).
 #
 # Policies:
 #   bottle-plus-components  Bottle base + named retained components (from another upstream or personal)
@@ -74,7 +75,7 @@ features:
       - features/Post Processing/
     # Owner-approved Personal changes to a Bottle feature (not a hook for another feature). Every
     # hunk is either a true->false/1->0 default flip or carries its "Personal ..." tag.
-    budget: 40
+    budget: 50
     seam:
       - path: features/Post Processing/SKSE/Plugins/CommunityShaders/PostProcessing/default.json
         anchor: "P1 - shipped default preset: every effect \"enabled\": false, DisableVanillaTonemapping 0"
@@ -88,6 +89,10 @@ features:
         anchor: "P1 - IsDisabledByDefault() false; Settings::DisableVanillaTonemapping 0"
         match: ["Personal default P1"]
         replaces: ["IsDisabledByDefault() const override { return true; }", "DisableVanillaTonemapping = 1;"]
+      - path: src/Features/PostProcessing/DoF.cpp
+        anchor: "P2 - DoF::GetTargetLockEnabled(), DoF::GetInDialogue(), and the target validity check in DoF::Draw()"
+        match: ["Personal fix P2", "auto* menuTopicManager = RE::MenuTopicManager::GetSingleton();", "IsMenuOpen(RE::DialogueMenu::MENU_NAME)"]
+        replaces: ["g_TDM->GetCurrentTarget();", "MenuTopicManager::GetSingleton()->lastSpeaker;", "if (!target)"]
     note: >-
       P1 (2026-09-26): Post Processing is enabled at boot but ships with every pipeline effect
       off and DisableVanillaTonemapping 0, so a fresh install looks vanilla until the user opts
@@ -97,6 +102,21 @@ features:
       (feature off too) as 90e57b9855 before the Bottle reset; the other presets in
       features/Post Processing/ are Bottle's, unmodified. When Bottle adds a pipeline effect,
       default it off in all three places.
+      P2 (2026-09-26): with Target Focus on, DoF must blur only while something is actively
+      targeted; with no target Draw() returns before any pass, so nothing is blurred. Bottle
+      picks a target from three signals that each outlive the targeting. (a) Dialogue:
+      MenuTopicManager::lastSpeaker stays set after the Dialogue Menu closes for as long as the
+      NPC's line keeps playing, so focus lingered on the speaker. Personal's first fix
+      (a7e142722c) gated on MenuTopicManager::menuOpen, but that is the manager's own bookkeeping
+      and, as reported in game, stays set when the player leaves, re-enters and leaves again in
+      quick succession (the engine-side cause is not traced). P2 gates on the Dialogue Menu being
+      on the UI menu stack (UI::IsMenuOpen, as State.cpp does for the main/loading menus), which
+      reflects the menu itself rather than the manager's state. (b) True Directional Movement: GetCurrentTarget() is only meaningful while
+      GetTargetLockState() is true, so the lock state is now required. (c) A target that is
+      disabled, deleted or has no 3D is dropped: its stale position used to drive the
+      manual-focus fallback and could put the focus plane behind near-field geometry.
+      Console Selection is unchanged; it is an explicit opt-in that follows the console's
+      selected reference.
 
   NeuralRendering:
     policy: personal

@@ -441,7 +441,8 @@ is the primary maintenance baseline. Since the 2026-09-26 simplification, Person
 plus exactly: the Neural Rendering feature (and its seams/hotkeys), the Screenshot SDR fix, the
 "Show Background Compile Overlay" toggle, `BuildPersonal.bat`, and its own docs/tooling, plus
 owner-approved changes to Bottle features: Upscaling fix F1 (Streamline `motionVectorsDilated`)
-and Post Processing P1 (feature on, every effect off by default). Everything else that used to differ is listed in `docs/development/removed-features.md`.
+and Post Processing P1 (feature on, every effect off by default) and P2 (DoF target focus only
+while actively targeting). Everything else that used to differ is listed in `docs/development/removed-features.md`.
 See `docs/development/maintainability.md`.
 
 Before modifying a shared feature:

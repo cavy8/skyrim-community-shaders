@@ -28,7 +28,7 @@ that, add the item back to `maintenance-policy.yaml` and `feature-provenance.yam
 | Effects11 preset hot-swap (preset locations, switch without restart) | Open | `src/Features/Effects11/PresetManager.*`, `MenuManager.*`, and `Effects11.cpp/.h`. Personal did not have Bottle's Effects 11 Editor; Bottle's editor is back now. |
 | Cloud Shadows t26 self-shadow input | Personal integration for Cloud Relight | `src/Features/CloudShadows.*`, `CloudShadows.hlsli` |
 | Sky Sync celestial light weights | Open | `src/Features/SkySync.*` |
-| Dialogue Depth of Field menu gate | **Personal original** (`a7e142722c`) | `DoF::GetInDialogue` in `src/Features/PostProcessing/DoF.cpp`: a `menuOpen &&` gate on `lastSpeaker` |
+| Dialogue Depth of Field menu gate | **Personal original** (`a7e142722c`) | `DoF::GetInDialogue` in `src/Features/PostProcessing/DoF.cpp`: a `menuOpen &&` gate on `lastSpeaker`. Re-added 2026-09-26 as Post Processing P2, gating on the Dialogue Menu instead (`menuOpen` failed on leave/re-enter/leave) and also requiring an active TDM lock (`maintenance-policy.yaml`). |
 
 ## Personal default states
 
