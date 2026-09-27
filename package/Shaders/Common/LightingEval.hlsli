@@ -7,6 +7,9 @@
 #if defined(TRUE_PBR)
 #	include "Common/PBR.hlsli"
 #endif
+#if defined(HAIR) && defined(HAIR_BACKLIGHTING)
+#	include "HairBacklighting/HairBacklighting.hlsli"
+#endif
 
 #if defined(TRUE_PBR)
 DirectContext CreateDirectLightingContext(float3 worldNormal, float3 coatWorldNormal, float3 vertexNormal, float3 viewDir, float3 coatViewDir, float3 lightDir, float3 coatLightDir, float3 lightColor, float detailedShadow, float softShadow)
@@ -119,10 +122,16 @@ void EvaluateLighting(DirectContext context, MaterialProperties material, float3
 	lightingOutput = (DirectLightingOutput)0;
 #if defined(TRUE_PBR)
 	PBR::GetDirectLightInput(lightingOutput, context, material, tbnTr, uv);
+#	if defined(HAIR) && defined(HAIR_BACKLIGHTING)
+	HairBacklighting::AddDirectLight(lightingOutput, context, tbnTr[2], material.BaseColor);
+#	endif
 #else
 #	if defined(CS_HAIR_SHADING)
 	if (SharedData::hairSpecularSettings.Enabled) {
 		Hair::GetHairDirectLight(lightingOutput, context, material, tbnTr, uv);
+#		if defined(HAIR_BACKLIGHTING)
+		HairBacklighting::AddDirectLight(lightingOutput, context, tbnTr[2], material.BaseColor);
+#		endif
 		return;
 	}
 #	endif
@@ -158,6 +167,9 @@ void EvaluateLighting(DirectContext context, MaterialProperties material, float3
 	{
 		lightingOutput.transmission += material.BaseColor * GetFoliageTransmission(NdotL, dot(context.viewDir, context.lightDir)) * diffuseLightColor * Color::VanillaNormalization();
 	}
+#	endif
+#	if defined(HAIR) && defined(HAIR_BACKLIGHTING)
+	HairBacklighting::AddDirectLight(lightingOutput, context, tbnTr[2], material.BaseColor);
 #	endif
 #	if defined(SOFT_LIGHTING)
 	lightingOutput.diffuse += softLightColor * GetSoftLightMultiplier(NdotL) * material.rimSoftLightColor * Color::VanillaNormalization();

@@ -24,6 +24,7 @@
 #include "Features/LinearLighting.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/NeuralRendering.h"
+#include "Features/HairBacklighting.h"
 #include "Features/PostProcessing.h"
 #include "Features/ProceduralSun.h"
 #include "Features/RemoteControl.h"
@@ -116,6 +117,7 @@ namespace globals
 		FootstepParticles footstepParticles{};
 		// Local (non-Bottle) features follow.
 		NeuralRendering neuralRendering{};
+		HairBacklighting hairBacklighting{};
 
 		namespace llf
 		{

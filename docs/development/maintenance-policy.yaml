@@ -14,6 +14,8 @@
 # (Streamline motionVectorsDilated), a DLSS correctness fix Bottle lacks; Post Processing P1
 # (feature on by default, every pipeline effect off) and P2 (DoF target focus only while actively
 # targeting).
+# Owner-requested local feature (2026-09-26): Hair Backlighting, a new personal feature (not a change
+# to a Bottle one); its shared-file hunks are append-only and listed under shared_integrations.
 #
 # Policies:
 #   bottle-plus-components  Bottle base + named retained components (from another upstream or personal)
@@ -128,6 +130,20 @@ features:
       - package/Shaders/Common/NeuralRenderingCategories.hlsli
       - docs/development/neural-rendering.md
 
+  HairBacklighting:
+    policy: personal
+    paths:
+      - src/Features/HairBacklighting.cpp
+      - src/Features/HairBacklighting.h
+      - features/Hair Backlighting/
+    note: >-
+      Owner request 2026-09-26: backlit-hair transmission, the hair counterpart of Foliage
+      Lighting's tree transmission. Shader side is a feature-owned include called from
+      LightingEval.hlsli under HAIR && HAIR_BACKLIGHTING (TruePBR, Hair Specular and vanilla hair
+      paths); settings are the first local FeatureData struct. Not in
+      .github/configs/shader-validation.yaml (generated from game logs), so CI does not compile
+      the HAIR_BACKLIGHTING path: compile it by hand with fxc after shader edits.
+
   Screenshot:
     policy: bottle-plus-components
     paths:
@@ -157,6 +173,21 @@ shared_integrations:
       source: personal
       anchor: "Masks2 Foliage category pack in both PS branches"
       match: ['#include "Common/NeuralRenderingCategories.hlsli"', "NeuralRenderingCategories::Pack("]
+  package/Shaders/Common/LightingEval.hlsli:
+    hair_backlighting:
+      source: personal
+      anchor: "HairBacklighting.hlsli include after PBR.hlsli; AddDirectLight() in EvaluateLighting's TruePBR, Hair Specular (before its return) and vanilla (after the TREE_ANIM transmission) paths"
+      match: ["HairBacklighting/HairBacklighting.hlsli", "HairBacklighting::AddDirectLight("]
+  package/Shaders/Common/SharedData.hlsli:
+    local_feature_data:
+      source: personal
+      anchor: "HairBacklightingSettings struct after VolumetricLightingSettings; member appended to the end of the FeatureData cbuffer"
+      match: ["HairBacklightingSettings", "Local (non-Bottle) FeatureData structs follow", "Local (non-Bottle) features follow."]
+  src/FeatureBuffer.cpp:
+    local_feature_data:
+      source: personal
+      anchor: "HairBacklighting include; settings appended to GetFeatureBufferData() after Bottle's, mirroring SharedData.hlsli"
+      match: ['#include "Features/HairBacklighting.h"', "volumetricLighting.GetCommonBufferData(),", "hairBacklighting.settings);"]
   package/Shaders/Common/Permutation.hlsli:
     local_extra_flags:
       source: personal
@@ -189,18 +220,18 @@ shared_integrations:
   src/Feature.cpp:
     local_features:
       source: personal
-      anchor: "GetFeatureList(): Neural Rendering appended after Bottle's list"
-      match: ['#include "Features/NeuralRendering.h"', "&globals::features::neuralRendering"]
+      anchor: "GetFeatureList(): Neural Rendering, then Hair Backlighting, appended after Bottle's list"
+      match: ['#include "Features/NeuralRendering.h"', "&globals::features::neuralRendering", '#include "Features/HairBacklighting.h"', "&globals::features::hairBacklighting"]
   src/Globals.cpp:
     local_features:
       source: personal
-      anchor: "globals::features: Neural Rendering instance appended"
-      match: ['#include "Features/NeuralRendering.h"', "NeuralRendering neuralRendering{};"]
+      anchor: "globals::features: Neural Rendering and Hair Backlighting instances appended"
+      match: ['#include "Features/NeuralRendering.h"', "NeuralRendering neuralRendering{};", '#include "Features/HairBacklighting.h"', "HairBacklighting hairBacklighting{};"]
   src/Globals.h:
     local_features:
       source: personal
       anchor: "forward declaration and extern appended"
-      match: ["struct NeuralRendering;", "extern NeuralRendering neuralRendering;"]
+      match: ["struct NeuralRendering;", "extern NeuralRendering neuralRendering;", "struct HairBacklighting;", "extern HairBacklighting hairBacklighting;"]
   src/Menu.cpp:
     nr_hotkeys:
       source: personal
@@ -270,5 +301,5 @@ repository:
     paths: [.claude/CLAUDE.md]
   generated_translations:
     source: generated
-    reason: "en.json is regenerated from source by tools/extract-i18n.py; it differs by Neural Rendering's and the overlay toggle's strings"
+    reason: "en.json is regenerated from source by tools/extract-i18n.py; it differs by Neural Rendering's, Hair Backlighting's and the overlay toggle's strings"
     paths: [package/SKSE/Plugins/CommunityShaders/Translations/en.json]

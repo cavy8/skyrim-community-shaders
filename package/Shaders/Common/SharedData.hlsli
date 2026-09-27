@@ -561,6 +561,18 @@ namespace SharedData
 		float2 pad0;
 	};
 
+	// Local (non-Bottle) FeatureData structs follow; mirror FeatureBuffer.cpp.
+	struct HairBacklightingSettings
+	{
+		uint Enable;
+		float Strength;
+		float ScatterWidth;
+		float EdgeFalloff;
+		float InteriorGlow;
+		float Absorption;
+		uint2 pad;
+	};
+
 	cbuffer FeatureData : register(b6)
 	{
 		GrassLightingSettings grassLightingSettings;
@@ -588,6 +600,8 @@ namespace SharedData
 		SnowCoverSettings snowCoverSettings;
 		PostProcessingSettings postProcessingSettings;
 		VolumetricLightingSettings volumetricLightingSettings;
+		// Local (non-Bottle) features follow.
+		HairBacklightingSettings hairBacklightingSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);

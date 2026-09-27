@@ -48,6 +48,7 @@ struct Skin;
 struct SnowCover;
 struct FootstepParticles;
 struct NeuralRendering;
+struct HairBacklighting;
 
 class State;
 class Deferred;
@@ -149,6 +150,7 @@ namespace globals
 		extern FootstepParticles footstepParticles;
 		// Local (non-Bottle) features follow.
 		extern NeuralRendering neuralRendering;
+		extern HairBacklighting hairBacklighting;
 
 	}
 

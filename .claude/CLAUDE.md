@@ -438,8 +438,9 @@ Unreleased = True
 
 Bottle-Compendium (InTheBottle/Bottled-Shaders), pinned in `docs/development/upstreams.yaml`,
 is the primary maintenance baseline. Since the 2026-09-26 simplification, Personal is Bottle
-plus exactly: the Neural Rendering feature (and its seams/hotkeys), the Screenshot SDR fix, the
-"Show Background Compile Overlay" toggle, `BuildPersonal.bat`, and its own docs/tooling, plus
+plus exactly: the Neural Rendering feature (and its seams/hotkeys), the Hair Backlighting feature,
+the Screenshot SDR fix, the "Show Background Compile Overlay" toggle, `BuildPersonal.bat`, and its
+own docs/tooling, plus
 owner-approved changes to Bottle features: Upscaling fix F1 (Streamline `motionVectorsDilated`)
 and Post Processing P1 (feature on, every effect off by default) and P2 (DoF target focus only
 while actively targeting). Everything else that used to differ is listed in `docs/development/removed-features.md`.
