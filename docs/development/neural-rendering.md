@@ -16,7 +16,7 @@ Source layout:
 | `src/Features/NeuralRendering.{h,cpp}` | the `NeuralRendering` feature: settings and UI, placement logic, category capture, Finished Image, comparison capture, hooks; thin adapter to the backend |
 | `src/Features/NeuralRendering/Backend.{h,cpp}` | `NeuralRenderingBackend` - owns the D3D11↔D3D12 shared textures, the colour/guide transfer passes, the failure latch |
 | `src/Features/NeuralRendering/Runtime.{h,cpp}` | `NeuralRenderingNGX::Runtime` - loads the snippet DLL, drives NGX feature 18 create/evaluate/release, the `GetModuleFileNameW` caller-gate hook |
-| `src/Features/NeuralRendering/D3D12Interop.{h,cpp}` | private D3D12 device/queue, shared-fence ping-pong with the game's D3D11 context |
+| `src/Features/NeuralRendering/D3D12Interop.{h,cpp}` | private D3D12 device/queue, "ready" and "complete" fences shared with the game's D3D11 context |
 | `features/Neural Rendering/Shaders/NeuralRendering/` | `EncodeColorCS` / `DecodeColorCS` / `CopyDepthGuideCS` / `EncodeResidualCS` / `ApplyResidualCS` and `ColorTransfer.hlsli` |
 
 Where it hooks into the frame:
@@ -774,6 +774,64 @@ across the skipped one. A history reset keeps the plain one-frame scale (there i
 no history to bridge), and a gap longer than two frames is not treated as a skip:
 it only happens when `Run` was not called at all, e.g. while a menu paused the
 game. The proxy does not do this; it hands the model one frame of motion for two.
+
+## Asynchronous evaluation
+
+`Asynchronous Evaluation` (experimental, off by default,
+`Settings::asyncEvaluation`) follows the "latest-completed" idea of
+[wilsjo2's fork](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases).
+Synchronously, `EndD3D12` makes the D3D11 context wait on the GPU for Feature 18
+to finish before the decode, so the model's whole cost sits in series inside the
+frame. Asynchronously, the D3D11 context does not wait for this frame's
+evaluation. It decodes the *previous* frame's answer instead, reprojected
+through the game's motion vectors exactly like an alternate-frames skip (see
+*Alternating frames*, `TransferParams.StaleAnswer`). That evaluation was
+submitted a frame ago, so the one GPU-side wait on it (`WaitOnD3D11`) is
+normally already satisfied, and the model's work can overlap the rest of this
+frame and the next frame's scene rendering. How much frame time that saves
+depends on how well the driver overlaps the private D3D12 direct queue with the
+game's D3D11 work, which is why the tooltip asks users to compare frame times.
+
+**Double buffering.** The four shared textures (colour/proxy, depth guide,
+motion guide, output) and the two decode views exist twice while it is on:
+the members `color` / `depth` / `motionVectors` / `output` / `outputSRV` /
+`colorSRV` and `State::previous` (`BufferSet`). Each asynchronous frame encodes
+into the members, submits, decodes `previous`, and then `SwapBuffers()`
+exchanges the sets. So the evaluation just submitted becomes `previous` (the next
+frame's answer), and the set the next frame overwrites is the one whose
+evaluation this frame already waited on. `EnsurePreviousSet` allocates the
+second set to mirror the first and releases it when the mode is turned off,
+draining the interop queue either way, since the set being replaced may still be
+in flight.
+
+**When it falls back to synchronous.** A frame decodes the previous answer only
+when that answer is from exactly the preceding `Run` (`previousAnswerFrame`),
+because the motion vectors describe one frame. It also needs no history reset
+pending (raster change, tuning change, loading screen, placement change). Without
+such an answer - the first asynchronous frame, after a reset, after a frame
+Neural Rendering skipped - the frame waits for its own evaluation, as the
+synchronous path does, and the mode resumes on the next frame. Separate
+Upscaling always evaluates synchronously (`PrepareSeparate` clears the flag),
+because its private DLSS SR pass reuses the shared depth and motion textures an
+asynchronous evaluation would still be reading. A held frame (Frame Hold) has
+nothing to overlap with and is synchronous too. While it is on it replaces
+Alternate Frames, whose skip logic assumes the synchronous pair; the UI disables
+that checkbox.
+
+**Two fences.** The interop originally used one shared fence in both
+directions: D3D11 signalled "input ready" and D3D12 "evaluation complete" on the
+same counter. That only stays monotonic while D3D11 always waits for completion
+before its next signal. Asynchronously, the next frame's ready signal could push
+the fence past a still-running evaluation's complete value and release the wait
+on it early. `D3D12Interop` therefore has a ready fence (`readyFence11_/12_`,
+signalled by D3D11 only) and a complete fence (`fence11_/12_`, signalled by D3D12
+only, also used by the CPU backpressure and `WaitForIdle`). `EndD3D12` can defer
+its D3D11 wait and reports the complete value; `WaitOnD3D11` issues it later.
+The synchronous path is unchanged apart from using the two fences.
+
+The trade-off is one frame of latency on the model's edit: under motion it trails
+the image by a frame, and where content is newly revealed the stale-edit guard
+shows the clean frame for that one frame.
 
 ## Model tuning parameters
 

@@ -139,6 +139,22 @@ namespace
 		       texture.desc.Width == desc.Width && texture.desc.Height == desc.Height &&
 		       texture.desc.Format == desc.Format;
 	}
+
+	/** @brief (Re)creates a single-mip SRV over a shared texture in its own format. */
+	bool CreateSharedSRV(const NeuralRenderingNGX::SharedTexture& texture,
+		winrt::com_ptr<ID3D11ShaderResourceView>& view, const char* name)
+	{
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = texture.desc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+		view = nullptr;
+		if (FAILED(globals::d3d::device->CreateShaderResourceView(texture.resource11.Get(), &srvDesc, view.put())))
+			return false;
+		Util::SetResourceName(view.get(), name);
+		return true;
+	}
 }
 
 struct NeuralRenderingBackend::State
@@ -190,6 +206,31 @@ struct NeuralRenderingBackend::State
 	/// Colour source used on the preceding frame. A change means the model moved
 	/// between pre- and post-upscale domains and its temporal history is invalid.
 	ID3D11Resource* lastColorInput = nullptr;
+
+	/**
+	 * Asynchronous evaluation's second set of the four shared textures and two views
+	 * above. After every asynchronous frame the two sets are swapped (SwapBuffers), so
+	 * this always holds the evaluation submitted on the previous frame - whose answer
+	 * this frame decodes - and the members above the set whose evaluation has already
+	 * been waited on, which is therefore safe to overwrite. Unallocated while
+	 * asynchronous evaluation is off.
+	 */
+	struct BufferSet
+	{
+		NeuralRenderingNGX::SharedTexture color;
+		NeuralRenderingNGX::SharedTexture depth;
+		NeuralRenderingNGX::SharedTexture motionVectors;
+		NeuralRenderingNGX::SharedTexture output;
+		winrt::com_ptr<ID3D11ShaderResourceView> outputSRV;
+		winrt::com_ptr<ID3D11ShaderResourceView> colorSRV;
+	};
+	BufferSet previous;
+	/// Complete-fence value of the evaluation that wrote @c previous.
+	std::uint64_t previousCompleteValue = 0;
+	/// evaluateFrameIndex of that evaluation; only an answer from exactly the preceding
+	/// frame is reprojected (the motion vectors describe one frame).
+	std::uint64_t previousAnswerFrame = 0;
+	bool previousAnswerReady = false;
 
 	bool probeAttempted = false;
 	bool probeSucceeded = false;
@@ -384,9 +425,11 @@ struct NeuralRenderingBackend::State
 	 * @brief Creates or validates compact shared textures at the model and guide extents.
 	 * @param modelWidth Model raster width the colour/output textures are allocated at.
 	 * @param modelHeight Model raster height.
+	 * @param doubleBuffered Also keep the second (asynchronous evaluation) set; see EnsurePreviousSet.
 	 * @return False only when the descriptions cannot be read or a shared texture cannot be created.
 	 */
-	bool EnsureResources(const FrameInputs& inputs, std::uint32_t modelWidth, std::uint32_t modelHeight)
+	bool EnsureResources(const FrameInputs& inputs, std::uint32_t modelWidth, std::uint32_t modelHeight,
+		bool doubleBuffered)
 	{
 		D3D11_TEXTURE2D_DESC colorSource{};
 		D3D11_TEXTURE2D_DESC depthSource{};
@@ -405,7 +448,7 @@ struct NeuralRenderingBackend::State
 
 		if (Matches(color, colorDesc) && Matches(output, outputDesc) &&
 			Matches(depth, depthDesc) && Matches(motionVectors, motionDesc) && outputSRV && colorSRV)
-			return true;
+			return EnsurePreviousSet(doubleBuffered);
 
 		// Active extents changed (a resolution, placement, or display-mode change). Everything
 		// downstream of the allocation - including the NGX feature handle - is stale.
@@ -427,24 +470,64 @@ struct NeuralRenderingBackend::State
 			!interop.CreateSharedTexture(motionDesc, motionVectors, "NeuralRendering::MotionVectors"))
 			return false;
 
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-		srvDesc.Format = outputDesc.Format;
-		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-		srvDesc.Texture2D.MostDetailedMip = 0;
-		srvDesc.Texture2D.MipLevels = 1;
-		if (FAILED(globals::d3d::device->CreateShaderResourceView(output.resource11.Get(), &srvDesc, outputSRV.put())))
+		if (!CreateSharedSRV(output, outputSRV, "NeuralRendering::Output SRV") ||
+			!CreateSharedSRV(color, colorSRV, "NeuralRendering::Color SRV"))
 			return false;
-		Util::SetResourceName(outputSRV.get(), "NeuralRendering::Output SRV");
-		srvDesc.Format = colorDesc.Format;
-		if (FAILED(globals::d3d::device->CreateShaderResourceView(color.resource11.Get(), &srvDesc, colorSRV.put())))
-			return false;
-		Util::SetResourceName(colorSRV.get(), "NeuralRendering::Color SRV");
 
 		resetPending = true;
 		logger::info("[NeuralRendering] Shared resources allocated model={}x{} (active {}x{}) depth={}x{} motion={}x{}",
 			colorDesc.Width, colorDesc.Height, inputs.width, inputs.height,
 			depthDesc.Width, depthDesc.Height, motionDesc.Width, motionDesc.Height);
+		return EnsurePreviousSet(doubleBuffered);
+	}
+
+	/**
+	 * @brief Allocates (or releases) asynchronous evaluation's second buffer set to mirror the first.
+	 *
+	 * Either change drains the interop queue first: the set being replaced or released may
+	 * still be referenced by an evaluation in flight. Any change also drops the previous
+	 * answer, so the next asynchronous frame starts synchronously.
+	 */
+	bool EnsurePreviousSet(bool wanted)
+	{
+		const bool allocated = previous.color.resource11 != nullptr;
+		if (wanted && allocated && Matches(previous.color, color.desc) && Matches(previous.output, output.desc) &&
+			Matches(previous.depth, depth.desc) && Matches(previous.motionVectors, motionVectors.desc) &&
+			previous.outputSRV && previous.colorSRV)
+			return true;
+		if (!wanted && !allocated)
+			return true;
+
+		if (!interop.WaitForIdle())
+			return false;
+		previous = {};
+		previousAnswerReady = false;
+		if (!wanted)
+			return true;
+
+		if (!interop.CreateSharedTexture(color.desc, previous.color, "NeuralRendering::Color (async)") ||
+			!interop.CreateSharedTexture(output.desc, previous.output, "NeuralRendering::Output (async)") ||
+			!interop.CreateSharedTexture(depth.desc, previous.depth, "NeuralRendering::DepthGuide (async)") ||
+			!interop.CreateSharedTexture(motionVectors.desc, previous.motionVectors, "NeuralRendering::MotionVectors (async)") ||
+			!CreateSharedSRV(previous.output, previous.outputSRV, "NeuralRendering::Output (async) SRV") ||
+			!CreateSharedSRV(previous.color, previous.colorSRV, "NeuralRendering::Color (async) SRV")) {
+			previous = {};
+			return false;
+		}
+		logger::info("[NeuralRendering] Asynchronous evaluation buffers allocated model={}x{}",
+			color.desc.Width, color.desc.Height);
 		return true;
+	}
+
+	/// Exchanges the two buffer sets; see BufferSet.
+	void SwapBuffers()
+	{
+		std::swap(color, previous.color);
+		std::swap(depth, previous.depth);
+		std::swap(motionVectors, previous.motionVectors);
+		std::swap(output, previous.output);
+		std::swap(outputSRV, previous.outputSRV);
+		std::swap(colorSRV, previous.colorSRV);
 	}
 
 	/** @brief Allocate the signed carrier, its private-SR output, and fixed unit exposure. */
@@ -674,11 +757,14 @@ struct NeuralRenderingBackend::State
 	 *
 	 * @param motionFrames Frames elapsed since the model's previous evaluation; the
 	 *        one-frame game motion vectors are scaled by it (see Run).
+	 * @param deferD3D11Wait Asynchronous evaluation: do not make D3D11 wait for the
+	 *        submission; the caller does it later with WaitOnD3D11(@p completeValue).
+	 * @param completeValue Receives the submission's complete-fence value.
 	 */
 	bool EvaluateModel(const FrameInputs& inputs, ID3D11DeviceContext* context,
 		ID3D11ComputeShader* encodeShader, ID3D11ComputeShader* guideShader, ID3D11ShaderResourceView* colorInView,
 		std::uint32_t modelWidth, std::uint32_t modelHeight, std::uint32_t guideWidth, std::uint32_t guideHeight,
-		float motionFrames)
+		float motionFrames, bool deferD3D11Wait, std::uint64_t& completeValue)
 	{
 		// (b) Colour moves through compute passes rather than CopyResource. The
 		// encode resamples the frame onto the unjittered pixel grid at the model
@@ -747,7 +833,7 @@ struct NeuralRenderingBackend::State
 			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
 		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
 
-		if (!interop.EndD3D12())
+		if (!interop.EndD3D12(&completeValue, !deferD3D11Wait))
 			return LatchFailure("EndD3D12", interop.LastError());
 		if (!executed)
 			return LatchFailure("Feature 18 execution", static_cast<HRESULT>(NeuralRenderingNGX::Runtime::Instance().NgxResult()));
@@ -774,7 +860,10 @@ struct NeuralRenderingBackend::State
 		const std::uint32_t desiredModelHeight = ScaledExtent(colorHeight, inputs.resolutionScaleY);
 		const auto [modelWidth, modelHeight] = SettleModelRaster(desiredModelWidth, desiredModelHeight, colorWidth, colorHeight);
 
-		if (!EnsureResources(inputs, modelWidth, modelHeight))
+		// Asynchronous evaluation reprojects the previous frame's answer, so it needs the
+		// motion vectors; a held frame (static motion) has nothing to overlap with.
+		const bool async = inputs.asyncEvaluation && inputs.motionVectorsSRV && !inputs.staticMotion;
+		if (!EnsureResources(inputs, modelWidth, modelHeight, async))
 			return LatchFailure("shared resource creation", interop.LastError());
 
 		const std::uint32_t guideSrcWidth = inputs.guideWidth ? inputs.guideWidth : inputs.width;
@@ -832,8 +921,14 @@ struct NeuralRenderingBackend::State
 		// submitted. The first frame after a history reset, a raster change or a
 		// failure always evaluates, and so does every frame when there is no
 		// motion-vector view to reproject through.
-		const bool skipFrame = inputs.alternateFrames && inputs.motionVectorsSRV && !inputs.staticMotion &&
+		const bool skipFrame = inputs.alternateFrames && !async && inputs.motionVectorsSRV && !inputs.staticMotion &&
 		                       featureAvailable && !resetPending && !inputs.reset && (evaluateFrameIndex % 2) == 1;
+		// Asynchronous evaluation decodes the previous frame's answer, reprojected like a
+		// skip frame's, while this frame's evaluation runs. After a reset, a rebuild or a
+		// gap there is no answer that belongs to this frame's predecessor, so the frame
+		// waits for its own evaluation instead.
+		const bool decodePrevious = async && previousAnswerReady && !resetPending && !inputs.reset &&
+		                            evaluateFrameIndex - previousAnswerFrame == 1;
 
 		auto* encodeShader = GetShader(encodeColorCS, encodeColorAttempted, kEncodeColorPath, "EncodeColorCS");
 		auto* decodeShader = GetShader(decodeColorCS, decodeColorAttempted, kDecodeColorPath, "DecodeColorCS");
@@ -891,7 +986,7 @@ struct NeuralRenderingBackend::State
 		// resolve exactly as before (the proxy likewise bypasses at 1.0).
 		const bool modelBelowNative = modelWidth < colorWidth || modelHeight < colorHeight;
 		transferParams.depthAwareResolve = inputs.depthAwareResolve && modelBelowNative ? 1u : 0u;
-		transferParams.staleAnswer = skipFrame ? 1u : 0u;
+		transferParams.staleAnswer = skipFrame || decodePrevious ? 1u : 0u;
 		// Only 0 (scene linear) and 1 (display gamma) exist; anything else falls back to the
 		// original scene-linear behaviour rather than an undefined shader branch.
 		transferParams.colorDomain = inputs.colorDomain <= 1u ? inputs.colorDomain : 0u;
@@ -933,6 +1028,7 @@ struct NeuralRenderingBackend::State
 		transferParams.wipePosition = inputs.wipePosition >= 0.0f ? std::min(inputs.wipePosition, 1.0f) : -1.0f;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
+		std::uint64_t completeValue = 0;
 		if (!skipFrame) {
 			// Only alternating-frame mode leaves a gap between evaluations; a reset
 			// discards the history the scale would describe, so it keeps one frame.
@@ -942,9 +1038,25 @@ struct NeuralRenderingBackend::State
 			const bool bridgedSkip = inputs.alternateFrames && historyValid &&
 			                         evaluateFrameIndex - lastEvaluatedFrameIndex == 2;
 			if (!EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,
-					modelWidth, modelHeight, guideWidth, guideHeight, bridgedSkip ? 2.0f : 1.0f))
+					modelWidth, modelHeight, guideWidth, guideHeight, bridgedSkip ? 2.0f : 1.0f,
+					async, completeValue))
 				return false;
 			lastEvaluatedFrameIndex = evaluateFrameIndex;
+		}
+
+		// Asynchronous evaluation: D3D11 was not made to wait for this frame's submission.
+		// Decode the previous frame's answer instead - that evaluation has had a whole frame
+		// to finish, so this GPU-side wait normally costs nothing - or, without one to reuse,
+		// wait for this frame's after all.
+		ID3D11ShaderResourceView* answerSRV = outputSRV.get();
+		ID3D11ShaderResourceView* proxySRV = colorSRV.get();
+		if (async) {
+			if (!interop.WaitOnD3D11(decodePrevious ? previousCompleteValue : completeValue))
+				return LatchFailure("asynchronous evaluation wait", interop.LastError());
+			if (decodePrevious) {
+				answerSRV = previous.outputSRV.get();
+				proxySRV = previous.colorSRV.get();
+			}
 		}
 
 		// Re-anchor the model's bounded luminance to the untouched source, then
@@ -955,9 +1067,18 @@ struct NeuralRenderingBackend::State
 		// silhouette guide for the depth-aware resolve, and the motion vectors
 		// reproject a stale answer.
 		DispatchTransfer(context, decodeShader,
-			{ outputSRV.get(), colorInView, colorSRV.get(), inputs.depthSRV, inputs.materialCategoriesSRV,
+			{ answerSRV, colorInView, proxySRV, inputs.depthSRV, inputs.materialCategoriesSRV,
 				inputs.display.vanillaAdaptationSRV, inputs.display.postProcessAdaptationSRV, inputs.motionVectorsSRV },
 			colorOutView, transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight);
+
+		if (async) {
+			// This frame's evaluation becomes the next frame's answer, and the set the
+			// previous evaluation used - waited on above - is the one written next frame.
+			SwapBuffers();
+			previousCompleteValue = completeValue;
+			previousAnswerFrame = evaluateFrameIndex;
+			previousAnswerReady = true;
+		}
 
 		resetPending = false;
 		featureAvailable = true;
@@ -974,7 +1095,11 @@ struct NeuralRenderingBackend::State
 		// First produce the normal matched-residual NR result at render resolution.
 		// This writes only the caller-owned scratch texture; the game's main colour
 		// remains untouched and is therefore what its regular DLSS history sees.
-		if (!Evaluate(inputs))
+		// Always synchronous: the private DLSS SR pass below reuses the shared depth and
+		// motion textures, which an asynchronous evaluation would still be reading.
+		FrameInputs synchronousInputs = inputs;
+		synchronousInputs.asyncEvaluation = false;
+		if (!Evaluate(synchronousInputs))
 			return false;
 
 		auto* device = globals::d3d::device;
@@ -1164,6 +1289,10 @@ struct NeuralRenderingBackend::State
 		depth = {};
 		motionVectors = {};
 		output = {};
+		previous = {};
+		previousCompleteValue = 0;
+		previousAnswerFrame = 0;
+		previousAnswerReady = false;
 		residualInput = {};
 		residualOutput = {};
 		residualExposure = {};

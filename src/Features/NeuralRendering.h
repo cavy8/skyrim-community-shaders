@@ -159,6 +159,10 @@ struct NeuralRendering : Feature
 		/// content under a pixel changed. Halves the neural cost; the model's
 		/// own temporal state then sees every second frame.
 		bool alternateFrames = false;
+		/// Experimental, off by default: let the model run alongside the next frame's
+		/// rendering and apply the previous frame's answer, reprojected. Replaces
+		/// alternateFrames while on; Separate Upscaling and Frame Hold stay synchronous.
+		bool asyncEvaluation = false;
 		float localToneStrength = 1.0f;
 		float localStructureStrength = 1.0f;
 		float skinStructureStrength = -1.0f;
@@ -279,6 +283,7 @@ struct NeuralRendering : Feature
 		CategoryStrengths equipmentStrengths;
 		bool depthAwareResolve = false;  // Experimental; see Options::depthAwareResolve.
 		bool alternateFrames = false;
+		bool asyncEvaluation = false;  // Experimental; see Options::asyncEvaluation.
 		/// Debug view: render each pixel's classified material category as a flat colour instead
 		/// of the model's edit. See Options::debugCategoryView.
 		bool debugCategoryView = false;

@@ -129,6 +129,10 @@ public:
 		/// Run the model every other frame and re-apply its previous answer to the
 		/// fresh frame in between (experimental; halves the neural cost).
 		bool alternateFrames = false;
+		/// Let Feature 18 run alongside the next frame's D3D11 work and decode the previous
+		/// frame's answer, reprojected (experimental). Needs @c motionVectorsSRV; replaces
+		/// @c alternateFrames while on; ignored by Separate Upscaling and a held frame.
+		bool asyncEvaluation = false;
 		float localToneStrength = 1.0f;
 		float localStructureStrength = 1.0f;
 		float skinStructureStrength = -1.0f;
