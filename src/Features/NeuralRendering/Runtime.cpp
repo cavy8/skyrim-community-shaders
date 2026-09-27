@@ -369,7 +369,8 @@ namespace NeuralRenderingNGX
 		std::uint32_t colorWidth, std::uint32_t colorHeight,
 		std::uint32_t guideWidth, std::uint32_t guideHeight,
 		std::uint32_t outputWidth, std::uint32_t outputHeight,
-		float motionVectorScaleX, float motionVectorScaleY, const Tuning& tuning, bool reset)
+		float motionVectorScaleX, float motionVectorScaleY, const Tuning& tuning, bool reset,
+		bool depthInverted)
 	{
 		if (status_ != RuntimeStatus::Initialized || !commandList || !color || !depth || !motionVectors || !output)
 			return false;
@@ -461,7 +462,7 @@ namespace NeuralRenderingNGX
 		parameters->Set("DLSSNR.OutputSubrectHeight", colorHeight);
 		parameters->Set("DLSSNR.MVecScaleX", motionVectorScaleX);
 		parameters->Set("DLSSNR.MVecScaleY", motionVectorScaleY);
-		parameters->Set("DLSSNR.DepthInverted", 0u);
+		parameters->Set("DLSSNR.DepthInverted", depthInverted ? 1u : 0u);
 		parameters->Set("DLSSNR.Enabled", 1u);
 		parameters->Set("DLSSNR.Reset", reset ? 1u : 0u);
 		parameters->Set("DLSSNR.Intensity", tuning.intensity);
@@ -489,7 +490,7 @@ namespace NeuralRenderingNGX
 		float jitterOffsetX, float jitterOffsetY,
 		float motionVectorScaleX, float motionVectorScaleY,
 		float frameTimeDeltaMilliseconds,
-		std::uint32_t qualityMode, std::uint32_t preset, bool reset)
+		std::uint32_t qualityMode, std::uint32_t preset, bool reset, bool depthInverted)
 	{
 		if (status_ != RuntimeStatus::Initialized || !commandList || !color || !depth ||
 			!motionVectors || !exposure || !output || !inputWidth || !inputHeight ||
@@ -539,8 +540,10 @@ namespace NeuralRenderingNGX
 			parameters->Set(NVSDK_NGX_Parameter_CreationNodeMask, 1u);
 			parameters->Set(NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
 			parameters->Set(NVSDK_NGX_Parameter_PerfQualityValue, static_cast<int>(ToPerfQuality(qualityMode)));
-			parameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
-				static_cast<unsigned int>(NVSDK_NGX_DLSS_Feature_Flags_MVLowRes));
+			unsigned int createFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+			if (depthInverted)
+				createFlags |= NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
+			parameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, createFlags);
 			SetRenderPreset(parameters, preset);
 
 			NVSDK_NGX_Handle* handle = nullptr;

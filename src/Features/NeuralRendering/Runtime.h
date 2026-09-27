@@ -139,6 +139,7 @@ namespace NeuralRenderingNGX
 		 * @param motionVectorScaleY Motion-vector Y scale, analogous to @p motionVectorScaleX.
 		 * @param tuning Feature tuning parameters.
 		 * @param reset True to discard temporal history this frame.
+		 * @param depthInverted True when @p depth is Reverse Z (near = 1, far = 0).
 		 * @return True when the evaluation succeeded.
 		 */
 		bool Execute(ID3D12GraphicsCommandList* commandList,
@@ -146,7 +147,8 @@ namespace NeuralRenderingNGX
 			std::uint32_t colorWidth, std::uint32_t colorHeight,
 			std::uint32_t guideWidth, std::uint32_t guideHeight,
 			std::uint32_t outputWidth, std::uint32_t outputHeight,
-			float motionVectorScaleX, float motionVectorScaleY, const Tuning& tuning, bool reset);
+			float motionVectorScaleX, float motionVectorScaleY, const Tuning& tuning, bool reset,
+			bool depthInverted);
 
 		/**
 		 * @brief Create/evaluate an independent DLSS Super Resolution feature for a signed residual carrier.
@@ -155,6 +157,7 @@ namespace NeuralRenderingNGX
 		 * Streamline DLSS feature. Creation deliberately occupies one submission without evaluation;
 		 * the first residual is produced on a later frame so NGX can finish initializing its history.
 		 * The carrier is treated as LDR data with fixed unit exposure and no sharpening.
+		 * @p depthInverted is a create-time flag; it must not change while the feature exists.
 		 */
 		SuperResolutionResult ExecuteSuperResolution(ID3D12GraphicsCommandList* commandList,
 			ID3D12Resource* color, ID3D12Resource* depth, ID3D12Resource* motionVectors,
@@ -164,7 +167,7 @@ namespace NeuralRenderingNGX
 			float jitterOffsetX, float jitterOffsetY,
 			float motionVectorScaleX, float motionVectorScaleY,
 			float frameTimeDeltaMilliseconds,
-			std::uint32_t qualityMode, std::uint32_t preset, bool reset);
+			std::uint32_t qualityMode, std::uint32_t preset, bool reset, bool depthInverted);
 
 		/**
 		 * @brief Release the NGX feature handle and clear the cached extents.

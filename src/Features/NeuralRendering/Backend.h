@@ -132,7 +132,8 @@ public:
 		/// entirely; see NeuralRendering::Options::rawModelOutput. Only honoured
 		/// in the display-gamma colour domain (Finished Image).
 		bool rawModelOutput = false;
-		bool reset = false;  ///< Force a history reset on this frame.
+		bool reset = false;          ///< Force a history reset on this frame.
+		bool depthInverted = false;  ///< Depth guide is Reverse Z (near = 1, far = 0).
 	};
 
 	NeuralRenderingBackend();

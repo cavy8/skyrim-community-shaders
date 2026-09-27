@@ -716,7 +716,7 @@ struct NeuralRenderingBackend::State
 			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
 			modelWidth, modelHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
 			static_cast<float>(guideWidth), static_cast<float>(guideHeight),
-			tuning, inputs.reset || resetPending);
+			tuning, inputs.reset || resetPending, inputs.depthInverted);
 
 		for (auto& barrier : barriers)
 			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
@@ -1023,7 +1023,7 @@ struct NeuralRenderingBackend::State
 			1.0f, 1.0f,
 			globals::game::deltaTime ? *globals::game::deltaTime * 1000.0f : 16.6667f,
 			inputs.superResolutionQualityMode, inputs.superResolutionPreset,
-			inputs.reset || separateResetPending);
+			inputs.reset || separateResetPending, inputs.depthInverted);
 
 		for (auto& barrier : barriers)
 			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);

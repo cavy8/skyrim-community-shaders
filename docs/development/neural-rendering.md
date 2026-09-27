@@ -195,6 +195,31 @@ The copy is allocated with the game target's exact format
 texture, the subresource copy, and the motion-vector scale / subrects are
 identical whichever resource is passed. DLSS keeps its dilated copy unchanged.
 
+Bottle's Streamline constants report that copy as undilated, which makes DLSS
+dilate it a second time; Upscaling fix F1 (`maintenance-policy.yaml`) restores
+`motionVectorsDilated = eTrue`. That concerns DLSS SR only, not the model.
+
+## Depth convention (Reverse Z)
+
+Reverse Z (CORE, on by default, latched at boot) stores depth as
+`1 - conventional depth`: near is 1, far is 0. It arrived on Personal after
+Neural Rendering was written against conventional depth, and three depth
+consumers must follow it or edges flicker:
+
+-   **Feature 18**: `DLSSNR.DepthInverted` is set from
+    `FrameInputs::depthInverted` (`Runtime::Execute`), filled from
+    `ReverseZ::IsActive()` in `MakeFrameInputs`.
+-   **Separate Upscaling's private DLSS SR**: the same flag adds
+    `NVSDK_NGX_DLSS_Feature_Flags_DepthInverted` at create time
+    (`Runtime::ExecuteSuperResolution`). It cannot change while the feature
+    exists, which holds because Reverse Z is boot-latched.
+-   **`NeuralSilhouetteWeight`**: maps its samples back to conventional depth
+    under `REVERSE_Z` (see *Depth-aware silhouette preservation*).
+
+`CopyDepthGuideCS` copies depth verbatim in both conventions. The main DLSS
+instance reads the same state through Streamline's `depthInverted` (Bottle).
+Runtime-compiled shaders get the `REVERSE_Z` define from `Util::CompileShader`.
+
 ## Why there is no separate "Inside Upscaling" mode
 
 OptiScaler's DLSS-NR fork offers *before / inside / after* the upscaler. "Inside"
@@ -612,6 +637,14 @@ measures the relative depth range of the five-texel cross and fades the edit
 weight towards 0.25 across discontinuities above 2%. The backend forces it off
 at native scale, where there is no upsample to bleed, so the 1.0 path stays
 bit-exact.
+
+The 2% threshold assumes conventional depth, where the far scene sits near 1.0
+and only large near-field jumps clear it. Read raw under Reverse Z the ratio
+becomes roughly `1 - zNear/zFar`: it clears 2% at almost every silhouette and on
+grazing surfaces, and with jittered guides the weight swings between 0.25 and 1
+each frame, which shows as edge flicker. Under `REVERSE_Z` the five samples are
+therefore converted back with `1 - d` first. That map is affine, so it commutes
+with the bilinear taps and gives exactly the conventional-depth result.
 
 ## Alternating frames
 

@@ -8,6 +8,7 @@
 #include "LinearLighting.h"
 #include "PostProcessing.h"
 #include "PostProcessing/HistogramAutoExposure.h"
+#include "ReverseZ.h"
 #include "ScreenshotFeature.h"
 #include "State.h"
 #include "Upscaling.h"
@@ -114,6 +115,8 @@ namespace
 		inputs.debugCategoryView = options.debugCategoryView;
 		inputs.rawModelOutput = options.rawModelOutput;
 		inputs.reset = options.reset;
+		// Reverse Z is latched at boot, so the private DLSS SR's create-time flag stays valid.
+		inputs.depthInverted = globals::features::reverseZ.IsActive();
 		return inputs;
 	}
 

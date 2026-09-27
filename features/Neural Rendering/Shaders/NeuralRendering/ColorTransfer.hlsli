@@ -525,6 +525,15 @@ float2 NeuralGuidePosition(uint2 colorPixel, uint2 guideSize, uint2 activeSize, 
  * lands exactly on the old nearest-texel reads when guide and colour share a
  * resolution (Before/Separate Upscaling, where this never mattered).
  *
+ * The 2% threshold was tuned on conventional depth, where the far scene sits
+ * near 1.0 and only large near-field discontinuities clear it. Under Reverse Z
+ * (stored depth = 1 - conventional depth) the same ratio becomes roughly
+ * 1 - zNear/zFar, which clears 2% at nearly every silhouette and at grazing
+ * surfaces; with jittered guides the weight then swings between a quarter and
+ * one each frame, flickering the edit along edges. The samples are therefore
+ * mapped back to conventional depth first (the map is affine, so it commutes
+ * with the bilinear filtering).
+ *
  * @param guideDepth Game depth (the guide the model received), any allocation.
  * @param linearClamp Bilinear, clamp-to-edge sampler.
  * @param guideTexel Guide-space position this colour pixel maps to, texel
@@ -554,6 +563,13 @@ float NeuralSilhouetteWeight(Texture2D<float> guideDepth, SamplerState linearCla
 	float depthWest = guideDepth.SampleLevel(linearClamp, west / allocationSize, 0);
 	float depthSouth = guideDepth.SampleLevel(linearClamp, south / allocationSize, 0);
 	float depthNorth = guideDepth.SampleLevel(linearClamp, north / allocationSize, 0);
+#ifdef REVERSE_Z
+	depthCentre = 1.0 - depthCentre;
+	depthEast = 1.0 - depthEast;
+	depthWest = 1.0 - depthWest;
+	depthSouth = 1.0 - depthSouth;
+	depthNorth = 1.0 - depthNorth;
+#endif
 
 	float minDepth = min(depthCentre, min(min(depthEast, depthWest), min(depthSouth, depthNorth)));
 	float maxDepth = max(depthCentre, max(max(depthEast, depthWest), max(depthSouth, depthNorth)));
