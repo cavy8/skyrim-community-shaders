@@ -572,6 +572,8 @@ namespace SharedData
 		float Absorption;
 		float DarkBoost;
 		float DarkThreshold;
+		float HeadOcclusion;
+		uint3 pad;
 	};
 
 	cbuffer FeatureData : register(b6)

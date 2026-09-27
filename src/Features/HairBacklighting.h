@@ -16,9 +16,11 @@ struct HairBacklighting : Feature
 		float Absorption = 0.9f;
 		float DarkBoost = 4.0f;
 		float DarkThreshold = 0.4f;
+		float HeadOcclusion = 1.0f;
+		uint pad[3]{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
-	static_assert(sizeof(Settings) == 32);
+	static_assert(sizeof(Settings) == 48);
 
 	virtual inline std::string GetName() override { return "Hair Backlighting"; }
 	virtual std::string GetDisplayName() override { return T("feature.hair_backlighting.name", "Hair Backlighting"); }
@@ -36,7 +38,8 @@ struct HairBacklighting : Feature
 			{ T("feature.hair_backlighting.key_feature_1", "Light transmission through hair facing away from a light"),
 				T("feature.hair_backlighting.key_feature_2", "Brightest on thin edges and loose strands"),
 				T("feature.hair_backlighting.key_feature_3", "Tinted by the hair color; works with any light, with or without Hair Specular"),
-				T("feature.hair_backlighting.key_feature_4", "Boosted in dark surroundings so firelight at night glows like the sun by day") } };
+				T("feature.hair_backlighting.key_feature_4", "Boosted in dark surroundings so firelight at night glows like the sun by day"),
+				T("feature.hair_backlighting.key_feature_5", "Held back where the head blocks the light, so the scalp does not glow through it") } };
 	}
 
 	/** @brief Draws the hair backlighting controls. */

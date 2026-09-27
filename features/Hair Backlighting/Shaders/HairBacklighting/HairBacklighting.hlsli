@@ -36,6 +36,24 @@ namespace HairBacklighting
 		return lerp(SharedData::hairBacklightingSettings.InteriorGlow, 1.0, edge);
 	}
 
+	// Occlusion by the head. Point lights cast no shadows, so without this a fire in
+	// front of and below a character, seen from behind, lights the outline of the scalp
+	// through the skull. lightOffset is the part of L perpendicular to the view axis:
+	// the direction the light sits off "directly behind the hair", scaled by the sine of
+	// that angle. Where the (viewer-facing) geometric normal points away from it, the
+	// rest of the hair volume lies between the pixel and the light; for hair lying on the
+	// scalp that is the head. Full occlusion at a sine of 0.4 (about 24 degrees), where a
+	// ray tangent to a 1 cm hair layer on a 10 cm radius head first enters the skull.
+	// Edges whose normal points toward the offset, such as the lower ends of long hair
+	// with the light below, and every edge when the light is straight behind, keep their
+	// full glow, so short hairstyles still get a rim.
+	float GetHeadOcclusion(float3 geometricNormal, float3 V, float3 L)
+	{
+		const float3 lightOffset = L - V * dot(V, L);
+		const float behind = saturate(-dot(geometricNormal, lightOffset));
+		return 1.0 - SharedData::hairBacklightingSettings.HeadOcclusion * smoothstep(0.0, 0.4, behind);
+	}
+
 	// Local exposure compensation. Skyrim barely adapts to dark scenes, so a fire
 	// behind a character at night produces a glow that is as bright as it should be
 	// in absolute terms but reads as muted next to the sun's in daylight. Below
@@ -79,7 +97,8 @@ namespace HairBacklighting
 		// halo is a deeper, more saturated shade of the hair color (blonde turns gold).
 		const float3 tint = pow(max(baseColor, 0.0), SharedData::hairBacklightingSettings.Absorption);
 
-		float3 transmission = tint * (scatter * GetThinness(normalize(geometricNormal), V) * SharedData::hairBacklightingSettings.Strength * GetDarkSurroundingsGain());
+		const float3 N = normalize(geometricNormal);
+		float3 transmission = tint * (scatter * GetThinness(N, V) * GetHeadOcclusion(N, V, L) * SharedData::hairBacklightingSettings.Strength * GetDarkSurroundingsGain());
 		transmission *= context.lightColor * context.detailedShadow;
 #if defined(TRUE_PBR)
 		transmission *= BRDF::Diffuse_Lambert();

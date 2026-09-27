@@ -15,7 +15,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	InteriorGlow,
 	Absorption,
 	DarkBoost,
-	DarkThreshold);
+	DarkThreshold,
+	HeadOcclusion);
 
 namespace
 {
@@ -65,6 +66,11 @@ void HairBacklighting::DrawSettings()
 		ImGui::Text("%s", T(TKEY("absorption_tooltip"), "How strongly the hair color tints the glow. Higher values give a deeper,\nmore saturated glow (blonde turns golden) that is also dimmer on dark hair."));
 	}
 
+	ImGui::SliderFloat(T(TKEY("head_occlusion"), "Head Occlusion"), &settings.HeadOcclusion, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("head_occlusion_tooltip"), "Removes the glow where the head is between the hair and the light, such as the\ntop of the scalp when a fire is in front of and below the character.\nMost fires and torches cast no shadows, so they need this. 0 turns it off."));
+	}
+
 	ImGui::SeparatorText(T(TKEY("dark_surroundings"), "Dark Surroundings"));
 
 	ImGui::SliderFloat(T(TKEY("dark_boost"), "Dark Boost"), &settings.DarkBoost, kMinDarkBoost, kMaxDarkBoost, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
@@ -93,6 +99,7 @@ void HairBacklighting::LoadSettings(json& o_json)
 	settings.Absorption = std::clamp(settings.Absorption, kMinAbsorption, kMaxAbsorption);
 	settings.DarkBoost = std::clamp(settings.DarkBoost, kMinDarkBoost, kMaxDarkBoost);
 	settings.DarkThreshold = std::clamp(settings.DarkThreshold, 0.0f, 1.0f);
+	settings.HeadOcclusion = std::clamp(settings.HeadOcclusion, 0.0f, 1.0f);
 }
 
 void HairBacklighting::RestoreDefaultSettings()
