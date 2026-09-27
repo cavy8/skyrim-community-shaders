@@ -29,13 +29,11 @@ namespace NeuralRenderingNGX
 	 * @brief D3D11 <-> D3D12 bridge used to run the D3D12-only DLSS NR runtime.
 	 *
 	 * Owns a private D3D12 device, direct queue and a small ring of command
-	 * contexts, plus two fences shared with the game's D3D11 device. Work is ordered
-	 * entirely on the GPU: BeginD3D12() signals the *ready* fence from D3D11 and
-	 * makes the D3D12 queue wait on it, EndD3D12() signals the *complete* fence from
-	 * D3D12 and (unless deferred) makes the D3D11 context wait on it. Each fence has
-	 * a single signaller, so its value only ever increases even when D3D11 moves on
-	 * to the next frame before D3D12 has finished (asynchronous evaluation). The CPU
-	 * only blocks when every command context is still in flight.
+	 * contexts, plus a fence shared with the game's D3D11 device. Work is ordered
+	 * entirely on the GPU: BeginD3D12() signals the shared fence from D3D11 and
+	 * makes the D3D12 queue wait on it, EndD3D12() signals it from D3D12 and makes
+	 * the D3D11 context wait. The CPU only blocks when every command context is
+	 * still in flight.
 	 */
 	class D3D12Interop
 	{
@@ -80,19 +78,9 @@ namespace NeuralRenderingNGX
 
 		/**
 		 * @brief Close and submit the recorded command list, then make D3D11 wait on it.
-		 * @param completeValue Receives the complete-fence value the submission signals (optional).
-		 * @param d3d11Waits False defers the D3D11 wait to a later WaitOnD3D11(completeValue),
-		 *        letting D3D11 work proceed while D3D12 runs (asynchronous evaluation).
-		 * @return True when the submission (and the cross-API wait, unless deferred) was queued.
+		 * @return True when the submission and the cross-API wait were queued.
 		 */
-		bool EndD3D12(std::uint64_t* completeValue = nullptr, bool d3d11Waits = true);
-
-		/**
-		 * @brief Makes subsequent D3D11 work wait (on the GPU) for a submission EndD3D12() reported.
-		 * @param completeValue The value EndD3D12() returned; zero is a no-op.
-		 * @return True when the wait was queued.
-		 */
-		bool WaitOnD3D11(std::uint64_t completeValue);
+		bool EndD3D12();
 
 		/**
 		 * @brief Block until every submitted D3D12 command list has completed.
@@ -129,16 +117,13 @@ namespace NeuralRenderingNGX
 
 		Microsoft::WRL::ComPtr<ID3D11Device5> device11_;
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext4> context11_;
-		Microsoft::WRL::ComPtr<ID3D11Fence> fence11_;       ///< Complete fence, D3D11 side (D3D12 signals).
-		Microsoft::WRL::ComPtr<ID3D11Fence> readyFence11_;  ///< Ready fence, D3D11 side (D3D11 signals).
+		Microsoft::WRL::ComPtr<ID3D11Fence> fence11_;
 		Microsoft::WRL::ComPtr<ID3D12Device> device12_;
 		Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue12_;
 		std::array<CommandContext, kCommandContextCount> commandContexts_;
-		Microsoft::WRL::ComPtr<ID3D12Fence> fence12_;       ///< Complete fence: signalled by D3D12 only.
-		Microsoft::WRL::ComPtr<ID3D12Fence> readyFence12_;  ///< Ready fence: signalled by D3D11 only.
+		Microsoft::WRL::ComPtr<ID3D12Fence> fence12_;
 		HANDLE fenceEvent_ = nullptr;
-		std::uint64_t fenceValue_ = 0;       ///< Last complete-fence value submitted.
-		std::uint64_t readyFenceValue_ = 0;  ///< Last ready-fence value submitted.
+		std::uint64_t fenceValue_ = 0;
 		HRESULT lastError_ = S_OK;
 		const char* lastOperation_ = "none";
 		std::uint32_t lastResourceFlags_ = 0;

@@ -54,7 +54,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	equipmentStrengths,
 	depthAwareResolve,
 	alternateFrames,
-	asyncEvaluation,
 	debugCategoryView,
 	rawModelOutput);
 
@@ -110,7 +109,6 @@ namespace
 		}
 		inputs.depthAwareResolve = options.depthAwareResolve;
 		inputs.alternateFrames = options.alternateFrames;
-		inputs.asyncEvaluation = options.asyncEvaluation;
 		inputs.localToneStrength = options.localToneStrength;
 		inputs.localStructureStrength = options.localStructureStrength;
 		inputs.skinStructureStrength = options.skinStructureStrength;
@@ -379,25 +377,12 @@ void NeuralRendering::DrawSettings()
 			"When the model runs below full resolution, fades its edit across depth edges so background "
 			"changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0."));
 	}
-	ImGui::BeginDisabled(settings.asyncEvaluation && !IsPlacement(Placement::kSeparateUpscaling));
 	ImGui::Checkbox(T(TKEY("alternate_frames"), "Alternate Frames (Experimental)"), &settings.alternateFrames);
-	ImGui::EndDisabled();
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("alternate_frames_tooltip"),
 			"Runs the model every other frame. In between, its previous result is moved along with the image "
 			"using the game's motion vectors and re-applied, fading only where something new came into view. "
 			"Halves the neural cost; the model's lighting and detail changes can trail fast motion by a frame."));
-	}
-	ImGui::BeginDisabled(IsPlacement(Placement::kSeparateUpscaling));
-	ImGui::Checkbox(T(TKEY("async_evaluation"), "Asynchronous Evaluation (Experimental)"), &settings.asyncEvaluation);
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("async_evaluation_tooltip"),
-			"Lets the model run alongside the next frame's rendering instead of making the frame wait for it. "
-			"Each frame then shows the previous frame's result, moved along with the image using the game's "
-			"motion vectors. How much time this saves depends on how well the GPU overlaps the two workloads, "
-			"so compare frame times with it on and off. Replaces Alternate Frames while on. Not available with "
-			"Separate Upscaling."));
 	}
 
 	// --- Model tuning: information handed to the DLSS Neural Rendering model itself ---
@@ -1111,7 +1096,6 @@ NeuralRendering::Options NeuralRendering::MakeOptions() const
 	setCategoryStrengths(MaterialCategory::kEquipment, settings.equipmentStrengths);
 	options.depthAwareResolve = settings.depthAwareResolve;
 	options.alternateFrames = settings.alternateFrames;
-	options.asyncEvaluation = settings.asyncEvaluation;
 	options.localToneStrength = settings.localToneStrength;
 	options.localStructureStrength = settings.localStructureStrength;
 	options.skinStructureStrength = settings.skinStructureStrength;

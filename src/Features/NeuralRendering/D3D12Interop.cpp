@@ -45,24 +45,13 @@ namespace NeuralRenderingNGX
 			if (FAILED(result)) return RecordFailure(result);
 		}
 
-		// Two fences, one signaller each: D3D11 signals "ready" and D3D12 waits on it;
-		// D3D12 signals "complete" and D3D11 (and the CPU) waits on it. A single fence
-		// signalled from both sides only stays monotonic while D3D11 always waits for
-		// completion before its next signal, which asynchronous evaluation does not.
-		const auto createSharedFence = [&](Microsoft::WRL::ComPtr<ID3D12Fence>& fence12,
-										   Microsoft::WRL::ComPtr<ID3D11Fence>& fence11) {
-			HRESULT hr = device12_->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence12));
-			if (FAILED(hr)) return hr;
-			HANDLE sharedFence = nullptr;
-			hr = device12_->CreateSharedHandle(fence12.Get(), nullptr, GENERIC_ALL, nullptr, &sharedFence);
-			if (FAILED(hr)) return hr;
-			hr = device11_->OpenSharedFence(sharedFence, IID_PPV_ARGS(&fence11));
-			CloseHandle(sharedFence);
-			return hr;
-		};
-		result = createSharedFence(fence12_, fence11_);
+		result = device12_->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence12_));
 		if (FAILED(result)) return RecordFailure(result);
-		result = createSharedFence(readyFence12_, readyFence11_);
+		HANDLE sharedFence = nullptr;
+		result = device12_->CreateSharedHandle(fence12_.Get(), nullptr, GENERIC_ALL, nullptr, &sharedFence);
+		if (FAILED(result)) return RecordFailure(result);
+		result = device11_->OpenSharedFence(sharedFence, IID_PPV_ARGS(&fence11_));
+		CloseHandle(sharedFence);
 		if (FAILED(result)) return RecordFailure(result);
 
 		fenceEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -84,11 +73,8 @@ namespace NeuralRenderingNGX
 		backpressureLogged_ = false;
 		initialized_ = false;
 		fenceValue_ = 0;
-		readyFenceValue_ = 0;
 		fence11_.Reset();
 		fence12_.Reset();
-		readyFence11_.Reset();
-		readyFence12_.Reset();
 		commandContexts_ = {};
 		queue12_.Reset();
 		device12_.Reset();
@@ -171,10 +157,10 @@ namespace NeuralRenderingNGX
 
 		auto& commandContext = commandContexts_[contextIndex];
 		commandContext.fenceValue = 0;
-		const std::uint64_t readyValue = ++readyFenceValue_;
-		HRESULT result = context11_->Signal(readyFence11_.Get(), readyValue);
+		const std::uint64_t readyValue = ++fenceValue_;
+		HRESULT result = context11_->Signal(fence11_.Get(), readyValue);
 		if (FAILED(result)) return RecordFailure(result);
-		result = queue12_->Wait(readyFence12_.Get(), readyValue);
+		result = queue12_->Wait(fence12_.Get(), readyValue);
 		if (FAILED(result)) return RecordFailure(result);
 		result = commandContext.allocator->Reset();
 		if (FAILED(result)) return RecordFailure(result);
@@ -187,7 +173,7 @@ namespace NeuralRenderingNGX
 		return true;
 	}
 
-	bool D3D12Interop::EndD3D12(std::uint64_t* completeValueOut, bool d3d11Waits)
+	bool D3D12Interop::EndD3D12()
 	{
 		if (!initialized_ || !recording_ || recordingContext_ >= kCommandContextCount)
 			return RecordFailure(E_UNEXPECTED);
@@ -202,22 +188,10 @@ namespace NeuralRenderingNGX
 		result = queue12_->Signal(fence12_.Get(), completeValue);
 		if (FAILED(result)) return RecordFailure(result);
 		commandContext.fenceValue = completeValue;
-		if (completeValueOut)
-			*completeValueOut = completeValue;
-		lastError_ = S_OK;
 
 		// This queues a GPU-side dependency. Subsequent D3D11 output copies wait
 		// for Feature 18 without stalling the render thread on the CPU.
-		return d3d11Waits ? WaitOnD3D11(completeValue) : true;
-	}
-
-	bool D3D12Interop::WaitOnD3D11(std::uint64_t completeValue)
-	{
-		if (!initialized_)
-			return RecordFailure(E_UNEXPECTED);
-		if (!completeValue)
-			return true;
-		const HRESULT result = context11_->Wait(fence11_.Get(), completeValue);
+		result = context11_->Wait(fence11_.Get(), completeValue);
 		if (FAILED(result)) return RecordFailure(result);
 		lastError_ = S_OK;
 		return true;

@@ -1383,8 +1383,6 @@
     "feature.lod_blending.name": "LOD Blending",
     "feature.neural_rendering.alternate_frames": "Alternate Frames (Experimental)",
     "feature.neural_rendering.alternate_frames_tooltip": "Runs the model every other frame. In between, its previous result is moved along with the image using the game's motion vectors and re-applied, fading only where something new came into view. Halves the neural cost; the model's lighting and detail changes can trail fast motion by a frame.",
-    "feature.neural_rendering.async_evaluation": "Asynchronous Evaluation (Experimental)",
-    "feature.neural_rendering.async_evaluation_tooltip": "Lets the model run alongside the next frame's rendering instead of making the frame wait for it. Each frame then shows the previous frame's result, moved along with the image using the game's motion vectors. How much time this saves depends on how well the GPU overlaps the two workloads, so compare frame times with it on and off. Replaces Alternate Frames while on. Not available with Separate Upscaling.",
     "feature.neural_rendering.automatic_mask": "Automatic Mask",
     "feature.neural_rendering.automatic_mask_tooltip": "Generates the skin mask automatically.",
     "feature.neural_rendering.available": "DLSS Neural Rendering is available.",
