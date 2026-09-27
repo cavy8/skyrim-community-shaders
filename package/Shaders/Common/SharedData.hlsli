@@ -570,7 +570,8 @@ namespace SharedData
 		float EdgeFalloff;
 		float InteriorGlow;
 		float Absorption;
-		uint2 pad;
+		float DarkBoost;
+		float DarkThreshold;
 	};
 
 	cbuffer FeatureData : register(b6)

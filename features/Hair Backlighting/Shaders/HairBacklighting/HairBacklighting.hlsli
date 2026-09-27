@@ -36,6 +36,26 @@ namespace HairBacklighting
 		return lerp(SharedData::hairBacklightingSettings.InteriorGlow, 1.0, edge);
 	}
 
+	// Local exposure compensation. Skyrim barely adapts to dark scenes, so a fire
+	// behind a character at night produces a glow that is as bright as it should be
+	// in absolute terms but reads as muted next to the sun's in daylight. Below
+	// DarkThreshold, the glow is scaled up by how much darker the hair's ambient
+	// light is than the threshold, capped at DarkBoost; at or above it the gain is 1,
+	// so daylight tuning is unaffected. The level is the ambient term only (the
+	// constant part of the vanilla directional ambient, i.e. its average over all
+	// directions): counting the direct lights would let a fire cancel its own boost.
+	// The threshold is given as a vanilla (gamma) ambient brightness and goes through
+	// the same Color::Ambient() conversion, so the ratio is taken in the lighting
+	// space in use with or without Linear Lighting. DirectionalAmbient is the
+	// Lighting.hlsl pixel-shader constant.
+	float GetDarkSurroundingsGain()
+	{
+		const float3 averageAmbient = max(0.0, float3(DirectionalAmbient._m03, DirectionalAmbient._m13, DirectionalAmbient._m23));
+		const float ambientLuminance = Color::RGBToLuminance(Color::Ambient(averageAmbient));
+		const float thresholdLuminance = Color::RGBToLuminance(Color::Ambient(SharedData::hairBacklightingSettings.DarkThreshold.xxx));
+		return clamp(thresholdLuminance / max(ambientLuminance, 1e-5), 1.0, SharedData::hairBacklightingSettings.DarkBoost);
+	}
+
 	/**
 	 * @brief Adds backlit hair transmission for one light.
 	 * @param lightingOutput Direct lighting output of the current light; transmission is accumulated.
@@ -59,7 +79,7 @@ namespace HairBacklighting
 		// halo is a deeper, more saturated shade of the hair color (blonde turns gold).
 		const float3 tint = pow(max(baseColor, 0.0), SharedData::hairBacklightingSettings.Absorption);
 
-		float3 transmission = tint * (scatter * GetThinness(normalize(geometricNormal), V) * SharedData::hairBacklightingSettings.Strength);
+		float3 transmission = tint * (scatter * GetThinness(normalize(geometricNormal), V) * SharedData::hairBacklightingSettings.Strength * GetDarkSurroundingsGain());
 		transmission *= context.lightColor * context.detailedShadow;
 #if defined(TRUE_PBR)
 		transmission *= BRDF::Diffuse_Lambert();

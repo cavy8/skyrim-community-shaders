@@ -14,7 +14,8 @@ struct HairBacklighting : Feature
 		float EdgeFalloff = 3.2f;
 		float InteriorGlow = 0.0f;
 		float Absorption = 0.9f;
-		uint pad[2];
+		float DarkBoost = 4.0f;
+		float DarkThreshold = 0.35f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 	static_assert(sizeof(Settings) == 32);
@@ -34,7 +35,8 @@ struct HairBacklighting : Feature
 		return { T("feature.hair_backlighting.description", "Makes hair glow when it is lit from behind, like foliage against the sun."),
 			{ T("feature.hair_backlighting.key_feature_1", "Light transmission through hair facing away from a light"),
 				T("feature.hair_backlighting.key_feature_2", "Brightest on thin edges and loose strands"),
-				T("feature.hair_backlighting.key_feature_3", "Tinted by the hair color; works with any light, with or without Hair Specular") } };
+				T("feature.hair_backlighting.key_feature_3", "Tinted by the hair color; works with any light, with or without Hair Specular"),
+				T("feature.hair_backlighting.key_feature_4", "Boosted in dark surroundings so firelight at night glows like the sun by day") } };
 	}
 
 	/** @brief Draws the hair backlighting controls. */

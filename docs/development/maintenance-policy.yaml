@@ -140,7 +140,9 @@ features:
       Owner request 2026-09-26: backlit-hair transmission, the hair counterpart of Foliage
       Lighting's tree transmission. Shader side is a feature-owned include called from
       LightingEval.hlsli under HAIR && HAIR_BACKLIGHTING (TruePBR, Hair Specular and vanilla hair
-      paths); settings are the first local FeatureData struct. Not in
+      paths); settings are the first local FeatureData struct. The dark-surroundings boost reads
+      Lighting.hlsl's DirectionalAmbient constant directly, so a Bottle change to that cbuffer
+      member breaks the include. Not in
       .github/configs/shader-validation.yaml (generated from game logs), so CI does not compile
       the HAIR_BACKLIGHTING path: compile it by hand with fxc after shader edits.
 

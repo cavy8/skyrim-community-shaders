@@ -13,7 +13,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ScatterWidth,
 	EdgeFalloff,
 	InteriorGlow,
-	Absorption);
+	Absorption,
+	DarkBoost,
+	DarkThreshold);
 
 namespace
 {
@@ -24,6 +26,8 @@ namespace
 	constexpr float kMaxEdgeFalloff = 8.0f;
 	constexpr float kMinAbsorption = 0.25f;
 	constexpr float kMaxAbsorption = 3.0f;
+	constexpr float kMinDarkBoost = 1.0f;
+	constexpr float kMaxDarkBoost = 16.0f;
 }
 
 void HairBacklighting::DrawSettings()
@@ -60,6 +64,18 @@ void HairBacklighting::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("absorption_tooltip"), "How strongly the hair color tints the glow. Higher values give a deeper,\nmore saturated glow (blonde turns golden) that is also dimmer on dark hair."));
 	}
+
+	ImGui::SeparatorText(T(TKEY("dark_surroundings"), "Dark Surroundings"));
+
+	ImGui::SliderFloat(T(TKEY("dark_boost"), "Dark Boost"), &settings.DarkBoost, kMinDarkBoost, kMaxDarkBoost, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("dark_boost_tooltip"), "The most the glow is amplified when the surroundings are dark, so a fire or\ntorch at night stands out like the sun does by day. 1 turns the boost off."));
+	}
+
+	ImGui::SliderFloat(T(TKEY("dark_threshold"), "Dark Threshold"), &settings.DarkThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("dark_threshold_tooltip"), "Ambient brightness (as in the weather's directional ambient colors) below which\nthe boost starts. The glow is amplified by how much darker the hair's ambient light\nis than this, up to Dark Boost. Keep it below daylight ambient so the sun is unchanged."));
+	}
 }
 
 void HairBacklighting::SaveSettings(json& o_json)
@@ -75,6 +91,8 @@ void HairBacklighting::LoadSettings(json& o_json)
 	settings.EdgeFalloff = std::clamp(settings.EdgeFalloff, kMinEdgeFalloff, kMaxEdgeFalloff);
 	settings.InteriorGlow = std::clamp(settings.InteriorGlow, 0.0f, 1.0f);
 	settings.Absorption = std::clamp(settings.Absorption, kMinAbsorption, kMaxAbsorption);
+	settings.DarkBoost = std::clamp(settings.DarkBoost, kMinDarkBoost, kMaxDarkBoost);
+	settings.DarkThreshold = std::clamp(settings.DarkThreshold, 0.0f, 1.0f);
 }
 
 void HairBacklighting::RestoreDefaultSettings()
