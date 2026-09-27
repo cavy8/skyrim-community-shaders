@@ -48,8 +48,10 @@ namespace
 		std::uint32_t debugCategoryView = 0;  ///< Non-zero: the decode renders the classified category, not the model's edit.
 		float maxRatio = 2.0f;                ///< Two-sided guard on the model/proxy luminance ratio (1/maxRatio..maxRatio).
 		std::uint32_t rawModelOutput = 0;     ///< Non-zero: the decode writes Feature 18's answer directly (Finished Image diagnostic).
+		float highlightWhite = 0.0f;          ///< Display gamma: display peak for the HDR highlight shoulder; 0 = none.
+		std::uint32_t reserved[3]{};
 	};
-	static_assert(sizeof(TransferParams) == 240);
+	static_assert(sizeof(TransferParams) == 256);
 
 	constexpr float kMinimumResolutionScale = 0.25f;
 	/// Native. Supersampling the model (scale above one) was removed: it cost the
@@ -635,7 +637,7 @@ struct NeuralRenderingBackend::State
 		                      inputs.colorOut != inputs.motionVectors && inputs.depth != inputs.motionVectors;
 		const bool finite = std::isfinite(inputs.intensity) && std::isfinite(inputs.colorStrength) &&
 		                    std::isfinite(inputs.transferStrength) && std::isfinite(inputs.luminosityStrength) &&
-		                    std::isfinite(inputs.maxRatio) &&
+		                    std::isfinite(inputs.maxRatio) && std::isfinite(inputs.highlightWhite) &&
 		                    std::isfinite(inputs.jitterOffsetX) && std::isfinite(inputs.jitterOffsetY) &&
 		                    std::isfinite(inputs.resolutionScaleX) && std::isfinite(inputs.resolutionScaleY) &&
 		                    std::isfinite(inputs.localToneStrength) &&
@@ -915,6 +917,9 @@ struct NeuralRenderingBackend::State
 		transferParams.hueGuardMask = hueGuardMask;
 		transferParams.debugCategoryView = inputs.debugCategoryView ? 1u : 0u;
 		transferParams.rawModelOutput = inputs.rawModelOutput ? 1u : 0u;
+		// Only meaningful for a finished frame on an HDR target; the shader ignores
+		// anything at or below one (no headroom) and the scene-linear domain.
+		transferParams.highlightWhite = transferParams.colorDomain == 1u ? std::clamp(inputs.highlightWhite, 0.0f, 100.0f) : 0.0f;
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		if (!skipFrame) {

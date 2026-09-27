@@ -25,6 +25,8 @@ cbuffer TransferParams : register(b0)
 	uint DebugCategoryView;    // Non-zero: render the classified category (NeuralRenderingCategories::DebugColor) instead of the model's edit.
 	float MaxRatio;            // Two-sided guard on the model/proxy luminance ratio (1/MaxRatio..MaxRatio); see ResolveNeuralColor.
 	uint RawModelOutput;       // Non-zero: write Feature 18's answer directly, bypassing the resolve entirely (Finished Image diagnostic).
+	float HighlightWhite;      // Display gamma: display peak for the HDR highlight shoulder (NeuralHighlightRolloff); 0 = none.
+	uint3 Reserved;
 };
 
 Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
@@ -180,7 +182,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	// register.
 	if (StaleAnswer != 0) {
 		NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
-			VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0]);
+			VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite);
 		editWeight *= answerOnScreen ? NeuralStaleEditWeight(proxy, original, ColorDomain, display) : 0.0;
 	}
 	if (DepthAwareResolve != 0 && all(GuideSize > 0)) {

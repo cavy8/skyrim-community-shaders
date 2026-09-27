@@ -42,11 +42,14 @@
 // redirect can carry values above one). Treating that as linear would compress
 // and re-encode an already-encoded image, handing the model a washed-out,
 // over-bright proxy. kNeuralColorDomainDisplayGamma therefore decodes the frame
-// with the same 2.2 curve HDR Display uses, scales only genuinely over-range
-// pixels down by one hue-preserving factor, and re-encodes with that curve - an
-// exact pass-through for SDR, so the model sees the finished frame as-is. The
-// resolve decodes proxy, model and original with that same curve, applies the
-// edit in linear light and re-encodes the result.
+// with the same 2.2 curve HDR Display uses, brings over-range pixels back into
+// 0..1 with one hue-preserving factor, and re-encodes with that curve - an exact
+// pass-through for SDR, so the model sees the finished frame as-is. On HDR
+// Display's redirect that factor is a soft highlight shoulder
+// (NeuralHighlightRolloff) rather than a hard scale-down, so highlight structure
+// up to the display's peak survives into the proxy. The resolve decodes proxy,
+// model and original with that same curve, applies the edit in linear light and
+// re-encodes the result.
 //
 // Jitter. "Before Upscaling" runs on the raw render-resolution raster, which the
 // game rendered with the per-frame sub-pixel TAA jitter DLSS later removes. The
@@ -81,6 +84,9 @@ static const float kNeuralChromaRatioMax = 4.0;
 // ~0.1 in this metric, saturated foliage ~0.3, a pure grey exactly 0.
 static const float kNeuralHueGuardStart = 0.03;
 static const float kNeuralHueGuardEnd = 0.2;
+// Display-gamma proxy on an HDR target: linear peak below which NeuralHighlightRolloff is
+// the identity. Everything a paper-white SDR frame puts below it reaches the model as-is.
+static const float kNeuralHighlightKnee = 0.8;
 
 // TransferParams.ColorDomain values; keep in sync with NeuralRendering::ColorDomain.
 static const uint kNeuralColorDomainSceneLinear = 0;   // Linear, open-ended HDR scene colour (pre-tonemap placements).
@@ -117,6 +123,7 @@ struct NeuralDisplayTransform
 	float brightness;        // ISHDR Cinematic.w.
 	float3 tintColor;        // ISHDR Tint.xyz.
 	float tintAmount;        // ISHDR Tint.w.
+	float highlightWhite;    // Display gamma only: linear peak the display can show (>1 = HDR target); 0 = none.
 };
 
 /** No exposure and no grading: the plain hue-preserving ACES-filmic proxy (NeuralAcesFilmic). */
@@ -133,6 +140,7 @@ NeuralDisplayTransform NeuralIdentityDisplayTransform()
 	display.brightness = 1.0;
 	display.tintColor = 1.0;
 	display.tintAmount = 0.0;
+	display.highlightWhite = 0.0;
 	return display;
 }
 
@@ -149,9 +157,10 @@ NeuralDisplayTransform NeuralIdentityDisplayTransform()
  *                        0.18 * compensation factor, zw its adaptation range.
  * @param vanillaAdaptation ISHDR AvgTex: x adapted luminance, y target luminance.
  * @param postProcessAdaptedLuminance Post Processing's adapted luminance.
+ * @param highlightWhite TransferParams.HighlightWhite (see NeuralHighlightRolloff).
  */
 NeuralDisplayTransform MakeNeuralDisplayTransform(float4 displayParam, float4 displayCinematic, float4 displayTint,
-	float4 displayExposure, float2 vanillaAdaptation, float postProcessAdaptedLuminance)
+	float4 displayExposure, float2 vanillaAdaptation, float postProcessAdaptedLuminance, float highlightWhite)
 {
 	NeuralDisplayTransform display = NeuralIdentityDisplayTransform();
 	// ISHDR: if (avgValue.x != 0 && avgValue.y != 0) inputColor *= avgValue.y / avgValue.x;
@@ -170,6 +179,7 @@ NeuralDisplayTransform MakeNeuralDisplayTransform(float4 displayParam, float4 di
 	display.brightness = displayCinematic.w;
 	display.tintColor = displayTint.xyz;
 	display.tintAmount = displayTint.w;
+	display.highlightWhite = highlightWhite;
 	return display;
 }
 
@@ -268,11 +278,43 @@ float3 ApplyNeuralDisplayTransform(float3 linearColor, NeuralDisplayTransform di
 }
 
 /**
+ * Soft highlight shoulder for the display-gamma proxy on an HDR target.
+ *
+ * Maps a linear peak (HDR Display's redirect: 1 = paper white) into 0..1 so the
+ * model, which was trained on SDR frames, can see it. Below kNeuralHighlightKnee
+ * it is the identity; above it an extended-Reinhard shoulder with unit slope at
+ * the knee rolls off towards one and reaches it exactly at @p white, the display's
+ * own peak, clamping beyond (the display clips there too). Strictly increasing up
+ * to @p white, so highlights that differ on screen still differ to the model -
+ * unlike the plain scale-down to a peak of one, which flattened every highlight
+ * of a given hue to the same value. Adapted from the "hybrid" reversible proxy of
+ * RenoDX's DLSS 5 add-on / OptiScaler's DLSSNR fork (identity midtones, unclipped
+ * highlights).
+ *
+ * @param peak Largest linear channel of the pixel.
+ * @param white Display peak in the same units; must exceed one.
+ * @return The rolled-off peak, in 0..1.
+ */
+float NeuralHighlightRolloff(float peak, float white)
+{
+	if (peak <= kNeuralHighlightKnee)
+		return peak;
+	const float headroom = 1.0 - kNeuralHighlightKnee;
+	float t = (peak - kNeuralHighlightKnee) / headroom;
+	float tWhite = (white - kNeuralHighlightKnee) / headroom;
+	float shoulder = t * (1.0 + t / (tWhite * tWhite)) / (1.0 + t);
+	return kNeuralHighlightKnee + headroom * min(shoulder, 1.0);
+}
+
+/**
  * Linear-light proxy of @p color with every channel at or below one.
  *
- * Display gamma: the frame is already tonemapped, so only genuinely over-range
- * (HDR) pixels are scaled down by one hue-preserving factor and an SDR frame
- * passes through unchanged. Scene linear: the colour goes through @p display
+ * Display gamma: the frame is already tonemapped, so an SDR frame passes through
+ * unchanged. Over-range (HDR) pixels are brought back into range by one
+ * hue-preserving factor: on an HDR target with a known display peak
+ * (display.highlightWhite > 1) that factor is NeuralHighlightRolloff's soft
+ * shoulder, otherwise a plain scale-down to a peak of one. Scene linear: the
+ * colour goes through @p display
  * (see ApplyNeuralDisplayTransform); with the identity transform that is the
  * hue-preserving scalar ACES-filmic curve, a single positive scale of the
  * linear light.
@@ -282,6 +324,8 @@ float3 EncodeNeuralProxy(float3 color, uint domain, NeuralDisplayTransform displ
 	float3 linearColor = NeuralDomainToLinear(color, domain);
 	if (domain == kNeuralColorDomainDisplayGamma) {
 		float peak = max(linearColor.r, max(linearColor.g, linearColor.b));
+		if (display.highlightWhite > 1.0)
+			return linearColor * (NeuralHighlightRolloff(peak, display.highlightWhite) / max(peak, 1e-5));
 		return linearColor / max(peak, 1.0);
 	}
 	return ApplyNeuralDisplayTransform(linearColor, display);

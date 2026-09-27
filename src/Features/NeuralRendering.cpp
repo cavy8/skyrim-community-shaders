@@ -91,6 +91,7 @@ namespace
 		inputs.display.postProcessExposure = options.display.postProcessExposure;
 		inputs.display.postProcessAdaptationSRV = options.display.postProcessAdaptationSRV;
 		inputs.display.postProcessExposureScale = options.display.postProcessExposureScale;
+		inputs.highlightWhite = options.highlightWhite;
 		std::copy_n(options.display.postProcessAdaptationRange, 2, inputs.display.postProcessAdaptationRange);
 		inputs.intensity = options.intensity;
 		inputs.colorStrength = options.colorStrength;
@@ -1262,6 +1263,11 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	                         (globals::features::linearLighting.settings.enableLinearLighting ||
 								 globals::state->GetTonemapOwner() == State::TonemapOwner::kPostProcessing);
 	options.colorDomain = sceneLinear ? ColorDomain::kSceneLinear : ColorDomain::kDisplayGamma;
+	// A gamma-encoded frame on the HDR redirect carries highlights up to the display's peak,
+	// with 1.0 at paper white (HDROutputCS PQ-encodes it against paperWhite). Tell the proxy
+	// where that peak is so it rolls highlights off instead of flattening them.
+	if (!sceneLinear && hdrDisplay.loaded && hdrDisplay.framebufferRedirected && hdrDisplay.settings.hdrPaperWhite > 0)
+		options.highlightWhite = static_cast<float>(hdrDisplay.settings.hdrPeakNits) / static_cast<float>(hdrDisplay.settings.hdrPaperWhite);
 
 	globals::profiler->BeginPass("NeuralRendering::Generate");
 	const bool evaluated = Evaluate(a_colorIn, a_colorOut,

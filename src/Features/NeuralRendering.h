@@ -229,6 +229,12 @@ struct NeuralRendering : Feature
 		/// Image, which already runs on the finished frame.
 		DisplayTransform display{};
 
+		/// Finished Image on HDR Display's float16 redirect: the display's peak relative to
+		/// paper white (the redirect's 1.0), so the display-gamma proxy can roll highlights
+		/// off softly up to it (ColorTransfer.hlsli, NeuralHighlightRolloff). Zero on SDR
+		/// targets and in the scene-linear domain, which keep their previous encode.
+		float highlightWhite = 0.0f;
+
 		/// DLSS-SR quality/preset selections mirrored from Upscaling settings when
 		/// Separate Upscaling is active. They are ignored by the other placements.
 		uint32_t superResolutionQualityMode = 1;

@@ -95,6 +95,10 @@ public:
 		std::uint32_t colorDomain = 0;
 		/// Display transform the scene-linear proxy replicates (identity by default).
 		DisplayTransform display{};
+		/// Display-gamma domain only: the linear peak the display can show, in the frame's
+		/// units (HDR Display's redirect: peak nits / paper white). Above one the proxy
+		/// rolls highlights off softly up to it instead of scaling them down; zero on SDR.
+		float highlightWhite = 0.0f;
 		float intensity = 0.8f;
 		float colorStrength = 1.0f;
 		/// Overall weight of the model's edit (0..2); one applies it exactly.

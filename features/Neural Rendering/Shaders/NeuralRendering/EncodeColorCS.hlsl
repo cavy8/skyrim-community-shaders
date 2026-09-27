@@ -24,6 +24,8 @@ cbuffer TransferParams : register(b0)
 	uint DebugCategoryView;    // Unused here; layout shared with DecodeColorCS.
 	float MaxRatio;            // Unused here; layout shared with DecodeColorCS.
 	uint RawModelOutput;       // Unused here; layout shared with DecodeColorCS.
+	float HighlightWhite;      // Display gamma: display peak for the HDR highlight shoulder (NeuralHighlightRolloff); 0 = none.
+	uint3 Reserved;
 };
 
 Texture2D<float4> SourceColor : register(t0);
@@ -80,6 +82,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	// are uniform, so the texture centre stands for the whole target; an unbound
 	// input reads zero and drops out of the transform.
 	NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
-		VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0]);
+		VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite);
 	DestinationColor[dispatchThreadID.xy] = EncodeNeuralColor(float4(color, alpha), ColorDomain, display);
 }

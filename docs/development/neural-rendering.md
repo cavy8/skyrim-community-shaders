@@ -250,8 +250,9 @@ that used to be `CategoryPadding`, so the constant-buffer layout is unchanged). 
 Separate Upscaling pass `kSceneLinear` and get exactly the behaviour described below. Finished
 Image runs after the tonemap, where `kFRAMEBUFFER` holds a gamma-2.2 display-referred frame, so
 it passes `kDisplayGamma` instead: the encode decodes with the 2.2 curve HDR Display uses
-(`Color::GammaToLinearSafe`), scales down only pixels whose linear peak exceeds one (a single
-hue-preserving factor, so an SDR frame reaches the model unchanged), and re-encodes with the same
+(`Color::GammaToLinearSafe`), brings only over-range pixels back into 0..1 (a single
+hue-preserving factor, so an SDR frame reaches the model unchanged; on an HDR target a soft
+shoulder, see *HDR highlight roll-off* below), and re-encodes with the same
 curve; the resolve decodes original, proxy and model with that curve, applies the edit in linear
 light and re-encodes. Treating the finished frame as scene-linear - what an earlier version did -
 Reinhard-compressed and re-encoded an already-encoded image, handing the model a washed-out,
@@ -297,6 +298,39 @@ near-black pixels, where normalized colour is numerically ambiguous, and is
 gated by `Transfer Strength` the same way the luminance edit is. HDR headroom
 and alpha remain renderer-owned. No temporal accumulator or midpoint blend is
 involved; every frame is independently re-anchored.
+
+### HDR highlight roll-off (Finished Image)
+
+On HDR Display's float16 redirect a gamma-encoded finished frame carries
+highlights above one: the redirect's 1.0 is paper white, and `HDROutputCS`
+PQ-encodes it against `hdrPaperWhite`, so the display shows values up to
+`hdrPeakNits / hdrPaperWhite` (about 3.9 at the 800/203 defaults) and clips
+beyond. The model was trained on SDR frames and needs 0..1. The original encode
+scaled any pixel whose linear peak exceeded one down to exactly one, which kept
+hue but flattened every highlight of a given hue to the same value - a sunlit
+cloud, a specular glint and a torch flame all read as the same white, so the model
+had no highlight structure to work with.
+
+`EvaluateFinishedImage` now passes that display peak as `Options::highlightWhite`
+(-> `TransferParams.HighlightWhite` -> `NeuralDisplayTransform::highlightWhite`)
+whenever the display-gamma domain runs on the redirect, and `EncodeNeuralProxy`
+applies `NeuralHighlightRolloff` to the pixel's peak instead: the identity below
+`kNeuralHighlightKnee` (0.8), then an extended-Reinhard shoulder with unit slope
+at the knee that reaches exactly one at the display peak and clamps beyond it.
+It is strictly increasing up to the peak (1.0 -> 0.90, 2.0 -> 0.98 at the
+defaults), so highlights that differ on screen still differ to the model. The
+factor is still one scalar per pixel, so hue is preserved. This is the "hybrid"
+reversible proxy of RenoDX's DLSS 5 add-on / OptiScaler's DLSSNR fork (identity
+midtones, unclipped highlights), bounded by the real display peak.
+
+The resolve is unchanged: the luminance ratio and chroma are measured between
+model and proxy in that rolled-off space and applied to the untouched original,
+and `NeuralStaleEditWeight` encodes the fresh frame through the same transform.
+Above the knee a proxy-space ratio therefore corresponds to a somewhat larger
+linear change than it would below it; inverting the shoulder instead would
+reintroduce the unbounded slope near white that *Colour domain* above rules out.
+SDR targets (`highlightWhite` zero), a display peak at or below paper white, and
+every scene-linear placement keep the previous encode bit-for-bit.
 
 ### Display-matched proxy
 
