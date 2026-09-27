@@ -940,9 +940,9 @@ void ThemeManager::CreateDefaultThemeFiles()
 
 		file << R"({
 	"DisplayName": "Default Theme",
-	"Description": "Default Cav's Unity Shaders theme",
+	"Description": "Default Bottled Shaders theme",
 	"Version": "1.0",
-	"Author": "Cav's Unity Shaders",
+	"Author": "Bottled Shaders",
 	"Theme": {
 		"UseSimplePalette": true,
 		"Palette": {

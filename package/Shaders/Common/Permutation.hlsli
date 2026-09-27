@@ -90,9 +90,6 @@ namespace Permutation
 		// actor, whatever shader type it was authored with; see
 		// NeuralRenderingCategories::Hair.
 		static const uint IsHair = (1u << 30);
-		// Set on tree trunk/leaf geometry that should sample per-mesh wind-bend
-		// sensitivities from the PerShader cbuffer below; see Wind::OnTreeBendRenderPassBegin.
-		static const uint TreeBend = (1u << 29);
 	}
 
 	namespace ExtraFeatureFlags
@@ -115,41 +112,6 @@ namespace Permutation
 		uint ExtraFeatureDescriptor;
 
 		float EffectRadius;
-
-		// Per-mesh tree wind-bend sensitivities; see State::PermutationCB.
-		float TreeBendModelSensitivity;
-		float TreeLeafModelSensitivity;
-		float TreeWindUpperBendRange;
-		float TreeWindMaximumDisplacementPercent;
-
-		float TreeWindBoundsBase;
-		float TreeWindBoundsHeight;
-		float TreeWindTrunkGustInfluence;
-		float TreeLeafGustInfluence;
-
-		float TreeTransientWindInfluence;
-		float TreeLeafTransientWindInfluence;
-		float TreeLeafTransientFlutterMaximum;
-		float TreeTransientMaximumBendMultiplier;
-
-		float4 TreeWindProbeBase;
-		float4 TreeWindProbeTop;
-
-		// Whole-frame wind/grass permutation defaults; see State::PermutationCB.
-		float WindIntensityOverride;
-		uint OverrideWindIntensity;
-		uint EnableGrassWindSpringBend;
-		float pad1;
-
-		float TrunkWindBendSensitivity;
-		float TreeLeafBaseWindFlutterGain;
-		uint EnableAmbientGrassWind;
-		float GrassWindBendProfile;
-
-		float GrassWindFlutterStrength;
-		float GrassWindFlutterFrequency;
-		float GrassWindSensitivity;
-		float GrassWindCompressionToBend;
 	};
 
 }

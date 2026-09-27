@@ -11,7 +11,7 @@ public:
 	virtual inline std::string_view GetShaderDefineName() override { return "GRASS_LIGHTING"; }
 	/** @brief Returns true only for Grass shader type. */
 	virtual bool HasShaderDefine(RE::BSShader::Type shaderType) override { return shaderType == RE::BSShader::Type::Grass; };
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kGrass; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kGrassAndFoliage; }
 
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{

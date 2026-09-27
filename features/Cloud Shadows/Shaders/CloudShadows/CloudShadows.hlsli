@@ -6,8 +6,9 @@
 namespace CloudShadows
 {
 	TextureCube<float> CloudShadowsTexture : register(t25);
-	// Cloud Relight seam: occlusion of the cloud decks drawn so far (see CloudShadows::ModifySky).
+#if defined(CLOUDS)
 	TextureCube<float> CloudSelfShadowTexture : register(t26);
+#endif
 
 	const static float CloudHeight = (2e3f / GAME_UNIT_TO_M);
 	const static float PlanetRadius = (6371e3f / GAME_UNIT_TO_M);

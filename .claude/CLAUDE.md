@@ -437,11 +437,11 @@ Unreleased = True
 ## Maintenance Baseline and Provenance (Personal branch)
 
 Bottle-Compendium (InTheBottle/Bottled-Shaders), pinned in `docs/development/upstreams.yaml`,
-is the primary maintenance baseline. This is not authorship: most Personal functionality
-was imported from other Community Shaders forks, and features may be composites of
-Bottle/Open/Jiayev/mainline code. Known Personal-original work: Neural Rendering, the
-dialogue DOF menu gate in `DoF::GetInDialogue`, and the other components marked
-`personal_original: true` in `feature-provenance.yaml`. See `docs/development/maintainability.md`.
+is the primary maintenance baseline. Since the 2026-09-26 simplification, Personal is Bottle
+plus exactly: the Neural Rendering feature (and its seams/hotkeys), the Screenshot SDR fix, the
+"Show Background Compile Overlay" toggle, `BuildPersonal.bat`, and its own docs/tooling.
+Everything else that used to differ is listed in `docs/development/removed-features.md`.
+See `docs/development/maintainability.md`.
 
 Before modifying a shared feature:
 
@@ -450,9 +450,8 @@ Before modifying a shared feature:
 3. preserve every documented component, seam and `shared_integrations` hunk;
 4. never infer provenance from repository path, commit author, or a generic "feat:" subject;
 5. Upscaling must stay Bottle + the documented NR seam only;
-6. prefer Bottle: do not keep mainline or Open changes that no port needs, and record every new
-   deviation in `maintenance-policy.yaml` in the same change (`bottle_sync.py` fails on any
-   unclaimed file or unattributed shared-file hunk).
+6. prefer Bottle: record every new deviation in `maintenance-policy.yaml` in the same change
+   (`bottle_sync.py` fails on any unclaimed file or unattributed shared-file hunk).
 
 ## AI Assistant Guidelines
 

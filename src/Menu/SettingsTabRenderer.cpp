@@ -525,6 +525,12 @@ void SettingsTabRenderer::RenderKeybindingsTab(
 			"Change##Effects11Toggle");
 
 		Util::InputComboWidget(
+			T("menu.settings.effects11_editor_key", "Effects 11 Editor Key:"),
+			settings.Effects11EditorKey,
+			state.settingEffects11EditorKey,
+			"Change##Effects11Editor");
+
+		Util::InputComboWidget(
 			T("menu.settings.neural_rendering_toggle_key", "Neural Rendering Toggle Key:"),
 			settings.NeuralRenderingToggleKey,
 			state.settingNeuralRenderingToggleKey,
@@ -609,7 +615,7 @@ void SettingsTabRenderer::RenderBehaviorTab()
 				ImGui::EndCombo();
 			}
 			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text("%s", T("menu.settings.language_tooltip", "Select the display language for the Cav's Unity Shaders interface."));
+				ImGui::Text("%s", T("menu.settings.language_tooltip", "Select the display language for the Bottled Shaders interface."));
 			}
 		}
 

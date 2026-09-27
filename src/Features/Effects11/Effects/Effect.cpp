@@ -24,6 +24,7 @@ bool Effect::Load()
 
 	if (!std::filesystem::exists(iniPath)) {
 		logger::info("[EFFECTS11] Could not find ini file '{}' for effect '{}', using defaults", iniPath.string(), GetName());
+		Util::SettingsPatches::Apply(*this);
 		CaptureBaseValues();
 		return true;
 	}
@@ -122,6 +123,49 @@ void Effect::CaptureBaseValue(UIVariable& uiVar)
 	if (uiVar.type == UIVariableType::Float)
 		uiVar.baseFloatValue = uiVar.floatValue;
 	std::copy(std::begin(uiVar.vectorValue), std::end(uiVar.vectorValue), std::begin(uiVar.baseVectorValue));
+}
+
+void Effect::CaptureDefaultValue(UIVariable& uiVar)
+{
+	// #define-backed values are read from the preset ini while preprocessing, so they have no shader default
+	if (uiVar.isLabel || uiVar.isDefine || !uiVar.effectVariable)
+		return;
+	switch (uiVar.type) {
+	case UIVariableType::Float:
+		uiVar.defaultFloatValue = uiVar.floatValue;
+		break;
+	case UIVariableType::Int:
+		uiVar.defaultIntValue = uiVar.intValue;
+		break;
+	case UIVariableType::Bool:
+		uiVar.defaultBoolValue = uiVar.boolValue;
+		break;
+	default:
+		std::copy(std::begin(uiVar.vectorValue), std::end(uiVar.vectorValue), std::begin(uiVar.defaultVectorValue));
+		break;
+	}
+	uiVar.hasDefaultValue = true;
+}
+
+bool Effect::RestoreDefaultValue(UIVariable& uiVar)
+{
+	if (!uiVar.hasDefaultValue)
+		return false;
+	switch (uiVar.type) {
+	case UIVariableType::Float:
+		uiVar.floatValue = uiVar.defaultFloatValue;
+		break;
+	case UIVariableType::Int:
+		uiVar.intValue = uiVar.defaultIntValue;
+		break;
+	case UIVariableType::Bool:
+		uiVar.boolValue = uiVar.defaultBoolValue;
+		break;
+	default:
+		std::copy(std::begin(uiVar.defaultVectorValue), std::end(uiVar.defaultVectorValue), std::begin(uiVar.vectorValue));
+		break;
+	}
+	return true;
 }
 
 void Effect::CaptureBaseValues()
@@ -445,6 +489,7 @@ Effect::TechniqueSequenceResult Effect::ExecuteTechniqueSequence(const std::stri
 
 	uint32_t swapCounter = 0;
 	uint32_t passOffset = 0;
+	bool wroteChain = false;
 	bool targetInOutput = false;
 	bool targetInTemp = false;
 
@@ -480,17 +525,20 @@ Effect::TechniqueSequenceResult Effect::ExecuteTechniqueSequence(const std::stri
 			swapCounter++;
 		}
 
-		targetInOutput = (outputRTV == a_output.rtv.get());
-		targetInTemp = (outputRTV == a_temp.rtv.get());
-
 		if (sourceTexture && sourceTexture->IsValid())
 			sourceTexture->AsShaderResource()->SetResource(inputSRV);
 
 		RenderPasses(techniqueInfo.technique.get(), outputRTV, passOffset);
 		passOffset += techniqueInfo.passCount;
+
+		if (outputRTV == a_output.rtv.get() || outputRTV == a_temp.rtv.get()) {
+			wroteChain = true;
+			targetInOutput = (outputRTV == a_output.rtv.get());
+			targetInTemp = !targetInOutput;
+		}
 	}
 
-	return { true, targetInOutput, targetInTemp };
+	return { wroteChain, targetInOutput, targetInTemp };
 }
 
 void Effect::ExecuteTechnique(const std::string& techniqueName, TextureManager::Texture& output)
@@ -732,6 +780,7 @@ void Effect::LoadUIVariables()
 		UIVariable uiVar = {};
 		if (ENBExtender::CreateUIVariable(uiVar, variable, varDesc, typeDesc, groupStack, *this)) {
 			LoadUIVariableValue(uiVar);
+			CaptureDefaultValue(uiVar);
 			uiVariables.push_back(std::move(uiVar));
 		}
 	}

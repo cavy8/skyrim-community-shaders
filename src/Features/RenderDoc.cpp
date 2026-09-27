@@ -159,7 +159,7 @@ void RenderDoc::DrawSettings()
 	}
 
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("enable_capture_tooltip"), "Enable RenderDoc frame capture for providing debug captures to the Cav's Unity Shaders team."));
+		ImGui::Text("%s", T(TKEY("enable_capture_tooltip"), "Enable RenderDoc frame capture for providing debug captures to the Bottled Shaders team."));
 		ImGui::Text("%s", T(TKEY("enable_capture_tooltip2"), "Enabling capture will force-enable frame annotations for easier debugging and will restore the previous setting when disabled."));
 	}
 

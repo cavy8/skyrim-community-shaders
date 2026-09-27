@@ -177,6 +177,7 @@ public:
 	bool settingCSEditorToggleKey = false;  // CS Editor toggle key
 	bool settingScreenshotKey = false;           // Screenshot capture key
 	bool settingEffects11ToggleKey = false;      // Effects 11 toggle key
+	bool settingEffects11EditorKey = false;      // Effects 11 editor key
 	bool settingNeuralRenderingToggleKey = false;     // DLSS Neural Rendering toggle key
 	bool settingNeuralRenderingCompareKey = false;    // DLSS Neural Rendering comparison screenshot key
 	bool settingNeuralRenderingScaleUpKey = false;    // DLSS Neural Rendering scale up key
@@ -421,6 +422,7 @@ public:
 		std::vector<InputCombo> CSEditorToggleKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_END) };  // CS Editor toggle key
 		std::vector<InputCombo> ScreenshotKey = { InputCombo::Keyboard(VK_SNAPSHOT) };                                    // Screenshot capture key
 		std::vector<InputCombo> Effects11ToggleKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_MULTIPLY) };  // Effects 11 toggle key
+		std::vector<InputCombo> Effects11EditorKey = { InputCombo::Keyboard(VK_CONTROL), InputCombo::Keyboard(VK_END) };  // Effects 11 editor key
 		std::vector<InputCombo> NeuralRenderingToggleKey = { InputCombo::Keyboard(VK_F6) };  // DLSS Neural Rendering toggle key
 		std::vector<InputCombo> NeuralRenderingCompareKey = {};                             // DLSS Neural Rendering A/B comparison screenshot key (unbound by default)
 		std::vector<InputCombo> NeuralRenderingScaleUpKey = {};                             // DLSS Neural Rendering scale up key (unbound by default)
@@ -452,7 +454,6 @@ public:
 
 	/** @brief Queues a feature to be selected in the left panel on the next frame */
 	void SelectFeatureMenu(const std::string& featureName);
-	static std::unordered_map<std::string, int> categoryCounts;  // Number of features in each feature category
 
 	bool overlayVisible = false;
 
@@ -530,7 +531,6 @@ private:
 	void DrawGeneralSettings();
 	void DrawAdvancedSettings();
 	void DrawDisableAtBootSettings();
-	void BuildCategoryCounts();
 
 	void addToEventQueue(KeyEvent e);
 	void ProcessInputEventQueue();

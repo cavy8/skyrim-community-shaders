@@ -14,6 +14,7 @@ struct UnifiedWater : OverlayFeature
 	virtual inline std::string GetShortName() override { return "UnifiedWater"; }
 	virtual inline std::string_view GetShaderDefineName() override { return "UNIFIED_WATER"; }
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kWater; }
+	virtual bool HasSettings() const override { return false; }
 	/** @brief Returns a summary description and list of key features for the UI. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
@@ -112,9 +113,6 @@ struct UnifiedWater : OverlayFeature
 	virtual void DataLoaded() override;
 
 	virtual bool IsCore() const override { return true; }
-
-	/** @brief Overrides the CORE+Beta default so Unified Water starts enabled at boot. */
-	virtual bool IsDisabledByDefault() const override { return false; }
 
 	/** @brief Installs engine hooks for water mesh replacement and worldspace handling. */
 	virtual void PostPostLoad() override;

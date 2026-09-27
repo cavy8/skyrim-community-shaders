@@ -171,17 +171,20 @@ cbuffer AlphaTestRefCB : register(b11)
 #		include "CloudShadows/CloudShadows.hlsli"
 #	endif
 
-#	if defined(EFFECTS11) && defined(CLOUDS)
+#	if defined(EFFECTS11) && (defined(HORIZFADE) || (defined(TEX) && !defined(DITHER) && !defined(CLOUDS) && !defined(MOONMASK)))
+#		define EFFECTS11_CELESTIAL_EXTINCTION
+#	endif
+
+#	if defined(EFFECTS11) && defined(DITHER) && !defined(TEX)
+#		define EFFECTS11_SKY_GRADIENT
+#	endif
+
+#	if defined(EFFECTS11) && (defined(CLOUDS) || defined(EFFECTS11_CELESTIAL_EXTINCTION) || defined(EFFECTS11_SKY_GRADIENT))
 #		include "Effects11/SkyScattering.hlsli"
 #	endif
 
 #	if defined(PROCEDURAL_SUN)
 #		include "ProceduralSun/ProceduralSun.hlsli"
-#	endif
-
-#	if defined(CLOUD_RELIGHT) && defined(CLOUD_SHADOWS) && defined(TEX) && defined(CLOUDS)
-#		define CR_CLOUDS
-#		include "CloudRelight/CloudRelight.hlsli"
 #	endif
 
 #	if defined(EXP_HEIGHT_FOG)
@@ -215,12 +218,6 @@ PS_OUTPUT main(PS_INPUT input)
 	blendColor.xyz = Color::Sky(blendColor.xyz);
 	baseColor.xyz = Color::Sky(baseColor.xyz);
 	baseColor = PParams.xxxx * (-baseColor + blendColor) + baseColor;
-#		endif
-#		if defined(CR_CLOUDS)
-	if (SharedData::cloudRelightSettings.enabled) {
-		float3 viewDir = normalize(input.WorldPosition.xyz);
-		baseColor.rgb = CloudRelight::RelightCloud(baseColor, viewDir, SampBaseSampler);
-	}
 #		endif
 
 #		if defined(PROCEDURAL_SUN) && defined(TEX) && defined(DEFERRED) && !defined(DITHER) && !defined(CLOUDS) && !defined(MOONMASK)
@@ -267,6 +264,14 @@ PS_OUTPUT main(PS_INPUT input)
 				SharedData::proceduralSunSettings.haloIntensity,
 				proceduralSunColor,
 				sunCoverage);
+
+#			if defined(CLOUD_SHADOWS)
+			float cloudExtinction = SharedData::proceduralSunSettings.cloudExtinction * sunCoverage;
+			[branch] if (cloudExtinction > 0.0) {
+				float capturedCloudOcclusion = CloudShadows::CloudShadowsTexture.SampleLevel(SampBaseSampler, viewDirection, 0).x;
+				proceduralSunColor *= ProceduralSun::GetCloudTransmission(capturedCloudOcclusion, cloudExtinction);
+			}
+#			endif
 		}
 
 		baseColor.xyz = proceduralSunColor;
@@ -306,6 +311,8 @@ PS_OUTPUT main(PS_INPUT input)
 		float gradientPosition = pow(1.0 - saturate(viewDirection.z), SharedData::enbSettings.ProceduralGradientWeightCurve);
 		skyGradientColor = lerp(input.SkyBlendColor2.xyz, input.SkyBlendColor0.xyz, gradientPosition);
 	}
+	[branch] if (SharedData::enbSettings.EnableCloudsScattering)
+		skyGradientColor = SkyScattering::ApplySkyScattering(skyGradientColor, input.SkyBlendColor2.xyz, viewDirection) + SkyScattering::GetMoonGlow(viewDirection);
 #endif
 	psout.Color.xyz = Color::Sky(skyGradientColor) + skyScale;
 
@@ -325,11 +332,6 @@ PS_OUTPUT main(PS_INPUT input)
 	psout.Color.w = input.TexCoord2.x * (baseColor.w * input.Color.w);
 #		else
 
-#		if defined(CLOUDS) && defined(EFFECTS11)
-	if (SharedData::enbSettings.Enable)
-		baseColor.xyz = pow(abs(baseColor.xyz), SharedData::enbSettings.CloudsCurve);
-#		endif
-
 	psout.Color.w = input.Color.w * baseColor.w;
 	psout.Color.xyz = Color::Sky(input.Color.xyz) * baseColor.xyz + skyScale;
 
@@ -339,74 +341,29 @@ PS_OUTPUT main(PS_INPUT input)
 #			endif
 
 #			if defined(CLOUDS) && defined(EFFECTS11)
-	if (SharedData::enbSettings.Enable) {
-		float3 cloudColor = psout.Color.xyz;
+	[branch] if (SharedData::enbSettings.Enable)
+	{
 		float3 viewDirection = normalize(input.WorldPosition.xyz);
+		float cloudTextureAlpha = saturate(baseColor.w);
+		float cloudTextureGray = pow(max(dot(baseColor.xyz, 1.0 / 3.0), 0.0), SharedData::enbSettings.CloudsCurve);
 
-		cloudColor.xyz = lerp(abs(cloudColor.xyz), dot(cloudColor.xyz, 1.0 / 3.0), SharedData::enbSettings.CloudsDesaturation);
+		float3 cloudColor = pow(max(Color::Sky(input.Color.xyz) * baseColor.xyz, 0.0), SharedData::enbSettings.CloudsCurve);
+		cloudColor = lerp(cloudColor, dot(cloudColor, 1.0 / 3.0), SharedData::enbSettings.CloudsDesaturation) * SharedData::enbSettings.CloudsIntensity * SharedData::enbSettings.CloudsColorFilter;
 
-		float cloudLuminance = dot(cloudColor.xyz, 1.0 / 3.0);
-
-		float sunLighting = saturate(dot(viewDirection, SharedData::SunDirection.xyz) * 0.5 + 0.5);
-		float masserLighting = saturate(dot(viewDirection, SharedData::MasserDirection.xyz) * 0.5 + 0.5);
-		float secundaLighting = saturate(dot(viewDirection, SharedData::SecundaDirection.xyz) * 0.5 + 0.5);
-
-		float3 edgeTransmittance = 0.0;
-		if (SharedData::enbSettings.EnableCloudsScattering) {
-			float3 scatteringTransmittance;
-			cloudColor = SkyScattering::RelightCloud(cloudColor, cloudLuminance, saturate(psout.Color.w), viewDirection, input.Position.xy, SampBaseSampler, scatteringTransmittance);
-			if (SharedData::enbSettings.CalculateCloudsEdgeFromScattering)
-				edgeTransmittance = scatteringTransmittance;
-		}
-
-		if (SharedData::enbSettings.CloudsEdgeIntensity > 0.0) {
-			float cloudsEdgeAlpha = saturate(1.0 - baseColor.w);
-
-			float3 sunPhase = pow(sunLighting, 32.0) * SharedData::SunColor.xyz * max(cloudsEdgeAlpha, edgeTransmittance.x);
-			float3 masserPhase = pow(masserLighting, 32.0) * SharedData::MasserColor.xyz * SharedData::enbSettings.CloudsEdgeMoonMultiplier * max(cloudsEdgeAlpha, edgeTransmittance.y);
-			float3 secundaPhase = pow(secundaLighting, 32.0) * SharedData::SecundaColor.xyz * SharedData::enbSettings.CloudsEdgeMoonMultiplier * max(cloudsEdgeAlpha, edgeTransmittance.z);
-
-			float3 cloudsScatter = (sunPhase + masserPhase + secundaPhase) * SharedData::enbSettings.CloudsEdgeIntensity;
-
-			cloudColor += cloudLuminance * cloudsScatter;
-		}
-
-		psout.Color.xyz = cloudColor;
-		psout.Color.w = saturate(psout.Color.w);
+		psout.Color.xyz = SkyScattering::ShadeCloud(cloudColor, cloudTextureAlpha, cloudTextureGray, viewDirection, SampBaseSampler) + skyScale * min(SharedData::enbSettings.CloudsIntensity, 1.0);
+		psout.Color.w = saturate(input.Color.w * baseColor.w * (1.0 + baseColor.w * SharedData::enbSettings.CloudsVertexAlphaBoost));
 	}
 #			endif
+#		endif
 
-#			if defined(CLOUDS) && defined(DEFERRED) && defined(PROCEDURAL_SUN)
-	float cloudExtinction = SharedData::proceduralSunSettings.cloudExtinction * SharedData::proceduralSunSettings.sunVisibility;
-	[branch] if (SharedData::proceduralSunSettings.enabled && cloudExtinction > 0.0 &&
-		(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InWorld)) {
-		float cloudSunCosTheta = dot(normalize(input.WorldPosition.xyz), SharedData::SunDirection.xyz);
-		float influenceCos = ProceduralSun::GetInfluenceCos(
-			SharedData::proceduralSunSettings.sunDiskCos,
-			SharedData::proceduralSunSettings.haloEnabled,
-			SharedData::proceduralSunSettings.sunHaloCos,
-			SharedData::proceduralSunSettings.haloIntensity);
-
-		[branch] if (cloudSunCosTheta > influenceCos) {
-			float sunMask;
-			float sunProfile;
-			ProceduralSun::EvaluateCloudExtinction(
-				cloudSunCosTheta,
-				SharedData::proceduralSunSettings.sunDiskCos,
-				SharedData::proceduralSunSettings.edgeSoftness,
-				SharedData::proceduralSunSettings.diskIntensity,
-				SharedData::proceduralSunSettings.haloEnabled,
-				SharedData::proceduralSunSettings.sunHaloCos,
-				SharedData::proceduralSunSettings.haloIntensity,
-				SharedData::proceduralSunSettings.haloFalloff,
-				sunMask,
-				sunProfile);
-			float sunLuminance = sunProfile * ProceduralSun::GetSunLuminance(SharedData::SunColor);
-			float sunShare = sunLuminance / max(sunLuminance + Color::RGBToLuminance(max(psout.Color.xyz, 0.0)), 1e-5);
-			psout.Color = ProceduralSun::ApplyCloudExtinction(psout.Color, 1.0 + cloudExtinction * sunMask, sunShare);
-		}
+#		if defined(EFFECTS11_CELESTIAL_EXTINCTION)
+	[branch] if (SharedData::enbSettings.Enable && SharedData::enbSettings.EnableCloudsScattering && !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSun))
+	{
+		float3 celestialTransmittance = SkyScattering::GetCelestialTransmittance(normalize(input.WorldPosition.xyz));
+		float transmittancePeak = max(celestialTransmittance.r, max(celestialTransmittance.g, celestialTransmittance.b));
+		psout.Color.xyz *= celestialTransmittance / max(transmittancePeak, 1e-4);
+		psout.Color.w *= transmittancePeak;
 	}
-#			endif
 #		endif
 
 #	else

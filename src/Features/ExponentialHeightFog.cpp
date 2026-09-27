@@ -163,6 +163,12 @@ ExponentialHeightFog::Settings ExponentialHeightFog::GetCommonBufferData() const
 	ClampFollowAndHazeSettings(data);
 	data.vanillaFogDensity = 0.0f;
 
+	if (globals::state->isMapMenuOpen) {
+		data.enabled = 0;
+		data.disableVanillaFog = 0;
+		return data;
+	}
+
 	const auto* sky = globals::game::sky;
 	const bool hasUnboundedFogRange = sky && (sky->fogNear == std::numeric_limits<float>::infinity() || sky->fogFar == std::numeric_limits<float>::infinity());
 	const float fogNear = sky ? std::max(std::isfinite(sky->fogNear) ? sky->fogNear : 0.0f, 0.0f) : 0.0f;
@@ -584,6 +590,9 @@ void ExponentialHeightFog::Prepass()
 		ReleaseVolumetricResources();
 		return;
 	}
+
+	if (globals::state->isMapMenuOpen)
+		return;
 
 	const auto cameraData = Util::GetCameraData();
 	const float volumeStart = settings.useVanillaFogSettings ? 0.0f : std::max(settings.volumetricFogStartDistance, 0.0f);

@@ -231,14 +231,6 @@ void SkySync::OnSkyUpdateColors(RE::Sky* sky)
 	}
 }
 
-std::optional<float3> SkySync::GetCelestialLightWeights() const
-{
-	if (!loaded || !settings.Enabled || !celestialLightingValid)
-		return std::nullopt;
-
-	return shadowFader.lightWeights;
-}
-
 void SkySync::Sky_Update::thunk(RE::Sky* sky)
 {
 	func(sky);
@@ -256,7 +248,6 @@ void SkySync::PreparePendingTransitions()
 
 	if (request.gameLoad) {
 		shadowFader.Reset();
-		celestialLightingValid = false;
 		currentCell = nullptr;
 		currentCellInterior = false;
 		currentCellWorldspace = nullptr;
@@ -269,7 +260,6 @@ void SkySync::PreparePendingTransitions()
 bool SkySync::Update(const RE::Sky* sky)
 {
 	std::fill(std::begin(celestialDirections), std::end(celestialDirections), RE::NiPoint3{});
-	celestialLightingValid = false;
 
 	if (!settings.Enabled) {
 		currentDim = 1.0f;
@@ -385,7 +375,6 @@ bool SkySync::Update(const RE::Sky* sky)
 
 	const bool transitionCompleted = immediateTransitionReady;
 	shadowFader.Update(sky, directions, intensities, settings.ShadowTransitionDuration, fadeAdvance, transitionCompleted || resetTransition);
-	celestialLightingValid = true;
 	immediateTransitionReady = false;
 	return transitionCompleted;
 }
@@ -534,8 +523,6 @@ inline void SkySync::SetSunPosition(const RE::Sun* sun, const RE::NiPoint3& dir,
 
 void SkySync::ShadowFader::Reset()
 {
-	lightWeights = float3{ 1.0f, 0.0f, 0.0f };
-	startLightWeights = lightWeights;
 	target = Caster::Sun;
 	previousTarget = Caster::Sun;
 	fadeTimer = 0.0f;
@@ -585,21 +572,14 @@ void SkySync::ShadowFader::Update(const RE::Sky* sky, RE::NiPoint3 dirs[], float
 		previousTarget = target;
 		target = best;
 		startDir = currentDir;
-		startLightWeights = lightWeights;
 		fadeTimer = 0.0f;
 		transitioning = true;
 	}
 
 	const RE::NiPoint3 targetDir = casterDir(target);
-	const float3 targetLightWeights = {
-		target == Caster::Sun ? 1.0f : 0.0f,
-		target == Caster::Masser ? 1.0f : 0.0f,
-		target == Caster::Secunda ? 1.0f : 0.0f
-	};
 
 	if (!transitioning) {
 		currentDir = targetDir;
-		lightWeights = targetLightWeights;
 		vlIntensityFactor = target == Caster::None ? 0.0f : 1.0f;
 		if (target != Caster::None)
 			immediateTransitionRemaining = 0.0f;
@@ -610,11 +590,6 @@ void SkySync::ShadowFader::Update(const RE::Sky* sky, RE::NiPoint3 dirs[], float
 	const float effectiveFadeAdvance = immediateTransitionRemaining > 0.0f ? fadeDuration : fadeAdvance;
 	fadeTimer = std::min(fadeTimer + effectiveFadeAdvance, fadeDuration);
 	const float t = fadeDuration > 0.0f ? fadeTimer / fadeDuration : 1.0f;
-	lightWeights = float3{
-		std::lerp(startLightWeights.x, targetLightWeights.x, t),
-		std::lerp(startLightWeights.y, targetLightWeights.y, t),
-		std::lerp(startLightWeights.z, targetLightWeights.z, t)
-	};
 
 	currentDir = {
 		std::lerp(startDir.x, targetDir.x, t),

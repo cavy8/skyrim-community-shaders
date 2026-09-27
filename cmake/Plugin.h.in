@@ -20,7 +20,7 @@ namespace Plugin
 	inline constexpr auto NAME = "@PROJECT_NAME@"sv;
 
 	/// Product name shown to users. Branding only; never use it to build a path.
-	inline constexpr auto DISPLAY_NAME = "Cav's Unity Shaders"sv;
+	inline constexpr auto DISPLAY_NAME = "Bottled Shaders"sv;
 
 	/// Full git describe string, e.g. "v1.4.11", "v1.4.11-3-gabcdef1", "v1.4.11-3-gabcdef1-dirty".
 	/// Matches "v{VERSION}" exactly on a clean tagged release build.

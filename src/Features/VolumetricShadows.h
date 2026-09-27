@@ -11,7 +11,8 @@ public:
 	/** @brief Returns the short identifier used for file paths and logging. */
 	virtual inline std::string GetShortName() override { return "VolumetricShadows"; }
 	virtual inline std::string_view GetShaderDefineName() override { return "VOLUMETRIC_SHADOWS"; }
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kShadows; }
+	virtual bool HasSettings() const override { return false; }
 	virtual bool IsCore() const override { return true; }
 	/** @brief Indicates this feature appears in the settings menu. */
 	virtual bool IsInMenu() const override { return true; }

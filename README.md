@@ -1,13 +1,22 @@
-# Cav's Unity Shaders
+[![Latest Release](https://img.shields.io/github/v/release/community-shaders/skyrim-community-shaders)](https://github.com/community-shaders/skyrim-community-shaders/releases)
+[![License](https://img.shields.io/github/license/community-shaders/skyrim-community-shaders)](./LICENSE)
+[![Last Commit](https://img.shields.io/github/last-commit/community-shaders/skyrim-community-shaders)](https://github.com/community-shaders/skyrim-community-shaders/commits)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/community-shaders/skyrim-community-shaders/release-build.yaml?event=release)](https://github.com/community-shaders/skyrim-community-shaders/actions)
+[![Discord](https://img.shields.io/discord/1080142797870485606?label=discord&logo=discord&color=5865F2)](https://discord.com/invite/nkrQybAsyy)
+[![Open Issues](https://img.shields.io/github/issues/community-shaders/skyrim-community-shaders)](https://github.com/community-shaders/skyrim-community-shaders/issues)
+[![Contributors](https://img.shields.io/github/contributors/community-shaders/skyrim-community-shaders)](https://github.com/community-shaders/skyrim-community-shaders/graphs/contributors)
+[![Stars](https://img.shields.io/github/stars/community-shaders/skyrim-community-shaders?style=social)](https://github.com/community-shaders/skyrim-community-shaders/stargazers)
 
-HEAVILY VIBECODED PERSONAL FORK OF COMMUNITY SHADERS WITH EXPERIMENTAL FEATURES: in short, none of this is intended for production or other users, nor is it planned to ever be. It is solely for my own use, made where polish and accuracy aren't necessarily as important as just getting me the basic features I want for my own game.
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/community-shaders/skyrim-community-shaders?utm_source=oss&utm_medium=github&utm_campaign=community-shaders%2Fskyrim-community-shaders&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/doodlum/skyrim-community-shaders)
 
-## Installation
+# Bottled Shaders
 
-Add nvngx_dlssnr.dll to Shaders/Upscaling/Streamline/ - you may want to replace nvngx_dlss.dll with the latest version as well.
+SKSE core plugin for community-driven advanced graphics modifications.
 
-No support will be provided. For questions regarding controls, refer to other DLSS integrations as they're fairly standard (except for those that come from DLSS Cost Scaler).
+[Nexus](https://www.nexusmods.com/skyrimspecialedition/mods/86492)
+[User Wiki](https://modding.wiki/en/skyrim/developers/community-shaders)
 
 ## Requirements
 
@@ -207,13 +216,4 @@ See LICENSE within each directory; if none, it's [Default](#default)
 
 ### Icons
 
--   The Cav's Unity Shaders logo assets are not covered by the GPL-3.0 license.
-
-### Branch-Specific Credits
-
-- [dlssnr-vr fork of Open Shaders](https://github.com/YtzyFvra/skyrim-community-shaders/tree/feature/dlssnr-vr)
-- [OptiScaler DLSS-NR pre-SR multipass fork](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass)
-- [DLSSNR-Cost-Scaler](https://github.com/xenmods/DLSSNR-Cost-Scaler)
-- [Open Shaders](https://github.com/alandtse/open-shaders)
-- [Bottled Shaders](https://github.com/InTheBottle/skyrim-community-shaders)
-- [jiayev's compendium-clean fork](https://github.com/jiayev/skyrim-community-shaders/tree/compendium-clean)
+-   [Bottled Shaders Logo](package/Interface/CommunityShaders/Icons/Community%20Shaders%20Logo/) is not covered by the GPL-3.0 license. It is provided solely for personal use (e.g., building from source) and may only be used in unmodified form. There is no license for any other purpose or to distribute the logo. No trademark license is granted for the logo. Any use not expressly permitted is prohibited without the express written consent of the Bottled Shaders team.

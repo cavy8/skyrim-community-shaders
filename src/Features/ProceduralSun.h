@@ -48,7 +48,7 @@ struct ProceduralSun : Feature
 	/** @brief Returns the shader configuration name. */
 	virtual inline std::string GetShortName() override { return "ProceduralSun"; }
 	/** @brief Returns the menu category. */
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kSky; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kSkyAndWeather; }
 	/** @brief Returns the shader permutation define. */
 	virtual inline std::string_view GetShaderDefineName() override { return "PROCEDURAL_SUN"; }
 	/** @brief Enables the feature define for sky shaders. */

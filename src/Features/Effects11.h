@@ -5,13 +5,16 @@
 #include <memory>
 #include <winrt/base.h>
 
+#pragma warning(push)
+#pragma warning(disable: 4324)
+
 struct Effects11 : Feature
 {
 public:
 	virtual inline std::string GetName() override { return "Effects11"; }
 	virtual inline std::string GetShortName() override { return "Effects11"; }
 	virtual inline std::string GetDisplayName() override { return "Effects 11"; }
-	virtual std::string_view GetCategory() const override { return "Post-Processing"; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kPostProcessing; }
 	virtual inline std::string_view GetShaderDefineName() override { return "EFFECTS11"; }
 	virtual inline bool HasShaderDefine(RE::BSShader::Type) override { return true; }
 
@@ -26,12 +29,6 @@ public:
 				T("feature.effects11.key_feature_5", "Dynamic UI variable system") }
 		};
 	}
-
-	struct Settings
-	{
-		std::string presetLocation;  // relative to game root (see PresetManager::ToRelativeKey); "" = auto-resolve
-	};
-	Settings settings;
 
 	struct alignas(16) PerFrame
 	{
@@ -85,31 +82,59 @@ public:
 
 		uint EnableCloudsScattering;
 		float SkyScatteringIntensity;
-		float SkyScatteringColorFromSun;
 		float SkyScatteringShadowAmount;
+		float SkyScatteringAmount;
 
 		float3 SkyScatteringColor;
-		float SkyScatteringExtinction;
+		float SkyScatteringDustDarkening;
 
-		float SkyScatteringScaleHeight;
-		float SkyScatteringSunGlowIntensity;
-		float SkyScatteringSunGlowAnisotropy;
+		float3 SkyScatteringDustTint;
+		float SkyScatteringDustVolume;
+
+		float3 SkyScatteringSunDirection;
+		float SkyScatteringSunVisibility;
+
+		float SkyScatteringHorizonRange;
+		float SkyScatteringAtmosphereThickness;
 		float SkyScatteringAirGlowIntensity;
+		float SkyScatteringAirGlowRange;
 
-		float SkyScatteringAirGlowAnisotropy;
+		float SkyScatteringSunGlowIntensity;
+		float SkyScatteringSunGlowRange;
 		float SkyScatteringMoonGlowAmount;
-		float CloudsLightingSunMultiplier;
-		float CloudsLightingSunMinIntensity;
+		float SkyScatteringMoonGlowRange;
 
+		float SkyScatteringSunIntensity;
+		float CloudsLightingSunIntensity;
 		float CloudsLightingMoonIntensity;
 		uint EnableCloudsLightingFromMoon;
+
 		uint CalculateCloudsEdgeFromScattering;
+		float CloudsLightingDesaturation;
+		float CloudsLightingForwardScattering;
 		float CloudsLightingDensity;
+
+		float3 CloudsColorFilter;
+		float CloudsIntensity;
+
+		float CloudsVertexAlphaBoost;
+		float CloudsEdgeClamp;
+		float CloudsEdgeFadePower;
+		float SunBillboardTan;
+
+		float MasserBillboardTan;
+		float SecundaBillboardTan;
+		float SkyScatteringPad0;
+		float SkyScatteringPad1;
 	};
 	static_assert(sizeof(PerFrame) % 16 == 0);
 	static_assert(offsetof(PerFrame, EnableCloudsScattering) % 16 == 0);
 	static_assert(offsetof(PerFrame, SkyScatteringColor) % 16 == 0);
-	static_assert(offsetof(PerFrame, CloudsLightingMoonIntensity) % 16 == 0);
+	static_assert(offsetof(PerFrame, SkyScatteringDustTint) % 16 == 0);
+	static_assert(offsetof(PerFrame, SkyScatteringSunDirection) % 16 == 0);
+	static_assert(offsetof(PerFrame, SkyScatteringSunIntensity) % 16 == 0);
+	static_assert(offsetof(PerFrame, CloudsColorFilter) % 16 == 0);
+	static_assert(offsetof(PerFrame, MasserBillboardTan) % 16 == 0);
 
 	bool enableEffect = false;
 
@@ -123,9 +148,10 @@ public:
 	std::unique_ptr<Texture2D> vlTexA;
 	std::unique_ptr<Texture2D> vlTexB;
 	std::unique_ptr<Texture2D> vlDepthHalf;
-	std::unique_ptr<Texture2D> skyTexA;
-	std::unique_ptr<Texture2D> skyTexB;
 	std::unique_ptr<ConstantBuffer> vlBlurCB;
+
+	float3 scatteringSunColor = { 1.0f, 1.0f, 1.0f };
+	float3 scatteringSunDirection = { 0.0f, 0.0f, 1.0f };
 
 	winrt::com_ptr<ID3D11Texture2D> raindropTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> raindropSRV;
@@ -133,23 +159,12 @@ public:
 	void LoadRaindropTexture();
 
 	PerFrame GetCommonBufferData();
-
-	virtual void LoadSettings(json& o_json) override;
-	virtual void SaveSettings(json& o_json) override;
+	void UpdateSkyScattering(PerFrame& a_data);
 
 	virtual void DrawSettings() override;
 	virtual void SetupResources() override;
 	virtual void Prepass() override;
 	virtual void ClearShaderCache() override;
-
-	/** @brief Resolves settings.presetLocation against PresetManager's freshly rescanned
-	 *  locations and calls SetActiveLocation. Must run after both Rescan() and
-	 *  LoadSettings() -- see Initialize(). */
-	void ResolveActivePresetLocation();
-
-	/** @brief One-time preset-location discovery + selection resolution; called from
-	 *  SetupResources() after settings have been loaded and before EffectManager::Initialize(). */
-	void Initialize();
 
 	/** @brief Flips the "UseEffect" GLOBAL setting; bound to the Effects 11 toggle hotkey. */
 	void ToggleEnabled();
@@ -193,4 +208,20 @@ public:
 
 private:
 	uint tonemapReplacedFrame = UINT32_MAX;  ///< frameCount when the effect chain last wrote the tonemap output
+
+	// The feature buffer is rebuilt several times per frame, so the setting lookups behind
+	// GetCommonBufferData are resolved once per frame and replayed from here.
+	PerFrame perFrameCache{};
+	uint perFrameCacheFrame = UINT32_MAX;
+
+	uint32_t rainEnabledSettingID = UINT32_MAX;  ///< RAIN:Enable, resolved on first use
+
+	struct PointLightingParams
+	{
+		float curve = 1.0f;
+		float desaturation = 0.0f;
+		float intensity = 1.0f;
+	} pointLighting;
 };
+
+#pragma warning(pop)

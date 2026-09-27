@@ -9,6 +9,7 @@
 
 -   **[Neural Rendering](./neural-rendering.md)** - DLSS NGX feature 18: source layout, placement modes, colour domain
 -   **[Maintainability Model](./maintainability.md)** - Bottle as the maintenance baseline, provenance vs policy, and the `upstreams.yaml` / `feature-provenance.yaml` / `maintenance-policy.yaml` records
+-   **[Removed Features](./removed-features.md)** - What the 2026-09-26 simplification removed, and where to restore it from
 -   **[Upstream Port Tracking (archived)](./history/upstream-port-tracking-2026-09.md)** - Historical port investigations; not authoritative
 
 ## Quick Links

@@ -28,15 +28,23 @@
 
 namespace
 {
-	// Core built-in menu names that always appear first in the menu list
-	// These are canonical identifiers used for logic — NOT translated
-	constexpr std::array<const char*, 2> CORE_MENU_NAMES = {
-		"General", "Advanced"
-	};
+	constexpr size_t CORE_MENU_COUNT = 2;
 
 	bool IsCoreMenu(const std::string& menuName)
 	{
-		return std::find(CORE_MENU_NAMES.begin(), CORE_MENU_NAMES.end(), menuName) != CORE_MENU_NAMES.end();
+		return menuName == T("menu.features.general", "General") || menuName == T("menu.features.advanced", "Advanced");
+	}
+
+	constexpr std::string_view kNoSettingsSectionKey = "No Settings";
+
+	void ExpandSectionOf(const std::string& shortName, std::map<std::string, bool>& categoryExpansionStates)
+	{
+		for (Feature* feat : Feature::GetFeatureList()) {
+			if (feat->GetShortName() == shortName) {
+				categoryExpansionStates[std::string(feat->HasSettings() ? feat->GetCategory() : kNoSettingsSectionKey)] = true;
+				return;
+			}
+		}
 	}
 
 	// Color for the [ALPHA]/[BETA] stage marker. Alpha (less stable) reads as an error,
@@ -121,34 +129,6 @@ namespace
 	bool BeginTabItemWithFont(const char* label, Menu::FontRole role, ImGuiTabItemFlags flags = ImGuiTabItemFlags_None)
 	{
 		return MenuFonts::BeginTabItemWithFont(label, role, flags);
-	}
-
-	std::string TranslateFeatureCategory(std::string_view category)
-	{
-		if (category == FeatureCategories::kCharacters)
-			return T("feature.category.characters", "Characters");
-		if (category == FeatureCategories::kDisplay)
-			return T("feature.category.display", "Display");
-		if (category == FeatureCategories::kGrass)
-			return T("feature.category.grass", "Grass");
-		if (category == FeatureCategories::kLandscapeAndTextures)
-			return T("feature.category.landscape_and_textures", "Landscape & Textures");
-		if (category == FeatureCategories::kLighting)
-			return T("feature.category.lighting", "Lighting");
-		if (category == FeatureCategories::kMaterials)
-			return T("feature.category.materials", "Materials");
-		if (category == FeatureCategories::kPostProcessing)
-			return T("feature.category.post_processing", "Post-Processing");
-		if (category == FeatureCategories::kOther)
-			return T("feature.category.other", "Other");
-		if (category == FeatureCategories::kSky)
-			return T("feature.category.sky", "Sky");
-		if (category == FeatureCategories::kUtility)
-			return T("feature.category.utility", "Utility");
-		if (category == FeatureCategories::kWater)
-			return T("feature.category.water", "Water");
-
-		return std::string(category);
 	}
 
 	/**
@@ -324,6 +304,9 @@ void FeatureListRenderer::RenderFeatureList(
 {
 	ImGui::BeginChild("Menus Table", ImVec2(0, 0));
 
+	if (!pendingFeatureSelection.empty())
+		ExpandSectionOf(pendingFeatureSelection, categoryExpansionStates);
+
 	auto menuList = BuildMenuList(featureSearch, categoryExpansionStates, drawGeneralSettings, drawAdvancedSettings);
 
 	ResolveSelectionFromKey(menuList, selectedMenu);
@@ -382,58 +365,38 @@ std::vector<FeatureListRenderer::MenuFuncInfo> FeatureListRenderer::BuildMenuLis
 
 	// Group features by category. Utility features are deliberately absent: they are
 	// rendered as sub-tabs of the Advanced page instead of as their own list category.
-	std::map<std::string, std::vector<Feature*>> categorizedFeatures;
+	std::map<std::string, std::vector<Feature*>, std::less<>> categorizedFeatures;
+	std::vector<Feature*> settingsFreeFeatures;
 	for (Feature* feat : sortedFeatureList) {
-		if (feat->IsInMenu() && feat->loaded && feat->GetCategory() != FeatureCategories::kUtility) {
-			std::string category(feat->GetCategory());
-			categorizedFeatures[category].push_back(feat);
+		if (!feat->IsInMenu() || !feat->loaded || feat->GetCategory() == FeatureCategories::kUtility)
+			continue;
+		if (feat->HasSettings())
+			categorizedFeatures[std::string(feat->GetCategory())].push_back(feat);
+		else
+			settingsFreeFeatures.push_back(feat);
+	}
+
+	const bool searching = !featureSearch.empty();
+	auto appendSection = [&](const std::string& key, std::string label, const std::vector<Feature*>& features, bool expandedByDefault) {
+		if (features.empty())
+			return;
+		const bool expanded = searching || categoryExpansionStates.try_emplace(key, expandedByDefault).first->second;
+		menuList.push_back(CategoryHeader{ key, std::move(label), static_cast<int>(features.size()), expanded });
+		if (expanded)
+			std::ranges::copy(features, std::back_inserter(menuList));
+	};
+
+	for (const auto category : FeatureCategories::kOrdered) {
+		if (auto it = categorizedFeatures.find(category); it != categorizedFeatures.end()) {
+			appendSection(it->first, Feature::TranslateCategory(category), it->second, true);
+			categorizedFeatures.erase(it);
 		}
 	}
 
-	// Sort features within each category
-	for (auto& [category, features] : categorizedFeatures) {
-		std::ranges::sort(features, [](Feature* a, Feature* b) {
-			return a->GetDisplayName() < b->GetDisplayName();
-		});
-	}
+	for (const auto& [category, features] : categorizedFeatures)
+		appendSection(category, Feature::TranslateCategory(category), features, true);
 
-	// Define category order
-	std::vector<std::string> categoryOrder = { "Display", "Characters", "Grass", "Lighting", "Materials", "Post-Processing", "Sky", "Landscape & Textures", "Water", "Other" };
-	// Add categorized features to menu with collapsible headers
-	for (const std::string& category : categoryOrder) {
-		if (categorizedFeatures.find(category) != categorizedFeatures.end() && !categorizedFeatures[category].empty()) {
-			// Initialize expansion state if not exists
-			if (categoryExpansionStates.find(category) == categoryExpansionStates.end()) {
-				categoryExpansionStates[category] = true;  // Default to expanded
-			}
-
-			// Add category header
-			menuList.push_back(CategoryHeader{ category });
-
-			// Add features only if category is expanded
-			if (categoryExpansionStates[category]) {
-				std::ranges::copy(categorizedFeatures[category], std::back_inserter(menuList));
-			}
-		}
-	}
-
-	// Add any categories not in the predefined order
-	for (const auto& [category, features] : categorizedFeatures) {
-		if (std::find(categoryOrder.begin(), categoryOrder.end(), category) == categoryOrder.end() && !features.empty()) {
-			// Initialize expansion state if not exists
-			if (categoryExpansionStates.find(category) == categoryExpansionStates.end()) {
-				categoryExpansionStates[category] = true;  // Default to expanded
-			}
-
-			// Add category header
-			menuList.push_back(CategoryHeader{ category });
-
-			// Add features only if category is expanded
-			if (categoryExpansionStates[category]) {
-				std::ranges::copy(features, std::back_inserter(menuList));
-			}
-		}
-	}
+	appendSection(std::string(kNoSettingsSectionKey), T("menu.features.no_settings_section", "No Settings"), settingsFreeFeatures, false);
 
 	auto unloadedFeatures = sortedFeatureList | std::ranges::views::filter([](Feature* feat) {
 		return !feat->loaded && feat->IsInMenu() && !feat->IsHiddenUnreleased() && feat->GetCategory() != FeatureCategories::kUtility && (!FeatureIssues::IsObsoleteFeature(feat->GetShortName()) || globals::state->IsDeveloperMode());
@@ -576,7 +539,7 @@ void FeatureListRenderer::RenderLeftColumn(
 	if (ImGui::BeginListBox("##MenusList", { -FLT_MIN, -FLT_MIN })) {
 		// First render the core built-in menus (General, Advanced)
 		size_t renderedCoreMenus = 0;
-		for (size_t i = 0; i < menuList.size() && renderedCoreMenus < CORE_MENU_NAMES.size(); i++) {
+		for (size_t i = 0; i < menuList.size() && renderedCoreMenus < CORE_MENU_COUNT; i++) {
 			if (std::holds_alternative<BuiltInMenu>(menuList[i])) {
 				const BuiltInMenu& menu = std::get<BuiltInMenu>(menuList[i]);
 				if (IsCoreMenu(menu.name)) {
@@ -655,20 +618,10 @@ void FeatureListRenderer::ListMenuVisitor::operator()(const std::string& label)
 
 void FeatureListRenderer::ListMenuVisitor::operator()(const CategoryHeader& header)
 {
-	// Get expansion state from static map
-	bool isExpanded = categoryExpansionStates[header.name];
-
-	// Draw category header with custom styling using util:UI function
-	// Use Heading font for category headers
-	{
-		MenuFonts::FontRoleGuard fontGuard(Menu::FontRole::Heading);
-		int count = Menu::categoryCounts[std::string(header.name)];
-		const auto categoryLabel = TranslateFeatureCategory(header.name);
-		Util::DrawCategoryHeader(header.name.c_str(), categoryLabel.c_str(), isExpanded, count);
-	}
-
-	// Update expansion state
-	categoryExpansionStates[header.name] = isExpanded;
+	MenuFonts::FontRoleGuard fontGuard(Menu::FontRole::Heading);
+	bool isExpanded = header.expanded;
+	if (Util::DrawCategoryHeader(header.name.c_str(), header.label.c_str(), isExpanded, header.count))
+		categoryExpansionStates[header.name] = isExpanded;
 }
 
 void FeatureListRenderer::ListMenuVisitor::operator()(Feature* feat)
@@ -707,14 +660,6 @@ void FeatureListRenderer::ListMenuVisitor::operator()(Feature* feat)
 	if (const auto stage = feat->GetReleaseStage(); stage != Feature::ReleaseStage::Release) {
 		ImGui::SameLine();
 		ImGui::TextColored(StageTagColor(stage), "%s", Feature::GetReleaseStageTag(stage).c_str());
-	}
-
-	// Display version if loaded
-	if (isLoaded) {
-		ImGui::SameLine();
-		std::string formattedVersion = feat->version;
-		std::replace(formattedVersion.begin(), formattedVersion.end(), '-', '.');
-		ImGui::TextDisabled(fmt::format("({})", formattedVersion).c_str());
 	}
 }
 
@@ -780,7 +725,7 @@ void FeatureListRenderer::DrawMenuVisitor::RenderFeatureHeader(Feature* feat, bo
 	// Check if override is available for this feature
 	auto overrideManager = SettingsOverrideManager::GetSingleton();
 	bool hasOverrides = overrideManager && overrideManager->HasFeatureOverrides(featureName);
-	bool canRestoreDefaults = !isDisabled && isLoaded;
+	bool canRestoreDefaults = !isDisabled && isLoaded && feat->HasSettings();
 
 	float totalButtonWidth = bootToggleWidth;
 	if (canRestoreDefaults) {

@@ -12,7 +12,7 @@ public:
 	virtual std::string GetDisplayName() override { return T("feature.exponential_height_fog.name", "Exponential Height Fog"); }
 	virtual inline std::string GetShortName() override { return "ExponentialHeightFog"; }
 	virtual inline std::string GetFeatureModLink() override { return MakeNexusModURL(MOD_ID); }
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kSkyAndWeather; }
 
 	virtual inline std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{

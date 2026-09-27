@@ -13,6 +13,7 @@ public:
 	virtual inline std::string_view GetShaderDefineName() override { return "ISL"; }
 
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
+	virtual bool HasSettings() const override { return false; }
 
 	/** @brief Returns a localized description and list of key features for the UI summary panel. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override

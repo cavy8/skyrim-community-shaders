@@ -29,6 +29,9 @@ public:
 	struct CategoryHeader
 	{
 		std::string name;
+		std::string label;
+		int count = 0;
+		bool expanded = true;
 	};
 
 	/** @brief Variant type representing any entry in the menu list. */

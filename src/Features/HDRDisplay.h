@@ -19,7 +19,7 @@ public:
 	virtual std::string GetDisplayName() override { return T("feature.hdr_display.name", "HDR Display"); }
 	virtual inline std::string GetShortName() override { return "HDRDisplay"; }
 	virtual inline std::string GetFeatureModLink() override { return MakeNexusModURL(MOD_ID); }
-	virtual inline std::string_view GetCategory() const override { return "Display"; }
+	virtual inline std::string_view GetCategory() const override { return FeatureCategories::kDisplay; }
 	virtual inline bool IsCore() const override { return false; }
 
 	virtual inline std::string_view GetShaderDefineName() override { return "HDR_OUTPUT"; }

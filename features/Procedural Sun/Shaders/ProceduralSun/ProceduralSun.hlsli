@@ -81,53 +81,19 @@ namespace ProceduralSun
 		return float4(emitted / alpha, alpha);
 	}
 
-	float GetSunLuminance(float4 sunColor)
+	float GetCloudTransmission(float capturedCloudOcclusion, float opticalDepthScale)
 	{
-		if (sunColor.w <= 0.0f)
-			return 0.0f;
-		return Color::RGBToLuminance(Color::Sky(sunColor.xyz / sunColor.w)) * sunColor.w;
-	}
-
-	void EvaluateCloudExtinction(
-		float cosTheta,
-		float sunDiskCos,
-		float edgeSoftness,
-		float diskIntensity,
-		bool haloEnabled,
-		float sunHaloCos,
-		float haloIntensity,
-		float haloFalloff,
-		out float mask,
-		out float sunProfile)
-	{
-		float3 limbDarkening;
-		float discCoverage;
-		EvaluateDisc(cosTheta, sunDiskCos, edgeSoftness, limbDarkening, discCoverage);
-
-		float haloProfile = 0.0f;
-		if (haloEnabled && haloIntensity > 0.0f)
-			haloProfile = saturate(EvaluateHalo(cosTheta, sunDiskCos, sunHaloCos, haloFalloff));
-
-		mask = max(discCoverage, haloProfile);
-		sunProfile = Color::RGBToLuminance(limbDarkening) * diskIntensity * discCoverage + haloIntensity * haloProfile;
-	}
-
-	float4 ApplyCloudExtinction(float4 cloudColor, float opticalDepthScale, float sunShare)
-	{
-		float alpha = cloudColor.w;
-		if (opticalDepthScale <= 1.0f || sunShare <= 0.0f || alpha <= 0.0f || alpha >= 1.0f)
-			return cloudColor;
-
-		float extinctAlpha = lerp(alpha, 1.0f - pow(1.0f - alpha, opticalDepthScale), saturate(sunShare));
-		return float4(cloudColor.xyz * (alpha / extinctAlpha), extinctAlpha);
+		float cloudOpacity = sqrt(saturate(capturedCloudOcclusion));
+		if (opticalDepthScale <= 0.0f || cloudOpacity <= 0.0f)
+			return 1.0f;
+		return pow(saturate(1.0f - cloudOpacity), opticalDepthScale);
 	}
 
 	float GetGlareCloudTransmission(float capturedCloudOcclusion, float extinction)
 	{
-		float cloudOpacity = sqrt(saturate(capturedCloudOcclusion));
-		if (extinction <= 0.0f || cloudOpacity <= 0.0f)
+		if (extinction <= 0.0f)
 			return 1.0f;
-		return pow(saturate(1.0f - cloudOpacity), 1.0f + 0.5f * extinction);
+		return GetCloudTransmission(capturedCloudOcclusion, 1.0f + 0.5f * extinction);
 	}
 }
 

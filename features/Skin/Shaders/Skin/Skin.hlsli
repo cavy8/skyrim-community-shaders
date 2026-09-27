@@ -21,21 +21,7 @@ namespace Skin
 	cbuffer SkinPerGeometry : register(b7)
 	{
 		float4 skinPerGeometry;
-		// x = HasRfaos, y = HasWetness. Fallback textures are always bound separately.
-		float4 skinMaterialFlags;
-		SharedData::SkinData skinPerGeometryProfile;
 	};
-
-	// Resolved per geometry: the profile bound to the drawn actor's race, or the default profile.
-	SharedData::SkinData GetSkinData()
-	{
-		return skinPerGeometryProfile;
-	}
-#else
-	SharedData::SkinData GetSkinData()
-	{
-		return SharedData::skinData;
-	}
 #endif
 #if defined(CS_SKIN_SHADING)
 	Texture2D<float4> TexSkinDetailNormal : register(t72);
@@ -139,14 +125,13 @@ namespace Skin
 			lightingOutput.specular += fuzzSpecular * material.FuzzWeight;
 		}
 
-		SharedData::SkinData skinData = GetSkinData();
 		float3 sssTransmittance = SSSSTransmittance(
-									  skinData.sssParams.x,
-									  skinData.sssParams.y,
+									  SharedData::skinData.sssParams.x,
+									  SharedData::skinData.sssParams.y,
 									  N,
 									  L,
 									  material.Thickness) *
-		                          skinData.sssParams.w;
+		                          SharedData::skinData.sssParams.w;
 		lightingOutput.transmission = min(sssTransmittance * context.lightColor * context.softShadow * material.BaseColor, context.lightColor);
 	}
 

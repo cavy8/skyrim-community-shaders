@@ -43,6 +43,7 @@
 #include "CSEditor/EditorWindow.h"
 #include "Features/CSEditor.h"
 #include "Features/Effects11.h"
+#include "Features/Effects11/Editor/Effects11Editor.h"
 #include "Features/NeuralRendering.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/PerformanceOverlay/ABTesting/ABTestAggregator.h"
@@ -187,7 +188,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SelectedThemePreset)
 
 bool IsEnabled = false;
-std::unordered_map<std::string, int> Menu::categoryCounts;
 
 namespace
 {
@@ -398,6 +398,7 @@ void Menu::Load(json& o_json)
 	migrateKey(o_json, "CSEditorToggleKey", settings.CSEditorToggleKey);
 	migrateKey(o_json, "ScreenshotKey", settings.ScreenshotKey);
 	migrateKey(o_json, "Effects11ToggleKey", settings.Effects11ToggleKey);
+	migrateKey(o_json, "Effects11EditorKey", settings.Effects11EditorKey);
 	migrateKey(o_json, "NeuralRenderingToggleKey", settings.NeuralRenderingToggleKey);
 	migrateKey(o_json, "NeuralRenderingCompareKey", settings.NeuralRenderingCompareKey);
 	migrateKey(o_json, "NeuralRenderingScaleUpKey", settings.NeuralRenderingScaleUpKey);
@@ -424,6 +425,7 @@ void Menu::Load(json& o_json)
 	loadComboList(o_json, "CSEditorToggleKey", settings.CSEditorToggleKey);
 	loadComboList(o_json, "ScreenshotKey", settings.ScreenshotKey);
 	loadComboList(o_json, "Effects11ToggleKey", settings.Effects11ToggleKey);
+	loadComboList(o_json, "Effects11EditorKey", settings.Effects11EditorKey);
 	loadComboList(o_json, "NeuralRenderingToggleKey", settings.NeuralRenderingToggleKey);
 	loadComboList(o_json, "NeuralRenderingCompareKey", settings.NeuralRenderingCompareKey);
 	loadComboList(o_json, "NeuralRenderingScaleUpKey", settings.NeuralRenderingScaleUpKey);
@@ -497,6 +499,7 @@ void Menu::Save(json& o_json)
 	InputCombo::ComboList::to_json(o_json["CSEditorToggleKey"], settings.CSEditorToggleKey);
 	InputCombo::ComboList::to_json(o_json["ScreenshotKey"], settings.ScreenshotKey);
 	InputCombo::ComboList::to_json(o_json["Effects11ToggleKey"], settings.Effects11ToggleKey);
+	InputCombo::ComboList::to_json(o_json["Effects11EditorKey"], settings.Effects11EditorKey);
 	InputCombo::ComboList::to_json(o_json["NeuralRenderingToggleKey"], settings.NeuralRenderingToggleKey);
 	InputCombo::ComboList::to_json(o_json["NeuralRenderingCompareKey"], settings.NeuralRenderingCompareKey);
 	InputCombo::ComboList::to_json(o_json["NeuralRenderingScaleUpKey"], settings.NeuralRenderingScaleUpKey);
@@ -714,13 +717,11 @@ void Menu::Init()
 		logger::warn("Menu::Init() - Failed to initialize background blur system");
 	}
 
-	BuildCategoryCounts();
-
 	initialized = true;
 }
 
 /**
- * @brief Main UI rendering coordinator for the Cav's Unity Shaders menu
+ * @brief Main UI rendering coordinator for the Bottled Shaders menu
  *
  * This method serves as the primary entry point for rendering the entire menu interface.
  * It handles window setup, docking configuration, and delegates rendering to specialized
@@ -811,6 +812,7 @@ void Menu::DrawGeneralSettings()
 		.settingCSEditorToggleKey = settingCSEditorToggleKey,
 		.settingScreenshotKey = settingScreenshotKey,
 		.settingEffects11ToggleKey = settingEffects11ToggleKey,
+		.settingEffects11EditorKey = settingEffects11EditorKey,
 		.settingNeuralRenderingToggleKey = settingNeuralRenderingToggleKey,
 		.settingNeuralRenderingCompareKey = settingNeuralRenderingCompareKey,
 		.settingNeuralRenderingScaleUpKey = settingNeuralRenderingScaleUpKey,
@@ -1067,6 +1069,10 @@ void Menu::ProcessInputEventQueue()
 						 if (globals::features::effects11.loaded)
 							 globals::features::effects11.ToggleEnabled();
 					 } },
+					{ settings.Effects11EditorKey, []() {
+						 if (!SetupRenderer::ShouldShowFirstTimeSetup())
+							 Effects11Editor::GetSingleton().Toggle();
+					 } },
 					{ settings.NeuralRenderingToggleKey, []() {
 						 auto& neuralRendering = globals::features::neuralRendering;
 						 if (!neuralRendering.loaded)
@@ -1139,6 +1145,7 @@ void Menu::ProcessInputEventQueue()
 					{ &settings.CSEditorToggleKey, &settingCSEditorToggleKey, [this](std::vector<InputCombo> keys) { settings.CSEditorToggleKey = keys; settingCSEditorToggleKey = false; } },
 					{ &settings.ScreenshotKey, &settingScreenshotKey, [this](std::vector<InputCombo> keys) { settings.ScreenshotKey = keys; settingScreenshotKey = false; } },
 					{ &settings.Effects11ToggleKey, &settingEffects11ToggleKey, [this](std::vector<InputCombo> keys) { settings.Effects11ToggleKey = keys; settingEffects11ToggleKey = false; } },
+					{ &settings.Effects11EditorKey, &settingEffects11EditorKey, [this](std::vector<InputCombo> keys) { settings.Effects11EditorKey = keys; settingEffects11EditorKey = false; } },
 					{ &settings.NeuralRenderingToggleKey, &settingNeuralRenderingToggleKey, [this](std::vector<InputCombo> keys) { settings.NeuralRenderingToggleKey = keys; settingNeuralRenderingToggleKey = false; } },
 					{ &settings.NeuralRenderingCompareKey, &settingNeuralRenderingCompareKey, [this](std::vector<InputCombo> keys) { settings.NeuralRenderingCompareKey = keys; settingNeuralRenderingCompareKey = false; } },
 					{ &settings.NeuralRenderingScaleUpKey, &settingNeuralRenderingScaleUpKey, [this](std::vector<InputCombo> keys) { settings.NeuralRenderingScaleUpKey = keys; settingNeuralRenderingScaleUpKey = false; } },
@@ -1203,6 +1210,9 @@ void Menu::ProcessInputEventQueue()
 						editorWindow->ExitPreviewMode();
 					} else if (editorWindow && editorWindow->open && editorWindow->ShouldHandleEscapeKey()) {
 						editorWindow->open = false;
+					} else if (auto& effects11Editor = Effects11Editor::GetSingleton(); effects11Editor.IsOpen()) {
+						if (effects11Editor.ShouldHandleEscapeKey())
+							effects11Editor.Close();
 					} else if (IsEnabled && (!editorWindow || !editorWindow->open)) {
 						IsEnabled = false;
 					}
@@ -1223,6 +1233,7 @@ void Menu::ProcessInputEventQueue()
 				&settings.CSEditorToggleKey,
 				&settings.ScreenshotKey,
 				&settings.Effects11ToggleKey,
+				&settings.Effects11EditorKey,
 				&settings.NeuralRenderingToggleKey,
 				&settings.NeuralRenderingCompareKey,
 				&settings.NeuralRenderingScaleUpKey,
@@ -1268,7 +1279,7 @@ bool Menu::IsCapturingHotkeyInput() const
 {
 	return settingToggleKey || settingSkipCompilationKey || settingsEffectsToggle ||
 	       settingOverlayToggleKey || settingShaderBlockPrevKey || settingShaderBlockNextKey || settingCSEditorToggleKey || settingScreenshotKey || settingEffects11ToggleKey ||
-	       settingNeuralRenderingToggleKey || settingNeuralRenderingCompareKey ||
+	       settingEffects11EditorKey || settingNeuralRenderingToggleKey || settingNeuralRenderingCompareKey ||
 	       settingNeuralRenderingScaleUpKey || settingNeuralRenderingScaleDownKey;
 }
 
@@ -1316,7 +1327,8 @@ void Menu::ProcessInputEvents(RE::InputEvent* const* a_events)
 bool Menu::ShouldSwallowInput()
 {
 	auto editorWindow = EditorWindow::GetSingleton();
-	return IsEnabled || SetupRenderer::ShouldShowFirstTimeSetup() || (editorWindow && editorWindow->open);
+	return IsEnabled || SetupRenderer::ShouldShowFirstTimeSetup() || (editorWindow && editorWindow->open) ||
+	       Effects11Editor::GetSingleton().IsOpen();
 }
 
 bool Menu::IsPreviewFlying()
@@ -1351,25 +1363,4 @@ void Menu::DrawWeatherDetailsWindow()
 	auto& weather = globals::features::csEditor;
 	bool* p_open = &globals::features::csEditor.WeatherDetailsWindow.Enabled;
 	weather.RenderWeatherDetailsWindow(p_open, !weather.WeatherDetailsWindow.ShowInOverlay);
-}
-
-/**
- * @brief Builds category counts for feature organization and display
- *
- * Iterates through all loaded features and counts how many features belong to each
- * category. This information is used for UI organization and displaying category
- * statistics in the feature navigation interface.
- *
- * @note Only counts features that are both loaded and configured to appear in the menu.
- */
-void Menu::BuildCategoryCounts()
-{
-	const std::vector<Feature*>& features = Feature::GetFeatureList();
-	// Get the category of each feature, and increment the count for that category
-	for (auto& feature : features) {
-		if (feature->IsInMenu() && feature->loaded) {
-			std::string_view category = feature->GetCategory();
-			categoryCounts[std::string(category)]++;
-		}
-	}
 }

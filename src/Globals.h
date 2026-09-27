@@ -47,10 +47,7 @@ struct ScreenshotFeature;
 struct Skin;
 struct SnowCover;
 struct FootstepParticles;
-struct CloudRelight;
 struct NeuralRendering;
-struct Wind;
-struct PseudoSunBounce;
 
 class State;
 class Deferred;
@@ -151,10 +148,7 @@ namespace globals
 		extern SnowCover snowCover;
 		extern FootstepParticles footstepParticles;
 		// Local (non-Bottle) features follow.
-		extern CloudRelight cloudRelight;
 		extern NeuralRendering neuralRendering;
-		extern Wind wind;
-		extern PseudoSunBounce pseudoSunBounce;
 
 	}
 
@@ -263,6 +257,7 @@ namespace globals
 		extern REL::Relocation<const RE::NiRTTI*> NiAlphaPropertyRTTI;
 		extern REL::Relocation<const RE::NiRTTI*> NiSourceTextureRTTI;
 		extern REL::Relocation<const RE::NiRTTI*> BSGrassShaderPropertyRTTI;
+		extern REL::Relocation<const RE::NiRTTI*> BSDistantTreeShaderPropertyRTTI;
 		extern REL::Relocation<const RE::NiRTTI*> BSMultiStreamInstanceTriShapeRTTI;
 	}
 

@@ -5,6 +5,10 @@
 #include "State.h"
 #include "TruePBR.h"
 #include "Utils/FormIdParser.h"
+#include "Utils/Game.h"
+
+#pragma warning(push)
+#pragma warning(disable: 4324)
 
 struct SnowCover : Feature
 {
@@ -35,11 +39,27 @@ private:
 	static constexpr uint DEFAULT_PEAK_SUMMER_MONTH = 6;
 	static constexpr uint DEFAULT_PEAK_WINTER_MONTH = 0;
 	static constexpr uint32_t FIRST_SRV_SLOT = 38;  // t38-t44, see SnowCover.hlsli
+	static constexpr uint32_t MAX_FIRE_MELT_SOURCES = 8;
+	static constexpr uint32_t MAX_TRACKED_FIRES = 64;
+	static constexpr uint32_t MAX_FIRE_BASE_CLASSIFICATIONS_PER_SCAN = 512;
+	static constexpr float FIRE_MELT_MAX_DISTANCE = 16384.0f;
+	static constexpr float FIRE_MELT_DISTANCE_FADE = 2048.0f;
+	static constexpr float FIRE_MELT_SLOT_FADE = 512.0f;
+	static constexpr float FIRE_MELT_MIN_RADIUS = 16.0f;
+	static constexpr float FIRE_MELT_MAX_RADIUS = 512.0f;
+	static constexpr float FIRE_MELT_CLUSTER_DISTANCE = 256.0f;
+	static constexpr float FIRE_MELT_MAX_REF_OFFSET = 4096.0f;
+	static constexpr float FIRE_MELT_SCAN_INTERVAL = 0.25f;
+	static constexpr uint32_t FIRE_MELT_GRACE_SCANS = 3;
+	static constexpr float FIRE_MELT_FADE_TIME = 1.0f;
+	static constexpr float FIRE_MELT_CENTER_SMOOTHING = 1.0f;
+	static constexpr float FIRE_MELT_GROW_SMOOTHING = 0.5f;
+	static constexpr float FIRE_MELT_SHRINK_SMOOTHING = 4.0f;
 
 public:
 	virtual inline std::string GetName() { return "Snow Cover"; }
 	virtual inline std::string GetShortName() { return "SnowCover"; }
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kLandscapeAndTextures; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kSkyAndWeather; }
 	inline std::string_view GetShaderDefineName() override { return "SNOW_COVER"; }
 
 	bool HasShaderDefine(RE::BSShader::Type) override { return true; };
@@ -95,6 +115,16 @@ public:
 	// Mirrors SharedData.hlsli's SnowCoverSettings; drift corrupts every struct after it.
 	static_assert(sizeof(WorldSettings) == 144);
 
+	struct FireMeltData
+	{
+		uint Count = 0;
+		float Strength = 0.0f;
+		float RadiusScale = 1.0f;
+		uint pad;
+		float4 Spheres[MAX_FIRE_MELT_SOURCES];
+	};
+	static_assert(sizeof(FireMeltData) == 16 + 16 * MAX_FIRE_MELT_SOURCES);
+
 	struct alignas(16) PerFrame
 	{
 		float Month;
@@ -104,13 +134,58 @@ public:
 
 		UserSettings settings;
 		WorldSettings wsettings;
+		FireMeltData fireMelt;
 	};
 	static_assert(sizeof(PerFrame) % 16 == 0);
-	static_assert(sizeof(PerFrame) == 176);
+	static_assert(sizeof(PerFrame) == 176 + sizeof(FireMeltData));
+
+	struct FireMeltSettings
+	{
+		bool Enabled = true;
+		float RadiusScale = 4.0f;
+		float Strength = 1.0f;
+	};
 
 	UserSettings settings;
 	WorldSettings wsettings;
+	FireMeltSettings fireMeltSettings;
 	PerFrame perFrame;
+
+	struct TrackedFire
+	{
+		RE::FormID refID = 0;
+		uint32_t cluster = 0;
+		RE::NiPoint3 sampleCenter;
+		float sampleRadius = 0.0f;
+		RE::NiPoint3 center;
+		float radius = 0.0f;
+		float strength = 0.0f;
+		uint32_t missedScans = 0;
+	};
+
+	struct FireCluster
+	{
+		RE::FormID refID = 0;
+		uint32_t cluster = 0;
+		RE::NiBound bound;
+		float distanceSq = 0.0f;
+	};
+
+	std::vector<TrackedFire> trackedFires;
+	std::vector<RE::NiBound> fireSamples;
+	std::vector<FireCluster> fireClusters;
+	std::vector<std::pair<float, uint32_t>> fireOrder;
+	std::unordered_map<RE::FormID, bool> fireBaseCache;
+	float fireScanTimer = FIRE_MELT_SCAN_INTERVAL;
+	bool fireMeltSnap = true;
+	Util::FrameChecker fireMeltFrame;
+
+	void UpdateFireMelt();
+	bool ScanFireSources();
+	void UploadFireMelt();
+	static bool IsWorldFireSource(RE::TESBoundObject* a_base);
+	static bool IsFireGeometry(RE::BSGeometry* a_geometry);
+	static void CollectFireGeometry(RE::NiAVObject* a_object, bool a_hidden, bool& a_hasFire, std::vector<RE::NiBound>& a_samples);
 
 	PerFrame GetCommonBufferData();
 
@@ -125,8 +200,8 @@ public:
 	char tbuf[256] = "";
 	char altbuf[256] = "";
 
-	float snowing_speed = 0.0f;
-	float melting_speed = 0.0f;
+	float snowing_speed = 1.0f;
+	float melting_speed = 1.0f;
 	float2 mapMin = DEFAULT_MAP_MIN;
 	float2 mapMax = DEFAULT_MAP_MAX;
 	uint MaxSummerMonth = DEFAULT_PEAK_SUMMER_MONTH;
@@ -182,6 +257,8 @@ public:
 	virtual void RestoreDefaultSettings() override;
 	void Reload();
 	void SaveConfig();
+	void ResetWorldConfig();
+	void UpdateMapTransform();
 
 	virtual inline void PostPostLoad() override { Hooks::Install(); }
 
@@ -203,3 +280,5 @@ public:
 		}
 	};
 };
+
+#pragma warning(pop)

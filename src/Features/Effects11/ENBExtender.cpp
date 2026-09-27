@@ -211,7 +211,9 @@ namespace ENBExtender
 
 		std::string finalVal = defaultVal;
 		if (!iniPath.empty() && !iniSection.empty() && !uiName.empty()) {
-			std::string iniKey = uiGroup.empty() ? uiName : (uiGroup + "." + uiName);
+			std::string iniKey = ann("UniqueName");
+			if (iniKey.empty())
+				iniKey = uiGroup.empty() ? uiName : (uiGroup + "." + uiName);
 			char buf[1024];
 			if (GetPrivateProfileStringA(iniSection.c_str(), iniKey.c_str(), "", buf, sizeof(buf), iniPath.c_str()) > 0) {
 				std::string iniVal(buf);

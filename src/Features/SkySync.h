@@ -3,8 +3,6 @@
 
 #include "Utils/Moon.h"
 
-#include <optional>
-
 /** @brief Synchronizes volumetric lighting and shadow direction with actual sun and moon positions. */
 struct SkySync : Feature
 {
@@ -16,7 +14,7 @@ public:
 	virtual std::string GetDisplayName() override { return T("feature.sky_sync.name", "Sky Sync"); }
 	virtual inline std::string GetShortName() override { return "SkySync"; }
 	virtual inline std::string GetFeatureModLink() override { return MakeNexusModURL(MOD_ID); }
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kSky; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kSkyAndWeather; }
 
 	/** @brief Returns a description and list of key features for the UI summary. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
@@ -63,9 +61,6 @@ public:
 	 * @param sky The sky object whose directional light color may be modified.
 	 */
 	void OnSkyUpdateColors(RE::Sky* sky);
-
-	/** @brief Returns sun/Masser/Secunda transition weights, or nullopt when synchronization is inactive. */
-	std::optional<float3> GetCelestialLightWeights() const;
 
 	/** @brief Installs rendering hooks and detects conflicting mods after plugin load. */
 	virtual void PostPostLoad() override;
@@ -120,8 +115,6 @@ private:
 	{
 		RE::NiPoint3 currentDir = { 0.0f, 0.0f, 1.0f };
 		RE::NiPoint3 startDir = { 0.0f, 0.0f, 1.0f };
-		float3 lightWeights = { 1.0f, 0.0f, 0.0f };
-		float3 startLightWeights = { 1.0f, 0.0f, 0.0f };
 		Caster target = Caster::Sun;
 		Caster previousTarget = Caster::Sun;
 		float fadeTimer = 0.0f;
@@ -171,7 +164,6 @@ private:
 	bool sunSetting = false;
 	bool sunRising = false;
 	bool sunBelowHorizon = false;
-	bool celestialLightingValid = false;
 	ShadowFader shadowFader;
 
 	void DisableOnConflict(std::string_view conflictName);

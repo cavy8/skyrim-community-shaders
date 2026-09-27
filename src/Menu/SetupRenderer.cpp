@@ -87,7 +87,7 @@ void SetupRenderer::RenderFirstTimeSetupDialog()
 
 	// Version text - two lines, both centered (reduced spacing between lines)
 	const char* versionLine1 = T("menu.setup.new_install_line1", "This appears to be a new install, update, or");
-	const char* versionLine2 = T("menu.setup.new_install_line2", "reinstallation of Cav's Unity Shaders.");
+	const char* versionLine2 = T("menu.setup.new_install_line2", "reinstallation of Bottled Shaders.");
 
 	centerText(versionLine1);
 	ImGui::Text("%s", versionLine1);

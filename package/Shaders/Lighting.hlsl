@@ -12,7 +12,6 @@
 #include "Common/Shading.hlsli"
 #include "Common/SharedData.hlsli"
 #include "Common/Skinned.hlsli"
-#include "Common/TreeWind.hlsli"
 #include "Common/Triplanar.hlsli"
 
 #if defined(FACEGEN) || defined(FACEGEN_RGB_TINT)
@@ -139,20 +138,17 @@ cbuffer VS_PerFrame : register(b12)
 #	if defined(SKINNED)
 	float3 BonesPivot : packoffset(c40);
 	float3 PreviousBonesPivot : packoffset(c41);
-#	else
-	float3 CameraPosAdjust : packoffset(c40);
-	float3 CameraPreviousPosAdjust : packoffset(c41);
 #	endif  // SKINNED
 };
 
 #	if defined(TREE_ANIM)
-float2 GetTreeShiftVector(float4 position, float4 color, float2 animationStrength)
+float2 GetTreeShiftVector(float4 position, float4 color)
 {
 	precise float4 tmp1 = (TreeParams.w * TreeParams.y).xxxx * WindTimers.xxyy;
 	precise float4 tmp2 = float4(0.1, 0.25, 0.1, 0.25) * tmp1 + dot(position.xyz, 1.0.xxx).xxxx;
 	precise float4 tmp3 = abs(-1.0.xxxx + 2.0.xxxx * frac(0.5.xxxx + tmp2.xyzw));
 	precise float4 tmp4 = (tmp3 * tmp3) * (3.0.xxxx - 2.0.xxxx * tmp3);
-	return (tmp4.xz + 0.1.xx * tmp4.yw) * color.w.xx * animationStrength;
+	return (tmp4.xz + 0.1.xx * tmp4.yw) * (TreeParams.z * color.w).xx;
 }
 #	endif  // TREE_ANIM
 
@@ -162,54 +158,6 @@ VS_OUTPUT main(VS_INPUT input)
 
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
 
-	const bool treeBendEnabled = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::TreeBend) != 0;
-	TreeWind::Sample treeWindSample;
-	treeWindSample.trunkVelocity = 0.0.xxx;
-	treeWindSample.leafAnimationStrength = 0.0;
-	TreeWind::Sample previousTreeWindSample;
-	previousTreeWindSample.trunkVelocity = 0.0.xxx;
-	previousTreeWindSample.leafAnimationStrength = 0.0;
-	if (treeBendEnabled) {
-#	if defined(SKINNED)
-		float3 currentTreeWorldOffset = 0.0.xxx;
-		float3 previousTreeWorldOffset = 0.0.xxx;
-#	else
-		float3 currentTreeWorldOffset = CameraPosAdjust.xyz;
-		float3 previousTreeWorldOffset = CameraPreviousPosAdjust.xyz;
-#	endif
-		TreeWind::SamplePositions currentTreeSamplePositions =
-			TreeWind::BuildSamplePositions(World, currentTreeWorldOffset);
-		TreeWind::SamplePositions previousTreeSamplePositions =
-			TreeWind::BuildSamplePositions(PreviousWorld, previousTreeWorldOffset);
-		float2 treeTransientInfluence = float2(
-			Permutation::TreeTransientWindInfluence, Permutation::TreeLeafTransientWindInfluence);
-#	if defined(TREE_ANIM)
-#		if defined(SKINNED)
-		precise int4 treeBoneIndices = 765.01.xxxx * input.BoneIndices.xyzw;
-		float3 currentLeafWorldPosition =
-			mul(inputPosition, transpose(Skinned::GetBoneTransformMatrix(Bones, treeBoneIndices, BonesPivot, input.BoneWeights))).xyz + BonesPivot.xyz;
-		float3 previousLeafWorldPosition =
-			mul(inputPosition, transpose(Skinned::GetBoneTransformMatrix(PreviousBones, treeBoneIndices, PreviousBonesPivot, input.BoneWeights))).xyz + PreviousBonesPivot.xyz;
-#		else
-		float3 currentLeafWorldPosition =
-			mul(World, inputPosition).xyz + currentTreeWorldOffset;
-		float3 previousLeafWorldPosition =
-			mul(PreviousWorld, inputPosition).xyz + previousTreeWorldOffset;
-#		endif
-		treeWindSample = TreeWind::SampleCurrent(
-			currentTreeSamplePositions, currentLeafWorldPosition,
-			treeTransientInfluence);
-		previousTreeWindSample = TreeWind::SamplePrevious(
-			previousTreeSamplePositions, previousLeafWorldPosition,
-			treeTransientInfluence);
-#	else
-		treeWindSample = TreeWind::SampleCurrent(
-			currentTreeSamplePositions, treeTransientInfluence);
-		previousTreeWindSample = TreeWind::SamplePrevious(
-			previousTreeSamplePositions, treeTransientInfluence);
-#	endif
-	}
-
 #	if defined(LODLANDNOISE) || defined(LODLANDSCAPE)
 	inputPosition = LodLandscape::AdjustLodLandscapeVertexPositionMS(inputPosition, float4x4(World, float4(0, 0, 0, 1)), HighDetailRange);
 #	endif  // defined(LODLANDNOISE) || defined(LODLANDSCAPE)                                                                   \
@@ -217,13 +165,7 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4 previousInputPosition = inputPosition;
 
 #	if defined(TREE_ANIM)
-	float2 leafAnimationStrength = TreeParams.z.xx;
-	if (treeBendEnabled) {
-		leafAnimationStrength = float2(
-			treeWindSample.leafAnimationStrength,
-			previousTreeWindSample.leafAnimationStrength);
-	}
-	precise float2 treeShiftVector = GetTreeShiftVector(input.Position, input.Color, leafAnimationStrength);
+	precise float2 treeShiftVector = GetTreeShiftVector(input.Position, input.Color);
 	float3 normal = -1.0.xxx + 2.0.xxx * input.Normal.xyz;
 
 	inputPosition.xyz += normal.xyz * treeShiftVector.x;
@@ -249,14 +191,6 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4x4 modelView = mul(ViewProj, world4x4);
 	float4 viewPos = mul(modelView, inputPosition);
 #	endif  // SKINNED
-
-	if (treeBendEnabled) {
-		worldPosition.xy +=
-			TreeWind::GetWorldDisplacement(input.Position.z, treeWindSample.trunkVelocity.xy);
-		previousWorldPosition.xy +=
-			TreeWind::GetWorldDisplacement(input.Position.z, previousTreeWindSample.trunkVelocity.xy);
-		viewPos = mul(ViewProj, worldPosition);
-	}
 
 	const bool reverseProjection = FrameBuffer::IsReverseProjection(Proj);
 	vsout.Position = viewPos;
@@ -982,10 +916,6 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 
 #	if defined(EXP_HEIGHT_FOG)
 #		include "ExponentialHeightFog/ExponentialHeightFog.hlsli"
-#	endif
-
-#	if defined(PSEUDO_SUN_BOUNCE)
-#		include "PseudoSunBounce/sunbounce.hlsli"
 #	endif
 
 #	include "Common/LightingEval.hlsli"
@@ -2284,7 +2214,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif
 #		if defined(LOD_LAND_BLEND) && defined(TRUE_PBR)
 		lodLandFadeFactor = snowFactor + (1 - snowFactor) * lodLandFadeFactor;
-		lodLandColor.rgb = lerp(lodLandColor, material.BaseColor * Color::PBRLightingScale, snowFactor);
+		lodLandColor.rgb = lerp(lodLandColor.rgb, material.BaseColor * Color::PBRLightingScale, snowFactor);
 #		endif
 	}
 #	endif  // SNOW_COVER
@@ -2911,38 +2841,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
-#	if defined(PSEUDO_SUN_BOUNCE)
-	float3 specularBounce = 0;
-	if (!SharedData::InInterior && inWorld && SharedData::pseudoSunBounceSettings.intensity > 0.0) {
-		float cloudShadows = 1;
-#		if defined(CLOUD_SHADOWS)
-		cloudShadows = CloudShadows::GetCloudShadowMult(input.WorldPosition.xyz, LinearSampler);
-#		endif
-		SunBounce::SH2_RGB sunBounceSH = SunBounce::CalcSunBounceSH(SharedData::DirLightDirection.xyz, dirLightColor * cloudShadows,
-			SharedData::pseudoSunBounceSettings.groundAlbedo, SharedData::pseudoSunBounceSettings.wallAlbedo);
-
-		specularBounce = max(0, SunBounce::CalcFauxSpecularBounce(ambientNormal, viewDirection, material.Roughness, sunBounceSH)) * SharedData::pseudoSunBounceSettings.intensity;
-
-		sunBounceSH.R = SphericalHarmonics::HanningConvolution(sunBounceSH.R, SharedData::pseudoSunBounceSettings.windowWidth);
-		sunBounceSH.G = SphericalHarmonics::HanningConvolution(sunBounceSH.G, SharedData::pseudoSunBounceSettings.windowWidth);
-		sunBounceSH.B = SphericalHarmonics::HanningConvolution(sunBounceSH.B, SharedData::pseudoSunBounceSettings.windowWidth);
-
-		float3 bounceLighting;
-		bounceLighting.r = SphericalHarmonics::Unproject(sunBounceSH.R, -ambientNormal);
-		bounceLighting.g = SphericalHarmonics::Unproject(sunBounceSH.G, -ambientNormal);
-		bounceLighting.b = SphericalHarmonics::Unproject(sunBounceSH.B, -ambientNormal);
-
-		bounceLighting = max(0, bounceLighting);
-#		if defined(SKYLIGHTING)
-		float3 bouncedSkylighting = saturate(MultiBounceAO(SharedData::pseudoSunBounceSettings.groundAlbedo, skylightingDiffuse) * skylightingDiffuse);
-		bounceLighting *= bouncedSkylighting;
-		specularBounce *= bouncedSkylighting;
-#		endif
-
-		directionalAmbientColor += bounceLighting * SharedData::pseudoSunBounceSettings.intensity;
-	}
-#	endif
-
 	float3 reflectionDiffuseColor = diffuseColor + directionalAmbientColor;
 
 #	if defined(TRUE_PBR) && defined(LOD_LAND_BLEND) && !defined(DEFERRED)
@@ -3096,15 +2994,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #			endif
 #		else
 		color.xyz += indirectLobeWeights.specular * directionalAmbientColor;
-#		endif
-#		if defined(PSEUDO_SUN_BOUNCE)
-	if (any(specularBounce > 0)) {
-		color.xyz += indirectLobeWeights.specular * specularBounce;
-#			if defined(WETNESS_EFFECTS)
-		if (waterRoughnessSpecular < 1)
-			color.xyz += wetnessReflectance * specularBounce;
-#			endif
-	}
 #		endif
 
 	color.xyz = Color::IrradianceToGamma(color.xyz);
@@ -3309,12 +3198,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// Reflection is from the water film surface; wetnessReflectance scales intensity by wetness amount.
 		screenSpaceNormal = normalize(FrameBuffer::WorldToView(wetnessNormal, false));
 		material.Roughness = waterRoughnessSpecular;
-	}
-#		endif
-
-#		if defined(PSEUDO_SUN_BOUNCE)
-	if (any(specularBounce > 0)) {
-		psout.Diffuse.xyz += indirectLobeWeights.specular * specularBounce;
 	}
 #		endif
 

@@ -3,7 +3,6 @@
 #include "FeatureIssues.h"
 #include "FeatureVersions.h"
 #include "Features/CSEditor.h"
-#include "Features/CloudRelight.h"
 #include "Features/CloudShadows.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/ProceduralSun.h"
@@ -28,7 +27,6 @@
 #include "Features/PerformanceOverlay.h"
 #include "Features/NeuralRendering.h"
 #include "Features/PostProcessing.h"
-#include "Features/PseudoSunBounce.h"
 #include "Features/RemoteControl.h"
 #include "Features/RenderDoc.h"
 #include "Features/ScreenSpaceGI.h"
@@ -51,7 +49,6 @@
 #include "Features/ReverseZ.h"
 #include "Features/WaterEffects.h"
 #include "Features/WetnessEffects.h"
-#include "Features/Wind/Wind.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
 #include "SettingsOverrideManager.h"
@@ -117,7 +114,7 @@ void Feature::Load(json& o_json)
 					std::string minimalVersionString = Util::GetFormattedVersion(minimalFeatureVersion);
 
 					if (IsCore()) {
-						failedLoadedMessage = std::format("This feature is already included as part of the core Cav's Unity Shaders installation. Uninstall this feature with your mod manager.");
+						failedLoadedMessage = std::format("This feature is already included as part of the core Bottled Shaders installation. Uninstall this feature with your mod manager.");
 					} else if (majorVersionMismatch) {
 						failedLoadedMessage = std::format("{} {} is too old, major version incompatibility detected. Required: {}", GetShortName(), value, minimalVersionString);
 					} else {
@@ -283,10 +280,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::snowCover,
 		&globals::features::footstepParticles,
 		// Local (non-Bottle) features follow.
-		&globals::features::cloudRelight,
-		&globals::features::neuralRendering,
-		&globals::features::wind,
-		&globals::features::pseudoSunBounce
+		&globals::features::neuralRendering
 	};
 
 	return features;
@@ -352,13 +346,17 @@ bool Feature::ReapplyOverrideSettings()
 
 std::string Feature::GetDisplayCategory() const
 {
-	const auto category = GetCategory();
+	return TranslateCategory(GetCategory());
+}
+
+std::string Feature::TranslateCategory(std::string_view category)
+{
 	if (category == FeatureCategories::kCharacters)
 		return T("feature.category.characters", "Characters");
 	if (category == FeatureCategories::kDisplay)
 		return T("feature.category.display", "Display");
-	if (category == FeatureCategories::kGrass)
-		return T("feature.category.grass", "Grass");
+	if (category == FeatureCategories::kGrassAndFoliage)
+		return T("feature.category.grass_and_foliage", "Grass & Foliage");
 	if (category == FeatureCategories::kLandscapeAndTextures)
 		return T("feature.category.landscape_and_textures", "Landscape & Textures");
 	if (category == FeatureCategories::kLighting)
@@ -369,8 +367,10 @@ std::string Feature::GetDisplayCategory() const
 		return T("feature.category.other", "Other");
 	if (category == FeatureCategories::kPostProcessing)
 		return T("feature.category.post_processing", "Post-Processing");
-	if (category == FeatureCategories::kSky)
-		return T("feature.category.sky", "Sky");
+	if (category == FeatureCategories::kShadows)
+		return T("feature.category.shadows", "Shadows");
+	if (category == FeatureCategories::kSkyAndWeather)
+		return T("feature.category.sky_and_weather", "Sky & Weather");
 	if (category == FeatureCategories::kUtility)
 		return T("feature.category.utility", "Utility");
 	if (category == FeatureCategories::kWater)

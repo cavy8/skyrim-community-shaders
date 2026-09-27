@@ -14,7 +14,7 @@ public:
 	/** @brief Returns the short identifier name. */
 	virtual inline std::string GetShortName() override { return "TerrainShadows"; }
 	virtual inline std::string_view GetShaderDefineName() override { return "TERRAIN_SHADOWS"; }
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kLandscapeAndTextures; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kShadows; }
 	/** @brief Returns a description and list of key features for the UI summary. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{

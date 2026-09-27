@@ -2,7 +2,7 @@
     "DisplayName": "Default Dark",
     "Description": "Black-bordered dark theme with a translucent background",
     "Version": "2.0.0",
-    "Author": "Cav's Unity Shaders Team",
+    "Author": "Bottled Shaders Team",
     "Theme": {
         "FontSize": 0.0,
         "FontName": "Jost/Jost-Regular.ttf",

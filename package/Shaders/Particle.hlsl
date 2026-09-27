@@ -256,6 +256,45 @@ cbuffer PerGeometry : register(b2)
 #		include "DynamicCubemaps/DynamicCubemaps.hlsli"
 #	endif
 
+#	if defined(LIGHT_LIMIT_FIX)
+bool GetLightCluster(float3 positionWS, out uint lightOffset, out uint lightCount)
+{
+	lightOffset = 0;
+	lightCount = 0;
+
+	float3 viewPosition = FrameBuffer::WorldToView(positionWS);
+	uint clusterIndex = 0;
+	if (!LightLimitFix::GetClusterIndex(FrameBuffer::ViewToUV(viewPosition), viewPosition.z, clusterIndex))
+		return false;
+
+	lightOffset = LightLimitFix::lightGrid[clusterIndex].offset;
+	lightCount = LightLimitFix::lightGrid[clusterIndex].lightCount;
+	return true;
+}
+
+float GetPointLightIntensity(LightLimitFix::Light light, float3 positionWS, out float3 lightDirection)
+{
+	lightDirection = light.positionWS.xyz - positionWS;
+	float lightDist = length(lightDirection);
+	lightDirection /= max(lightDist, 1e-5);
+
+#		if defined(ISL)
+	float intensity = InverseSquareLighting::GetAttenuation(lightDist, light);
+#		else
+	float intensityFactor = saturate(lightDist / light.radius);
+	float intensity = 1 - intensityFactor * intensityFactor;
+#		endif
+	intensity *= light.fade;
+	if (intensity < 1e-5)
+		return 0.0;
+
+	[branch] if (light.lightFlags & LightLimitFix::LightFlags::LocalShadow)
+		intensity *= LightLimitFix::GetLocalShadow(LinearSampler, light.localShadowIndex, positionWS, FrameBuffer::CameraPosAdjust.xyz, lightDirection, false, float2x2(1, 0, 0, 1));
+
+	return intensity;
+}
+#	endif
+
 PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 {
 	PS_OUTPUT psout;
@@ -308,7 +347,36 @@ if (SharedData::enbSettings.EnableRain) {
     float3 reflectColor = Color::IrradianceToLinear(DynamicCubemaps::EnvReflectionsTexture.SampleLevel(SampSourceTexture, reflectDir, 0).xyz);
     float3 refractColor = Color::IrradianceToLinear(DynamicCubemaps::EnvReflectionsTexture.SampleLevel(SampSourceTexture, refractDir, 0).xyz);
 
-    psout.Color.xyz = Color::IrradianceToGamma(lerp(refractColor, reflectColor, fresnel));
+	float3 raindropColor = lerp(refractColor, reflectColor, fresnel);
+
+#		if defined(LIGHT_LIMIT_FIX)
+	float pointLightingScale = SharedData::enbSettings.Enable ? SharedData::enbSettings.ParticlePointLightingInfluence : 1.0;
+	uint lightOffset, lightCount;
+	[branch] if (pointLightingScale > 0.0 && GetLightCluster(posWS.xyz, lightOffset, lightCount))
+	{
+		float3 pointLighting = 0.0;
+		[loop] for (uint i = 0; i < lightCount; i++)
+		{
+			LightLimitFix::Light light = LightLimitFix::lights[LightLimitFix::lightList[lightOffset + i]];
+			if (LightLimitFix::IsLightIgnored(light))
+				continue;
+
+			float3 lightDirection;
+			float intensity = GetPointLightIntensity(light, posWS.xyz, lightDirection);
+			[branch] if (intensity > 0.0)
+			{
+				float forwardScatter = lerp(0.3, 1.0, pow(saturate(dot(-lightDirection, V) * 0.5 + 0.5), 4.0));
+				float3 halfVector = lightDirection + V;
+				float glint = pow(saturate(dot(normalWS, halfVector) * rsqrt(max(dot(halfVector, halfVector), 1e-8))), 48.0);
+				const bool isPointLightLinear = light.lightFlags & LightLimitFix::LightFlags::Linear;
+				pointLighting += Color::IrradianceToLinear(Color::Light(light.color.xyz, isPointLightLinear)) * intensity * ((1.0 - fresnel) * forwardScatter + glint);
+			}
+		}
+		raindropColor += pointLighting * pointLightingScale;
+	}
+#		endif
+
+	psout.Color.xyz = Color::IrradianceToGamma(raindropColor);
     psout.Color.w = alpha;
     psout.Normal = float4(0, 1, 0, alpha);
     return psout;
@@ -339,6 +407,7 @@ if (SharedData::enbSettings.EnableRain) {
 
 	float unusedDetailedShadow;
 	float3 dirLightColor = SharedData::DirLightColor.xyz * ShadowSampling::GetLightingShadow(positionWS.xyz, unusedDetailedShadow);
+	dirLightColor *= ShadowSampling::GetWorldShadow(positionWS.xyz, FrameBuffer::CameraPosAdjust.xyz);
 	float3 ambientColor = max(0, SharedData::GetAmbient(float3(0, 0, 1)));
 #	if defined(IBL)
 	if (SharedData::iblSettings.EnableIBL) {
@@ -350,35 +419,16 @@ if (SharedData::enbSettings.EnableRain) {
 	propertyColor += ambientColor;
 
 #	if defined(LIGHT_LIMIT_FIX)
-	uint lightCount = 0;
-	{
-		float3 viewPosition = FrameBuffer::WorldToView(positionWS.xyz);
-		float2 screenUV = FrameBuffer::ViewToUV(viewPosition);
+	uint lightOffset, lightCount;
+	if (GetLightCluster(positionWS.xyz, lightOffset, lightCount)) {
+		[loop] for (uint i = 0; i < lightCount; i++)
+		{
+			LightLimitFix::Light light = LightLimitFix::lights[LightLimitFix::lightList[lightOffset + i]];
+			if (LightLimitFix::IsLightIgnored(light))
+				continue;
 
-		uint clusterIndex = 0;
-		if (LightLimitFix::GetClusterIndex(screenUV, viewPosition.z, clusterIndex)) {
-			lightCount = LightLimitFix::lightGrid[clusterIndex].lightCount;
-			uint lightOffset = LightLimitFix::lightGrid[clusterIndex].offset;
-			[loop] for (uint i = 0; i < lightCount; i++)
-			{
-				uint clusteredLightIndex = LightLimitFix::lightList[lightOffset + i];
-				LightLimitFix::Light light = LightLimitFix::lights[clusteredLightIndex];
-				if (LightLimitFix::IsLightIgnored(light) || light.lightFlags & LightLimitFix::LightFlags::ShadowCaster) {
-					continue;
-				}
-				float3 lightDirection = light.positionWS.xyz - positionWS.xyz;
-				float lightDist = length(lightDirection);
-
-#		if defined(ISL)
-				float intensityMultiplier = InverseSquareLighting::GetAttenuation(lightDist, light);
-#		else
-				float intensityFactor = saturate(lightDist / light.radius);
-				float intensityMultiplier = 1 - intensityFactor * intensityFactor;
-#		endif
-
-				float3 lightColor = light.color.xyz * intensityMultiplier;
-				propertyColor += lightColor;
-			}
+			float3 lightDirection;
+			propertyColor += light.color.xyz * GetPointLightIntensity(light, positionWS.xyz, lightDirection);
 		}
 	}
 #	endif

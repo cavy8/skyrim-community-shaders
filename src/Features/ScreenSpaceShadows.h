@@ -9,7 +9,7 @@ public:
 	virtual std::string GetDisplayName() override { return T("feature.screen_space_shadows.name", "Screen Space Shadows"); }
 	virtual inline std::string GetShortName() override { return "ScreenSpaceShadows"; }
 	virtual inline std::string_view GetShaderDefineName() override { return "SCREEN_SPACE_SHADOWS"; }
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kShadows; }
 
 	/** @brief Returns a localized description and list of key features for the UI summary panel. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override

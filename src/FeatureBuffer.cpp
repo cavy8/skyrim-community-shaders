@@ -2,7 +2,6 @@
 
 #include <array>
 
-#include "Features/CloudRelight.h"
 #include "Features/CloudShadows.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
@@ -17,7 +16,6 @@
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
 #include "Features/PostProcessing.h"
-#include "Features/PseudoSunBounce.h"
 #include "Features/ProceduralSun.h"
 #include "Features/Skin.h"
 #include "Features/SnowCover.h"
@@ -28,7 +26,6 @@
 #include "Features/VanillaFresnel.h"
 #include "Features/VolumetricLighting.h"
 #include "Features/WetnessEffects.h"
-#include "Features/Wind/Wind.h"
 #include "TruePBR.h"
 
 template <class... Ts>
@@ -77,10 +74,5 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::vanillaFresnel.settings,
 		globals::features::snowCover.GetCommonBufferData(),
 		globals::features::postProcessing.GetCommonBufferData(),
-		globals::features::volumetricLighting.GetCommonBufferData(),
-		// Bottle's order ends here (see SharedData.hlsli FeatureData); local settings follow.
-		globals::features::cloudRelight.GetCommonBufferData(),
-		globals::features::wind.GetSharedWindData(),
-		globals::features::wind.GetCommonBufferData(),
-		globals::features::pseudoSunBounce.settings);
+		globals::features::volumetricLighting.GetCommonBufferData());
 }

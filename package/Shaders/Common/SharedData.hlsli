@@ -9,8 +9,6 @@
 
 #include "Common/FrameBuffer.hlsli"
 #include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
-#include "Common/TransientWindImpulse.hlsli"
-#include "Common/WindFieldTypes.hlsli"
 
 namespace SharedData
 {
@@ -353,26 +351,50 @@ namespace SharedData
 
 		uint EnableCloudsScattering;
 		float SkyScatteringIntensity;
-		float SkyScatteringColorFromSun;
 		float SkyScatteringShadowAmount;
+		float SkyScatteringAmount;
 
 		float3 SkyScatteringColor;
-		float SkyScatteringExtinction;
+		float SkyScatteringDustDarkening;
 
-		float SkyScatteringScaleHeight;
-		float SkyScatteringSunGlowIntensity;
-		float SkyScatteringSunGlowAnisotropy;
+		float3 SkyScatteringDustTint;
+		float SkyScatteringDustVolume;
+
+		float3 SkyScatteringSunDirection;
+		float SkyScatteringSunVisibility;
+
+		float SkyScatteringHorizonRange;
+		float SkyScatteringAtmosphereThickness;
 		float SkyScatteringAirGlowIntensity;
+		float SkyScatteringAirGlowRange;
 
-		float SkyScatteringAirGlowAnisotropy;
+		float SkyScatteringSunGlowIntensity;
+		float SkyScatteringSunGlowRange;
 		float SkyScatteringMoonGlowAmount;
-		float CloudsLightingSunMultiplier;
-		float CloudsLightingSunMinIntensity;
+		float SkyScatteringMoonGlowRange;
 
+		float SkyScatteringSunIntensity;
+		float CloudsLightingSunIntensity;
 		float CloudsLightingMoonIntensity;
 		uint EnableCloudsLightingFromMoon;
+
 		uint CalculateCloudsEdgeFromScattering;
+		float CloudsLightingDesaturation;
+		float CloudsLightingForwardScattering;
 		float CloudsLightingDensity;
+
+		float3 CloudsColorFilter;
+		float CloudsIntensity;
+
+		float CloudsVertexAlphaBoost;
+		float CloudsEdgeClamp;
+		float CloudsEdgeFadePower;
+		float SunBillboardTan;
+
+		float MasserBillboardTan;
+		float SecundaBillboardTan;
+		float SkyScatteringPad0;
+		float SkyScatteringPad1;
 	};
 	struct TerrainBlendingSettings
 	{
@@ -518,6 +540,12 @@ namespace SharedData
 		float ObjectFadeEnd;
 		float ObjectFadeAmount;
 		uint2 pad2;
+
+		uint FireMeltCount;
+		float FireMeltStrength;
+		float FireMeltRadiusScale;
+		uint pad3;
+		float4 FireMeltSpheres[8];
 	};
 
 	struct PostProcessingSettings
@@ -531,32 +559,6 @@ namespace SharedData
 		float GodRayGain;
 		float GodRayExponent;
 		float2 pad0;
-	};
-
-	struct CloudRelightSettings
-	{
-		uint enabled;
-		float cloudRelightMix;
-		float cloudOriginalMix;
-		float silverLiningMix;
-
-		float silverLiningSpread;
-		float3 celestialLightWeights;
-	};
-
-	struct WindSettings
-	{
-		uint windFieldDebugEnabled;
-		uint windFieldDebugView;
-		float2 padding;
-	};
-
-	struct PseudoSunBounceSettings
-	{
-		float3 groundAlbedo;
-		float intensity;
-		float3 wallAlbedo;
-		float windowWidth;
 	};
 
 	cbuffer FeatureData : register(b6)
@@ -586,28 +588,6 @@ namespace SharedData
 		SnowCoverSettings snowCoverSettings;
 		PostProcessingSettings postProcessingSettings;
 		VolumetricLightingSettings volumetricLightingSettings;
-		// Everything above is Bottle's FeatureData, in Bottle's order. Local (non-Bottle)
-		// settings are appended below, each a 16-byte multiple, mirrored in the same order
-		// by GetFeatureBufferData() (FeatureBuffer.cpp).
-		CloudRelightSettings cloudRelightSettings;
-		// Flat field names (not a nested struct) to match WindField.hlsli/TransientWindImpulse.hlsli,
-		// which reference these directly as SharedData::WindFieldXxx. Mirrors the C++ WindSharedData
-		// struct (Features/Wind/Wind.h) byte-for-byte; see Wind::GetSharedWindData.
-		WindField::WindTuning WindFieldTuning;
-		float4 WindFieldAmbient;
-		float4 WindFieldPreviousAmbient;
-		WindField::Field WindFieldCurrent;
-		WindField::Field WindFieldPrevious;
-		WindField::Field WindFieldTransition;
-		WindField::Field WindFieldPreviousTransition;
-		float4 WindFieldTransitionData;  // x/y: current/previous blend, z/w: reserved
-		float4 WindFieldSpringDebug;     // xy: field minimum, z: field size, w: maximum tilt radians
-		uint4 WindFieldActiveCounts;     // x/y: current/previous transient impulse counts, z/w: reserved
-		WindField::TransientWindSource WindFieldTransientImpulses[WindField::TransientImpulseCapacity];
-		WindField::TransientWindSource WindFieldPreviousTransientImpulses[WindField::TransientImpulseCapacity];
-		WindSettings windSettings;
-
-		PseudoSunBounceSettings pseudoSunBounceSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);

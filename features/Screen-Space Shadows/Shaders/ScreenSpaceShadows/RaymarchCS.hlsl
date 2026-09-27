@@ -56,7 +56,11 @@ cbuffer PerFrame : register(b1)
 
 	parameters.DynamicRes = DynamicRes;
 
+#ifdef REVERSE_Z
+	parameters.UsePrecisionOffset = false;
+#else
 	parameters.UsePrecisionOffset = true;
+#endif
 
 	WriteScreenSpaceShadow(parameters, groupID, groupThreadID);
 }

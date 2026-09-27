@@ -27,6 +27,8 @@ public:
 	/// @return Location-mapped weather ID if applicable, otherwise the actual weather ID
 	uint32_t GetEffectiveWeatherID(uint32_t actualWeatherID);
 
+	uint32_t GetWeatherIndex(uint32_t weatherID) const;
+
 	const std::unordered_map<std::string, WeatherEntry>& GetWeatherEntries() const { return weatherEntries; }
 
 	std::unordered_map<std::string, std::string> GetWeatherFiles() const;

@@ -1,6 +1,6 @@
 {
     "AffectGrassTint": 1,
-    "AffectTreeTint": 0,
+    "AffectTreeTint": 1,
     "AltSpec": 0.019999999552965164,
     "AltTexture": "textures/pbr/landscape/snow02",
     "AltTint": [

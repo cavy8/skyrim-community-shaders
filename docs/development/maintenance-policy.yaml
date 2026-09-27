@@ -6,31 +6,21 @@
 # Bottle must be claimed by a feature, a shared integration, or a repository entry, and every hunk in
 # a shared-integration file must carry one of that file's documented `match` strings.
 #
-# Rule of the branch (owner ruling 2026-09-26): prefer Bottle. A deviation is kept only when a port
-# needs it (Wind, Pseudo Sun Bounce, Cloud Relight, Neural Rendering), it is a Personal default state
-# or Personal fix, it is branding, or it is Open's Effects11 preset hot-swap (kept by choice).
+# Rule of the branch (owner ruling 2026-09-26, simplification): Personal is Bottle-Compendium plus
+# exactly three things - the Neural Rendering feature, the Screenshot SDR fix and the "Show
+# Background Compile Overlay" toggle - and its own docs/tooling. Everything else that used to
+# differ was removed; see removed-features.md. Any file not claimed below must match Bottle exactly.
 #
 # Policies:
-#   bottle-exact            must match the pinned Bottle SHA (after the branding rule)
 #   bottle-plus-components  Bottle base + named retained components (from another upstream or personal)
 #   bottle-plus-seam        Bottle base + a minimal documented hook seam for a feature owned elsewhere
-#   external-maintained     Bottle does not carry this code; track `reference` directly
 #   personal                Personal-original implementation
 #
 # Per feature:
 #   paths:        feature-owned files/directories (directories end in '/').
 #   components:   bottle-plus-components only; each retained component with its source and paths.
 #   seam:         bottle-plus-seam only; each allowed hunk, by path and a stable anchor.
-#   adaptations:  external-maintained only; files that intentionally differ from `reference`, and why.
-#   deferred:     explicit owner decisions not to sync something (yet); one line each.
 #   note:         anything else a maintainer must know.
-
-branding:
-  # The only branding mechanism: Bottle's text with this substitution applied is what Personal
-  # ships. Plugin::DISPLAY_NAME (cmake/Plugin.h.in) carries the name to the code that prints it.
-  from: "Bottled Shaders"
-  to: "Cav's Unity Shaders"
-  paths: [src/, package/, cmake/Plugin.h.in, CONTRIBUTING.md, TRANSLATING.md]
 
 features:
   Upscaling:
@@ -62,15 +52,6 @@ features:
     note: >-
       S4 (ApplySharpening) eliminated: ResolveUpscaledFrame() copies NR's result back into
       sharpenerTexture. S5 keeps DLSS SR on NR's history boundary (NR toggle, loading screens).
-    deferred:
-      - "Personal-only Upscaling fixes dropped by D2 (no Neural Rendering impact): Streamline motionVectorsDilated=true for the pre-dilated DLSS MVs; WrappedResource resource names; qualityMode clamp; Upscaling's own loading-screen reset (NR resets DLSS through S5 instead)"
-
-  WetnessEffects:
-    policy: bottle-exact
-    paths:
-      - src/Features/WetnessEffects.cpp
-      - src/Features/WetnessEffects.h
-      - features/Wetness Effects/
 
   NeuralRendering:
     policy: personal
@@ -81,273 +62,6 @@ features:
       - features/Neural Rendering/
       - package/Shaders/Common/NeuralRenderingCategories.hlsli
       - docs/development/neural-rendering.md
-
-  CSEditor:
-    policy: bottle-exact
-    paths:
-      - src/Features/CSEditor.cpp
-      - src/Features/CSEditor.h
-      - src/CSEditor/
-      - features/CS Editor/
-
-  CloudRelight:
-    policy: external-maintained
-    reference: open
-    paths:
-      - src/Features/CloudRelight.cpp
-      - src/Features/CloudRelight.h
-      - features/Cloud Relight/
-    adaptations:
-      src/Features/CloudRelight.h: "no SupportsVR() override (Bottle's Feature has none)"
-    note: "integration outside the feature: Sky.hlsl cloud hunk, Cloud Shadows t26 seam, Sky Sync celestial weights, Math::SafePow"
-
-  CloudShadows:
-    policy: bottle-plus-components
-    paths:
-      - src/Features/CloudShadows.cpp
-      - src/Features/CloudShadows.h
-      - features/Cloud Shadows/
-    components:
-      cloud_relight_self_shadow:
-        source: open
-        anchor: "Cloud Relight seam: CloudSelfShadowTexture t26 decl; texSelfShadowCopy; ModifySky binds texOcclusionChain[deck] for main-view cloud draws, SkyShaderHacks binds a copy for reflection draws"
-        paths: ["features/Cloud Shadows/Shaders/CloudShadows/CloudShadows.hlsli", "src/Features/CloudShadows.cpp", "src/Features/CloudShadows.h"]
-    note: "the seam re-expresses Open's per-layer self-shadow input on Bottle's deck chain; not yet validated in game"
-
-  DynamicCubemaps:
-    policy: bottle-exact
-    paths:
-      - src/Features/DynamicCubemaps.cpp
-      - src/Features/DynamicCubemaps.h
-      - features/Dynamic Cubemaps/
-
-  Effects11:
-    policy: bottle-plus-components
-    paths:
-      - src/Features/Effects11.cpp
-      - src/Features/Effects11.h
-      - src/Features/Effects11/
-      - features/Effects11/
-    components:
-      open_preset_hot_swap:
-        source: open
-        anchor: "PresetManager.h/.cpp; MenuManager.cpp preset-location combo, tooltips, State::Save on switch and no-location Save/Load guard; Effects11 Settings.presetLocation, Load/SaveSettings, Initialize, ResolveActivePresetLocation"
-        paths: ["src/Features/Effects11/PresetManager.cpp", "src/Features/Effects11/PresetManager.h", "src/Features/Effects11/MenuManager.cpp", "src/Features/Effects11.cpp", "src/Features/Effects11.h"]
-    note: "kept by owner choice (2026-09-26). PresetManager uses std::filesystem where Open uses mainline's Util::PathHelpers::Safe* helpers, which Bottle lacks; MenuManager keeps Bottle's ShaderPatches::Load() calls"
-    deferred:
-      - "Sky Scattering and Cloud Relight can both relight cloud colour; interaction unresolved"
-      - "Bottle cloud self-shadowing (35e2151ab9, 6660d25a1b) not evaluated: Bottle partially self-reverted"
-
-  ExponentialHeightFog:
-    policy: bottle-exact
-    paths:
-      - src/Features/ExponentialHeightFog.cpp
-      - src/Features/ExponentialHeightFog.h
-      - features/Exponential Height Fog/
-
-  ExtendedMaterials:
-    policy: bottle-exact
-    paths:
-      - src/Features/ExtendedMaterials.cpp
-      - src/Features/ExtendedMaterials.h
-      - features/Extended Materials/
-
-  ExtendedTranslucency:
-    policy: bottle-exact
-    paths:
-      - src/Features/ExtendedTranslucency.cpp
-      - src/Features/ExtendedTranslucency.h
-      - features/Extended Translucency/
-
-  FoliageLighting:
-    policy: bottle-exact
-    paths:
-      - src/Features/FoliageLighting.cpp
-      - src/Features/FoliageLighting.h
-      - features/Foliage Lighting/
-
-  FootstepParticles:
-    policy: bottle-exact
-    paths:
-      - src/Features/FootstepParticles.cpp
-      - src/Features/FootstepParticles.h
-      - features/Footstep Particles/
-
-  GrassCollision:
-    policy: bottle-exact
-    paths:
-      - src/Features/GrassCollision.cpp
-      - src/Features/GrassCollision.h
-      - features/Grass Collision/
-    note: "Open reworked Grass Collision into a bend field shared with Wind; that is Open's evolution of this feature, not Wind code, so Bottle's collision stays and composes with the wind bend"
-
-  GrassLighting:
-    policy: bottle-exact
-    paths:
-      - src/Features/GrassLighting.cpp
-      - src/Features/GrassLighting.h
-      - features/Grass Lighting/
-
-  GrassOptimizations:
-    policy: bottle-plus-components
-    paths:
-      - src/Features/GrassOptimizations.cpp
-      - src/Features/GrassOptimizations.h
-      - src/Features/GrassOptimizations/
-      - features/Grass Optimizations/
-    components:
-      wind_instance_response:
-        source: open
-        anchor: "culling CS samples GrassWindResponse per instance; extras grow from 2 to 4 float4 (response slots 2/3); culling dispatch binds Wind's spring field and b4-b6 (hunks under shared_integrations)"
-        paths: ["src/Features/GrassOptimizations.cpp", "src/Features/GrassOptimizations/GrassBucketStore.cpp", "features/Grass Optimizations/Shaders/GrassOptimizations/GrassCullingCS.hlsl"]
-
-  HDRDisplay:
-    policy: bottle-exact
-    paths:
-      - src/Features/HDRDisplay.cpp
-      - src/Features/HDRDisplay.h
-      - features/HDR Display/
-
-  HairSpecular:
-    policy: bottle-exact
-    paths:
-      - src/Features/HairSpecular.cpp
-      - src/Features/HairSpecular.h
-      - features/Hair Specular/
-
-  HorizonFix:
-    policy: bottle-exact
-    paths:
-      - src/Features/HorizonFix.cpp
-      - src/Features/HorizonFix.h
-      - features/HorizonFix/
-
-  IBL:
-    policy: bottle-exact
-    paths:
-      - src/Features/IBL.cpp
-      - src/Features/IBL.h
-      - features/IBL/
-
-  InteriorSun:
-    policy: bottle-exact
-    paths:
-      - src/Features/InteriorSun.cpp
-      - src/Features/InteriorSun.h
-      - features/Interior Sun/
-
-  InverseSquareLighting:
-    policy: bottle-exact
-    paths:
-      - src/Features/InverseSquareLighting.cpp
-      - src/Features/InverseSquareLighting.h
-      - src/Features/InverseSquareLighting/
-      - features/Inverse Square Lighting/
-
-  LODBlending:
-    policy: bottle-exact
-    paths:
-      - src/Features/LODBlending.cpp
-      - src/Features/LODBlending.h
-      - features/LOD Blending/
-
-  LightLimitFix:
-    policy: bottle-exact
-    paths:
-      - src/Features/LightLimitFix.cpp
-      - src/Features/LightLimitFix.h
-      - features/Light Limit Fix/
-    deferred:
-      - "Bottle-Compendium past the pin reworks LLF again (occlusion pyramid, shadowless-light leak fix); sync deliberately"
-
-  LinearLighting:
-    policy: bottle-exact
-    paths:
-      - src/Features/LinearLighting.cpp
-      - src/Features/LinearLighting.h
-      - features/Linear Lighting/
-
-  PerformanceOverlay:
-    policy: bottle-exact
-    paths:
-      - src/Features/PerformanceOverlay.cpp
-      - src/Features/PerformanceOverlay.h
-      - src/Features/PerformanceOverlay/
-      - features/Performance Overlay/
-
-  PostProcessing:
-    policy: bottle-plus-components
-    paths:
-      - src/Features/PostProcessing.cpp
-      - src/Features/PostProcessing.h
-      - src/Features/PostProcessing/
-      - features/Post Processing/
-    components:
-      dialogue_dof_menu_gate:
-        source: personal
-        anchor: "DoF::GetInDialogue - menuOpen && gate on lastSpeaker (a7e142722c)"
-        paths: ["src/Features/PostProcessing/DoF.cpp"]
-      disabled_by_default:
-        source: personal
-        anchor: "default state: every pipeline effect and the feature start disabled; DisableVanillaTonemapping default 0 (90e57b9855)"
-        paths: ["features/Post Processing/SKSE/Plugins/CommunityShaders/PostProcessing/default.json", "src/Features/PostProcessing.cpp", "src/Features/PostProcessing.h"]
-
-  ProceduralSun:
-    policy: bottle-exact
-    paths:
-      - src/Features/ProceduralSun.cpp
-      - src/Features/ProceduralSun.h
-      - features/Procedural Sun/
-    note: "Bottle 26611dd183: the standalone Procedural Sun owns the sun and Effects11 has no procedural sun of its own"
-
-  PseudoSunBounce:
-    policy: external-maintained
-    reference: jiayev
-    paths:
-      - src/Features/PseudoSunBounce.cpp
-      - src/Features/PseudoSunBounce.h
-      - features/Pseudo Sun Bounce/
-    adaptations:
-      src/Features/PseudoSunBounce.cpp: "#include \"Utils/Serialize.h\" (jiayev's precompiled header provides it)"
-    note: "Lighting.hlsl carries jiayev's full bounce: cloud-shadow-gated sun colour, diffuse bounce, faux specular bounce (forward and deferred)"
-
-  RemoteControl:
-    policy: bottle-exact
-    paths:
-      - src/Features/RemoteControl.cpp
-      - src/Features/RemoteControl.h
-      - src/Features/RemoteControl/
-      - features/Remote Control/
-
-  RenderDoc:
-    policy: bottle-exact
-    paths:
-      - src/Features/RenderDoc.cpp
-      - src/Features/RenderDoc.h
-      - features/RenderDoc/
-
-  ReverseZ:
-    policy: bottle-exact
-    paths:
-      - src/Features/ReverseZ.cpp
-      - src/Features/ReverseZ.h
-      - features/ReverseZ/
-    note: "Bottle's REVERSE_Z handling in shared and other-feature files is complete; keep it when syncing any feature that reads depth"
-
-  ScreenSpaceGI:
-    policy: bottle-exact
-    paths:
-      - src/Features/ScreenSpaceGI.cpp
-      - src/Features/ScreenSpaceGI.h
-      - features/Screen Space GI/
-
-  ScreenSpaceShadows:
-    policy: bottle-exact
-    paths:
-      - src/Features/ScreenSpaceShadows.cpp
-      - src/Features/ScreenSpaceShadows.h
-      - src/Features/ScreenSpaceShadows/
-      - features/Screen-Space Shadows/
 
   Screenshot:
     policy: bottle-plus-components
@@ -362,268 +76,32 @@ features:
         paths: ["src/Features/ScreenshotFeature.cpp"]
       nr_comparison_capture:
         source: personal
-        anchor: "NeuralRenderingComparisonPath + Capture(forceCleanNoUI) for NR's A/B capture (7b0ffa8f1f)"
+        anchor: "NeuralRenderingComparisonPath + Capture(overridePath, forceCleanNoUI) for NR's A/B capture (7b0ffa8f1f)"
         paths: ["src/Features/ScreenshotFeature.cpp", "src/Features/ScreenshotFeature.h"]
 
-  Skin:
-    policy: external-maintained
-    reference: jiayev
-    paths:
-      - src/Features/Skin.cpp
-      - src/Features/Skin.h
-      - features/Skin/
-      - package/Shaders/Skin/
-    adaptations:
-      src/Features/Skin.cpp: "JiayeStatement promo panel removed"
-      src/Features/Skin.h: "default state: EnableSkin false (Personal, 9c8c8c1ea0)"
-    note: "Bottle carries an older, smaller Skin; Personal ships jiayev's Advanced Skin instead (4c4eb6d255, 2da0eb7a55)"
-
-  SkySync:
-    policy: bottle-plus-components
-    paths:
-      - src/Features/SkySync.cpp
-      - src/Features/SkySync.h
-      - features/Sky Sync/
-    components:
-      celestial_light_weights:
-        source: open
-        anchor: "GetCelestialLightWeights() + ShadowFader lightWeights for Cloud Relight (open 1d67aaead, Personal 105a90cea2)"
-        paths: ["src/Features/SkySync.cpp", "src/Features/SkySync.h"]
-
-  Skylighting:
-    policy: bottle-exact
-    paths:
-      - src/Features/Skylighting.cpp
-      - src/Features/Skylighting.h
-      - features/Skylighting/
-
-  SnowCover:
-    policy: bottle-plus-components
-    paths:
-      - src/Features/SnowCover.cpp
-      - src/Features/SnowCover.h
-      - features/Snow Cover/
-    components:
-      no_tree_tint:
-        source: personal
-        anchor: "default state: AffectTreeTint 0 in every worldspace config (Bottle 85f2020e8 flipped five of them to 1)"
-        paths: ["features/Snow Cover/Shaders/SnowCover/MarkarthWorld.json", "features/Snow Cover/Shaders/SnowCover/RiftenWorld.json", "features/Snow Cover/Shaders/SnowCover/SolitudeWorld.json", "features/Snow Cover/Shaders/SnowCover/Tamriel.json", "features/Snow Cover/Shaders/SnowCover/WhiterunWorld.json", "features/Snow Cover/Shaders/SnowCover/WindhelmWorld.json"]
-    deferred:
-      - "Bottle-Compendium past the pin re-adds fire melt (ae6af06476, 399695a5d4); decide on the next sync"
-
-  SubsurfaceScattering:
-    policy: bottle-exact
-    paths:
-      - src/Features/SubsurfaceScattering.cpp
-      - src/Features/SubsurfaceScattering.h
-      - features/Subsurface Scattering/
-
-  TerrainBlending:
-    policy: bottle-exact
-    paths:
-      - src/Features/TerrainBlending.cpp
-      - src/Features/TerrainBlending.h
-      - features/Terrain Blending/
-
-  TerrainHelper:
-    policy: bottle-exact
-    paths:
-      - src/Features/TerrainHelper.cpp
-      - src/Features/TerrainHelper.h
-      - features/Terrain Helper/
-
-  TerrainShadows:
-    policy: bottle-exact
-    paths:
-      - src/Features/TerrainShadows.cpp
-      - src/Features/TerrainShadows.h
-      - features/Terrain Shadows/
-      - features/Terrain Shadows - Heightmaps/
-
-  TerrainVariation:
-    policy: bottle-exact
-    paths:
-      - src/Features/TerrainVariation.cpp
-      - src/Features/TerrainVariation.h
-      - features/Terrain Variation/
-
-  TruePBR:
-    policy: bottle-exact
-    paths:
-      - src/TruePBR.cpp
-      - src/TruePBR.h
-      - src/TruePBR/
-      - features/TruePBR/
-
-  UnifiedWater:
-    policy: bottle-plus-components
-    paths:
-      - src/Features/UnifiedWater.cpp
-      - src/Features/UnifiedWater.h
-      - features/Unified Water/
-    components:
-      enabled_by_default:
-        source: personal
-        anchor: "default state: IsDisabledByDefault() override returns false (c5f10c0666, 9c8c8c1ea0)"
-        paths: ["src/Features/UnifiedWater.h"]
-
-  VanillaFresnel:
-    policy: bottle-exact
-    paths:
-      - src/Features/VanillaFresnel.cpp
-      - src/Features/VanillaFresnel.h
-      - features/Vanilla Fresnel/
-
-  VolumetricLighting:
-    policy: bottle-exact
-    paths:
-      - src/Features/VolumetricLighting.cpp
-      - src/Features/VolumetricLighting.h
-      - features/Volumetric Lighting/
-
-  VolumetricShadows:
-    policy: bottle-exact
-    paths:
-      - src/Features/VolumetricShadows.cpp
-      - src/Features/VolumetricShadows.h
-      - features/Volumetric Shadows/
-
-  WaterEffects:
-    policy: bottle-exact
-    paths:
-      - src/Features/WaterEffects.cpp
-      - src/Features/WaterEffects.h
-      - features/Water Effects/
-
-  Wind:
-    policy: external-maintained
-    reference: open
-    paths:
-      - src/Features/Wind/
-      - features/Wind/
-      - package/Shaders/Common/DampedSpring.hlsli
-      - package/Shaders/Common/GrassWind.hlsli
-      - package/Shaders/Common/GrassWindResponse.hlsli
-      - package/Shaders/Common/GrassWindSpring.hlsli
-      - package/Shaders/Common/TransientWindCulling.hlsli
-      - package/Shaders/Common/TransientWindImpulse.hlsli
-      - package/Shaders/Common/TreeWind.hlsli
-      - package/Shaders/Common/TreeWindSpring.hlsli
-      - package/Shaders/Common/WindField.hlsli
-      - package/Shaders/Common/WindFieldTypes.hlsli
-      - package/Shaders/GrassWindSpringCS.hlsl
-      - package/Shaders/TreeWindSpringCS.hlsl
-      - package/Shaders/Tests/TestWindField.hlsl
-      - package/Shaders/Tests/WindFieldParitySamples.hlsli
-      - package/SKSE/Plugins/CommunityShaders/WindSettings/
-      - src/Utils/LazyShader.h
-    adaptations:
-      src/Features/Wind/Wind.h: "no SupportsVR/devbench/scoped-page virtuals (Bottle's Feature has none); kGrass category (no kFoliage); tree hooks, scene-transition sink and BindVertexConstantBuffers() declared locally"
-      src/Features/Wind/Wind.cpp: "devbench diagnostics/UX actions and scoped-page defaults removed; OnRenderPassBegin replaced by self-installed BSLightingShader/BSUtilityShader SetupGeometry hooks; BindVertexConstantBuffers() binds b4/b6 to the vertex stage (Open: State::BindVertexPermutationData)"
-      src/Features/Wind/WindUpdate.cpp: "writes the per-frame permutation defaults (Open: State::UpdatePermutationBuffer)"
-      src/Features/Wind/WindGrass.cpp: "Tracy ZoneScopedN instead of CS_GPU_PASS (no GpuPass.h in Bottle)"
-      src/Features/Wind/WindTrees.cpp: "Tracy ZoneScopedN instead of CS_GPU_PASS (no GpuPass.h in Bottle)"
-      src/Features/Wind/UI/WindSettingsUI.cpp: "Util::GetEyePosition (Bottle has no GetAverageEyePosition)"
-      src/Features/Wind/WindEffects/DragonWind.cpp: "float3(...) instead of brace-init temporaries (ambiguous with this repo's float3 constructors)"
-      src/Features/Wind/WindEffects/WeaponThrowVRWind.cpp: "no VR build: throw tracking returns early"
-      src/Utils/LazyShader.h: "no ID3DBlob specialization (Bottle has no Util::CompileShaderBlob; Wind does not use it)"
-    note: "integration outside the feature: Lighting/Utility/RunGrass/DeferredCompositeCS hunks, PermutationCB fields, Hooks (grass spring, VS binding), Grass Optimizations culling seam, FeatureData, ActorUtils helpers, WindSettings path"
-    deferred:
-      - "Open's Grass Collision bend-field rework (collision rotation shared with the wind bend) is not ported; Bottle's Grass Collision composes additively"
-
-project:
-  deferred:
-    - "11 Bottle-Compendium commits past the pin (LLF, Snow Cover fire melt, Effects11, EHF, SSGI, Screen-Space Shadows); sync deliberately and bump upstreams.yaml"
-
 shared_integrations:
-  # Every hunk that differs from Bottle in these files must contain a `match` (or `removes`) string of
-  # one entry; every `match` string must still be present. `removes` names Bottle code a hunk only
-  # deletes. `anchor` says where the hunk lives.
+  # Every hunk that differs from Bottle in these files must contain a `match` string of one entry;
+  # every `match` string must still be present. `anchor` says where the hunk lives.
   package/Shaders/Lighting.hlsl:
     nr_category_classification:
       source: personal
       anchor: "NeuralRenderingCategories include; Masks2 SV_Target7 output; category pack replacing Bottle's Masks2 write at the end of the PS"
       match: ['#include "Common/NeuralRenderingCategories.hlsli"', "float4 Masks2: SV_Target7;", "NeuralRenderingCategories::Pack("]
-    wind_tree_bend:
-      source: open
-      anchor: "VS: TreeWind include; CameraPosAdjust in VS_PerFrame; tree samples at world positions; leafAnimationStrength into GetTreeShiftVector; trunk displacement before viewPos"
-      match: ['#include "Common/TreeWind.hlsli"', "CameraPosAdjust : packoffset(c40);", "treeBendEnabled", "animationStrength", "leafAnimationStrength"]
-    pseudo_sun_bounce:
-      source: jiayev
-      anchor: "PS: sunbounce include; cloud-gated bounce into directionalAmbientColor; faux specular bounce in the forward composite and the deferred output"
-      match: ["PseudoSunBounce/sunbounce.hlsli", "PSEUDO_SUN_BOUNCE", "specularBounce"]
-  package/Shaders/Utility.hlsl:
-    wind_tree_bend:
-      source: open
-      anchor: "VS: tree bend and leaf flutter for shadow/depth passes, matching Lighting.hlsl"
-      match: ['#include "Common/Permutation.hlsli"', '#include "Common/TreeWind.hlsli"', "treeBendEnabled", "leafAnimationStrength"]
   package/Shaders/RunGrass.hlsl:
-    wind_grass:
-      source: open
-      anchor: "GrassWind/GrassWindResponse includes; ApplyGrassWindResponse replaces CalculateWindDisplacement; GrassWindResponse::Sample in the standard path; 4-float4 InstanceExtras in the GRASS_OPTIMIZATIONS path; bent normals"
-      match: ['#include "Common/GrassWind.hlsli"', "GrassWindResponse", "ApplyGrassWindResponse", "InstanceExtras[instanceID * 4", "Four per instance", "GrassWind::RotateVector("]
-      removes: ["vertexTerm", "CalculateWindDisplacement"]   # Bottle's vanilla wind lines this replaces
     nr_category_classification:
       source: personal
       anchor: "Masks2 Foliage category pack in both PS branches"
       match: ['#include "Common/NeuralRenderingCategories.hlsli"', "NeuralRenderingCategories::Pack("]
-  package/Shaders/Sky.hlsl:
-    cloud_relight_clouds:
-      source: open
-      anchor: "CR_CLOUDS include block after Procedural Sun's; RelightCloud on the base colour after TEXLERP"
-      match: ["CR_CLOUDS", "CloudRelight"]
-  package/Shaders/DeferredCompositeCS.hlsl:
-    wind_debug_view:
-      source: open
-      anchor: "WindField include; GrassWindSpringDebug t18; wind-field debug view before the final MainRW write (Reverse Z-aware sky test)"
-      match: ['#include "Common/WindField.hlsli"', "GrassWindSpringDebug", "windFieldDebugEnabled"]
-  package/Shaders/Common/SharedData.hlsli:
-    local_feature_data:
-      source: personal
-      anchor: "wind type includes; CloudRelightSettings, WindSettings, PseudoSunBounceSettings structs; FeatureData entries appended after Bottle's volumetricLightingSettings (mirrors FeatureBuffer.cpp)"
-      match: ['#include "Common/TransientWindImpulse.hlsli"', "struct CloudRelightSettings", "struct PseudoSunBounceSettings", "CloudRelightSettings cloudRelightSettings;", "WindField::WindTuning WindFieldTuning;", "WindSettings windSettings;", "PseudoSunBounceSettings pseudoSunBounceSettings;"]
   package/Shaders/Common/Permutation.hlsli:
     local_extra_flags:
       source: personal
-      anchor: "ExtraFlags: IsHumanoidActor (31), IsHair (30) for Neural Rendering, TreeBend (29) for Wind; must mirror State.h"
-      match: ["IsHumanoidActor", "IsHair", "TreeBend"]
-    wind_permutation_fields:
-      source: open
-      anchor: "PerShader cbuffer: Wind tree-bend and grass-wind fields after Bottle's EffectRadius (mirrors State::PermutationCB)"
-      match: ["TreeBendModelSensitivity", "WindIntensityOverride"]
-  package/Shaders/Common/Math.hlsli:
-    wind_epsilons:
-      source: open
-      anchor: "EPSILON_WIND_* and EPSILON_DAMPED_SPRING_* defines"
-      match: ["EPSILON_WIND_GEOMETRY", "EPSILON_DAMPED_SPRING_FREQUENCY"]
-    safe_pow:
-      source: open
-      anchor: "Math::SafePow, used by Cloud Relight's Draine phase function"
-      match: ["SafePow"]
-  features/Grass Optimizations/Shaders/GrassOptimizations/GrassCullingCS.hlsl:
-    wind_instance_response:
-      source: open
-      anchor: "GrassWindResponse include; per-instance response replaces the WindScalar e1.xy; extras written with a stride of 4"
-      match: ['#include "Common/GrassWindResponse.hlsli"', "GrassWindResponse::Sample(", "currentResponse", "slot * 4"]
-  src/Features/GrassOptimizations.cpp:
-    wind_instance_response:
-      source: open
-      anchor: "culling dispatch: Wind::UpdateGrassWindSpring(true) and b4-b6 before CullParams"
-      match: ['#include "Wind/Wind.h"', "UpdateGrassWindSpring(true)"]
-  src/Features/GrassOptimizations/GrassBucketStore.cpp:
-    wind_instance_response:
-      source: open
-      anchor: "extras buffers (main and LOD bins) hold 4 float4 per instance"
-      match: ["[i*4+0]", "capacity * 4", "cap * 4"]
+      anchor: "ExtraFlags: IsHumanoidActor (31), IsHair (30) for Neural Rendering; must mirror State.h"
+      match: ["IsHumanoidActor", "IsHair"]
   src/State.h:
     local_extra_descriptors:
       source: personal
-      anchor: "ExtraShaderDescriptors: IsHumanoidActor, IsHair (Neural Rendering), TreeBend (Wind), allocated downward from bit 31"
-      match: ["IsHumanoidActor = 1u << 31", "IsHair = 1u << 30", "TreeBend = 1u << 29"]
-    wind_permutation_fields:
-      source: open
-      anchor: "PermutationCB: Wind fields after Bottle's EffectRadius/pad0, compared in operator=="
-      match: ["TreeBendModelSensitivity", "EnableGrassWindSpringBend"]
+      anchor: "ExtraShaderDescriptors: IsHumanoidActor, IsHair (Neural Rendering), allocated downward from bit 31"
+      match: ["IsHumanoidActor = 1u << 31", "IsHair = 1u << 30"]
   src/State.cpp:
     nr_settings_migration:
       source: personal
@@ -638,43 +116,30 @@ shared_integrations:
       source: personal
       anchor: "PostProcessingExtensions::Main_HDRTonemapBlendCinematic_Render"
       match: ['#include "Features/NeuralRendering.h"', "neuralRendering.CaptureDisplayTransform(", "neuralRendering.ApplyFinishedImage(", "HandlePostProcessing(input, output)) {"]
-    wind_hooks:
-      source: open
-      anchor: "BSGrassShader_SetupGeometry drives the grass spring; SetDirtyStates binds Wind's vertex buffers"
-      match: ['#include "Features/Wind/Wind.h"', "wind.UpdateGrassWindSpring()", "wind.BindVertexConstantBuffers()"]
   src/Deferred.cpp:
     nr_category_capture:
       source: personal
       anchor: "Deferred::EndDeferred (restore) and Main_RenderWorld_BlendedDecals (capture)"
       match: ['#include "Features/NeuralRendering.h"', "neuralRendering.RestoreCategories()", "neuralRendering.CaptureCategories()"]
-    wind_debug_view:
-      source: open
-      anchor: "main composite: t18 = Wind's grass-spring debug SRV, cleared with the other SRVs"
-      match: ['#include "Features/Wind/Wind.h"', "GetGrassWindSpringDebugSRV()", "CSSetShaderResources(18, 1"]
-  src/FeatureBuffer.cpp:
-    local_feature_data:
-      source: personal
-      anchor: "GetFeatureBufferData(): local entries after volumetricLighting, same order as SharedData.hlsli"
-      match: ['#include "Features/CloudRelight.h"', '#include "Features/PseudoSunBounce.h"', '#include "Features/Wind/Wind.h"', "globals::features::cloudRelight.GetCommonBufferData()", "globals::features::wind.GetSharedWindData()", "globals::features::pseudoSunBounce.settings"]
   src/Feature.cpp:
     local_features:
       source: personal
-      anchor: "GetFeatureList(): local features appended after Bottle's list"
-      match: ['#include "Features/CloudRelight.h"', '#include "Features/NeuralRendering.h"', '#include "Features/Wind/Wind.h"', "&globals::features::cloudRelight,"]
+      anchor: "GetFeatureList(): Neural Rendering appended after Bottle's list"
+      match: ['#include "Features/NeuralRendering.h"', "&globals::features::neuralRendering"]
   src/Globals.cpp:
     local_features:
       source: personal
-      anchor: "globals::features: local instances appended"
-      match: ['#include "Features/CloudRelight.h"', '#include "Features/NeuralRendering.h"', '#include "Features/Wind/Wind.h"', "CloudRelight cloudRelight{};"]
+      anchor: "globals::features: Neural Rendering instance appended"
+      match: ['#include "Features/NeuralRendering.h"', "NeuralRendering neuralRendering{};"]
   src/Globals.h:
     local_features:
       source: personal
-      anchor: "forward declarations and externs appended"
-      match: ["struct CloudRelight;", "extern CloudRelight cloudRelight;"]
+      anchor: "forward declaration and extern appended"
+      match: ["struct NeuralRendering;", "extern NeuralRendering neuralRendering;"]
   src/Menu.cpp:
     nr_hotkeys:
       source: personal
-      anchor: "NeuralRendering toggle/compare/scale hotkeys: load/save, StepNeuralRenderingScale, key actions, capture handlers"
+      anchor: "NeuralRendering toggle/compare/scale hotkeys after Effects 11 Editor's: load/save, StepNeuralRenderingScale, key actions, capture handlers"
       match: ["NeuralRendering"]
   src/Menu.h:
     nr_hotkeys:
@@ -684,7 +149,7 @@ shared_integrations:
   src/Menu/SettingsTabRenderer.cpp:
     nr_hotkeys:
       source: personal
-      anchor: "hotkey widgets after Effects 11's"
+      anchor: "hotkey widgets after Effects 11 Editor's"
       match: ["NeuralRendering"]
     background_compile_overlay:
       source: personal
@@ -715,33 +180,9 @@ shared_integrations:
       source: personal
       anchor: "kDataLoaded: backgroundCompilation = true after the boot compile wait (a192a5a527)"
       match: ["backgroundCompilation = true"]
-  src/Utils/FileSystem.cpp:
-    wind_settings_path:
-      source: open
-      anchor: "PathHelpers::GetWindSettingsPath()"
-      match: ["GetWindSettingsPath"]
-  src/Utils/FileSystem.h:
-    wind_settings_path:
-      source: open
-      anchor: "PathHelpers::GetWindSettingsPath() declaration"
-      match: ["WindSettings"]
-  src/Utils/ActorUtils.cpp:
-    wind_actor_helpers:
-      source: open
-      anchor: "IsDragon, GetVisualOrigin, GetMagicOrigin, GetAimDirection (== open) for Wind's effect routers"
-      match: ["#include <cctype>", "IsDragon", "GetVisualOrigin"]
-  src/Utils/ActorUtils.h:
-    wind_actor_helpers:
-      source: open
-      anchor: "declarations of the four Wind helpers"
-      match: ["class BGSKeyword;", "IsDragon"]
 
 repository:
   # Whole files outside the features that differ from Bottle.
-  fork_readme:
-    source: personal
-    reason: "the fork's own README (product name, what the fork is)"
-    paths: [README.md]
   personal_build:
     source: personal
     reason: "BuildPersonal.bat: BuildDev + prune excluded features + zip"
@@ -752,8 +193,8 @@ repository:
     paths: [cmake/Streamline/CMakeLists.txt, .gitignore]
   maintenance_records:
     source: personal
-    reason: "this catalogue, provenance, upstream pins and their docs"
-    paths: [docs/development/README.md, docs/development/feature-provenance.yaml, docs/development/maintenance-policy.yaml, docs/development/upstreams.yaml, docs/development/maintainability.md, docs/development/maintain-refactor.md, docs/development/history/]
+    reason: "this catalogue, provenance, upstream pins, the removed-features record and their docs"
+    paths: [docs/development/README.md, docs/development/feature-provenance.yaml, docs/development/maintenance-policy.yaml, docs/development/upstreams.yaml, docs/development/maintainability.md, docs/development/removed-features.md, docs/development/history/]
   maintenance_tools:
     source: personal
     reason: "tools that enforce this catalogue"
@@ -764,5 +205,5 @@ repository:
     paths: [.claude/CLAUDE.md]
   generated_translations:
     source: generated
-    reason: "en.json is regenerated from source by tools/extract-i18n.py; it differs by the local features' strings"
+    reason: "en.json is regenerated from source by tools/extract-i18n.py; it differs by Neural Rendering's and the overlay toggle's strings"
     paths: [package/SKSE/Plugins/CommunityShaders/Translations/en.json]

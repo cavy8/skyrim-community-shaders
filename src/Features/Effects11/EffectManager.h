@@ -99,13 +99,12 @@ public:
 	/** @brief Depth SRV for .fx files: the scene depth, or a standard-Z (1 - z) copy of it when Reverse Z is active. */
 	ID3D11ShaderResourceView* GetEffectDepthSRV();
 
-	void RenderEffectsList();
-
 	// Common variable data (updated once, applied to all effects)
 	struct CommonVariableData
 	{
 		float timer[4];
 		float weather[4];
+		float enbWeather[4];
 		float timeOfDay1[4];
 		float timeOfDay2[4];
 		float eNightDayFactor;
@@ -155,7 +154,7 @@ public:
 	void ExecuteEffect(EffectBase& effect, uint32_t enableSettingID = 0xFFFFFFFF);
 
 	// Texture copy using pixel shader
-	void CopyTexture(ID3D11ShaderResourceView* source, ID3D11RenderTargetView* destination, bool dither = true);
+	bool CopyTexture(ID3D11ShaderResourceView* source, ID3D11RenderTargetView* destination, bool dither = true);
 
 	// Color correction using compute shader
 	void ApplyColorCorrection(ID3D11UnorderedAccessView* textureUAV);

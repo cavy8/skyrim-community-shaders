@@ -102,6 +102,9 @@ public:
 	bool queuedResetSkylighting = true;
 	bool inOcclusion = false;
 	RE::NiPoint3 occlusionEyePosition;
+	float occlusionDirectionZ = -1.f;
+	static constexpr float OcclusionBelowGridMargin = 512.f;
+	static constexpr float OcclusionBelowGridMaxDirectionZ = -.25f;
 	REX::W32::XMFLOAT4X4 OcclusionTransform;
 	float4 OcclusionDir;
 	uint frameCount = 0;

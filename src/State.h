@@ -218,7 +218,7 @@ public:
 	 */
 	void CheckTypedUAVLoadSupport();
 	/**
-	 * @brief Strips and rewrites shader descriptor bits for the Cav's Unity Shaders pipeline.
+	 * @brief Strips and rewrites shader descriptor bits for the Bottled Shaders pipeline.
 	 * @param a_shader The shader being compiled.
 	 * @param a_vertexDescriptor Vertex descriptor flags (modified in place).
 	 * @param a_pixelDescriptor Pixel descriptor flags (modified in place).
@@ -295,10 +295,7 @@ public:
 		// geometry belongs to a hair or facial-hair head part of its actor,
 		// whatever shader type the piece was authored with - see
 		// NeuralRenderingCategories::Hair.
-		IsHair = 1u << 30,
-		// Set by Wind::OnTreeBendRenderPassBegin for tree trunk/leaf geometry that
-		// should sample per-mesh wind-bend sensitivities from PermutationCB.
-		TreeBend = 1u << 29
+		IsHair = 1u << 30
 	};
 
 	/** @brief Bitflags describing extra feature-specific properties related to terrain displacement and material models. */
@@ -379,73 +376,11 @@ public:
 		float EffectRadius;
 		float3 pad0;
 
-		// Per-mesh tree wind-bend sensitivities, set by Wind::OnTreeBendRenderPassBegin
-		// just before a qualifying tree draw; see State::ExtraShaderDescriptors::TreeBend.
-		float TreeBendModelSensitivity;
-		float TreeLeafModelSensitivity;
-		float TreeWindUpperBendRange;
-		float TreeWindMaximumDisplacementPercent;
-
-		float TreeWindBoundsBase;
-		float TreeWindBoundsHeight;
-		float TreeWindTrunkGustInfluence;
-		float TreeLeafGustInfluence;
-
-		float TreeTransientWindInfluence;
-		float TreeLeafTransientWindInfluence;
-		float TreeLeafTransientFlutterMaximum;
-		float TreeTransientMaximumBendMultiplier;
-
-		float4 TreeWindProbeBase;
-		float4 TreeWindProbeTop;
-
-		// Whole-frame wind/grass permutation defaults, set once per frame from
-		// Wind::GetPermutationContribution() in Wind::Reset(). The tree fields above are
-		// then overridden per-mesh by Wind::OnTreeBendRenderPassBegin for qualifying draws.
-		float WindIntensityOverride;
-		uint32_t OverrideWindIntensity;
-		uint32_t EnableGrassWindSpringBend;
-		float pad1;
-
-		float TrunkWindBendSensitivity;
-		float TreeLeafBaseWindFlutterGain;
-		uint32_t EnableAmbientGrassWind;
-		float GrassWindBendProfile;
-
-		float GrassWindFlutterStrength;
-		float GrassWindFlutterFrequency;
-		float GrassWindSensitivity;
-		float GrassWindCompressionToBend;
-
 		bool operator==(const PermutationCB& other) const
 		{
 			return PixelShaderDescriptor == other.PixelShaderDescriptor &&
 			       ExtraShaderDescriptor == other.ExtraShaderDescriptor &&
-			       ExtraFeatureDescriptor == other.ExtraFeatureDescriptor && EffectRadius == other.EffectRadius &&
-			       TreeBendModelSensitivity == other.TreeBendModelSensitivity &&
-			       TreeLeafModelSensitivity == other.TreeLeafModelSensitivity &&
-			       TreeWindUpperBendRange == other.TreeWindUpperBendRange &&
-			       TreeWindMaximumDisplacementPercent == other.TreeWindMaximumDisplacementPercent &&
-			       TreeWindBoundsBase == other.TreeWindBoundsBase &&
-			       TreeWindBoundsHeight == other.TreeWindBoundsHeight &&
-			       TreeWindTrunkGustInfluence == other.TreeWindTrunkGustInfluence &&
-			       TreeLeafGustInfluence == other.TreeLeafGustInfluence &&
-			       TreeTransientWindInfluence == other.TreeTransientWindInfluence &&
-			       TreeLeafTransientWindInfluence == other.TreeLeafTransientWindInfluence &&
-			       TreeLeafTransientFlutterMaximum == other.TreeLeafTransientFlutterMaximum &&
-			       TreeTransientMaximumBendMultiplier == other.TreeTransientMaximumBendMultiplier &&
-			       TreeWindProbeBase == other.TreeWindProbeBase && TreeWindProbeTop == other.TreeWindProbeTop &&
-			       WindIntensityOverride == other.WindIntensityOverride &&
-			       OverrideWindIntensity == other.OverrideWindIntensity &&
-			       EnableGrassWindSpringBend == other.EnableGrassWindSpringBend &&
-			       TrunkWindBendSensitivity == other.TrunkWindBendSensitivity &&
-			       TreeLeafBaseWindFlutterGain == other.TreeLeafBaseWindFlutterGain &&
-			       EnableAmbientGrassWind == other.EnableAmbientGrassWind &&
-			       GrassWindBendProfile == other.GrassWindBendProfile &&
-			       GrassWindFlutterStrength == other.GrassWindFlutterStrength &&
-			       GrassWindFlutterFrequency == other.GrassWindFlutterFrequency &&
-			       GrassWindSensitivity == other.GrassWindSensitivity &&
-			       GrassWindCompressionToBend == other.GrassWindCompressionToBend;
+			       ExtraFeatureDescriptor == other.ExtraFeatureDescriptor && EffectRadius == other.EffectRadius;
 		}
 	};
 	STATIC_ASSERT_ALIGNAS_16(PermutationCB);

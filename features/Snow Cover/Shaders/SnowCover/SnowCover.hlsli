@@ -45,6 +45,20 @@ namespace SnowCover
 		return 1 - smoothstep(fadeStart, fadeEnd, viewDist) * amount;
 	}
 
+	float GetFireMelt(float3 p)
+	{
+		float melt = 0;
+		uint fireCount = min(SharedData::snowCoverSettings.FireMeltCount, 8u);
+		[loop] for (uint i = 0; i < fireCount; i++)
+		{
+			float4 fire = SharedData::snowCoverSettings.FireMeltSpheres[i];
+			float radius = fire.w * SharedData::snowCoverSettings.FireMeltRadiusScale;
+			float3 delta = p - fire.xyz;
+			melt = max(melt, 1 - smoothstep(radius * radius * 0.25, radius * radius, dot(delta, delta)));
+		}
+		return melt * SharedData::snowCoverSettings.FireMeltStrength;
+	}
+
 	float GetHeightMult(float3 p)
 	{
 		float2 scale = SharedData::snowCoverSettings.mapScale;
@@ -77,6 +91,8 @@ namespace SnowCover
 		float weatherMult = GetWeatherRange(p, viewDist) * SharedData::snowCoverSettings.TimeSnowing * max(500, SharedData::snowCoverSettings.SnowingDensity) / 500;
 		float mult = SharedData::snowCoverSettings.MainTint.a * saturate(env_mult);
 		mult = distMult * skylight * saturate(mult + weatherMult) * smoothstep(SharedData::snowCoverSettings.minAngle, SharedData::snowCoverSettings.maxAngle, worldNormal.z);
+		[branch] if (mult > 0)
+			mult *= 1 - GetFireMelt(p);
 #	if defined(GRASS)
 		if (SharedData::snowCoverSettings.AffectGrassTint) {
 #	else
@@ -109,6 +125,8 @@ namespace SnowCover
 		float distMult = 1;
 #		endif
 		float mult = distMult * skylight * env_mult * smoothstep(SharedData::snowCoverSettings.minAngle, SharedData::snowCoverSettings.maxAngle, worldNormal.z);
+		[branch] if (mult > 0)
+			mult *= 1 - GetFireMelt(p);
 		if (mult <= 0) {
 			alt = false;
 			return mult;
