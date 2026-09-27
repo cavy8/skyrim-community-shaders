@@ -32,7 +32,7 @@ namespace
 		std::uint32_t workSize[2]{};          ///< Model raster; the shared colour/output textures are this size.
 		std::uint32_t guideSize[2]{};         ///< Depth guide active region, in guide texels.
 		std::uint32_t depthAwareResolve = 0;  ///< Non-zero: fade the edit across depth silhouettes in the decode.
-		std::uint32_t skipFrame = 0;          ///< Non-zero: the model did not run; the decode re-applies its stale answer.
+		std::uint32_t staleAnswer = 0;        ///< Non-zero: the decode reprojects the previous frame's answer.
 		std::uint32_t hueGuardMask = 0;  ///< Bit i set: category i (NeuralRendering::MaterialCategory) hue-guards its chroma change.
 		float guideJitterOffset[2]{};   ///< Projection offset of the guide rasters relative to the colour raster, in guide texels.
 		std::uint32_t colorDomain = 0;  ///< NeuralRendering::ColorDomain: how the colour input is encoded.
@@ -591,8 +591,8 @@ struct NeuralRenderingBackend::State
 		return colorOutUAV.get();
 	}
 
-	/// Most SRVs any transfer pass binds (DecodeColorCS: t0-t6).
-	static constexpr std::size_t kMaxTransferSources = 7;
+	/// Most SRVs any transfer pass binds (DecodeColorCS: t0-t7).
+	static constexpr std::size_t kMaxTransferSources = 8;
 
 	/// Runs a single-UAV compute pass over the given extent with @p sources bound from t0 upwards, and unbinds afterwards.
 	static void DispatchTransfer(ID3D11DeviceContext* context, ID3D11ComputeShader* shader,
@@ -801,12 +801,14 @@ struct NeuralRenderingBackend::State
 
 		// Alternating frames (the proxy's experimental "VRNR"): run the model every
 		// other frame and, in between, re-apply its previous answer to the fresh
-		// frame through the decode alone. The shared colour/output textures keep
-		// the previous proxy/answer pair, which D3D11 already waited on when that
-		// frame's D3D12 work was submitted. The first frame after a history reset,
-		// a raster change or a failure always evaluates.
-		const bool skipFrame = inputs.alternateFrames && featureAvailable && !resetPending && !inputs.reset &&
-		                       (evaluateFrameIndex % 2) == 1;
+		// frame through the decode alone, reprojected through the game's motion
+		// vectors. The shared colour/output textures keep the previous proxy/answer
+		// pair, which D3D11 already waited on when that frame's D3D12 work was
+		// submitted. The first frame after a history reset, a raster change or a
+		// failure always evaluates, and so does every frame when there is no
+		// motion-vector view to reproject through.
+		const bool skipFrame = inputs.alternateFrames && inputs.motionVectorsSRV && featureAvailable &&
+		                       !resetPending && !inputs.reset && (evaluateFrameIndex % 2) == 1;
 
 		auto* encodeShader = GetShader(encodeColorCS, encodeColorAttempted, kEncodeColorPath, "EncodeColorCS");
 		auto* decodeShader = GetShader(decodeColorCS, decodeColorAttempted, kDecodeColorPath, "DecodeColorCS");
@@ -864,7 +866,7 @@ struct NeuralRenderingBackend::State
 		// resolve exactly as before (the proxy likewise bypasses at 1.0).
 		const bool modelBelowNative = modelWidth < colorWidth || modelHeight < colorHeight;
 		transferParams.depthAwareResolve = inputs.depthAwareResolve && modelBelowNative ? 1u : 0u;
-		transferParams.skipFrame = skipFrame ? 1u : 0u;
+		transferParams.staleAnswer = skipFrame ? 1u : 0u;
 		// Only 0 (scene linear) and 1 (display gamma) exist; anything else falls back to the
 		// original scene-linear behaviour rather than an undefined shader branch.
 		transferParams.colorDomain = inputs.colorDomain <= 1u ? inputs.colorDomain : 0u;
@@ -911,10 +913,11 @@ struct NeuralRenderingBackend::State
 		// The edit is measured against the exact proxy the model received, sampled
 		// at the same (jitter-compensated) position. No inverse tonemap or temporal
 		// colour accumulator is involved. The game depth rides along as the
-		// silhouette guide for the depth-aware resolve.
+		// silhouette guide for the depth-aware resolve, and the motion vectors
+		// reproject a stale answer.
 		DispatchTransfer(context, decodeShader,
 			{ outputSRV.get(), colorInView, colorSRV.get(), inputs.depthSRV, inputs.materialCategoriesSRV,
-				inputs.display.vanillaAdaptationSRV, inputs.display.postProcessAdaptationSRV },
+				inputs.display.vanillaAdaptationSRV, inputs.display.postProcessAdaptationSRV, inputs.motionVectorsSRV },
 			colorOutView, transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight);
 
 		resetPending = false;

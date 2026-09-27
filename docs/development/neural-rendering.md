@@ -655,12 +655,31 @@ with the bilinear taps and gives exactly the conventional-depth result.
 frames only. On odd frames the backend skips the encode, guide copies and the
 D3D12 submission entirely and runs `DecodeColorCS` alone against the shared
 textures, which still hold the previous frame's proxy/answer pair (D3D11
-already waited on that submission). `NeuralStaleEditWeight` compares the stale
-proxy's luminance with the fresh frame encoded the same way and fades the edit
-wherever they differ, so moving content shows the clean current frame instead
-of a misplaced ratio. A pending history reset, a raster change or a latched
-failure always forces an evaluation, so the first frame after enabling is never
-a skip.
+already waited on that submission). A pending history reset, a raster change or
+a latched failure always forces an evaluation, so the first frame after enabling
+is never a skip.
+
+**Reprojection.** That pair was computed for the previous frame, so every scene
+point sat somewhere else in it. `TransferParams.StaleAnswer` tells the decode to
+follow the game's motion vector (`MotionVectors`, `t7`, the raw
+`kMOTION_VECTOR` target at the guide resolution) back to where the point was -
+Skyrim stores current -> previous as a normalised UV offset over the active
+region, the same normalisation as the decode's `uv`, so
+`answerUV = uv + motion` - and sample the answer and its proxy there. Only
+then does `NeuralStaleEditWeight` compare the reprojected stale proxy with the
+fresh frame encoded the same way and fade the edit where they still differ
+(disocclusion, a light switching, animated surfaces). A point whose previous
+position is off screen has no answer to reuse and shows the clean frame. The
+motion vector is read nearest-neighbour at the pixel's jitter-corrected guide
+position (`NeuralGuidePosition`), as the category lookup is.
+
+An earlier version sampled the stale pair at the pixel's *current* position.
+Under any camera motion - which in Skyrim includes idle sway and head bob -
+almost every pixel then failed the stale-edit comparison, so skip frames showed
+the clean frame and evaluated frames the full edit: the whole image strobed
+between enhanced and unenhanced at half the frame rate. The backend only skips
+an evaluation when it has a motion-vector view to reproject through
+(`FrameInputs::motionVectorsSRV`); every placement passes the game's.
 
 Two known compromises, both shared with the proxy: the model's own temporal
 state sees every second frame, and the motion vectors it is given describe one

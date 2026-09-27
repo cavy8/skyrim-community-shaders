@@ -61,7 +61,7 @@ namespace
 {
 	NeuralRenderingBackend::FrameInputs MakeFrameInputs(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
 		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV, ID3D11ShaderResourceView* materialCategoriesSRV,
-		ID3D11Resource* motionVectors,
+		ID3D11Resource* motionVectors, ID3D11ShaderResourceView* motionVectorsSRV,
 		uint32_t width, uint32_t height, const NeuralRendering::Options& options)
 	{
 		NeuralRenderingBackend::FrameInputs inputs;
@@ -71,6 +71,7 @@ namespace
 		inputs.depthSRV = depthSRV;
 		inputs.materialCategoriesSRV = materialCategoriesSRV;
 		inputs.motionVectors = motionVectors;
+		inputs.motionVectorsSRV = motionVectorsSRV;
 		inputs.width = width;
 		inputs.height = height;
 		inputs.guideWidth = options.guideWidth ? options.guideWidth : width;
@@ -227,24 +228,26 @@ bool NeuralRendering::IsFeatureAvailable() const
 bool NeuralRendering::Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
 	ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
 	ID3D11ShaderResourceView* materialCategoriesSRV,
-	ID3D11Resource* motionVectors,
+	ID3D11Resource* motionVectors, ID3D11ShaderResourceView* motionVectorsSRV,
 	uint32_t width, uint32_t height, const Options& options)
 {
 	// Each placement is 1:1 in colour/output space. After-upscale colour is
 	// display-resolution while the depth and motion guides retain the render
 	// resolution used by DLSS SR, so their extents are carried independently.
 	return backend->Evaluate(MakeFrameInputs(colorIn, colorOut, depth, depthSRV,
-		materialCategoriesSRV, motionVectors, width, height, options));
+		materialCategoriesSRV, motionVectors, motionVectorsSRV, width, height, options));
 }
 
 bool NeuralRendering::PrepareSeparateUpscaling(ID3D11Resource* colorIn, ID3D11Resource* editedColor,
 	ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
 	ID3D11ShaderResourceView* materialCategoriesSRV,
-	ID3D11Resource* motionVectors, ID3D11Resource* superResolutionMotionVectors,
+	ID3D11Resource* motionVectors, ID3D11ShaderResourceView* motionVectorsSRV,
+	ID3D11Resource* superResolutionMotionVectors,
 	uint32_t width, uint32_t height,
 	uint32_t outputWidth, uint32_t outputHeight, const Options& options)
 {
-	auto inputs = MakeFrameInputs(colorIn, editedColor, depth, depthSRV, materialCategoriesSRV, motionVectors, width, height, options);
+	auto inputs = MakeFrameInputs(colorIn, editedColor, depth, depthSRV, materialCategoriesSRV, motionVectors,
+		motionVectorsSRV, width, height, options);
 	inputs.superResolutionMotionVectors = superResolutionMotionVectors;
 	inputs.outputWidth = outputWidth;
 	inputs.outputHeight = outputHeight;
@@ -374,9 +377,9 @@ void NeuralRendering::DrawSettings()
 	ImGui::Checkbox(T(TKEY("alternate_frames"), "Alternate Frames (Experimental)"), &settings.alternateFrames);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("alternate_frames_tooltip"),
-			"Runs the model every other frame and re-applies its previous result to the frames in between, "
-			"fading it wherever the image changed. Halves the neural cost, but fast motion may show a "
-			"one-frame lag in the model's lighting and detail changes."));
+			"Runs the model every other frame. In between, its previous result is moved along with the image "
+			"using the game's motion vectors and re-applied, fading only where something new came into view. "
+			"Halves the neural cost; the model's lighting and detail changes can trail fast motion by a frame."));
 	}
 
 	// --- Model tuning: information handed to the DLSS Neural Rendering model itself ---
@@ -780,6 +783,7 @@ ID3D11Resource* NeuralRendering::PrepareUpscaleInput(ID3D11Resource* a_color, ID
 				depth.depthSRV,
 				materialCategoriesSRV,
 				motionVector.texture,
+				motionVector.SRV,
 				renderWidth,
 				renderHeight,
 				options)) {
@@ -794,6 +798,7 @@ ID3D11Resource* NeuralRendering::PrepareUpscaleInput(ID3D11Resource* a_color, ID
 			depth.depthSRV,
 			materialCategoriesSRV,
 			motionVector.texture,
+			motionVector.SRV,
 			a_superResolutionMotionVectors,
 			renderWidth,
 			renderHeight,
@@ -853,6 +858,7 @@ void NeuralRendering::ResolveUpscaledFrame(Texture2D* a_upscaled)
 				depth.depthSRV,
 				materialCategoriesSRV,
 				motionVector.texture,
+				motionVector.SRV,
 				nativeWidth,
 				nativeHeight,
 				options);
@@ -1258,7 +1264,7 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 
 	globals::profiler->BeginPass("NeuralRendering::Generate");
 	const bool evaluated = Evaluate(a_colorIn, a_colorOut,
-		depthTexture, depthSRV, materialCategoriesSRV, motionVector.texture,
+		depthTexture, depthSRV, materialCategoriesSRV, motionVector.texture, motionVector.SRV,
 		nativeWidth, nativeHeight, options);
 	globals::profiler->EndPass();
 	if (!evaluated) {

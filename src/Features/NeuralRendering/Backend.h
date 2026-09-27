@@ -62,6 +62,9 @@ public:
 		ID3D11ShaderResourceView* depthSRV = nullptr;               ///< SRV over @c depth, used by the guide pass.
 		ID3D11ShaderResourceView* materialCategoriesSRV = nullptr;  ///< Packed Masks2 material categories.
 		ID3D11Resource* motionVectors = nullptr;                    ///< Motion vectors matching @c depth.
+	/// SRV over @c motionVectors; the decode reprojects a previous frame's answer through it.
+	/// Optional: without it alternating-frame mode evaluates every frame.
+	ID3D11ShaderResourceView* motionVectorsSRV = nullptr;
 		ID3D11Resource* superResolutionMotionVectors = nullptr;     ///< Processed motion field used by main DLSS.
 		std::uint32_t width = 0;                                    ///< Colour/output active region width in pixels.
 		std::uint32_t height = 0;                                   ///< Colour/output active region height in pixels.

@@ -1382,7 +1382,7 @@
     "feature.lod_blending.lod_terrain_gamma": "LOD Terrain Gamma",
     "feature.lod_blending.name": "LOD Blending",
     "feature.neural_rendering.alternate_frames": "Alternate Frames (Experimental)",
-    "feature.neural_rendering.alternate_frames_tooltip": "Runs the model every other frame and re-applies its previous result to the frames in between, fading it wherever the image changed. Halves the neural cost, but fast motion may show a one-frame lag in the model's lighting and detail changes.",
+    "feature.neural_rendering.alternate_frames_tooltip": "Runs the model every other frame. In between, its previous result is moved along with the image using the game's motion vectors and re-applied, fading only where something new came into view. Halves the neural cost; the model's lighting and detail changes can trail fast motion by a frame.",
     "feature.neural_rendering.automatic_mask": "Automatic Mask",
     "feature.neural_rendering.automatic_mask_tooltip": "Generates the skin mask automatically.",
     "feature.neural_rendering.available": "DLSS Neural Rendering is available.",

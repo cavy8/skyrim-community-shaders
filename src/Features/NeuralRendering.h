@@ -329,6 +329,7 @@ struct NeuralRendering : Feature
 	 * @param depthSRV Shader resource view over @p depth, used by the depth-guide compute pass.
 	 * @param materialCategoriesSRV Packed material category and vertex-AO render target.
 	 * @param motionVectors Motion-vector resource.
+	 * @param motionVectorsSRV Shader resource view over @p motionVectors; reprojects a previous frame's answer.
 	 * @param width Active region width in pixels.
 	 * @param height Active region height in pixels.
 	 * @param options Neural Rendering settings.
@@ -337,7 +338,7 @@ struct NeuralRendering : Feature
 	bool Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
 		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
 		ID3D11ShaderResourceView* materialCategoriesSRV,
-		ID3D11Resource* motionVectors,
+		ID3D11Resource* motionVectors, ID3D11ShaderResourceView* motionVectorsSRV,
 		uint32_t width, uint32_t height, const Options& options);
 
 	/**
@@ -349,7 +350,8 @@ struct NeuralRendering : Feature
 	bool PrepareSeparateUpscaling(ID3D11Resource* colorIn, ID3D11Resource* editedColor,
 		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
 		ID3D11ShaderResourceView* materialCategoriesSRV,
-		ID3D11Resource* motionVectors, ID3D11Resource* superResolutionMotionVectors,
+		ID3D11Resource* motionVectors, ID3D11ShaderResourceView* motionVectorsSRV,
+		ID3D11Resource* superResolutionMotionVectors,
 		uint32_t width, uint32_t height,
 		uint32_t outputWidth, uint32_t outputHeight, const Options& options);
 

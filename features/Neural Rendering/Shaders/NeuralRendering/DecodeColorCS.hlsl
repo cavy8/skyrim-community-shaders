@@ -10,7 +10,7 @@ cbuffer TransferParams : register(b0)
 	uint2 WorkSize;    // Model raster; ModelColor and ProxyColor are allocated at this size.
 	uint2 GuideSize;   // Valid region of GuideDepth (render resolution), in its texels.
 	uint DepthAwareResolve;  // Non-zero: fade the edit across depth silhouettes (see NeuralSilhouetteWeight).
-	uint SkipFrame;          // Non-zero: the model was not run this frame; ModelColor/ProxyColor are stale.
+	uint StaleAnswer;        // Non-zero: ModelColor/ProxyColor are the previous frame's; reproject them through MotionVectors.
 	uint HueGuardMask;       // Bit i set: category i (NeuralRenderingCategories) hue-guards its chroma change.
 	float2 GuideJitterOffset;  // Projection offset of the guide rasters relative to the colour raster, in guide texels.
 	uint ColorDomain;          // kNeuralColorDomain* - how OriginalColor and DestinationColor are encoded.
@@ -34,6 +34,7 @@ Texture2D<float> GuideDepth : register(t3);      // Game depth at the guide reso
 Texture2D<float> MaterialCategories : register(t4);  // Masks2: category in the low three R16_UNORM bits.
 Texture2D<float2> VanillaAdaptation : register(t5);            // Same inputs EncodeColorCS used for the display transform,
 StructuredBuffer<float> PostProcessAdaptation : register(t6);  // so a stale proxy can be compared with a fresh encode.
+Texture2D<float2> MotionVectors : register(t7);  // Game motion vectors at the guide resolution (current -> previous, normalised UV).
 RWTexture2D<float4> DestinationColor : register(u0);
 SamplerState LinearClampSampler : register(s0);
 
@@ -75,8 +76,25 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	// edit for this exact scene point; at native scale with a zero offset this is
 	// the texel centre.
 	float2 uv = (float2(dispatchThreadID.xy) + 0.5 - JitterOffset) / float2(ActiveSize);
-	float4 model = ModelColor.SampleLevel(LinearClampSampler, uv, 0);
-	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, uv, 0);
+	// A stale answer (alternating-frame skip) was computed for the previous frame,
+	// so this scene point sat elsewhere in it. Follow the game's motion vector back
+	// to where it was - Skyrim stores current -> previous as a normalised UV offset
+	// over the active region, the same normalisation as uv - and read the answer
+	// and its proxy there. Without this the previous frame's edit lands on
+	// whatever moved under the pixel, the stale-edit guard below rejects almost
+	// the whole frame under any camera motion, and the edit strobes on and off at
+	// half the frame rate. A point that came from outside the previous frame has
+	// no answer to reuse and shows the clean frame.
+	float2 answerUV = uv;
+	bool answerOnScreen = true;
+	if (StaleAnswer != 0 && all(GuideSize > 0)) {
+		float2 motionCoord = NeuralGuidePosition(dispatchThreadID.xy, GuideSize, ActiveSize, GuideJitterOffset) - 0.5;
+		int2 motionTexel = clamp((int2)round(motionCoord), int2(0, 0), int2(GuideSize) - 1);
+		answerUV = uv + MotionVectors.Load(int3(motionTexel, 0));
+		answerOnScreen = all(answerUV >= 0.0) && all(answerUV <= 1.0);
+	}
+	float4 model = ModelColor.SampleLevel(LinearClampSampler, answerUV, 0);
+	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, answerUV, 0);
 
 	float4 original = OriginalColor[dispatchThreadID.xy];
 
@@ -155,14 +173,15 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float resolvedColorStrength = categoryColorStrength * ColorStrength;
 	float editWeight = categoryTransferStrength * TransferStrength;
 	float resolvedLuminosityStrength = categoryLuminosityStrength * LuminosityStrength;
-	// On an alternating skip frame the model's previous answer is re-applied to
-	// the fresh frame; fade it out wherever the content under the pixel changed.
-	// The fresh frame is encoded with the same display transform the stale proxy
-	// received, so only genuine content changes register.
-	if (SkipFrame != 0) {
+	// A stale answer has been reprojected above; fade it out wherever the content
+	// under the pixel still differs from what the model saw (disocclusion, a light
+	// switching, an animated surface). The fresh frame is encoded with the same
+	// display transform the stale proxy received, so only genuine content changes
+	// register.
+	if (StaleAnswer != 0) {
 		NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
 			VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0]);
-		editWeight *= NeuralStaleEditWeight(proxy, original, ColorDomain, display);
+		editWeight *= answerOnScreen ? NeuralStaleEditWeight(proxy, original, ColorDomain, display) : 0.0;
 	}
 	if (DepthAwareResolve != 0 && all(GuideSize > 0)) {
 		// Left fractional (not rounded to a texel) so NeuralSilhouetteWeight can

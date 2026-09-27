@@ -9,7 +9,7 @@ cbuffer TransferParams : register(b0)
 	uint2 WorkSize;    // Model raster; DestinationColor is allocated at this size.
 	uint2 GuideSize;   // Unused here; keeps the layout shared with DecodeColorCS.
 	uint DepthAwareResolve;
-	uint SkipFrame;
+	uint StaleAnswer;           // Unused here; layout shared with DecodeColorCS.
 	uint HueGuardMask;          // Unused here; layout shared with DecodeColorCS.
 	float2 GuideJitterOffset;   // Unused here; layout shared with DecodeColorCS.
 	uint ColorDomain;           // kNeuralColorDomain* - how SourceColor is encoded.

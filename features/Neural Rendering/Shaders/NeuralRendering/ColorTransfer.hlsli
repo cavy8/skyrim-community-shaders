@@ -584,7 +584,9 @@ float NeuralSilhouetteWeight(Texture2D<float> guideDepth, SamplerState linearCla
  * Confidence that a model answer from the previous evaluated frame still
  * belongs to this pixel (alternating-frame mode, the proxy's "VRNR").
  *
- * Compares the luminance of the stale proxy the model actually saw against the
+ * @p proxyColor is the stale proxy the model actually saw, already reprojected
+ * to this pixel through the game's motion vectors (DecodeColorCS). Its
+ * luminance is compared against the
  * fresh frame encoded into the same domain through the same display transform
  * (a changed exposure alone would otherwise register as motion). Where they
  * differ the scene moved
