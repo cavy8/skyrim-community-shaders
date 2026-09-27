@@ -15,7 +15,7 @@ struct HairBacklighting : Feature
 		float InteriorGlow = 0.0f;
 		float Absorption = 0.9f;
 		float DarkBoost = 4.0f;
-		float DarkThreshold = 0.35f;
+		float DarkThreshold = 0.4f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 	static_assert(sizeof(Settings) == 32);
