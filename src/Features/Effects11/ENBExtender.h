@@ -58,4 +58,8 @@ namespace ENBExtender
 
 	// Post-load processing
 	void LoadTechniqueDropdownMetadata(Effect& effect);
+
+	bool IsEncryptedSource(std::string_view source);
+	bool CreateEncryptedEffect(const std::string& effectName, winrt::com_ptr<ID3DX11Effect>& effect, std::string& error);
+	void ResolveCompiledGroups(Effect& effect, const std::filesystem::path& iniPath);
 }

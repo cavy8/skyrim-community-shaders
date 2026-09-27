@@ -101,7 +101,7 @@ public:
 	STATIC_ASSERT_ALIGNAS_16(LightData);
 
 	static constexpr uint32_t SHADOW_MASK_CHANNEL_COUNT = 4;
-	static constexpr uint32_t ENGINE_SHADOW_SLOTS = 4;
+	static constexpr uint32_t ENGINE_LOCAL_SHADOW_CASTERS = 3;
 	static constexpr uint32_t ENGINE_SHADOW_MAP_SLICES = 8;
 	static constexpr uint32_t MIN_LOCAL_SHADOW_SLOTS = 4;
 	static constexpr uint32_t MAX_LOCAL_SHADOW_SLOTS = 64;
@@ -327,7 +327,6 @@ public:
 	ankerl::unordered_dense::map<RE::FormID, RE::NiPoint3> localShadowActorHistoryNext;
 	eastl::vector<LocalShadowData> localShadowUpload;
 	bool localShadowSelecting = false;
-	bool localShadowSunActive = false;
 	uint32_t localShadowFrame = 0;
 	RE::NiPoint3 localShadowCameraPosition{};
 

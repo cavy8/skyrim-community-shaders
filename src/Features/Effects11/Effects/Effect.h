@@ -295,6 +295,7 @@ protected:
 
 private:
 	bool LoadFXFile();
+	void ReflectCompiledEffect();
 
 	std::unordered_map<std::string, ID3DX11EffectVariable*> variableCache;
 	std::unordered_map<std::string, TextureManager::Texture*> commonTexturePointerCache;

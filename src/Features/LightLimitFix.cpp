@@ -1370,7 +1370,7 @@ void LightLimitFix::ScheduleLocalShadowCasters()
 	}
 	order.insert(order.end(), newcomers.begin(), newcomers.end());
 
-	size_t engineCapacity = localShadowSunActive ? ENGINE_SHADOW_SLOTS - 1 : ENGINE_SHADOW_SLOTS;
+	size_t engineCapacity = ENGINE_LOCAL_SHADOW_CASTERS;
 	if (needsSweep && order.size() >= engineCapacity && engineCapacity > 1)
 		engineCapacity--;
 	const size_t allowedCount = std::min<size_t>(order.size(), engineCapacity);
@@ -1651,7 +1651,6 @@ void LightLimitFix::CopyLocalShadowMaps()
 	const uint32_t groups = (localShadowCacheResolution + 7) / 8;
 
 	bool computeBound = false;
-	bool sunSeen = false;
 	static bool loggedMapping = false;
 
 	const uint32_t engineSliceCount = std::min(ENGINE_SHADOW_MAP_SLICES, localShadowEngineSlices);
@@ -1668,10 +1667,8 @@ void LightLimitFix::CopyLocalShadowMaps()
 	uint32_t sliceClaims[ENGINE_SHADOW_MAP_SLICES] = {};
 
 	ForEachAccumulatedShadowLight(runtimeData.shadowLightsAccum, [&](RE::BSShadowLight* light) {
-		if (light == sunLight) {
-			sunSeen = true;
+		if (light == sunLight)
 			return;
-		}
 
 		auto* caster = FindLocalShadowCaster(light);
 		if (!caster || caster->lastRenderedFrame == frame)
@@ -1767,10 +1764,7 @@ void LightLimitFix::CopyLocalShadowMaps()
 		localShadowStatRendered++;
 	}
 
-	localShadowSunActive = sunSeen || globals::state->HasDirectionalShadows();
-
-	const uint32_t engineCapacity = localShadowSunActive ? ENGINE_SHADOW_SLOTS - 1 : ENGINE_SHADOW_SLOTS;
-	if (localShadowStatRendered < engineCapacity) {
+	if (localShadowStatRendered < ENGINE_LOCAL_SHADOW_CASTERS) {
 		for (auto* allowed : localShadowAllowed) {
 			auto* caster = FindLocalShadowCaster(allowed);
 			if (!caster || caster->lastRenderedFrame == frame)
