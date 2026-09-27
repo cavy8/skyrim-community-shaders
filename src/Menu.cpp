@@ -959,7 +959,7 @@ static std::vector<InputCombo> DeriveCSEditorKey(const std::vector<InputCombo>& 
 }
 
 // Steps the Neural Rendering resolution scale by delta (positive = up, negative = down),
-// clamping to [0.25, 2.0] and rounding to 2 decimals to avoid float drift. Applies to the
+// clamping to [0.25, 1.0] and rounding to 2 decimals to avoid float drift. Applies to the
 // uniform scale or both per-axis scales depending on NeuralRendering::Settings::resolutionMode, then
 // shows a HUD message with the resulting scale(s) on the game's main thread.
 static void StepNeuralRenderingScale(float delta)
@@ -970,7 +970,7 @@ static void StepNeuralRenderingScale(float delta)
 	auto& nrSettings = neuralRendering.settings;
 
 	auto clampRound = [](float value) {
-		value = std::clamp(value, 0.25f, 2.0f);
+		value = std::clamp(value, 0.25f, 1.0f);
 		return std::round(value * 100.0f) / 100.0f;
 	};
 

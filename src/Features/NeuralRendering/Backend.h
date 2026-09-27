@@ -85,9 +85,9 @@ public:
 		/// before reading them.
 		float guideJitterOffsetX = 0.0f;
 		float guideJitterOffsetY = 0.0f;
-		/// Model raster relative to the colour active region, per axis (0.25..2).
+		/// Model raster relative to the colour active region, per axis (0.25..1).
 		/// Below one the model runs on a downsampled proxy and only its bounded
-		/// edit returns to the full-resolution frame; above one it supersamples.
+		/// edit returns to the full-resolution frame.
 		float resolutionScaleX = 1.0f;
 		float resolutionScaleY = 1.0f;
 		/// How @c colorIn is encoded: 0 = linear open-ended HDR scene colour, 1 = finished

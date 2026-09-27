@@ -427,7 +427,7 @@ void NeuralBoxAxis(float coord, float footprint, out float weight[6], out int in
  * (https://github.com/Dagherbou/OptiScaler_DLSSNR/discussions/2).
  *
  * Each axis is filtered independently: an axis whose footprint is still one
- * texel or less (native scale, or that axis is being supersampled) keeps
+ * texel (that axis is at native scale) keeps
  * Catmull-Rom reconstruction instead, so an anisotropic scale like 0.65 x 0.85
  * only integrates the axis that is actually shrinking. The combined result is
  * clamped to the range of every texel actually sampled, which is a no-op for

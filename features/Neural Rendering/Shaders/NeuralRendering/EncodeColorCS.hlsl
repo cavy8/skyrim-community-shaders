@@ -56,9 +56,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	// a zero offset this is exactly the source texel itself.
 	//
 	// footprint is the source-texel extent, per axis, that one destination texel
-	// represents. An axis at or above source resolution (footprint <= 1: native
-	// scale, or that axis is being supersampled) keeps the Catmull-Rom
-	// reconstruction the jitter compensation already needed. An axis below
+	// represents. An axis at source resolution (footprint 1: native scale, the
+	// maximum) keeps the Catmull-Rom reconstruction the jitter compensation
+	// already needed. An axis below
 	// source resolution (footprint > 1) switches to an exact-area box average
 	// instead, because reconstructing a single point there leaves source
 	// frequencies above the model's new Nyquist limit free to alias into the

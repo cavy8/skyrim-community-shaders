@@ -208,10 +208,10 @@ struct NeuralRendering : Feature
 		float guideJitterOffsetY = 0.0f;
 
 		/// Resolution the model runs at relative to the colour region it
-		/// processes, per axis (0.25..2). Below one the model sees a downsampled
+		/// processes, per axis (0.25..1). Below one the model sees a downsampled
 		/// proxy and only its bounded luminance/colour edit is applied to the
 		/// full-resolution frame, which keeps native detail while cutting the neural
-		/// cost roughly with the pixel count. Above one supersamples the model input.
+		/// cost roughly with the pixel count.
 		/// The backend debounces changes so a slider drag does not rebuild the
 		/// feature every frame.
 		float resolutionScaleX = 1.0f;

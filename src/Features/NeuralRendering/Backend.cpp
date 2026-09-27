@@ -52,7 +52,10 @@ namespace
 	static_assert(sizeof(TransferParams) == 240);
 
 	constexpr float kMinimumResolutionScale = 0.25f;
-	constexpr float kMaximumResolutionScale = 2.0f;
+	/// Native. Supersampling the model (scale above one) was removed: it cost the
+	/// square of the scale for no visible gain once the edit is applied as a ratio
+	/// to the untouched full-resolution frame.
+	constexpr float kMaximumResolutionScale = 1.0f;
 	/// Feature 18 is not created below this per-axis extent.
 	constexpr std::uint32_t kMinimumModelExtent = 64;
 	/// Frames a changed model raster must stay stable before the shared textures

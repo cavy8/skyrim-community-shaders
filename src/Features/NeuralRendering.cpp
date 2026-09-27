@@ -347,22 +347,22 @@ void NeuralRendering::DrawSettings()
 			"horizontal detail for a larger reduction of the neural workload."));
 	}
 	if (settings.resolutionMode == 0) {
-		ImGui::SliderFloat(T(TKEY("resolution_scale"), "Resolution Scale"), &settings.resolutionScale, 0.25f, 2.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("resolution_scale"), "Resolution Scale"), &settings.resolutionScale, 0.25f, 1.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("resolution_scale_tooltip"),
 				"Resolution the model runs at, relative to the frame it processes.\n"
 				"Below 1.0 the model works on a downsampled copy and only its lighting and colour edit is applied "
 				"to the full-resolution frame, so fine detail is kept; 0.75-0.85 cuts the neural cost by roughly a "
-				"third with little visible loss. Above 1.0 supersamples the model input.\n"
+				"third with little visible loss.\n"
 				"Changes apply once the slider settles."));
 		}
 	} else {
-		ImGui::SliderFloat(T(TKEY("resolution_scale_x"), "Horizontal Scale"), &settings.resolutionScaleX, 0.25f, 2.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("resolution_scale_x"), "Horizontal Scale"), &settings.resolutionScaleX, 0.25f, 1.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("resolution_scale_x_tooltip"),
 				"Model width relative to the frame width. Changes apply once the slider settles."));
 		}
-		ImGui::SliderFloat(T(TKEY("resolution_scale_y"), "Vertical Scale"), &settings.resolutionScaleY, 0.25f, 2.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("resolution_scale_y"), "Vertical Scale"), &settings.resolutionScaleY, 0.25f, 1.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("resolution_scale_y_tooltip"),
 				"Model height relative to the frame height. Changes apply once the slider settles."));
@@ -572,9 +572,10 @@ void NeuralRendering::LoadSettings(json& o_json)
 	sanitizeFloat(settings.skinStructureStrength, -1.0f, -1.0f, 2.0f);
 	if (settings.resolutionMode > 1)
 		settings.resolutionMode = 1;
-	sanitizeFloat(settings.resolutionScale, 1.0f, 0.25f, 2.0f);
-	sanitizeFloat(settings.resolutionScaleX, 1.0f, 0.25f, 2.0f);
-	sanitizeFloat(settings.resolutionScaleY, 1.0f, 0.25f, 2.0f);
+	// Scales above native (model supersampling) are no longer offered; a saved one runs at native.
+	sanitizeFloat(settings.resolutionScale, 1.0f, 0.25f, 1.0f);
+	sanitizeFloat(settings.resolutionScaleX, 1.0f, 0.25f, 1.0f);
+	sanitizeFloat(settings.resolutionScaleY, 1.0f, 0.25f, 1.0f);
 	sanitizeFloat(settings.transferStrength, 1.0f, 0.0f, 2.0f);
 	sanitizeFloat(settings.luminosityStrength, 1.0f, 0.0f, 2.0f);
 	const auto sanitizeCategoryStrengths = [&](CategoryStrengths& strengths) {

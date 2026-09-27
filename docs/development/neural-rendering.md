@@ -422,7 +422,8 @@ resolution. Loading transitions request a one-frame history reset.
 
 The `Model Resolution` controls (ported from
 [DLSSNR-Cost-Scaler](https://github.com/xenmods/DLSSNR-Cost-Scaler)) run
-Feature 18 on a raster smaller (or larger) than the colour region it processes.
+Feature 18 on a raster smaller than the colour region it processes (0.25..1
+per axis).
 `Uniform` applies one scale; `Per-Axis` is the proxy's experimental anamorphic
 mode and scales width and height independently (its suggested 0.65 x 0.85 cuts
 the neural workload by ~45%). Per axis the model extent is
@@ -438,8 +439,8 @@ The scaling lives entirely in the existing colour transfer:
 - `EncodeColorCS` dispatches over the model raster. Each model texel covers
   scene position `(id + 0.5) * active / work` on the unjittered grid, resampled
   from `+ JitterOffset`. The per-axis footprint (`active / work` on that axis)
-  decides the kernel: at or above native resolution on that axis (footprint
-  <= 1) it keeps the same Catmull-Rom kernel the jitter compensation already
+  decides the kernel: at native resolution on that axis (footprint 1) it
+  keeps the same Catmull-Rom kernel the jitter compensation already
   used; below native resolution (footprint > 1) it instead exact-area box
   averages that axis (`SampleNeuralSourceAreaMinify`), since reconstructing a
   single point instead of integrating the region a shrunk model texel actually
@@ -460,6 +461,13 @@ The scaling lives entirely in the existing colour transfer:
   direct (bilinear + RCAS) mode is not offered: it would need the model output
   inverse-tonemapped, which *Colour domain* above explains was a dead end, and
   DLSS sharpening already covers RCAS.
+
+**No supersampling.** Scales above one (up to 2, supersampling the model
+input) were offered until 2026-09-26 and removed: the model's cost grows with
+the square of the scale, but the edit is applied as a luminance/chroma ratio to
+the untouched full-resolution frame, so a finer model raster added next to
+nothing visible. `kMaximumResolutionScale` is 1, the sliders and the scale
+hotkeys stop at 1, and `LoadSettings` clamps a saved scale above one to native.
 
 Feature 18 is created at the model raster, so a scale change rebuilds it. The
 backend debounces the request (`SettleModelRaster`, 12 stable frames) so a
