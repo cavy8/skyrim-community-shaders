@@ -4,6 +4,7 @@
 #include <sstream>
 
 #include "Deferred.h"
+#include "Features/ReverseZ.h"
 #include "MeshExtract.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -19,11 +20,13 @@ namespace Strands
 		constexpr uint32_t kMinDrawnStrands = 64;
 		constexpr float kLodHysteresis = 1.05f;
 		constexpr float kHiddenViewportOrigin = 30000.0f;  // past any render target, even scaled by dynamic resolution
+		constexpr float kHiddenViewportSize = 1024.0f;     // big enough to read the dynamic resolution scale back from
 
 		const wchar_t* kLightingShaderPath = L"Data\\Shaders\\HairStrands\\StrandLighting.hlsl";
 		const wchar_t* kSkinShaderPath = L"Data\\Shaders\\HairStrands\\StrandSkin.cs.hlsl";
 
 		using LightingFlags = SIE::ShaderCache::LightingShaderFlags;
+		using UtilityFlags = SIE::ShaderCache::UtilityShaderFlags;
 
 		std::string ToLower(std::string_view a_text)
 		{
@@ -32,57 +35,73 @@ namespace Strands
 			return result;
 		}
 
-		// --- Hair classification (the same rules as Neural Rendering's hair category) ---
+		// --- Hair classification ---
 
-		bool IsHairHeadPart(const RE::BGSHeadPart* a_part, bool a_facialHair)
+		struct HeadPartMatch
 		{
-			using HeadPartType = RE::BGSHeadPart::HeadPartType;
-			return a_part && (a_part->type == HeadPartType::kHair || (a_facialHair && a_part->type == HeadPartType::kFacialHair));
-		}
+			bool underFace = false;                   // the geometry hangs under the face node: a head part
+			const RE::BGSHeadPart* part = nullptr;    // the head part it belongs to, if the NPC record lists it
+			const RE::BGSHeadPart* parent = nullptr;  // the part listing it as an extra part, if any
+		};
 
-		// The hair head part named a_partName among a_parts or their extra parts (hairlines
-		// ride along as extra parts of their hair).
-		const RE::BGSHeadPart* MatchHairHeadPart(RE::BGSHeadPart** a_parts, uint32_t a_count, const RE::BSFixedString& a_partName, bool a_facialHair)
+		// The head part named a_partName among a_parts, or among their extra parts.
+		bool MatchHeadPart(RE::BGSHeadPart** a_parts, uint32_t a_count, const RE::BSFixedString& a_partName, HeadPartMatch& o_match)
 		{
 			if (!a_parts)
-				return nullptr;
+				return false;
 			for (uint32_t i = 0; i < a_count; ++i) {
 				const auto* part = a_parts[i];
-				if (!IsHairHeadPart(part, a_facialHair))
+				if (!part)
 					continue;
-				if (part->formEditorID == a_partName)
-					return part;
+				if (part->formEditorID == a_partName) {
+					o_match.part = part;
+					return true;
+				}
 				for (const auto* extra : part->extraParts) {
-					if (extra && extra->formEditorID == a_partName)
-						return extra;
+					if (extra && extra->formEditorID == a_partName) {
+						o_match.part = extra;
+						o_match.parent = part;
+						return true;
+					}
 				}
 			}
-			return nullptr;
+			return false;
 		}
 
 		// Head parts hang under the actor's skinned face node, each as a child named by the
 		// part's editor ID; the geometry's ancestor right under that node names its part.
-		const RE::BGSHeadPart* FindHairHeadPart(RE::Actor* a_actor, const RE::BSGeometry* a_geometry, bool a_facialHair)
+		HeadPartMatch FindHeadPart(RE::Actor* a_actor, const RE::BSGeometry* a_geometry)
 		{
+			HeadPartMatch match;
 			const auto* faceNode = a_actor->GetFaceNodeSkinned();
 			if (!faceNode)
-				return nullptr;
+				return match;
 			const RE::NiAVObject* partRoot = a_geometry;
 			while (partRoot && partRoot->parent != faceNode)
 				partRoot = partRoot->parent;
 			if (!partRoot)
-				return nullptr;
+				return match;
+			match.underFace = true;
 			auto* npc = a_actor->GetActorBase();
 			if (!npc)
-				return nullptr;
-			if (npc->HasOverlays()) {
-				if (const auto* part = MatchHairHeadPart(npc->GetBaseOverlays(), npc->GetNumBaseOverlays(), partRoot->name, a_facialHair))
-					return part;
-			}
-			return MatchHairHeadPart(npc->headParts, static_cast<uint32_t>(std::max<std::int8_t>(npc->numHeadParts, 0)), partRoot->name, a_facialHair);
+				return match;
+			if (npc->HasOverlays() && MatchHeadPart(npc->GetBaseOverlays(), npc->GetNumBaseOverlays(), partRoot->name, match))
+				return match;
+			MatchHeadPart(npc->headParts, static_cast<uint32_t>(std::max<std::int8_t>(npc->numHeadParts, 0)), partRoot->name, match);
+			return match;
 		}
 
-		// Hair worn as equipment (wigs) has no head part, only the hair-tint material.
+		bool HasAlpha(const RE::BSGeometry* a_geometry)
+		{
+			const auto& property = a_geometry->GetGeometryRuntimeData().alphaProperty;
+			if (!property || property->GetRTTI() != globals::rtti::NiAlphaPropertyRTTI.get())
+				return false;
+			const auto* alpha = static_cast<const RE::NiAlphaProperty*>(property.get());
+			return alpha->GetAlphaTesting() || alpha->GetAlphaBlending();
+		}
+
+		// The hair-tint material: what the HAIR technique, and so every hair shading feature,
+		// treats as hair. Hair worn as equipment (wigs) has only this to go by.
 		bool IsHairTintShader(const RE::BSRenderPass* a_pass)
 		{
 			if (!a_pass->shaderProperty || a_pass->shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
@@ -156,6 +175,7 @@ namespace Strands
 	{
 		enum class State
 		{
+			Readback,  // waiting for the texture's alpha to reach the CPU
 			Queued,
 			Running,
 			Ready,
@@ -165,7 +185,8 @@ namespace Strands
 		std::string key;
 		State state = State::Queued;
 		std::string error;
-		HairMeshData mesh;  // released once the job starts
+		HairMeshData mesh;          // released once the job starts
+		CoverageReadback readback;  // decoded into mesh.coverage by the job
 		StrandStyle style;
 		std::future<std::unique_ptr<StrandAssetData>> job;
 
@@ -187,7 +208,9 @@ namespace Strands
 		uint32_t vertexCount = 0;
 
 		HairKey key;
-		bool isHair = false;
+		RE::FormID actorId = 0;
+		bool isHair = false;  // drawn as strands when converted
+		bool layer = false;   // a card layer over hair drawn as strands: hidden while its twin has strands
 		bool isPlayer = false;
 		bool converted = false;
 		bool authored = false;
@@ -213,6 +236,7 @@ namespace Strands
 		bool allowed = false;
 		float budgetScale = 1.0f;
 		bool lodActive = false;
+		uint32_t lastHiddenFrame = UINT32_MAX;  // last frame the lighting pass drew strands in place of the cards
 
 		// This frame's draw parameters.
 		bool drawThisFrame = false;
@@ -364,6 +388,19 @@ namespace Strands
 			InvalidateStyles();
 		}
 
+		// Texture alpha that reached the CPU: its hair can be generated now.
+		for (auto& [key, asset] : assets) {
+			if (asset->state != Asset::State::Readback)
+				continue;
+			const auto status = PollCoverageReadback(asset->readback);
+			if (status == ReadbackStatus::Pending)
+				continue;
+			if (status == ReadbackStatus::Failed)
+				logger::warn("[HairStrands] {}: could not read the hair texture back; strands fill the whole cards", asset->key);
+			asset->state = Asset::State::Queued;
+			jobQueue.push_back(asset);
+		}
+
 		// Start queued generation jobs, a few at a time, and upload finished ones.
 		uint32_t running = 0;
 		for (auto& [key, asset] : assets) {
@@ -410,6 +447,12 @@ namespace Strands
 				std::string error;
 				bool ok = false;
 				try {
+					if (!asset->readback.bytes.empty()) {
+						std::string coverageError;
+						if (!DecodeCoverage(asset->readback, asset->mesh.coverage, coverageError))
+							logger::warn("[HairStrands] {}: {}; strands fill the whole cards", asset->key, coverageError);
+						asset->readback = {};
+					}
 					ok = GenerateStrands(asset->mesh, asset->style, *data, error);
 				} catch (const std::exception& e) {
 					error = e.what();  // bad_alloc on an absurd mesh must not reach the render thread
@@ -473,7 +516,7 @@ namespace Strands
 		}
 		for (const auto& [key, asset] : assets) {
 			++stats.assets;
-			stats.pendingJobs += (asset->state == Asset::State::Queued || asset->state == Asset::State::Running) ? 1 : 0;
+			stats.pendingJobs += (asset->state == Asset::State::Readback || asset->state == Asset::State::Queued || asset->state == Asset::State::Running) ? 1 : 0;
 			stats.gpuBytes += asset->state == Asset::State::Ready ? asset->GpuBytes() : 0;
 		}
 		stats.strandsDrawn = strandsThisFrame;
@@ -494,11 +537,29 @@ namespace Strands
 		if (!actor)
 			return;
 
-		const RE::BGSHeadPart* part = FindHairHeadPart(actor, a_geometry, settings.convertFacialHair);
-		if (!part && !IsHairTintShader(a_pass))
+		// Only hair cards: the hair-tint material with alpha. Beads, ties and other solid
+		// pieces of a hair mesh keep their own look.
+		if (!IsHairTintShader(a_pass) || !HasAlpha(a_geometry))
 			return;
 
-		a_instance.isHair = true;
+		// Head parts: only the Hair type becomes strands. Brows, lashes and beards are hair
+		// tinted too but stay cards. The Misc extra parts of a hair are its hairline (a scalp
+		// cap that stays under the strands) or a second card layer of the same mesh.
+		using HeadPartType = RE::BGSHeadPart::HeadPartType;
+		const auto match = FindHeadPart(actor, a_geometry);
+		const RE::BGSHeadPart* part = match.part;
+		if (match.underFace) {
+			if (part && part->type == HeadPartType::kHair)
+				a_instance.isHair = true;
+			else if (part && match.parent && match.parent->type == HeadPartType::kHair)
+				a_instance.layer = true;
+			else
+				return;
+		} else {
+			a_instance.isHair = true;  // hair worn as equipment
+		}
+
+		a_instance.actorId = actor->GetFormID();
 		a_instance.isPlayer = actor->IsPlayerRef();
 		a_instance.key.shape = a_geometry->name.c_str();
 		a_instance.key.vertexCount = a_instance.vertexCount;
@@ -512,6 +573,29 @@ namespace Strands
 			if (const char* model = part->GetModel())
 				a_instance.key.model = ToLower(model);
 		}
+
+		// Hair shipped as two layers of one mesh (alpha-tested and blended copies): the first
+		// seen becomes strands, the rest are hidden under it.
+		if (a_instance.isHair) {
+			for (const auto& [geometry, other] : instances) {
+				if (other.get() != &a_instance && other->isHair && other->actorId == a_instance.actorId && other->key.vertexCount == a_instance.key.vertexCount &&
+					other->key.triangleCount == a_instance.key.triangleCount && frame - other->lastSeenFrame <= 2) {
+					a_instance.isHair = false;
+					a_instance.layer = true;
+					break;
+				}
+			}
+		}
+	}
+
+	bool StrandRenderer::TwinDrawsStrands(const Instance& a_layer) const
+	{
+		for (const auto& [geometry, other] : instances) {
+			if (other->isHair && other->actorId == a_layer.actorId && other->key.vertexCount == a_layer.key.vertexCount && other->key.triangleCount == a_layer.key.triangleCount &&
+				other->drawThisFrame && other->lastSkinnedFrame != UINT32_MAX && frame - other->lastSkinnedFrame <= 1)
+				return true;
+		}
+		return false;
 	}
 
 	void StrandRenderer::ResolveStyle(Instance& a_instance)
@@ -537,7 +621,7 @@ namespace Strands
 		a_instance.converted = a_instance.style.enabled && (a_instance.authored || a_instance.edited || settings.autoConvert);
 	}
 
-	std::shared_ptr<StrandRenderer::Asset> StrandRenderer::RequestAsset(Instance& a_instance, RE::BSGeometry* a_geometry)
+	std::shared_ptr<StrandRenderer::Asset> StrandRenderer::RequestAsset(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry)
 	{
 		const std::string key = std::format("{}#{:016X}", a_instance.key.ToString(), a_instance.style.GenerationHash());
 		if (auto it = assets.find(key); it != assets.end())
@@ -552,7 +636,11 @@ namespace Strands
 			asset->state = Asset::State::Failed;
 			asset->error = error;
 			logger::warn("[HairStrands] {}: cannot read the mesh: {}", a_instance.key.ToString(), error);
+		} else if (asset->style.coverageThreshold > 0.0f && BeginCoverageReadback(a_pass, asset->readback, error)) {
+			asset->state = Asset::State::Readback;
 		} else {
+			if (asset->style.coverageThreshold > 0.0f)
+				logger::info("[HairStrands] {}: {}; strands fill the whole cards", a_instance.key.ToString(), error);
 			jobQueue.push_back(asset);
 		}
 		assets.emplace(key, asset);
@@ -822,7 +910,33 @@ namespace Strands
 		return slot.get();
 	}
 
-	void StrandRenderer::Draw(Instance& a_instance, ShaderVariant& a_variant)
+	ID3D11DepthStencilState* StrandRenderer::GetStrandDepthState(ID3D11DepthStencilState* a_current, bool a_reversedDepth)
+	{
+		auto& slot = strandDepthStates[a_reversedDepth ? 1 : 0][a_current];
+		if (slot)
+			return slot.get();
+		D3D11_DEPTH_STENCIL_DESC desc{};
+		if (a_current) {
+			a_current->GetDesc(&desc);
+		} else {
+			desc.DepthFunc = a_reversedDepth ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_LESS_EQUAL;
+			desc.StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK;
+			desc.StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK;
+			desc.FrontFace = desc.BackFace = { D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_COMPARISON_ALWAYS };
+		}
+		// Alpha-tested hair is shaded with an equal test against its depth prepass, which no
+		// strand off the card surface can pass. Strands are opaque: test and write like any.
+		desc.DepthEnable = TRUE;
+		desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+		if (desc.DepthFunc == D3D11_COMPARISON_EQUAL)
+			desc.DepthFunc = a_reversedDepth ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_LESS_EQUAL;
+		if (FAILED(globals::d3d::device->CreateDepthStencilState(&desc, slot.put())))
+			return a_current;
+		Util::SetResourceName(slot.get(), "HairStrands::DepthState");
+		return slot.get();
+	}
+
+	void StrandRenderer::Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport)
 	{
 		auto* context = globals::d3d::context;
 		auto& shadowState = globals::game::shadowState->GetRuntimeData();
@@ -867,7 +981,15 @@ namespace Strands
 		context->VSGetShaderResources(0, 3, oldSRVs);
 		winrt::com_ptr<ID3D11RasterizerState> oldRS;
 		context->RSGetState(oldRS.put());
+		winrt::com_ptr<ID3D11DepthStencilState> oldDepthState;
+		UINT stencilRef = 0;
+		context->OMGetDepthStencilState(oldDepthState.put(), &stencilRef);
+		// Depth values are reversed when the camera's projection is (ReverseZ): its z row is ~0, not ~1.
+		const bool reversedDepth = std::abs(shadowState.cameraData.getEye().projMat.m[2][2]) < 0.5f;
 
+		// The states read back above are the ones bound, already mapped by ReverseZ's hooks:
+		// set and restore them raw so they are not mapped a second time.
+		ReverseZ::SetHookPassthrough(true);
 		ID3D11Buffer* drawBuffer = drawCB->CB();
 		ID3D11ShaderResourceView* srvs[3] = { asset.restPoints->srv.get(), asset.strandInfo->srv.get(), a_instance.skinned->srv.get() };
 		context->IASetInputLayout(nullptr);
@@ -877,12 +999,14 @@ namespace Strands
 		context->VSSetConstantBuffers(7, 1, &drawBuffer);
 		context->VSSetShaderResources(0, 3, srvs);
 		context->RSSetState(GetNoCullState(oldRS.get()));
-		if (cardsHidden)
-			context->RSSetViewports(1, &savedViewport);
+		context->OMSetDepthStencilState(GetStrandDepthState(oldDepthState.get(), reversedDepth), stencilRef);
+		if (a_viewport)
+			context->RSSetViewports(1, a_viewport);
 
 		const uint32_t renderPoints = (asset.pointsPerStrand - 1) * a_instance.subdivisions + 1;
 		context->DrawInstanced(renderPoints * 2, a_instance.activeStrands, 0, 0);
 
+		context->OMSetDepthStencilState(oldDepthState.get(), stencilRef);
 		context->RSSetState(oldRS.get());
 		context->VSSetShaderResources(0, 3, oldSRVs);
 		context->VSSetConstantBuffers(7, 1, &oldCB);
@@ -896,6 +1020,7 @@ namespace Strands
 		}
 		if (oldCB)
 			oldCB->Release();
+		ReverseZ::SetHookPassthrough(false);
 
 		if (annotate)
 			globals::state->EndPerfEvent();
@@ -903,10 +1028,7 @@ namespace Strands
 
 	void StrandRenderer::OnSetupGeometry(RE::BSRenderPass* a_pass)
 	{
-		currentPass = nullptr;
-		currentInstance = nullptr;
-		currentVariant = nullptr;
-		cardsHidden = false;
+		RestoreHiddenViewport();
 
 		// Main world view only: reflections and cubemaps keep the cards.
 		auto* state = globals::state;
@@ -926,12 +1048,17 @@ namespace Strands
 
 		Instance* instance = FindOrCreateInstance(a_pass, geometry);
 		instance->lastSeenFrame = frame;
+		if (instance->layer) {
+			if (TwinDrawsStrands(*instance))
+				HideCards(a_pass);
+			return;
+		}
 		if (!instance->isHair)
 			return;
 		if (instance->styleGeneration == UINT32_MAX) {
 			ResolveStyle(*instance);
 			if (instance->converted) {
-				auto asset = RequestAsset(*instance, geometry);
+				auto asset = RequestAsset(*instance, a_pass, geometry);
 				if (!instance->asset || instance->asset->state != Asset::State::Ready)
 					instance->asset = asset;
 				else if (asset != instance->asset)
@@ -970,30 +1097,108 @@ namespace Strands
 		if (!instance->drawThisFrame)
 			return;
 
-		currentPass = a_pass;
 		currentInstance = instance;
 		currentVariant = variant;
+		instance->lastHiddenFrame = frame;
+		HideCards(a_pass);
+	}
 
-		const bool replace = settings.modeOverride == 2 || (settings.modeOverride == 0 && instance->style.mode == RenderMode::Replace);
-		if (replace) {
-			// The cards still draw (and still cast shadows elsewhere) but into a 1x1 viewport
-			// past the render target, so no fragment of them reaches the pixel shader.
+	void StrandRenderer::RestoreHiddenViewport()
+	{
+		currentPass = nullptr;
+		currentInstance = nullptr;
+		currentVariant = nullptr;
+		if (cardsHidden) {
+			// The last hidden pass never reached RestoreGeometry: never leave the viewport hidden.
 			auto& shadowState = globals::game::shadowState->GetRuntimeData();
-			savedViewport = shadowState.viewPort;
-			shadowState.viewPort = { kHiddenViewportOrigin, kHiddenViewportOrigin, 1.0f, 1.0f, savedViewport.MinDepth, savedViewport.MaxDepth };
+			shadowState.viewPort = savedViewport;
 			shadowState.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
-			cardsHidden = true;
+			cardsHidden = false;
 		}
+	}
+
+	void StrandRenderer::OnUtilitySetupGeometry(RE::BSRenderPass* a_pass)
+	{
+		RestoreHiddenViewport();
+
+		// Shadow maps keep the cards: strands cast no shadows of their own.
+		auto* state = globals::state;
+		if ((state->currentPixelDescriptor & static_cast<uint32_t>(UtilityFlags::RenderShadowmap)) ||
+			(state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)))
+			return;
+		auto* geometry = a_pass->geometry;
+		if (!geometry)
+			return;
+		auto it = instances.find(geometry);
+		auto* skin = geometry->GetGeometryRuntimeData().skinInstance.get();
+		if (it == instances.end() || !skin || !skin->skinPartition || it->second->skinInstance != skin || it->second->vertexCount != skin->skinPartition->vertexCount)
+			return;
+		const Instance& instance = *it->second;
+
+		if (instance.layer) {
+			if (TwinDrawsStrands(instance))
+				HideCards(a_pass);
+			return;
+		}
+		// The depth prepass runs before the lighting pass decides: follow the last lighting
+		// pass, unless the hair has since left the strand distance (the cards then come back).
+		if (!instance.isHair || instance.lastHiddenFrame == UINT32_MAX || frame - instance.lastHiddenFrame > 1 || !instance.allowed)
+			return;
+		auto& shadowState = globals::game::shadowState->GetRuntimeData();
+		const float distance = (ToFloat3(geometry->worldBound.center) - ToFloat3(shadowState.posAdjust.getEye())).Length();
+		if (distance > settings.lodEnd * (instance.lodActive ? kLodHysteresis : 1.0f))
+			return;
+		HideCards(a_pass);
+	}
+
+	void StrandRenderer::HideCards(RE::BSRenderPass* a_pass)
+	{
+		// The cards still draw (and still cast shadows elsewhere) but into a viewport past the
+		// render target, so no fragment of them reaches the pixel shader.
+		auto& shadowState = globals::game::shadowState->GetRuntimeData();
+		savedViewport = shadowState.viewPort;
+		shadowState.viewPort = { kHiddenViewportOrigin, kHiddenViewportOrigin, kHiddenViewportSize, kHiddenViewportSize, savedViewport.MinDepth, savedViewport.MaxDepth };
+		shadowState.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT);
+		currentPass = a_pass;
+		cardsHidden = true;
+	}
+
+	bool StrandRenderer::GetCardViewport(D3D11_VIEWPORT& o_viewport)
+	{
+		// The viewport bound now is the hidden one as the game applied it. Any dynamic
+		// resolution scale it applied shows in its size; apply the same to the saved one.
+		D3D11_VIEWPORT applied{};
+		UINT count = 1;
+		globals::d3d::context->RSGetViewports(&count, &applied);
+		const float scaleX = applied.Width / kHiddenViewportSize;
+		const float scaleY = applied.Height / kHiddenViewportSize;
+		if (count == 0 || applied.TopLeftX < kHiddenViewportOrigin * 0.1f || scaleX <= 0.0f || scaleY <= 0.0f) {
+			// The hidden viewport never reached the draw: the cards were drawn, and the viewport
+			// bound is already the right one for the strands.
+			if (!loggedViewportMiss) {
+				loggedViewportMiss = true;
+				logger::warn("[HairStrands] Hiding the cards did not reach the draw; cards show under the strands");
+			}
+			return false;
+		}
+		// Depth range as bound (already mapped by ReverseZ): Draw sets this viewport raw.
+		o_viewport = { savedViewport.TopLeftX * scaleX, savedViewport.TopLeftY * scaleY, savedViewport.Width * scaleX, savedViewport.Height * scaleY, applied.MinDepth, applied.MaxDepth };
+		return true;
 	}
 
 	void StrandRenderer::OnRestoreGeometry(RE::BSRenderPass* a_pass)
 	{
-		if (!currentInstance || a_pass != currentPass) {
+		if (a_pass != currentPass) {
 			currentPass = nullptr;
 			currentInstance = nullptr;
+			currentVariant = nullptr;
 			return;
 		}
-		Draw(*currentInstance, *currentVariant);
+		if (currentInstance && currentVariant) {
+			D3D11_VIEWPORT viewport{};
+			const bool haveViewport = cardsHidden && GetCardViewport(viewport);
+			Draw(*currentInstance, *currentVariant, haveViewport ? &viewport : nullptr);
+		}
 		if (cardsHidden) {
 			auto& shadowState = globals::game::shadowState->GetRuntimeData();
 			shadowState.viewPort = savedViewport;

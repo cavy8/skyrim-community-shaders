@@ -1,10 +1,35 @@
 # Hair Strands
 
 Converts hair card meshes into strands at runtime and draws them inside the hair's own
-lighting pass. Personal feature, added 2026-09-28 (Alpha, `0-1-0`). As of that date it is
-build- and shader-compile-verified and its converter is unit-tested on synthetic cards; it has
-**not** been run in game yet. The first in-game session should work through
-[Unverified assumptions](#unverified-assumptions).
+lighting pass, in place of the cards. Personal feature, added 2026-09-28 (Alpha).
+
+The first in-game run (2026-09-28, `0-1-0`) showed three faults, fixed in `0-1-1`:
+
+-   Brows, lashes, beards and hairlines were converted too. They carry the hair-tint
+    material, and the old classification fell back to it for any head part. See
+    [What converts](#what-converts).
+-   Strands were drawn over the cards (the default mode was Hybrid). Strands now always
+    replace the cards, and the cards come back only as the fallback: past the strand
+    distance, over the budget, while generating, or when the actor fades.
+-   Strands did not match the hair's shape. The generator filled the whole card geometry,
+    but cards are mostly transparent: tapered tips, gaps between locks, and whole empty
+    regions of beard and brow meshes. Strands now follow the texture's alpha. See
+    [Conversion algorithm](#conversion-algorithm-strandgeneratorcpp).
+
+The second run (`0-1-1` before the depth fix) drew the strands (the statistics counted them)
+but showed the hair as a flat, sky-coloured card silhouette, the same look as a hair
+permutation that is still compiling. Two causes:
+
+-   Alpha-tested hair has a depth prepass (Utility shader), and its lighting pass tests depth
+    for equality against it. No strand fragment off the exact card surface passes, so no
+    strand was ever visible on alpha-tested hair. That was already true in the first run,
+    where only the blended brows and beards showed strands.
+-   The cards were hidden in the lighting pass only. Their prepass depth stayed, so the
+    deferred composite shaded the card silhouette from an empty G-buffer.
+
+The strands now draw with their own depth state, and the cards are hidden from the depth
+prepass as well. See [Why it is built this way](#why-it-is-built-this-way). This is
+build-verified only. Work through [Unverified assumptions](#unverified-assumptions) first.
 
 ## Pipeline
 
@@ -13,6 +38,8 @@ build- and shader-compile-verified and its converter is unit-tested on synthetic
 | Classify: is this geometry hair? | `StrandRenderer::Classify` | render | first draw of a geometry |
 | Resolve style (file → preset → editor override) | `StrandRenderer::ResolveStyle` | render | first draw, and after style files or settings change |
 | Copy mesh (bind pose, weights, UVs) | `MeshExtract.cpp` | render | once per hair and style |
+| Copy one mip of the diffuse texture to a staging texture, map it once the GPU is done | `BeginCoverageReadback`, `PollCoverageReadback` | render | once per hair and style, a frame or two before generation |
+| Decode the texture's alpha (any format, BC included, via DirectXTex) | `DecodeCoverage` | worker | start of the generation job |
 | Generate strands | `StrandGenerator.cpp` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
 | Upload asset | `StrandRenderer::BeginFrame` | render | when the job finishes |
 | LOD, bone palette, skinning compute | `UpdateLod`, `Skin` | render, in `SetupGeometry` | first lighting draw of the hair each frame |
@@ -43,16 +70,53 @@ Everything lives in `src/Features/HairStrands.{h,cpp}` (feature, settings, UI) a
     instance and bone nodes are guaranteed alive. Instances are keyed by `BSGeometry*` but
     never dereferenced elsewhere, and re-validated by skin instance and vertex count because
     addresses get reused.
--   **Hiding cards costs nothing.** Replace mode sets the shadow state's viewport to 1×1
-    at (30000, 30000) for the card draw, so every card fragment is clipped before the pixel
-    shader. It works for opaque, alpha-tested and blended hair. A `discard` in
-    `Lighting.hlsl` was rejected: it would have cost early-Z on every opaque permutation.
-    Cards still cast the shadows, because the shadow passes use the Utility shader, which is
-    not hooked.
+-   **Hiding cards costs nothing.** For a card draw that strands replace, the shadow
+    state's viewport moves to 1024×1024 at (30000, 30000), so every card fragment is clipped
+    before the pixel shader. It works for opaque, alpha-tested and blended hair. A `discard`
+    in `Lighting.hlsl` was rejected: it would have cost early-Z on every opaque permutation.
+    The strands are drawn with the card's own viewport. It is read back from the one the game
+    applied, so a dynamic resolution scale applied there is kept. If the hidden viewport never
+    reaches the draw, the log says `Hiding the cards did not reach the draw` once.
+-   **Cards leave the depth prepass too.** Alpha-tested hair writes its depth in a Utility
+    shader prepass before the lighting pass. A hook on `BSUtilityShader` slots 6 and 7 hides
+    the cards there with the same viewport trick, except in shadow-map passes
+    (`RenderShadowmap`), so cards still cast the shadows. The prepass runs before the
+    lighting pass decides, so it follows the last lighting pass that drew strands for that
+    hair, and stops as soon as the hair leaves the strand distance.
+-   **Strands bring their own depth state.** The hair's lighting pass tests depth with
+    `EQUAL`. The strand draw uses the pass's own depth-stencil state with writes on and
+    `EQUAL` widened to `LESS_EQUAL`, or `GREATER_EQUAL` when the projection is reversed
+    (ReverseZ; detected from the camera projection's z row). The VS also moves each ribbon a
+    ribbon width nearer along its view ray. That covers the same pixels but gives nearer
+    depth, so strands lying on a card or at the scalp are not lost to the hairline or to
+    their own tilt. All state is set and restored with ReverseZ's hook passthrough on,
+    because the values read back are already mapped.
 -   **Procedural style in the vertex shader.** The generator makes the low-frequency shape
     (flow, clumps, volume) as 4–32 control points per strand. The VS adds curls, coils, waves
     and frizz analytically on a Catmull-Rom spline. That keeps memory small, makes those
     fields update live in the editor, and lets LOD drop curve detail with distance.
+
+## What converts
+
+`StrandRenderer::Classify` runs once per geometry. A shape becomes strands only if all of
+these hold:
+
+1. It belongs to an actor and uses the hair-tint material, the one the HAIR technique (and
+   so Hair Specular and Hair Backlighting) treats as hair. Beads, ties and other solid parts
+   of a hair mesh keep their own material and stay as they are.
+2. It has an alpha property (test or blend). Hair cards always do.
+3. It is a head part of type **Hair**, or it is not a head part at all (a wig worn as
+   equipment). Brows, lashes, beards and eyes are hair-tinted too, but their types are
+   Eyebrows, Misc or FacialHair, so they keep their cards.
+
+The Misc extra parts of a Hair part are either its hairline or a second layer of the same
+hair. Checked on 2026-09-28 against `Skyrim.esm` and `KS Hairdo's.esp`: every hairline is a
+Misc extra part, and KS "HL" parts reuse the hair's mesh (identical vertex and triangle
+counts). A Misc extra part is hidden while a strand shape of the same actor with the same
+counts draws strands. Otherwise it keeps its cards: a hairline is a scalp cap that stays
+under the strands, where it covers the gaps between them. Two Hair shapes of one actor with
+identical counts are handled the same way: the first seen becomes strands, the other is
+hidden.
 
 ## Conversion algorithm (`StrandGenerator.cpp`)
 
@@ -70,7 +134,15 @@ Everything lives in `src/Features/HairStrands.{h,cpp}` (feature, settings, UI) a
    width across the flow (85% of the 40k strand cap). A fill pass adds whole streamlines
    through any triangle the roots under-visited. `seeding: auto` switches to area seeding
    (short strands scattered over the surface) when the median strand is under 1 unit.
-5. **Resample** every strand to one point count per asset: the 95th-percentile length
+5. **Trim to the painted hair.** With a coverage mask (the diffuse alpha, read back at no
+   more than 512 texels across), each traced streamline keeps only the run from its first
+   point whose alpha reaches `coverageThreshold` to the last one before a transparent gap of
+   more than 0.5 units. Roots can therefore start downstream of a transparent card edge, and
+   strands end where the painted lock ends. Seeds in transparent stretches are dropped, so
+   strand count follows painted area. Fill seeding skips triangles with no painted texel on
+   a 4-step barycentric probe grid. Without a mask (a texture with no alpha, a failed
+   readback, or `coverageThreshold` 0), the whole card counts, as before.
+6. **Resample** every strand to one point count per asset: the 95th-percentile length
    divided by `segmentLength`, clamped to 4–32 points. Then lift points off the surface
    (layer jitter plus `volume` towards the tip), clump by root grid cell within a
    connected piece (pull plus optional twist), and shuffle. Because of the shuffle, any
@@ -105,7 +177,6 @@ with no `match` applies to all hair.
         {
             "match": { "headPart": "HairFemaleNord01" },
             "preset": "curly",
-            "mode": "replace",
             "curlRadius": 0.3,
             "excludeUV": [[0.0, 0.0, 0.25, 0.1]]
         },
@@ -124,7 +195,7 @@ with no `match` applies to all hair.
     `curl`/`ringlet` → curly, `wave`/`wavy` → wavy, anything else → straight.
 -   Fields: generation (`seeding`, `flowAxis`, `density`, `segmentLength`, `lengthScale`,
     `volume`, `layerJitter`, `clumpStrength`, `clumpSize`, `clumpTwist`, `shortLength`,
-    `seed`, `excludeUV`) and render (`rootWidth`, `tipWidth`, `waveAmplitude`, `waveLength`,
+    `coverageThreshold`, `seed`, `excludeUV`) and render (`rootWidth`, `tipWidth`, `waveAmplitude`, `waveLength`,
     `curlRadius`, `curlLength`, `curlStart`, `frizz`, `flyaways`). Tooltips in the editor
     explain each field. Units are Skyrim units, about 1.4 cm.
 -   In-game editor: select a hair in view, edit it, and the change applies to every actor
@@ -143,8 +214,8 @@ with no `match` applies to all hair.
 | Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists) |
 
 Short hair (buzz cuts, fades, fuzz) is covered by area seeding, not a preset. Long hair just
-gets more control points, up to 32. For dark hair, keep the cards (Hybrid): thin strands over
-a light background show the gaps between them most.
+gets more control points, up to 32. Dark hair over a light background shows gaps between
+strands most: raise `density` or the root width for it.
 
 ## Shared-file hunks
 
@@ -186,7 +257,19 @@ Check these first in game:
 -   The skinning convention is `boneWorldTransforms[b] × skinToBone(b)`, with no extra
     root-parent transform. Strands offset from the cards would point here.
 -   Setting `viewPort` + `DIRTY_VIEWPORT` in the shadow state reaches `RSSetViewports` on
-    the card draw.
+    the card draw. If it does not, the log warns once and cards show under the strands.
+-   The hair's depth prepass is a Utility pass without `RenderShadowmap`. If card outlines
+    still show as flat sky-coloured shapes around the strands, it is some other pass.
+-   Frame order: the depth prepass runs before `Prepass()` (`BeginFrame`), so it sees the
+    previous frame's number. The prepass rule tolerates either order. When a hair first
+    switches to strands, expect one frame of card outline.
+-   The diffuse texture from `BSLightingShaderMaterialBase::diffuseTexture->rendererTexture`
+    is the one the card draw samples, and its alpha is coverage. A hair whose log line says
+    `strands fill the whole cards` had no usable alpha.
+-   The default `coverageThreshold` of 0.3 on a mip of at most 512 texels. Too high thins
+    and shortens strands; too low brings back strands over transparent card areas.
+-   The actor's head parts are listed in its NPC record (`headParts`, or RaceMenu's
+    overlays). A hair not listed there keeps its cards.
 -   The previous-frame convention (relative to `previousPosAdjust`) matches the game's
     skinned motion vectors. A mismatch would show as ghosting on moving hair with TAA or DLSS.
 
@@ -198,4 +281,6 @@ Check these first in game:
 -   Wigs have no model path in their key (no head part), so they match on shape name and
     vertex/triangle count.
 -   Actor fade-out keeps the cards: strands have no alpha to fade with.
+-   Beards and other facial hair keep their cards. They would need their own flow and
+    density rules, since beard cards lie flat on the skin.
 -   Model-space-normal hair permutations keep their cards.

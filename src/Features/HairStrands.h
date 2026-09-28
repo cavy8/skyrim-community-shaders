@@ -10,8 +10,9 @@
  *
  * Strands are generated from each hair mesh's texture flow (automatically, or from an
  * authored style), skinned on the GPU with the hair's own bones, and drawn inside the
- * hair's lighting pass with a strand variant of the hair's own Lighting shader. Cards are
- * kept underneath (Hybrid) or hidden (Replace). See docs/development/hair-strands.md.
+ * hair's lighting pass with a strand variant of the hair's own Lighting shader, in place of
+ * the hair's cards; the cards remain the fallback past the strand distance and budget.
+ * See docs/development/hair-strands.md.
  */
 struct HairStrands : Feature
 {
@@ -19,7 +20,6 @@ struct HairStrands : Feature
 	{
 		bool Enable = true;
 		bool AutoConvert = true;
-		bool ConvertFacialHair = true;
 		bool PlayerOnly = false;
 		uint MaxActors = 6;
 		float DensityScale = 1.0f;
@@ -30,7 +30,6 @@ struct HairStrands : Feature
 		float MaxWidthScale = 4.0f;
 		uint MaxSubdivisions = 4;
 		uint MaxStrandsPerFrame = 200000;
-		uint ModeOverride = 0;  // 0: each style's mode, 1: always keep cards, 2: always replace cards
 	};
 
 	virtual inline std::string GetName() override { return "Hair Strands"; }
@@ -49,7 +48,7 @@ struct HairStrands : Feature
 				T("feature.hair_strands.key_feature_5", "Distance LOD, actor and strand budgets keep the cost bounded") } };
 	}
 
-	/** @brief Installs the Lighting shader SetupGeometry/RestoreGeometry hooks and loads the style files. */
+	/** @brief Installs the Lighting and Utility shader SetupGeometry/RestoreGeometry hooks and loads the style files. */
 	virtual void PostPostLoad() override;
 	/** @brief Starts the frame: finishes generation jobs, evicts unused hair, assigns the budget. */
 	virtual void Prepass() override;
@@ -77,6 +76,18 @@ private:
 		};
 
 		struct BSLightingShader_RestoreGeometry
+		{
+			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct BSUtilityShader_SetupGeometry
+		{
+			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct BSUtilityShader_RestoreGeometry
 		{
 			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
 			static inline REL::Relocation<decltype(thunk)> func;

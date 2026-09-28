@@ -10,7 +10,6 @@ namespace Strands
 	namespace
 	{
 		constexpr std::array<std::string_view, static_cast<size_t>(HairPreset::Count)> kPresetNames{ "auto", "straight", "wavy", "curly", "coily", "locs" };
-		constexpr std::array<std::string_view, static_cast<size_t>(RenderMode::Count)> kModeNames{ "hybrid", "replace" };
 		constexpr std::array<std::string_view, static_cast<size_t>(SeedMode::Count)> kSeedNames{ "auto", "roots", "area" };
 		constexpr std::array<std::string_view, static_cast<size_t>(FlowAxis::Count)> kFlowNames{ "auto", "v", "-v", "u", "-u" };
 
@@ -94,6 +93,7 @@ namespace Strands
 		Hash(hash, clumpSize);
 		Hash(hash, clumpTwist);
 		Hash(hash, shortLength);
+		Hash(hash, coverageThreshold);
 		Hash(hash, seed);
 		for (const auto& rect : excludeUV)
 			Hash(hash, rect);
@@ -102,7 +102,6 @@ namespace Strands
 
 	void Sanitize(StrandStyle& a_style)
 	{
-		a_style.mode = static_cast<RenderMode>(std::min(static_cast<uint32_t>(a_style.mode), static_cast<uint32_t>(RenderMode::Count) - 1));
 		a_style.preset = static_cast<HairPreset>(std::min(static_cast<uint32_t>(a_style.preset), static_cast<uint32_t>(HairPreset::Count) - 1));
 		a_style.seeding = static_cast<SeedMode>(std::min(static_cast<uint32_t>(a_style.seeding), static_cast<uint32_t>(SeedMode::Count) - 1));
 		a_style.flowAxis = static_cast<FlowAxis>(std::min(static_cast<uint32_t>(a_style.flowAxis), static_cast<uint32_t>(FlowAxis::Count) - 1));
@@ -116,6 +115,7 @@ namespace Strands
 		a_style.clumpSize = std::clamp(a_style.clumpSize, 0.1f, StyleLimits::kMaxClumpSize);
 		a_style.clumpTwist = std::clamp(a_style.clumpTwist, -StyleLimits::kMaxTwist, StyleLimits::kMaxTwist);
 		a_style.shortLength = std::clamp(a_style.shortLength, 0.1f, StyleLimits::kMaxShortLength);
+		a_style.coverageThreshold = std::clamp(a_style.coverageThreshold, 0.0f, 1.0f);
 
 		a_style.rootWidth = std::clamp(a_style.rootWidth, StyleLimits::kMinWidth, StyleLimits::kMaxWidth);
 		a_style.tipWidth = std::clamp(a_style.tipWidth, StyleLimits::kMinWidth, StyleLimits::kMaxWidth);
@@ -223,15 +223,9 @@ namespace Strands
 		return kPresetNames[std::min(static_cast<size_t>(a_preset), kPresetNames.size() - 1)];
 	}
 
-	std::string_view RenderModeName(RenderMode a_mode)
-	{
-		return kModeNames[std::min(static_cast<size_t>(a_mode), kModeNames.size() - 1)];
-	}
-
 	void StyleToJson(const StrandStyle& a_style, json& o_json)
 	{
 		o_json["enabled"] = a_style.enabled;
-		o_json["mode"] = RenderModeName(a_style.mode);
 		o_json["preset"] = PresetName(a_style.preset);
 		o_json["seeding"] = kSeedNames[static_cast<size_t>(a_style.seeding)];
 		o_json["flowAxis"] = kFlowNames[static_cast<size_t>(a_style.flowAxis)];
@@ -244,6 +238,7 @@ namespace Strands
 		o_json["clumpSize"] = a_style.clumpSize;
 		o_json["clumpTwist"] = a_style.clumpTwist;
 		o_json["shortLength"] = a_style.shortLength;
+		o_json["coverageThreshold"] = a_style.coverageThreshold;
 		o_json["seed"] = a_style.seed;
 		o_json["rootWidth"] = a_style.rootWidth;
 		o_json["tipWidth"] = a_style.tipWidth;
@@ -272,7 +267,6 @@ namespace Strands
 
 		if (auto it = a_json.find("enabled"); it != a_json.end() && it->is_boolean())
 			style.enabled = it->get<bool>();
-		style.mode = EnumFromName(a_json, "mode", kModeNames, style.mode);
 		style.seeding = EnumFromName(a_json, "seeding", kSeedNames, style.seeding);
 		style.flowAxis = EnumFromName(a_json, "flowAxis", kFlowNames, style.flowAxis);
 
@@ -285,6 +279,7 @@ namespace Strands
 		ReadFloat(a_json, "clumpSize", style.clumpSize);
 		ReadFloat(a_json, "clumpTwist", style.clumpTwist);
 		ReadFloat(a_json, "shortLength", style.shortLength);
+		ReadFloat(a_json, "coverageThreshold", style.coverageThreshold);
 		if (auto it = a_json.find("seed"); it != a_json.end() && it->is_number_integer())
 			style.seed = static_cast<uint32_t>(it->get<int64_t>());
 

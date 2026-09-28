@@ -18,6 +18,8 @@ namespace Strands
 		constexpr uint32_t kMaxStepsPerStrand = 4096;
 		constexpr uint32_t kMaxCrossingsPerStep = 64;  // triangles one step may cross (slivers)
 		constexpr float kRootBudgetShare = 0.85f;      // of kMaxStrands, the rest left for fill strands
+		constexpr float kCoverageGap = 0.5f;           // a transparent stretch longer than this ends a strand
+		constexpr uint32_t kCoverageProbeGrid = 4;     // barycentric grid probing a triangle for any hair
 
 		struct Triangle
 		{
@@ -37,6 +39,13 @@ namespace Strands
 			float3 position;
 			float length;
 			int32_t component;
+		};
+
+		struct TraceSample
+		{
+			float3 position;
+			uint32_t tri;
+			float length;
 		};
 
 		float3 Barycentric(const float3& a_p, const float3& a_a, const float3& a_b, const float3& a_c)
@@ -80,7 +89,8 @@ namespace Strands
 		{
 		public:
 			Generator(const HairMeshData& a_mesh, const StrandStyle& a_style) :
-				mesh(a_mesh), style(a_style), rng(a_style.seed * 0x9E3779B9u + static_cast<uint32_t>(a_mesh.positions.size()))
+				mesh(a_mesh), style(a_style), rng(a_style.seed * 0x9E3779B9u + static_cast<uint32_t>(a_mesh.positions.size())),
+				useCoverage(!a_mesh.coverage.Empty() && a_style.coverageThreshold > 0.0f)
 			{}
 
 			bool Run(StrandAssetData& o_asset, std::string& o_error);
@@ -110,7 +120,17 @@ namespace Strands
 			void SeedRoots(std::vector<Seed>& o_seeds);
 			void SeedFill(std::vector<Seed>& o_seeds);
 			void SeedArea(std::vector<Seed>& o_seeds);
-			bool TryAddSeed(uint32_t a_tri, const float3& a_pos, float a_maxLength, std::vector<Seed>& o_seeds, bool a_countVisits);
+			/**
+			 * Traces a strand from a seed and keeps it if long enough. With a coverage mask the
+			 * strand is cut to the painted part of its streamline; a_findCoverage lets that part
+			 * start downstream of the seed (roots on a transparent card edge), otherwise the seed
+			 * itself must be painted.
+			 */
+			bool TryAddSeed(uint32_t a_tri, const float3& a_pos, float a_maxLength, std::vector<Seed>& o_seeds, bool a_countVisits, bool a_findCoverage);
+			bool TrimToCoverage(bool a_findCoverage, Seed& io_seed) const;
+			float Coverage(uint32_t a_tri, const float3& a_pos) const;
+			bool Covered(uint32_t a_tri, const float3& a_pos) const { return !useCoverage || Coverage(a_tri, a_pos) >= style.coverageThreshold; }
+			bool HasCoverage(uint32_t a_tri) const;
 
 			RestPoint MakePoint(uint32_t a_tri, const float3& a_pos, float a_t) const;
 			float3 LiftNormal(uint32_t a_tri, const float3& a_pos) const;
@@ -122,6 +142,7 @@ namespace Strands
 			const StrandStyle& style;
 			std::mt19937 rng;
 			std::uniform_real_distribution<float> uniform{ 0.0f, 1.0f };
+			const bool useCoverage;
 
 			std::vector<uint32_t> weldId;      // per source vertex
 			std::vector<uint32_t> positionId;  // per source vertex, ignoring normals
@@ -137,6 +158,7 @@ namespace Strands
 			std::vector<uint32_t> visitStamp;  // last strand counted per triangle
 			uint32_t currentStamp = 0;
 			std::vector<uint32_t> crossed;
+			std::vector<TraceSample> samples;  // the last traced streamline
 			uint32_t strandBudget = GeneratorLimits::kMaxStrands;
 		};
 
@@ -446,26 +468,83 @@ namespace Strands
 			return length;
 		}
 
-		bool Generator::TryAddSeed(uint32_t a_tri, const float3& a_pos, float a_maxLength, std::vector<Seed>& o_seeds, bool a_countVisits)
+		float Generator::Coverage(uint32_t a_tri, const float3& a_pos) const
+		{
+			const auto& tri = tris[a_tri];
+			const float3 bary = ClampBarycentric(Barycentric(a_pos, Position(tri.v[0]), Position(tri.v[1]), Position(tri.v[2])));
+			const float2 uv = mesh.uvs[tri.v[0]] * bary.x + mesh.uvs[tri.v[1]] * bary.y + mesh.uvs[tri.v[2]] * bary.z;
+			return mesh.coverage.Sample(uv.x, uv.y);
+		}
+
+		bool Generator::HasCoverage(uint32_t a_tri) const
+		{
+			if (!useCoverage)
+				return true;
+			const auto& tri = tris[a_tri];
+			const float3 a = Position(tri.v[0]), b = Position(tri.v[1]), c = Position(tri.v[2]);
+			for (uint32_t i = 0; i <= kCoverageProbeGrid; ++i) {
+				for (uint32_t j = 0; i + j <= kCoverageProbeGrid; ++j) {
+					const float u = static_cast<float>(i) / kCoverageProbeGrid, v = static_cast<float>(j) / kCoverageProbeGrid;
+					if (Covered(a_tri, a * (1.0f - u - v) + b * u + c * v))
+						return true;
+				}
+			}
+			return false;
+		}
+
+		bool Generator::TrimToCoverage(bool a_findCoverage, Seed& io_seed) const
+		{
+			// From the first painted sample to the last one before a transparent gap longer
+			// than kCoverageGap: where the card's texture ends, the strand ends.
+			size_t first = 0;
+			if (a_findCoverage) {
+				while (first < samples.size() && !Covered(samples[first].tri, samples[first].position))
+					++first;
+			} else if (samples.empty() || !Covered(samples[0].tri, samples[0].position)) {
+				return false;
+			}
+			if (first >= samples.size())
+				return false;
+			size_t last = first;
+			for (size_t i = first + 1; i < samples.size(); ++i) {
+				if (Covered(samples[i].tri, samples[i].position))
+					last = i;
+				else if (samples[i].length - samples[last].length > kCoverageGap)
+					break;
+			}
+			io_seed.tri = samples[first].tri;
+			io_seed.position = samples[first].position;
+			io_seed.length = samples[last].length - samples[first].length;
+			io_seed.component = tris[io_seed.tri].component;
+			return true;
+		}
+
+		bool Generator::TryAddSeed(uint32_t a_tri, const float3& a_pos, float a_maxLength, std::vector<Seed>& o_seeds, bool a_countVisits, bool a_findCoverage)
 		{
 			if (o_seeds.size() >= strandBudget)
 				return false;
 			// Each triangle the strand crosses, once.
 			++currentStamp;
 			crossed.clear();
-			const float length = Trace(a_tri, a_pos, 1.0f, a_maxLength, [&](const float3&, uint32_t a_t, float) {
+			samples.clear();
+			const float length = Trace(a_tri, a_pos, 1.0f, a_maxLength, [&](const float3& a_p, uint32_t a_t, float a_length) {
 				if (visitStamp[a_t] != currentStamp) {
 					visitStamp[a_t] = currentStamp;
 					crossed.push_back(a_t);
 				}
+				samples.push_back({ a_p, a_t, a_length });
 			});
-			if (length < GeneratorLimits::kMinStrandLength)
-				return false;
-			if (a_countVisits) {
+			Seed seed{ a_tri, a_pos, length, tris[a_tri].component };
+			const bool keep = (!useCoverage || TrimToCoverage(a_findCoverage, seed)) && seed.length >= GeneratorLimits::kMinStrandLength;
+			// With a mask the whole streamline counts as visited, painted or not: its
+			// transparent stretches need no fill strands either.
+			if (a_countVisits && (keep || useCoverage)) {
 				for (uint32_t t : crossed)
 					visits[t] = static_cast<uint16_t>(std::min<uint32_t>(visits[t] + 1u, UINT16_MAX));
 			}
-			o_seeds.push_back({ a_tri, a_pos, length, tris[a_tri].component });
+			if (!keep)
+				return false;
+			o_seeds.push_back(seed);
 			return true;
 		}
 
@@ -518,7 +597,7 @@ namespace Strands
 					const float s = (j + Random()) / count;
 					// Just inside the edge, so the first step starts in this triangle.
 					const float3 p = float3::Lerp(float3::Lerp(a, b, s), centre, 0.002f);
-					TryAddSeed(root.tri, p, GeneratorLimits::kMaxStrandLength, o_seeds, true);
+					TryAddSeed(root.tri, p, GeneratorLimits::kMaxStrandLength, o_seeds, true, true);
 				}
 			}
 		}
@@ -533,7 +612,7 @@ namespace Strands
 			std::shuffle(order.begin(), order.end(), rng);
 			for (uint32_t t : order) {
 				const auto& tri = tris[t];
-				if (!tri.valid)
+				if (!tri.valid || !HasCoverage(t))
 					continue;
 				const auto target = static_cast<uint32_t>(std::max(1.0f, std::round(style.density * std::sqrt(tri.area) * 0.5f)));
 				for (uint32_t attempt = 0; visits[t] < target && attempt < target * 2; ++attempt) {
@@ -542,7 +621,7 @@ namespace Strands
 					uint32_t rootTri = t;
 					float3 rootPos = p;
 					Trace(t, p, -1.0f, GeneratorLimits::kMaxStrandLength, [](const float3&, uint32_t, float) {}, &rootTri, &rootPos);
-					if (!TryAddSeed(rootTri, rootPos, GeneratorLimits::kMaxStrandLength, o_seeds, true) && o_seeds.size() >= strandBudget)
+					if (!TryAddSeed(rootTri, rootPos, GeneratorLimits::kMaxStrandLength, o_seeds, true, true) && o_seeds.size() >= strandBudget)
 						return;
 				}
 			}
@@ -563,7 +642,7 @@ namespace Strands
 				for (uint32_t j = 0; j < count; ++j) {
 					float r1 = std::sqrt(Random()), r2 = Random();
 					const float3 p = Position(tri.v[0]) * (1.0f - r1) + Position(tri.v[1]) * (r1 * (1.0f - r2)) + Position(tri.v[2]) * (r1 * r2);
-					if (!TryAddSeed(t, p, style.shortLength, o_seeds, false) && o_seeds.size() >= strandBudget)
+					if (!TryAddSeed(t, p, style.shortLength, o_seeds, false, false) && o_seeds.size() >= strandBudget)
 						return;
 				}
 			}

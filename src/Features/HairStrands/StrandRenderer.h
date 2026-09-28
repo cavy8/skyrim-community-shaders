@@ -65,7 +65,6 @@ namespace Strands
 	struct RenderSettings
 	{
 		bool autoConvert = true;
-		bool convertFacialHair = true;
 		bool playerOnly = false;
 		uint32_t maxActors = 6;
 		float densityScale = 1.0f;
@@ -76,7 +75,6 @@ namespace Strands
 		float maxWidthScale = 4.0f;
 		uint32_t maxSubdivisions = 4;
 		uint32_t maxStrandsPerFrame = 200000;
-		uint32_t modeOverride = 0;  // 0: each style's mode, 1: always Hybrid, 2: always Replace
 	};
 
 	/** @brief What the editor and statistics show for one tracked hair. */
@@ -135,10 +133,15 @@ namespace Strands
 		/** @brief Once per frame before the world renders: job completion, eviction, budget. */
 		void BeginFrame(const RenderSettings& a_settings);
 
-		/** @brief After the game's BSLightingShader::SetupGeometry: skins strands, hides replaced cards. */
+		/** @brief After the game's BSLightingShader::SetupGeometry: skins strands, hides the cards they replace. */
 		void OnSetupGeometry(RE::BSRenderPass* a_pass);
 		/** @brief Before the game's BSLightingShader::RestoreGeometry: draws the pass's strands. */
 		void OnRestoreGeometry(RE::BSRenderPass* a_pass);
+		/**
+		 * @brief After the game's BSUtilityShader::SetupGeometry: hides cards that strands replace
+		 * from the depth prepass too, so their depth does not outline the hair. Shadow maps keep them.
+		 */
+		void OnUtilitySetupGeometry(RE::BSRenderPass* a_pass);
 
 		/** @brief Drops every compiled shader so edited HLSL is recompiled. */
 		void ClearShaders();
@@ -164,15 +167,22 @@ namespace Strands
 		Instance* FindOrCreateInstance(RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry);
 		void Classify(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry);
 		void ResolveStyle(Instance& a_instance);
-		std::shared_ptr<Asset> RequestAsset(Instance& a_instance, RE::BSGeometry* a_geometry);
-		bool UploadAsset(Asset& a_asset);
+		std::shared_ptr<Asset> RequestAsset(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry);
+		/** @brief True if a_layer's twin (same actor, same mesh counts) drew strands this frame or the last. */
+		bool TwinDrawsStrands(const Instance& a_layer) const;
+		void HideCards(RE::BSRenderPass* a_pass);
+		/** @brief The viewport the hidden cards would have used, for the strands drawn in their place. */
+		bool GetCardViewport(D3D11_VIEWPORT& o_viewport);
 		bool EnsureInstanceBuffers(Instance& a_instance);
 		ShaderVariant* GetVariant(uint32_t a_pixelDescriptor);
 		bool EnsureSkinShader();
 		bool UpdateLod(Instance& a_instance, RE::BSGeometry* a_geometry);
 		bool Skin(Instance& a_instance, RE::NiSkinInstance* a_skin);
-		void Draw(Instance& a_instance, ShaderVariant& a_variant);
+		void Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport);
 		ID3D11RasterizerState* GetNoCullState(ID3D11RasterizerState* a_current);
+		/** @brief The pass's depth state with writes on and an equal test widened to less/greater-equal. */
+		ID3D11DepthStencilState* GetStrandDepthState(ID3D11DepthStencilState* a_current, bool a_reversedDepth);
+		void RestoreHiddenViewport();
 
 		StyleLibrary& library;
 		RenderSettings settings;
@@ -195,6 +205,7 @@ namespace Strands
 		std::unique_ptr<ConstantBuffer> drawCB;
 		std::unique_ptr<ConstantBuffer> skinCB;
 		std::unordered_map<ID3D11RasterizerState*, winrt::com_ptr<ID3D11RasterizerState>> noCullStates;
+		std::unordered_map<ID3D11DepthStencilState*, winrt::com_ptr<ID3D11DepthStencilState>> strandDepthStates[2];  // by reversed depth
 
 		// The pass between OnSetupGeometry and OnRestoreGeometry.
 		RE::BSRenderPass* currentPass = nullptr;
@@ -202,6 +213,7 @@ namespace Strands
 		ShaderVariant* currentVariant = nullptr;
 		bool cardsHidden = false;
 		D3D11_VIEWPORT savedViewport{};
+		bool loggedViewportMiss = false;
 
 		RenderStats stats;
 		uint64_t strandsThisFrame = 0;

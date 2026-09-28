@@ -199,7 +199,10 @@ VS_OUTPUT main(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 
 	const float4 worldPosition = float4(position, 1.0);
 	const float4 viewPos = mul(ViewProj, worldPosition);
-	vsout.Position = viewPos;
+	// Drawn a ribbon width nearer along its own view ray: the same pixels, but a strand lying
+	// on its card or at the scalp wins the depth test against the hairline and the card
+	// surface it follows, even where the camera-facing ribbon tilts behind that surface.
+	vsout.Position = mul(ViewProj, float4(position - normalize(position) * max(width, 0.05), 1.0));
 
 	const float2 uv = lerp(float2(r1.U, r1.V), float2(r2.U, r2.V), f);
 	vsout.TexCoord0.xy = uv * TexcoordOffset.zw + TexcoordOffset.xy;

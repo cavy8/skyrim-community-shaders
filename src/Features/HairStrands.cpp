@@ -10,7 +10,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	HairStrands::Settings,
 	Enable,
 	AutoConvert,
-	ConvertFacialHair,
 	PlayerOnly,
 	MaxActors,
 	DensityScale,
@@ -20,8 +19,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MinPixelWidth,
 	MaxWidthScale,
 	MaxSubdivisions,
-	MaxStrandsPerFrame,
-	ModeOverride);
+	MaxStrandsPerFrame);
 
 namespace
 {
@@ -77,6 +75,9 @@ void HairStrands::PostPostLoad()
 	// Chained after every other Lighting SetupGeometry hook, so the pass's state is final.
 	stl::write_vfunc<0x6, Hooks::BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
 	stl::write_vfunc<0x7, Hooks::BSLightingShader_RestoreGeometry>(RE::VTABLE_BSLightingShader[0]);
+	// The depth prepass (Utility shader) must not keep the outline of cards the strands replace.
+	stl::write_vfunc<0x6, Hooks::BSUtilityShader_SetupGeometry>(RE::VTABLE_BSUtilityShader[0]);
+	stl::write_vfunc<0x7, Hooks::BSUtilityShader_RestoreGeometry>(RE::VTABLE_BSUtilityShader[0]);
 	hooksInstalled = true;
 	logger::info("[HairStrands] Installed hooks; {} authored style entries", library.GetEntryCount());
 }
@@ -98,11 +99,26 @@ void HairStrands::Hooks::BSLightingShader_RestoreGeometry::thunk(RE::BSShader* T
 	func(This, Pass, RenderFlags);
 }
 
+void HairStrands::Hooks::BSUtilityShader_SetupGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
+{
+	func(This, Pass, RenderFlags);
+	auto& feature = globals::features::hairStrands;
+	if (feature.settings.Enable && feature.renderer)
+		feature.renderer->OnUtilitySetupGeometry(Pass);
+}
+
+void HairStrands::Hooks::BSUtilityShader_RestoreGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
+{
+	auto& feature = globals::features::hairStrands;
+	if (feature.settings.Enable && feature.renderer)
+		feature.renderer->OnRestoreGeometry(Pass);
+	func(This, Pass, RenderFlags);
+}
+
 Strands::RenderSettings HairStrands::MakeRenderSettings() const
 {
 	Strands::RenderSettings result;
 	result.autoConvert = settings.AutoConvert;
-	result.convertFacialHair = settings.ConvertFacialHair;
 	result.playerOnly = settings.PlayerOnly;
 	result.maxActors = settings.MaxActors;
 	result.densityScale = settings.DensityScale;
@@ -113,7 +129,6 @@ Strands::RenderSettings HairStrands::MakeRenderSettings() const
 	result.maxWidthScale = settings.MaxWidthScale;
 	result.maxSubdivisions = settings.MaxSubdivisions;
 	result.maxStrandsPerFrame = settings.MaxStrandsPerFrame;
-	result.modeOverride = settings.ModeOverride;
 	return result;
 }
 
@@ -146,20 +161,6 @@ void HairStrands::DrawSettings()
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("conversion_tooltip"), "All hair: every hairstyle is converted, using its authored style if it has one.\nAuthored styles only: only hairstyles with a style file entry (or edited in the\nhairstyle editor below) are converted; every other hair keeps its cards."));
-	}
-
-	if (ImGui::Checkbox(T(TKEY("facial_hair"), "Convert Facial Hair"), &settings.ConvertFacialHair) && renderer)
-		renderer->ForgetInstances();
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("facial_hair_tooltip"), "Also converts beards, moustaches and other facial hair."));
-	}
-
-	int modeOverride = static_cast<int>(std::min(settings.ModeOverride, 2u));
-	const char* modeNames[] = { T(TKEY("cards_per_style"), "As each style says"), T(TKEY("cards_keep"), "Always keep cards"), T(TKEY("cards_replace"), "Always replace cards") };
-	if (ImGui::Combo(T(TKEY("cards"), "Hair Cards"), &modeOverride, modeNames, 3))
-		settings.ModeOverride = static_cast<uint>(modeOverride);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("cards_tooltip"), "Keep: the original hair cards stay under the strands, filling out the volume\n(best for thin automatic conversions and dark hair, where the scalp would show).\nReplace: only strands are drawn. Cards always still cast the shadows."));
 	}
 
 	ImGui::SeparatorText(T(TKEY("performance"), "Performance"));
@@ -279,9 +280,6 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 	changed |= ImGui::Checkbox(T(TKEY("style_enabled"), "Convert This Hair"), &a_style.enabled);
 	tooltip(T(TKEY("style_enabled_tooltip"), "Off keeps this hairstyle's cards even when automatic conversion is on."));
 
-	changed |= EnumCombo(T(TKEY("style_mode"), "Cards"), a_style.mode, { T(TKEY("style_mode_hybrid"), "Keep under strands"), T(TKEY("style_mode_replace"), "Replace with strands") });
-	tooltip(T(TKEY("style_mode_tooltip"), "Whether this hairstyle's cards stay under its strands. The Hair Cards option above can override it."));
-
 	EnumCombo(T(TKEY("style_preset"), "Hair Type"), a_style.preset,
 		{ T(TKEY("preset_auto"), "Auto (from the hair's name)"), T(TKEY("preset_straight"), "Straight"), T(TKEY("preset_wavy"), "Wavy"), T(TKEY("preset_curly"), "Curly"),
 			T(TKEY("preset_coily"), "Coily (afro-textured)"), T(TKEY("preset_locs"), "Locs, braids and twists") });
@@ -290,8 +288,8 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		StrandStyle preset = MakePresetStyle(a_style.preset == HairPreset::Auto ? HairPreset::Straight : a_style.preset);
 		preset.preset = a_style.preset;
 		preset.enabled = a_style.enabled;
-		preset.mode = a_style.mode;
 		preset.flowAxis = a_style.flowAxis;
+		preset.coverageThreshold = a_style.coverageThreshold;
 		preset.excludeUV = a_style.excludeUV;
 		a_style = preset;
 		changed = true;
@@ -332,6 +330,9 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		ImGui::SliderFloat(T(TKEY("style_length_scale"), "Length"), &a_style.lengthScale, 0.05f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		generationEdited();
 		tooltip(T(TKEY("style_length_scale_tooltip"), "Fraction of the card length the strands keep."));
+		ImGui::SliderFloat(T(TKEY("style_coverage"), "Texture Coverage"), &a_style.coverageThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		generationEdited();
+		tooltip(T(TKEY("style_coverage_tooltip"), "Strands only grow where the hair texture's alpha is at least this, so they end where\nthe painted hair ends and skip the transparent parts of the cards. Lower keeps\nfainter wisps; 0 ignores the texture and fills the whole cards."));
 		ImGui::SliderFloat(T(TKEY("style_volume"), "Volume"), &a_style.volume, 0.0f, L::kMaxVolume, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		generationEdited();
 		tooltip(T(TKEY("style_volume_tooltip"), "How far strands lift off the cards towards their tips, in units."));
@@ -537,7 +538,6 @@ void HairStrands::LoadSettings(json& o_json)
 	settings.MaxWidthScale = std::clamp(settings.MaxWidthScale, 1.0f, kMaxWidthScaleLimit);
 	settings.MaxSubdivisions = std::clamp(settings.MaxSubdivisions, 1u, kMaxSubdivisionsLimit);
 	settings.MaxStrandsPerFrame = std::clamp(settings.MaxStrandsPerFrame, kMinStrandBudget, kMaxStrandBudget);
-	settings.ModeOverride = std::min(settings.ModeOverride, 2u);
 	if (renderer) {
 		renderer->ForgetInstances();
 		if (!settings.Enable)

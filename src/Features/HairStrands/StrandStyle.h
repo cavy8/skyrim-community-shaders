@@ -28,14 +28,6 @@ namespace Strands
 		Count
 	};
 
-	/** @brief Cards kept under the strands (Hybrid) or hidden in the lighting passes (Replace). */
-	enum class RenderMode : uint32_t
-	{
-		Hybrid,
-		Replace,
-		Count
-	};
-
 	/** @brief Where strands start. Auto uses Roots, and Area for very short hair. */
 	enum class SeedMode : uint32_t
 	{
@@ -72,21 +64,21 @@ namespace Strands
 	struct StrandStyle
 	{
 		bool enabled = true;
-		RenderMode mode = RenderMode::Hybrid;
 		HairPreset preset = HairPreset::Auto;
 
 		// Generation: changing any of these rebuilds the strand asset.
 		SeedMode seeding = SeedMode::Auto;
 		FlowAxis flowAxis = FlowAxis::Auto;
-		float density = 12.0f;        // strands per unit of root edge (Area: per square unit x 4)
-		float segmentLength = 1.0f;   // control-point spacing
-		float lengthScale = 1.0f;     // fraction of the traced length kept
-		float volume = 0.15f;         // lift off the card surface towards the tip
-		float layerJitter = 0.12f;    // random root offset along the normal, for depth
-		float clumpStrength = 0.25f;  // pull towards the clump centre towards the tip
-		float clumpSize = 1.5f;       // clump radius at the root
-		float clumpTwist = 0.0f;      // turns per unit around the clump centre (locs, twists)
-		float shortLength = 1.2f;     // strand length when seeding by area
+		float density = 12.0f;           // strands per unit of root edge (Area: per square unit x 4)
+		float segmentLength = 1.0f;      // control-point spacing
+		float lengthScale = 1.0f;        // fraction of the traced length kept
+		float volume = 0.15f;            // lift off the card surface towards the tip
+		float layerJitter = 0.12f;       // random root offset along the normal, for depth
+		float clumpStrength = 0.25f;     // pull towards the clump centre towards the tip
+		float clumpSize = 1.5f;          // clump radius at the root
+		float clumpTwist = 0.0f;         // turns per unit around the clump centre (locs, twists)
+		float shortLength = 1.2f;        // strand length when seeding by area
+		float coverageThreshold = 0.3f;  // card texture alpha below this has no hair (0: ignore the texture)
 		uint32_t seed = 1;
 		std::vector<UVRect> excludeUV;
 
@@ -139,7 +131,6 @@ namespace Strands
 	HairPreset GuessPreset(std::string_view a_headPart, std::string_view a_model, std::string_view a_shape);
 
 	std::string_view PresetName(HairPreset a_preset);
-	std::string_view RenderModeName(RenderMode a_mode);
 
 	/** @brief Writes every field of a style (the in-game editor saves fully resolved styles). */
 	void StyleToJson(const StrandStyle& a_style, json& o_json);
