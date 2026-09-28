@@ -951,6 +951,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if (!frontFace)
 		tbn = lerp(tbn, -tbn, nearFactor);
 #		endif
+#		if defined(HAIR_STRANDS)
+	// Hair Strands: camera-facing ribbons have no back side to fix.
+	tbn = float3x3(input.TBN0.xyz, input.TBN1.xyz, input.TBN2.xyz);
+#		endif
 
 	float3x3 tbnTr = transpose(tbn);
 
@@ -1420,6 +1424,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float4 normalColor;
 	MESH_TV_SAMPLE_BIAS(normalColor, TexNormalSampler, SampNormalSampler, uv);
 	normal = normalColor;
+#		if defined(HAIR_STRANDS)
+	// Hair Strands: a strand's coverage is its geometry, so it takes the card's colour without
+	// the card's alpha, and its shading normal from the strand rather than the card normal map.
+	baseColor = float4(Color::Diffuse(TexColorSampler.SampleBias(SampColorSampler, diffuseUv, SharedData::MipBias + HAIR_STRANDS_COLOR_MIP_BIAS).rgb), 1.0);
+	normal.xyz = float3(0.5, 0.5, 1.0);
+#		endif
 #		if defined(TRUE_PBR)
 	MESH_TV_SAMPLE_BIAS(rawRMAOS, TexRMAOSSampler, SampRMAOSSampler, diffuseUv);
 	rawRMAOS *= float4(PBRParams1.x, 1, 1, PBRParams1.z);

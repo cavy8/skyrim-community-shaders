@@ -59,8 +59,8 @@ harness instead: capture one frame, swap just that shader, diff against the ship
 
 Bottle-Compendium (InTheBottle/Bottled-Shaders), pinned in `docs/development/upstreams.yaml`,
 is the primary maintenance baseline. Since the 2026-09-26 simplification, Personal is Bottle
-plus exactly: the Neural Rendering feature (and its seams/hotkeys), the Screenshot SDR fix,
-`BuildPersonal.bat`, and its own docs/tooling (Hair Backlighting and the "Show Background Compile
+plus exactly: the Neural Rendering and Hair Strands features (and NR's seams/hotkeys), the
+Screenshot SDR fix, `BuildPersonal.bat`, and its own docs/tooling (Hair Backlighting and the "Show Background Compile
 Overlay" toggle are Bottle's now), plus
 owner-approved changes to Bottle features: Upscaling fix F1 (Streamline `motionVectorsDilated`)
 and Post Processing P1 (feature on, every effect off by default) and P2 (DoF target focus only

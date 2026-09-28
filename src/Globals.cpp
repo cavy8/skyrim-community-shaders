@@ -25,6 +25,7 @@
 #include "Features/LinearLighting.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/NeuralRendering.h"
+#include "Features/HairStrands.h"
 #include "Features/PostProcessing.h"
 #include "Features/ProceduralSun.h"
 #include "Features/RemoteControl.h"
@@ -118,6 +119,7 @@ namespace globals
 		// Local (non-Bottle) features follow.
 		NeuralRendering neuralRendering{};
 		HairBacklighting hairBacklighting{};
+		HairStrands hairStrands{};
 
 		namespace llf
 		{

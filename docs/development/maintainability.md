@@ -18,6 +18,7 @@ that is recorded. Read this before changing a feature that also exists upstream.
     Hair Backlighting and the "Show Background Compile Overlay" toggle started here and were merged
     into Bottle-Compendium (PRs #3 and #4, pinned at `978eb4d9f2`); Bottle owns them now, so they
     have no policy entry and their files must match Bottle exactly.
+    Hair Strands (added 2026-09-28 at the owner's request) is a new Personal feature on top.
     Everything else that used to differ (Wind, Cloud Relight, Pseudo Sun Bounce, Advanced Skin,
     Effects11 preset hot-swap, default states, branding, ...) was removed and is listed in
     [`removed-features.md`](./removed-features.md) for later re-adding.
@@ -25,7 +26,7 @@ that is recorded. Read this before changing a feature that also exists upstream.
     still have started in Open Shaders, Jiayev's fork, or mainline. Pinning a baseline says
     nothing about who wrote the code.
 -   **Personal-original work is small and recorded.** Neural Rendering (with its hotkeys and the
-    Screenshot comparison capture) and the Screenshot sRGB fix. Each is marked `personal_original: true`
+    Screenshot comparison capture), Hair Strands, and the Screenshot sRGB fix. Each is marked `personal_original: true`
     in `feature-provenance.yaml`. Work that Bottle has merged is recorded there as
     `personal_original: false` with `source: bottle`, keeping the original commits as evidence.
 -   **Source comparison is authoritative.** When a record here disagrees with the code, the code
@@ -58,7 +59,7 @@ written as `confidence: unresolved` with a one-line note, never guessed.
 | --- | --- |
 | `bottle-plus-components` | Bottle base plus named retained components (Screenshot: the sRGB fix and NR's comparison capture). |
 | `bottle-plus-seam` | Bottle base plus a minimal documented hook seam for a feature owned elsewhere. Upscaling carries the Neural Rendering seam and fix F1; Post Processing carries its Personal default states (P1) and the DoF targeting fix (P2). |
-| `personal` | Personal-original implementation (Neural Rendering). |
+| `personal` | Personal-original implementation (Neural Rendering, Hair Strands). |
 
 A feature with no entry must match Bottle exactly: `bottle_sync.py` reports any differing file that
 no entry claims. `bottle_sync.py` also still understands `bottle-exact`, `external-maintained`

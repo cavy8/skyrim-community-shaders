@@ -57,6 +57,14 @@ features:
         role: design-reference        # lobe shape follows Foliage Lighting's GetFoliageTransmission(); no code copied
         confidence: confirmed
 
+  HairStrands:
+    status: present
+    personal_original: true
+    provenance:
+      - source: personal
+        role: implementation       # mesh-to-strand hair conversion and rendering (owner request 2026-09-28)
+        confidence: confirmed
+
   Screenshot:
     status: present
     personal_original: false
