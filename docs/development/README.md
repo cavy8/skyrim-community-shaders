@@ -18,7 +18,7 @@
 
 -   **Fast shader deployment:** `cmake --build build/ALL --target COPY_SHADERS`
 -   **Full build with deployment:** `.\BuildRelease.bat ALL-WITH-AUTO-DEPLOYMENT`
--   **Validate shader permutations:** `hlslkit-compile` (see `.claude/CLAUDE.md` "Shader Development and Testing")
+-   **Validate shader permutations:** `hlslkit-compile` (see `.claude/CLAUDE.md` "Shader validation")
 -   **Create a worktree with submodules + local preset:** `pwsh ./tools/new-worktree.ps1 -Name my-branch`
 -   **Install optional git alias:** `pwsh ./tools/install-worktree-alias.ps1`
 
