@@ -13,6 +13,8 @@ struct EngineFix
 	/** @brief Returns the human-readable name of this fix (used in log messages). */
 	virtual std::string GetName() = 0;
 
+	virtual const char* GetEngineFixesName() const { return nullptr; }
+
 	/** @brief Applies the engine fix. Override in subclasses to perform patching. */
 	virtual void Install() {}
 

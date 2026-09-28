@@ -228,8 +228,7 @@ namespace PBR
 
 		[branch] if (SharedData::truePBRSettings.EnableMicroShadows != 0)
 		{
-			float microShadow = ApproximateDirectOcculusion(material.AO, NdotL);
-			microShadow = lerp(1.0, microShadow, SharedData::truePBRSettings.MicroShadowStrength);
+			float microShadow = lerp(1.0, ApproximateDirectOcculusion(material.AO, NdotL), SharedData::truePBRSettings.MicroShadowStrength);
 			lightingOutput.diffuse *= microShadow;
 			lightingOutput.specular *= microShadow;
 			lightingOutput.coatDiffuse *= microShadow;

@@ -56,6 +56,7 @@ namespace ShadowSampling
 		float worldShadow = 1.0;
 #if defined(TERRAIN_SHADOWS)
 		worldShadow = TerrainShadows::GetTerrainShadow(positionWS + offset, LinearSampler);
+		worldShadow *= TerrainShadows::GetLODShadow(positionWS + offset, LinearSampler);
 #endif
 
 #if defined(CLOUD_SHADOWS)

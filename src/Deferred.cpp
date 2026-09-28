@@ -15,6 +15,7 @@
 #include "Features/Skylighting.h"
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
+#include "Features/TerrainShadows.h"
 #include "Features/Upscaling.h"
 #include "Features/CSEditor.h"
 
@@ -215,6 +216,8 @@ void Deferred::EarlyPrepasses()
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Early Prepass");
 
+	sceneDepthFinal = false;
+
 	auto shaderCache = globals::shaderCache;
 
 	if (!shaderCache->IsEnabled())
@@ -251,6 +254,7 @@ void Deferred::PrepassPasses()
 
 void Deferred::StartDeferred()
 {
+	sceneDepthFinal = false;
 	if (!globals::state->inWorld)
 		return;
 	globals::state->UpdateSharedData(true, false);
@@ -319,6 +323,13 @@ void Deferred::DeferredPasses()
 	auto main = renderer->GetRuntimeData().renderTargets[forwardRenderTargets[0]];
 	auto normals = renderer->GetRuntimeData().renderTargets[forwardRenderTargets[2]];
 	auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	// Publish the finished opaque depth before any post-geometry pass reads it. The z-prepass
+	// depth omits alpha-tested geometry (rocks, cliffs, road edges), so SSGI, SSS and the
+	// composite would otherwise see the background where those objects stand. Water also
+	// samples this copy for edge fade and refraction.
+	auto finalDepthCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+	context->CopyResource(finalDepthCopy.texture, depth.texture);
+	sceneDepthFinal = true;
 	auto reflectance = renderer->GetRuntimeData().renderTargets[REFLECTANCE];
 
 	auto motionVectors = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
@@ -404,8 +415,10 @@ void Deferred::DeferredPasses()
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();
 
-	if (globals::features::effects11.loaded)
+	if (globals::features::effects11.loaded) {
 		globals::features::effects11.DrawVolumetricRays();
+		globals::features::effects11.DrawSunRays();
+	}
 }
 
 void Deferred::EndDeferred()
@@ -698,14 +711,16 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumula
 
 	deferred->EndDeferred();
 
-	// Copy depth from before water
-	auto renderer = globals::game::renderer;
-	auto context = globals::d3d::context;
+	// Copy depth from before water, unless DeferredPasses already did
+	if (!deferred->sceneDepthFinal) {
+		auto renderer = globals::game::renderer;
+		auto context = globals::d3d::context;
 
-	auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-	auto depthCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+		auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		auto depthCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
 
-	context->CopyResource(depthCopy.texture, depth.texture);
+		context->CopyResource(depthCopy.texture, depth.texture);
+	}
 
 	// After this point, water starts rendering
 };
@@ -715,9 +730,15 @@ void Deferred::Hooks::BSCubeMapCamera_RenderCubemap::thunk(RE::NiAVObject* camer
 	auto deferred = globals::deferred;
 	auto state = globals::state;
 
+	auto& terrainShadows = globals::features::terrainShadows;
+
 	deferred->ReflectionsPrepasses();
 	state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections);
+	if (terrainShadows.loaded)
+		terrainShadows.lodShadowMap.BeginFace(camera, static_cast<uint32_t>(a2));
 	func(camera, a2, a3, a4, a5);
+	if (terrainShadows.loaded)
+		terrainShadows.lodShadowMap.EndFace();
 	state->permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections);
 }
 

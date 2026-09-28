@@ -171,8 +171,7 @@ void SkySync::RestoreDefaultSettings()
 
 void SkySync::PostPostLoad()
 {
-	moonAndStarsLoaded = GetModuleHandle(L"po3_MoonMod.dll");
-	if (moonAndStarsLoaded)
+	if (Util::Moon::IsMoonAndStarsLoaded())
 		logger::info("[Sky Sync] Moon and Stars detected, compatibility enabled");
 
 	if (GetModuleHandle(L"EVLaS.dll")) {
@@ -259,7 +258,7 @@ void SkySync::PreparePendingTransitions()
 
 bool SkySync::Update(const RE::Sky* sky)
 {
-	std::fill(std::begin(celestialDirections), std::end(celestialDirections), RE::NiPoint3{});
+	std::fill(std::begin(rawDirections), std::end(rawDirections), RE::NiPoint3{});
 
 	if (!settings.Enabled) {
 		currentDim = 1.0f;
@@ -354,7 +353,7 @@ bool SkySync::Update(const RE::Sky* sky)
 	ProcessSun(sky, directions, intensities);
 	ProcessMoon(sky, Caster::Masser, directions, intensities);
 	ProcessMoon(sky, Caster::Secunda, directions, intensities);
-	std::copy(std::begin(directions), std::end(directions), std::begin(celestialDirections));
+	std::copy(std::begin(directions), std::end(directions), std::begin(rawDirections));
 
 	const auto calendar = globals::game::calendar;
 	const auto deltaTime = globals::game::deltaTime;
@@ -447,12 +446,7 @@ void SkySync::ProcessMoon(const RE::Sky* sky, const Caster type, RE::NiPoint3 di
 	if (!moon || moon->root->GetFlags().any(RE::NiAVObject::Flag::kHidden))
 		return;
 
-	auto dir = moon->root->local.rotate.GetVectorY();
-
-	if (moonAndStarsLoaded)
-		dir = { dir.y, -dir.x, dir.z };
-
-	dirs[idx] = dir;
+	dirs[idx] = Util::Moon::GetFacingAxis(moon->root->local.rotate);
 
 	const float4& baseColor = type == Caster::Masser ? Util::Moon::MasserBaseColor : Util::Moon::SecundaBaseColor;
 	float4 color = Util::Moon::GetBlendColor(moon, baseColor, settings.NewMoonIntensity, settings.CrescentMoonIntensity, settings.FullMoonIntensity);
@@ -469,13 +463,14 @@ void SkySync::ProcessMoon(const RE::Sky* sky, const Caster type, RE::NiPoint3 di
 RE::NiPoint3 SkySync::GetCelestialDirection(const RE::Sky* sky, const Caster caster) const
 {
 	const auto idx = static_cast<size_t>(caster);
-	if (!sky || !sky->root || idx >= std::size(celestialDirections))
+	assert(idx < std::size(rawDirections));
+	if (!sky || !sky->root)
 		return { 0.0f, 0.0f, 1.0f };
 
-	RE::NiPoint3 dir = celestialDirections[idx];
+	RE::NiPoint3 dir = rawDirections[idx];
 	if (dir.SqrLength() > 0.0f)
 		dir = sky->root->world.rotate * dir;
-	else if (caster == Caster::Sun)
+	else if (caster == Caster::Sun)  // SetSunPosition writes only the local translate, so the world one may be stale
 		dir = sky->sun && sky->sun->root ? sky->sun->root->world.translate - sky->root->world.translate : RE::NiPoint3{};
 	else
 		dir = Util::Moon::GetDirection(caster == Caster::Masser ? sky->masser : sky->secunda);
@@ -483,6 +478,33 @@ RE::NiPoint3 SkySync::GetCelestialDirection(const RE::Sky* sky, const Caster cas
 	if (dir.Unitize() <= FLT_EPSILON)
 		return { 0.0f, 0.0f, 1.0f };
 	return dir;
+}
+
+SkySync::Caster SkySync::GetMoonLightCaster(const RE::Sky* sky) const
+{
+	if (!sky)
+		return Caster::None;
+
+	auto visibility = [](const RE::Moon* moon) {
+		if (!moon || !moon->root || !moon->moonMesh || moon->root->GetFlags().any(RE::NiAVObject::Flag::kHidden))
+			return 0.0f;
+		const auto prop = skyrim_cast<RE::BSSkyShaderProperty*>(moon->moonMesh->GetGeometryRuntimeData().shaderProperty.get());
+		return prop ? prop->kBlendColor.alpha : 0.0f;
+	};
+
+	const float masser = visibility(sky->masser);
+	const float secunda = visibility(sky->secunda);
+
+	switch (static_cast<MoonLightSource>(settings.MoonLightSource)) {
+	case MoonLightSource::Masser:
+		return masser > 0.0f ? Caster::Masser : Caster::None;
+	case MoonLightSource::Secunda:
+		return secunda > 0.0f ? Caster::Secunda : Caster::None;
+	default:
+		if (masser <= 0.0f && secunda <= 0.0f)
+			return Caster::None;
+		return secunda > masser ? Caster::Secunda : Caster::Masser;
+	}
 }
 
 inline void SkySync::CalculateSunDirectionAndDistance(const RE::Sun* sun, RE::NiPoint3& outDir, float& outDistance)

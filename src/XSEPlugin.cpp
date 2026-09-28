@@ -97,8 +97,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				// Register scene settings event handler (Interior Only transitions)
 				SceneSettingsManager::MenuOpenCloseEventHandler::Register();
 
-				// Now validate disk cache after features have had a chance to modify their state
-				shaderCache->ValidateDiskCache();
+				shaderCache->RemoveLegacyDiskCache();
 
 				if (shaderCache->UseFileWatcher())
 					shaderCache->StartFileWatcher();
@@ -139,7 +138,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				}
 
 				if (shaderCache->IsDiskCache()) {
-					shaderCache->WriteDiskCacheInfo();
+					shaderCache->TrimDiskCache();
 				}
 
 				Feature::ForEachLoadedFeature("DataLoaded", [](Feature* feature) { feature->DataLoaded(); });

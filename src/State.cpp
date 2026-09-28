@@ -564,7 +564,6 @@ void State::SaveToJson(nlohmann::json& settings)
 	json general;
 	general["Enable Shaders"] = shaderCache->IsEnabled();
 	general["Enable Disk Cache"] = shaderCache->IsDiskCache();
-	general["Skip Unchanged Shaders"] = shaderCache->IsSkipUnchangedShaders();
 	general["Enable Async"] = shaderCache->IsAsync();
 	general["Show Background Compile Overlay"] = shaderCache->IsShowBackgroundOverlay();
 	general["Language"] = I18n::GetSingleton()->GetCurrentLocale();
@@ -651,8 +650,6 @@ void State::LoadFromJson(nlohmann::json& settings)
 			shaderCache->SetEnabled(general["Enable Shaders"]);
 		if (general.contains("Enable Disk Cache") && general["Enable Disk Cache"].is_boolean())
 			shaderCache->SetDiskCache(general["Enable Disk Cache"]);
-		if (general.contains("Skip Unchanged Shaders") && general["Skip Unchanged Shaders"].is_boolean())
-			shaderCache->SetSkipUnchangedShaders(general["Skip Unchanged Shaders"]);
 		if (general.contains("Enable Async") && general["Enable Async"].is_boolean())
 			shaderCache->SetAsync(general["Enable Async"]);
 		if (general.contains("Show Background Compile Overlay") && general["Show Background Compile Overlay"].is_boolean())
@@ -723,20 +720,6 @@ void State::Save(ConfigMode a_configMode)
 	} catch (const std::exception& e) {
 		logger::warn("Failed to write settings to file: {}. Error: {}", configPath, e.what());
 	}
-}
-
-bool State::ValidateCache(CSimpleIniA& a_ini)
-{
-	bool valid = true;
-	for (auto* feature : Feature::GetFeatureList())
-		valid = valid && feature->ValidateCache(a_ini);
-	return valid;
-}
-
-void State::WriteDiskCacheInfo(CSimpleIniA& a_ini)
-{
-	for (auto* feature : Feature::GetFeatureList())
-		feature->WriteDiskCacheInfo(a_ini);
 }
 
 void State::SetLogLevel(spdlog::level::level_enum a_level)
@@ -1117,11 +1100,11 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		}
 
 		if (auto sky = globals::game::sky) {
-			// Process sun
 			const auto& skySync = globals::features::skySync;
 
+			// Process sun
 			if (auto sun = sky->sun; sun && sun->root && sky->root) {
-				auto sunDirection = skySync.GetCelestialDirection(sky, SkySync::Caster::Sun);
+				const auto sunDirection = skySync.GetCelestialDirection(sky, SkySync::Caster::Sun);
 				data.SunDirection = { sunDirection.x, sunDirection.y, sunDirection.z, 0.0f };
 
 				if (sun->sunBase) {

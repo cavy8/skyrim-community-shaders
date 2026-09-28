@@ -12,6 +12,7 @@
 #include "Features/GrassLighting.h"
 #include "Features/HairBacklighting.h"
 #include "Features/HairSpecular.h"
+#include "Features/HorizonFix.h"
 #include "Features/IBL.h"
 #include "Features/LODBlending.h"
 #include "Features/LightLimitFix.h"
@@ -76,6 +77,7 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::snowCover.GetCommonBufferData(),
 		globals::features::postProcessing.GetCommonBufferData(),
 		globals::features::volumetricLighting.GetCommonBufferData(),
+		globals::features::horizonFix.GetCommonBufferData(),
 		// Local (non-Bottle) features follow; mirror SharedData.hlsli FeatureData.
 		globals::features::hairBacklighting.settings);
 }

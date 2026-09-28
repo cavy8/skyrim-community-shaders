@@ -853,7 +853,7 @@ void ColorGrading::ClearShaderCache()
 			}
 	}
 
-	globals::shaderCache->ClearStandaloneComputeCache(L"PostProcessing/ColorGrading");
+	globals::shaderCache->InvalidateShaderSources();
 	CompileShaders();
 }
 

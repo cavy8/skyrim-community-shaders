@@ -27,48 +27,42 @@ struct PS_OUTPUT
 	float Depth : SV_Target1;
 };
 
+static const float MaxRayLength = 154117.64;
+static const float RcpShadowCoverageRadiusSq = 1.0 / (262000.0 * 262000.0);
+
 float GetVolumetricRaysScattering(float3 positionMS, float noise, float3 cameraOffset)
 {
-	float extinction = SharedData::enbSettings.VolumetricRaysExtinction;
-	float totalRayLength = length(positionMS);
+	float pixelDistance = length(positionMS);
+	float3 rayDirection = positionMS / max(pixelDistance, 1e-4);
+	float rayLength = min(pixelDistance, MaxRayLength);
+	float3 sunDirection = SharedData::SunDirection.xyz;
 
 	const uint sampleCount = 16;
 	const float rcpSampleCount = 1.0 / float(sampleCount);
-	float negExtTimesRayLen = -extinction * totalRayLength;
 
-	float scattering = 0.0;
-	float transmittance = 1.0;
+	float visibility = 0.0;
 
 	[unroll]
 	for (uint i = 0; i < sampleCount; i++) {
-		float t0 = float(i) * rcpSampleCount;
-		float t1 = float(i + 1) * rcpSampleCount;
-
-		t0 *= t0;
-		t1 *= t1;
-
-		float t = lerp(t0, t1, noise);
-		float stepDelta = t1 - t0;
-
-		float3 samplePos = positionMS * t;
+		float3 samplePos = rayDirection * ((float(i) + noise) * rcpSampleCount * rayLength);
 
 		float shadow = 1.0;
 
 #if defined(TERRAIN_SHADOWS)
 		shadow = TerrainShadows::GetTerrainShadow(samplePos + cameraOffset, LinearSampler);
+		shadow *= TerrainShadows::GetLODShadow(samplePos + cameraOffset, LinearSampler);
 #endif
 
 #if defined(CLOUD_SHADOWS)
 		shadow *= CloudShadows::GetCloudShadowMult(samplePos, LinearSampler);
 #endif
-		shadow *= shadow;
 
-		float stepTransmittance = exp(negExtTimesRayLen * stepDelta);
-		scattering += shadow * (1.0 - stepTransmittance) * transmittance;
-		transmittance *= stepTransmittance;
+		float alongSun = dot(samplePos, sunDirection);
+		float offsetSq = max(dot(samplePos, samplePos) - alongSun * alongSun, 0.0);
+		visibility += shadow * saturate(1.0 - offsetSq * RcpShadowCoverageRadiusSq);
 	}
 
-	return scattering;
+	return saturate(visibility * rcpSampleCount * rayLength / MaxRayLength);
 }
 
 PS_OUTPUT main(VS_OUTPUT_POST input)

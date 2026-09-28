@@ -1,6 +1,7 @@
 namespace TerrainShadows
 {
 	Texture2D<float2> ShadowHeightTexture : register(t60);
+	Texture2DArray<float> LODShadowTexture : register(t61);
 
 	// Lowers shadow heights to hide self-shadowing from the coarse heightmap.
 	static const float SelfShadowBias = 256.0;
@@ -35,5 +36,41 @@ namespace TerrainShadows
 		if (transitionHeight <= 0.0)
 			return worldPos.z >= shadowHeight.x ? 1.0 : 0.0;
 		return saturate((worldPos.z - lowerHeight) / transitionHeight);
+	}
+
+	float GetLODShadow(const float3 worldPos, SamplerState samp)
+	{
+		const float strength = SharedData::terraOccSettings.LODShadowStrength;
+		if (strength <= 0.0)
+			return 1.0;
+
+		const float3 lightPos = float3(
+			dot(SharedData::terraOccSettings.LODShadowAxisX.xyz, worldPos),
+			dot(SharedData::terraOccSettings.LODShadowAxisY.xyz, worldPos),
+			dot(SharedData::terraOccSettings.LODShadowAxisZ.xyz, worldPos) + SharedData::terraOccSettings.LODShadowAxisZ.w);
+
+		const float resolution = SharedData::terraOccSettings.LODShadowResolution;
+		const float innerEdge = 1.0 - 2.0 / resolution;
+
+		[loop] for (uint cascade = 0; cascade < 3; cascade++)
+		{
+			const float4 mapping = SharedData::terraOccSettings.LODShadowCascades[cascade];
+			const float2 uv = float2(lightPos.x * mapping.x + mapping.y, lightPos.y * mapping.z + mapping.w);
+			const float edge = max(abs(uv.x * 2.0 - 1.0), abs(uv.y * 2.0 - 1.0));
+			if (edge >= innerEdge)
+				continue;
+
+			const float2 texel = uv * resolution - 0.5;
+			const float2 weight = frac(texel);
+			const float4 depths = LODShadowTexture.GatherRed(samp, float3((floor(texel) + 1.0) / resolution, cascade));
+			const float texelDepth = SharedData::terraOccSettings.LODShadowDepthBias[cascade];
+			const float slope = max(abs(depths.y - depths.x), abs(depths.z - depths.w)) + max(abs(depths.x - depths.w), abs(depths.y - depths.z));
+			const float bias = 0.5 * texelDepth + SharedData::terraOccSettings.LODShadowDepthBias.w + min(slope, 6.0 * texelDepth);
+			const float4 lit = step(lightPos.z - bias, depths);
+			const float visibility = lerp(lerp(lit.w, lit.z, weight.x), lerp(lit.x, lit.y, weight.x), weight.y);
+			const float fade = cascade == 2 ? saturate((innerEdge - edge) * 8.0) : 1.0;
+			return lerp(1.0, visibility, strength * fade);
+		}
+		return 1.0;
 	}
 }

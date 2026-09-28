@@ -1003,7 +1003,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(TERRAIN_VARIATION_MESH) && !defined(LANDSCAPE)
-#		define MESH_TV_SAMPLE(DEST, TEX, SAMP, UV)                      \
+#		define MESH_TV_SAMPLE(DEST, TEX, SAMP, UV)                     \
 			{                                                           \
 				[branch] if (applyMeshTV)                               \
 				{                                                       \
@@ -1014,7 +1014,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 					DEST = TEX.Sample(SAMP, UV);                        \
 				}                                                       \
 			}
-#		define MESH_TV_SAMPLE_BIAS(DEST, TEX, SAMP, UV)                   \
+#		define MESH_TV_SAMPLE_BIAS(DEST, TEX, SAMP, UV)                  \
 			{                                                             \
 				[branch] if (applyMeshTV)                                 \
 				{                                                         \
@@ -1025,7 +1025,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 					DEST = TEX.SampleBias(SAMP, UV, SharedData::MipBias); \
 				}                                                         \
 			}
-#		define MESH_TV_HEIGHT(DEST, TEX, SAMP, UV, MIP, CHANNEL)                             \
+#		define MESH_TV_HEIGHT(DEST, TEX, SAMP, UV, MIP, CHANNEL)                            \
 			{                                                                                \
 				[branch] if (applyMeshTV)                                                    \
 				{                                                                            \

@@ -1,7 +1,6 @@
 #ifndef EFFECTS11_SKY_SCATTERING_HLSLI
 #define EFFECTS11_SKY_SCATTERING_HLSLI
 
-#include "Common/Game.hlsli"
 #include "Common/Math.hlsli"
 #include "Common/SharedData.hlsli"
 
@@ -11,39 +10,21 @@
 
 namespace SkyScattering
 {
-	static const float PlanetRadius = 6371e3 / GAME_UNIT_TO_M;
-	static const float RayleighScaleHeight = 8e3 / GAME_UNIT_TO_M;
-	static const float AerosolScaleHeight = 1.2e3 / GAME_UNIT_TO_M;
-	static const float3 RayleighExtinction = float3(6.6049e-6, 12.345e-6, 29.413e-6) * GAME_UNIT_TO_M;
-	static const float AerosolExtinction = 4.44e-5 * GAME_UNIT_TO_M;
+	static const float2 ScaleHeight = float2(8e3, 1.2e3);
+	static const float2 AirmassSlope = sqrt(0.5 * 6371e3 / ScaleHeight);
+	static const float3 RayleighExtinction = float3(6.6049e-6, 12.345e-6, 29.413e-6);
+	static const float AerosolExtinction = 4.44e-5;
 
 	float3 SafeNormalize(float3 v)
 	{
 		return v * rsqrt(max(dot(v, v), 1e-8));
 	}
 
-	float GetRelativeAirmass(float cosZenith, float scaleHeight)
+	float4 GetCelestialExtinction(float3 viewDirection)
 	{
-		float x = PlanetRadius / scaleHeight;
-		float y = sqrt(0.5 * x) * max(cosZenith, 0.0);
-		return sqrt(2.0 * x) / (y + sqrt(y * y + 4.0 / Math::PI));
-	}
-
-	float3 GetCelestialTransmittance(float3 viewDirection)
-	{
-		float rayleighExcess = GetRelativeAirmass(viewDirection.z, RayleighScaleHeight) - GetRelativeAirmass(1.0, RayleighScaleHeight);
-		float aerosolExcess = GetRelativeAirmass(viewDirection.z, AerosolScaleHeight) - GetRelativeAirmass(1.0, AerosolScaleHeight);
-		float3 opticalDepth = RayleighExtinction * (RayleighScaleHeight * rayleighExcess) + AerosolExtinction * AerosolScaleHeight * aerosolExcess;
-		return exp(-max(opticalDepth, 0.0));
-	}
-
-	float Pow32(float x)
-	{
-		x *= x;
-		x *= x;
-		x *= x;
-		x *= x;
-		return x * x;
+		float2 y = AirmassSlope * saturate(viewDirection.z);
+		float2 depth = 2.0 * AirmassSlope * ScaleHeight * (1.0 / (y + sqrt(y * y + 4.0 / Math::PI)) - 1.0 / (AirmassSlope + sqrt(AirmassSlope * AirmassSlope + 4.0 / Math::PI)));
+		return exp(-float4((RayleighExtinction - RayleighExtinction.r) * depth.x, RayleighExtinction.r * depth.x + AerosolExtinction * depth.y));
 	}
 
 	float3 Pow32(float3 x)
@@ -67,55 +48,37 @@ namespace SkyScattering
 
 	float GetElevation(float3 viewDirection, float sunHeight)
 	{
-		return saturate(1.0 - saturate(1.0 - viewDirection.z) * saturate(1.0 + sunHeight));
+		return 1.0 - saturate(1.0 - viewDirection.z) * saturate(1.0 + sunHeight);
 	}
 
 	float GetHorizonCrop(float viewHeight)
 	{
-		float below = saturate(1.0 - saturate(viewHeight) * 40.0);
-		return saturate(1.0 - below * below);
+		float below = saturate(1.0 - viewHeight * 40.0);
+		return 1.0 - below * below;
 	}
 
 	float GetDustBand(float elevation)
 	{
-		return Pow32(saturate(1.0 - elevation * SharedData::enbSettings.SkyScatteringDustVolume));
+		return Pow32(saturate(1.0 - elevation * SharedData::enbSettings.SkyScatteringDustVolume)).x;
 	}
 
 	float GetEarthShadow(float elevation, float facing, float sunHeight)
 	{
-		float lightHeight = -sunHeight;
-		float threshold = lerp(0.8 + 0.3 * saturate((lightHeight + 0.1) * 5.0), 0.95 + saturate(lightHeight * 0.5), facing);
-		float shadow = saturate(1.0 + elevation - threshold);
-		float spread = saturate(1.0 - (lightHeight + 0.1) * 3.0);
-		spread = 4.0 * (0.1 + spread * spread);
-		shadow = saturate(shadow * spread * (1.0 + facing * 4.0));
-		shadow = shadow * shadow * (3.0 - 2.0 * shadow);
-		return shadow * shadow * (3.0 - 2.0 * shadow);
+		float twilight = 0.1 - sunHeight;
+		float threshold = lerp(0.8 + 0.3 * saturate(twilight * 5.0), 0.95 + saturate(sunHeight * -0.5), facing);
+		float spread = saturate(1.0 - twilight * 3.0);
+		float shadow = saturate(1.0 + elevation - threshold) * (4.0 * (0.1 + spread * spread)) * (1.0 + facing * 4.0);
+		return smoothstep(0.0, 1.0, smoothstep(0.0, 1.0, shadow));
 	}
 
-	float3 GetScatteringColor(float dustBand, bool horizonTerms, float aboveHorizon)
+	float3 GetScatteringColor(float dustBand)
 	{
-		float3 color = SharedData::enbSettings.SkyScatteringColor * Pow32(saturate(1.0 - dustBand * SharedData::enbSettings.SkyScatteringDustTint));
-		float intensity = SharedData::enbSettings.SkyScatteringIntensity;
-		if (horizonTerms) {
-			intensity *= aboveHorizon;
-			color *= 1.0 - dustBand * SharedData::enbSettings.SkyScatteringDustDarkening;
-		}
-		return color * intensity;
-	}
-
-	float GetScatteringFade(float elevation, float facing)
-	{
-		float away = 1.0 - facing;
-		float spread = lerp(SharedData::enbSettings.SkyScatteringHorizonRange * away * away, SharedData::enbSettings.SkyScatteringAtmosphereThickness, elevation * elevation);
-		return 1.0 / (1.0 + away * spread);
+		return SharedData::enbSettings.SkyScatteringColor * SharedData::enbSettings.SkyScatteringIntensity * Pow32(saturate(1.0 - dustBand * SharedData::enbSettings.SkyScatteringDustTint));
 	}
 
 	float3 GetScatteringColorAt(float3 direction)
 	{
-		float3 sunDirection = GetSunDirection();
-		float dustBand = GetDustBand(GetElevation(direction, sunDirection.z));
-		return GetScatteringColor(dustBand, false, 1.0) * saturate(SharedData::enbSettings.SkyScatteringAmount);
+		return GetScatteringColor(GetDustBand(GetElevation(direction, GetSunDirection().z))) * saturate(SharedData::enbSettings.SkyScatteringAmount);
 	}
 
 	float3 ApplySkyScattering(float3 skyColor, float3 topColor, float3 viewDirection)
@@ -124,22 +87,20 @@ namespace SkyScattering
 		float facing = GetFacing(viewDirection, sunDirection);
 		float away = 1.0 - facing;
 		float elevation = GetElevation(viewDirection, sunDirection.z);
-
-		float below = saturate(-viewDirection.z);
-		float aboveHorizon = saturate(1.0 - below * 10.0);
+		float dustBand = GetDustBand(elevation);
+		float aboveHorizon = saturate(1.0 + viewDirection.z * 10.0);
+		float sunAboveHorizon = saturate(1.0 + viewDirection.z * 40.0);
 		aboveHorizon *= aboveHorizon;
-		float sunAboveHorizon = saturate(1.0 - below * 40.0);
 		sunAboveHorizon *= sunAboveHorizon;
 
+		float spread = lerp(SharedData::enbSettings.SkyScatteringHorizonRange * away * away, SharedData::enbSettings.SkyScatteringAtmosphereThickness, elevation * elevation);
+		float3 scatteringColor = GetScatteringColor(dustBand) * (aboveHorizon * (1.0 - dustBand * SharedData::enbSettings.SkyScatteringDustDarkening));
 		float shadow = lerp(1.0, GetEarthShadow(elevation, facing, sunDirection.z), SharedData::enbSettings.SkyScatteringShadowAmount);
-		float3 scatteringColor = GetScatteringColor(GetDustBand(elevation), true, aboveHorizon);
 
-		float3 result = skyColor;
-		result += result * (SharedData::enbSettings.SkyScatteringAirGlowIntensity / (1.0 + away * SharedData::enbSettings.SkyScatteringAirGlowRange));
-		result = lerp(result, scatteringColor, saturate(GetScatteringFade(elevation, facing) * SharedData::enbSettings.SkyScatteringAmount));
-		result += result * (SharedData::enbSettings.SkyScatteringSunGlowIntensity * sunAboveHorizon / (1.0 + away * SharedData::enbSettings.SkyScatteringSunGlowRange));
-		result = lerp(topColor * 0.5, result, shadow);
-		return lerp(skyColor, result, aboveHorizon);
+		float3 result = skyColor * (1.0 + SharedData::enbSettings.SkyScatteringAirGlowIntensity / (1.0 + away * SharedData::enbSettings.SkyScatteringAirGlowRange));
+		result = lerp(result, scatteringColor, saturate(SharedData::enbSettings.SkyScatteringAmount / (1.0 + away * spread)));
+		result *= 1.0 + SharedData::enbSettings.SkyScatteringSunGlowIntensity * sunAboveHorizon / (1.0 + away * SharedData::enbSettings.SkyScatteringSunGlowRange);
+		return lerp(skyColor, lerp(topColor * 0.5, result, shadow), aboveHorizon);
 	}
 
 	float GetBillboardRadius(float3 viewDirection, float3 centerDirection, float halfTan)
@@ -152,31 +113,29 @@ namespace SkyScattering
 
 	float3 GetMoonGlow(float3 viewDirection, float3 moonDirection, float3 moonColor, float moonHalfTan)
 	{
-		float radius = GetBillboardRadius(viewDirection, SafeNormalize(moonDirection), 12.0 * moonHalfTan);
-		if (radius >= 1.0)
-			return 0.0;
-		float glow = saturate(1.0 / (1.0 + radius * SharedData::enbSettings.SkyScatteringMoonGlowRange) - 0.005) * (1.0 - radius);
-		return max(moonColor, 0.0) * (glow * SharedData::enbSettings.CloudsEdgeMoonMultiplier);
+		float radius = saturate(GetBillboardRadius(viewDirection, SafeNormalize(moonDirection), 12.0 * moonHalfTan));
+		return max(moonColor, 0.0) * (saturate(1.0 / (1.0 + radius * SharedData::enbSettings.SkyScatteringMoonGlowRange) - 0.005) * (1.0 - radius));
 	}
 
 	float3 GetMoonGlow(float3 viewDirection)
 	{
-		[branch] if (SharedData::enbSettings.SkyScatteringMoonGlowAmount <= 0.0) return 0.0;
-
-		float3 glow = GetMoonGlow(viewDirection, SharedData::MasserDirection.xyz, SharedData::MasserColor.xyz, SharedData::enbSettings.MasserBillboardTan);
-		glow += GetMoonGlow(viewDirection, SharedData::SecundaDirection.xyz, SharedData::SecundaColor.xyz, SharedData::enbSettings.SecundaBillboardTan);
-		return glow * (SharedData::enbSettings.SkyScatteringMoonGlowAmount * GetHorizonCrop(viewDirection.z));
+		float3 glow = 0.0;
+		[branch] if (SharedData::enbSettings.SkyScatteringMoonGlowAmount > 0.0)
+		{
+			glow = GetMoonGlow(viewDirection, SharedData::MasserDirection.xyz, SharedData::MasserColor.xyz, SharedData::enbSettings.MasserBillboardTan);
+			glow += GetMoonGlow(viewDirection, SharedData::SecundaDirection.xyz, SharedData::SecundaColor.xyz, SharedData::enbSettings.SecundaBillboardTan);
+			glow *= SharedData::enbSettings.SkyScatteringMoonGlowAmount * SharedData::enbSettings.CloudsEdgeMoonMultiplier * GetHorizonCrop(viewDirection.z);
+		}
+		return glow;
 	}
 
 #if defined(CLOUDS)
-	static const float IsotropicPhase = 0.25 / Math::PI;
-
-	float PhaseThomasSchander(float cosTheta)
+	float GetCloudPhase(float3 viewDirection, float3 lightDirection, float cloudAlpha)
 	{
+		float cosTheta = dot(viewDirection, lightDirection);
 		float p1 = cosTheta + 8.194068e-01;
-		float4 expValues = exp(float4(-6.5e+01 * cosTheta - 5.5e+01, -8.370334e+01 * p1 * p1, 7.810083e+00 * cosTheta, -4.552125e-12 * cosTheta));
-		float4 expWeights = float4(9.805233e-06, 1.388198e-01, 2.054747e-03, 2.600563e-02);
-		return dot(expValues, expWeights) * 0.25;
+		float phase = dot(exp(float3(-6.5e+01 * cosTheta - 5.5e+01, -8.370334e+01 * p1 * p1, 7.810083e+00 * cosTheta)), float3(9.805233e-06, 1.388198e-01, 2.054747e-03)) + 2.600563e-02;
+		return max(0.0, 1.0 + SharedData::enbSettings.CloudsLightingForwardScattering * (1.0 - cloudAlpha) * (phase * Math::PI - 1.0));
 	}
 
 	float GetCloudLightOcclusion(float3 viewDirection, float3 lightDirection, SamplerState textureSampler)
@@ -191,7 +150,7 @@ namespace SkyScattering
 		float occlusion = 0.0;
 		[unroll] for (uint i = 0; i < 4; i++)
 		{
-			float3 sampleDirection = SafeNormalize(lerp(viewDirection, lightDirection, (float(i) + 0.5) / 32.0)) + (PoissonDisc[i] * 2.0 - 1.0) * 0.01;
+			float3 sampleDirection = normalize(lerp(viewDirection, lightDirection, (float(i) + 0.5) / 32.0)) + (PoissonDisc[i] * 2.0 - 1.0) * 0.01;
 			if (sampleDirection.z < 0.0)
 				occlusion += -sampleDirection.z;
 #	if defined(CLOUD_SHADOWS)
@@ -213,80 +172,36 @@ namespace SkyScattering
 		return max(lerp(color, dot(color, 1.0 / 3.0), SharedData::enbSettings.CloudsLightingDesaturation), 0.0);
 	}
 
-	float GetCloudPhase(float3 viewDirection, float3 lightDirection, float cloudAlpha)
+	float GetCloudEdgeFade(float radius)
 	{
-		float anisotropic = lerp(PhaseThomasSchander(dot(viewDirection, lightDirection)), IsotropicPhase, saturate(cloudAlpha)) / IsotropicPhase;
-		return max(0.0, lerp(1.0, anisotropic, SharedData::enbSettings.CloudsLightingForwardScattering));
+		return pow(saturate(1.0 - radius), SharedData::enbSettings.CloudsEdgeFadePower);
 	}
 
-	float3 GetCloudEdgeLight(float3 viewDirection, bool scattering, SamplerState textureSampler)
+	void AddCloudMoonLight(inout float3 light, inout float3 edge, float3 viewDirection, float3 moonDirection, float3 moonColor, float halfTan, bool lit, bool rim, bool scattering, SamplerState textureSampler)
 	{
-		float3 edge = 0.0;
-		float fadePower = SharedData::enbSettings.CloudsEdgeFadePower;
-
-		float sunAlpha = saturate(SharedData::SunColor.w);
-		[branch] if (sunAlpha > 0.0)
+		float3 direction = SafeNormalize(moonDirection);
+		float3 color = max(moonColor, 0.0);
+		float radius = GetBillboardRadius(viewDirection, direction, 8.0 * halfTan);
+		lit = lit && any(color > 0.0);
+		rim = rim && radius < 1.0;
+		[branch] if (lit || rim)
 		{
-			float3 sunDirection = SafeNormalize(SharedData::SunDirection.xyz);
-			float radius = GetBillboardRadius(viewDirection, sunDirection, SharedData::enbSettings.SunBillboardTan);
-			[branch] if (radius < 1.0)
-			{
-				float3 color = max(SharedData::SunColor.xyz, 0.0);
-				if (scattering && SharedData::enbSettings.CalculateCloudsEdgeFromScattering)
-					color = GetScatteringColorAt(viewDirection) * (SharedData::enbSettings.SkyScatteringSunIntensity * sunAlpha);
-				if (scattering)
-					color *= GetCloudLightVisibility(viewDirection, sunDirection, 1.1, textureSampler);
-				edge += color * pow(saturate(1.0 - radius), fadePower);
-			}
+			float visibility = 1.0;
+			if (scattering)
+				visibility = GetCloudLightVisibility(viewDirection, direction, 1.0, textureSampler);
+			if (lit)
+				light += color * visibility;
+			if (rim)
+				edge += color * (SharedData::enbSettings.CloudsEdgeMoonMultiplier * visibility * GetCloudEdgeFade(radius));
 		}
-
-		float moonScale = SharedData::enbSettings.CloudsEdgeMoonMultiplier;
-		[branch] if (moonScale > 0.0)
-		{
-			float3 masserDirection = SafeNormalize(SharedData::MasserDirection.xyz);
-			float masserRadius = GetBillboardRadius(viewDirection, masserDirection, 8.0 * SharedData::enbSettings.MasserBillboardTan);
-			[branch] if (masserRadius < 1.0)
-			{
-				float3 color = max(SharedData::MasserColor.xyz, 0.0) * moonScale;
-				if (scattering)
-					color *= GetCloudLightVisibility(viewDirection, masserDirection, 1.0, textureSampler);
-				edge += color * pow(saturate(1.0 - masserRadius), fadePower);
-			}
-
-			float3 secundaDirection = SafeNormalize(SharedData::SecundaDirection.xyz);
-			float secundaRadius = GetBillboardRadius(viewDirection, secundaDirection, 8.0 * SharedData::enbSettings.SecundaBillboardTan);
-			[branch] if (secundaRadius < 1.0)
-			{
-				float3 color = max(SharedData::SecundaColor.xyz, 0.0) * moonScale;
-				if (scattering)
-					color *= GetCloudLightVisibility(viewDirection, secundaDirection, 1.0, textureSampler);
-				edge += color * pow(saturate(1.0 - secundaRadius), fadePower);
-			}
-		}
-
-		return edge * (SharedData::enbSettings.CloudsEdgeIntensity * GetHorizonCrop(viewDirection.z));
-	}
-
-	float3 GetCloudMoonLight(float3 viewDirection, SamplerState textureSampler)
-	{
-		float3 light = 0.0;
-
-		float3 masserColor = max(SharedData::MasserColor.xyz, 0.0);
-		[branch] if (any(masserColor > 0.0))
-			light += masserColor * GetCloudLightVisibility(viewDirection, SafeNormalize(SharedData::MasserDirection.xyz), 1.0, textureSampler);
-
-		float3 secundaColor = max(SharedData::SecundaColor.xyz, 0.0);
-		[branch] if (any(secundaColor > 0.0))
-			light += secundaColor * GetCloudLightVisibility(viewDirection, SafeNormalize(SharedData::SecundaDirection.xyz), 1.0, textureSampler);
-
-		return DesaturateCloudLight(light) * (SharedData::enbSettings.CloudsEdgeMoonMultiplier * SharedData::enbSettings.CloudsLightingMoonIntensity * GetHorizonCrop(viewDirection.z));
 	}
 
 	float3 ShadeCloud(float3 cloudColor, float textureAlpha, float textureGray, float3 viewDirection, SamplerState textureSampler)
 	{
-		float colorGray = dot(cloudColor, 1.0 / 3.0);
-		float3 result = cloudColor;
 		bool scattering = SharedData::enbSettings.EnableCloudsScattering;
+		float edgeWeight = saturate(1.0 - textureAlpha - SharedData::enbSettings.CloudsEdgeClamp);
+		float3 result = cloudColor;
+		float3 edge = 0.0;
 
 		float sunWeight = saturate(SharedData::SunColor.w * 4.0);
 		[branch] if (scattering && sunWeight > 0.0)
@@ -297,7 +212,7 @@ namespace SkyScattering
 
 			float sunVisibility = SharedData::enbSettings.SkyScatteringSunVisibility;
 			if (sunVisibility < 1.0) {
-				float3 flattened = SafeNormalize(float3(viewDirection.xy, viewDirection.z * 8.0));
+				float3 flattened = normalize(float3(viewDirection.xy, viewDirection.z * 8.0));
 				planetShadow *= saturate(dot(flattened.xy, sunDirection.xy) * 0.5 + 0.5 + sunVisibility * 2.0 - 1.0);
 			}
 
@@ -314,14 +229,33 @@ namespace SkyScattering
 			result = lerp(result, sunLit, sunWeight);
 		}
 
-		[branch] if (scattering && SharedData::enbSettings.EnableCloudsLightingFromMoon && SharedData::enbSettings.CloudsLightingMoonIntensity != 0.0)
-			result += GetCloudMoonLight(viewDirection, textureSampler) * textureGray;
+		[branch] if (edgeWeight > 0.0 && SharedData::SunColor.w > 0.0)
+		{
+			float3 sunDirection = SafeNormalize(SharedData::SunDirection.xyz);
+			float radius = GetBillboardRadius(viewDirection, sunDirection, SharedData::enbSettings.SunBillboardTan);
+			[branch] if (radius < 1.0)
+			{
+				edge = max(SharedData::SunColor.xyz, 0.0);
+				if (scattering && SharedData::enbSettings.CalculateCloudsEdgeFromScattering)
+					edge = GetScatteringColorAt(viewDirection) * (SharedData::enbSettings.SkyScatteringSunIntensity * saturate(SharedData::SunColor.w));
+				if (scattering)
+					edge *= GetCloudLightVisibility(viewDirection, sunDirection, 1.1, textureSampler);
+				edge *= GetCloudEdgeFade(radius);
+			}
+		}
 
-		float edgeWeight = saturate(1.0 - textureAlpha - SharedData::enbSettings.CloudsEdgeClamp);
-		[branch] if (edgeWeight > 0.0)
-			result += GetCloudEdgeLight(viewDirection, scattering, textureSampler) * (colorGray * edgeWeight);
+		float3 moonLight = 0.0;
+		bool moonLit = scattering && SharedData::enbSettings.EnableCloudsLightingFromMoon && SharedData::enbSettings.CloudsLightingMoonIntensity != 0.0;
+		bool moonRim = edgeWeight > 0.0 && SharedData::enbSettings.CloudsEdgeMoonMultiplier > 0.0;
+		[branch] if (moonLit || moonRim)
+		{
+			AddCloudMoonLight(moonLight, edge, viewDirection, SharedData::MasserDirection.xyz, SharedData::MasserColor.xyz, SharedData::enbSettings.MasserBillboardTan, moonLit, moonRim, scattering, textureSampler);
+			AddCloudMoonLight(moonLight, edge, viewDirection, SharedData::SecundaDirection.xyz, SharedData::SecundaColor.xyz, SharedData::enbSettings.SecundaBillboardTan, moonLit, moonRim, scattering, textureSampler);
+		}
 
-		return result;
+		float horizonCrop = GetHorizonCrop(viewDirection.z);
+		result += DesaturateCloudLight(moonLight) * (SharedData::enbSettings.CloudsEdgeMoonMultiplier * SharedData::enbSettings.CloudsLightingMoonIntensity * horizonCrop * textureGray);
+		return result + edge * (SharedData::enbSettings.CloudsEdgeIntensity * horizonCrop * dot(cloudColor, 1.0 / 3.0) * edgeWeight);
 	}
 #endif
 }

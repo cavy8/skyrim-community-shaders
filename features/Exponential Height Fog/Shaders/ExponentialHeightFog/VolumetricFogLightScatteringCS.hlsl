@@ -203,6 +203,7 @@ float SampleDirectionalWorldShadow(float3 positionWS)
 	float worldShadow = 1.0f;
 #if defined(TERRAIN_SHADOWS)
 	worldShadow *= TerrainShadows::GetTerrainShadow(positionWS + FrameBuffer::CameraPosAdjust.xyz, LinearSampler);
+	worldShadow *= TerrainShadows::GetLODShadow(positionWS + FrameBuffer::CameraPosAdjust.xyz, LinearSampler);
 #endif
 #if defined(CLOUD_SHADOWS)
 	worldShadow *= CloudShadows::GetCloudShadowMult(positionWS, LinearSampler);

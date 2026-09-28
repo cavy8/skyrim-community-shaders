@@ -26,7 +26,8 @@
 
 -   `ALL` - Standard build (no auto-deployment)
 -   `ALL-WITH-AUTO-DEPLOYMENT` - Build + deploy to game directory
--   `Dev` - Fast iteration preset (recommended for development)
+-   `Dev` - Optimized DLL + AIO folder (`BuildDev.bat`)
+-   `Dev-Fast` - Fastest iteration: Ninja, /Od, DLL only (`BuildDevFast.bat`)
 
 See `CMakePresets.json` for all available presets.
 

@@ -60,8 +60,9 @@
 		[branch] if (scale > 0.001)
 #endif
 		{
+			const float quality = SharedData::extendedMaterialSettings.ParallaxQuality;
 			const uint minSteps = 4;
-			const uint maxStepsCap = 32;
+			const uint maxStepsCap = clamp((uint)(32.0 * quality + 0.5), 8u, 64u);
 #if !defined(LANDSCAPE)
 			const float baseMaxSteps = 8;
 #endif
@@ -76,7 +77,7 @@
 			// because the heightfield genuinely holds fewer texels there.
 			float mipTexDim = maxTexDim * exp2(-mipLevel);
 			float uvMarchSpan = dot(abs(parallaxDir), maxHeight + minHeight);
-			float texelsPerStep = lerp(3.5, 1.75, grazing);
+			float texelsPerStep = lerp(3.5, 1.75, grazing) * rcp(quality);
 			float marchTexels = uvMarchSpan * mipTexDim;
 			uint uvSteps = (uint)(marchTexels * rcp(texelsPerStep) + 0.5);
 			uint angleSteps = (uint)(lerp((float)minSteps, (float)maxStepsCap, grazing) + 0.5);
@@ -87,7 +88,7 @@
 #else
 			float grazingStepBoost = lerp(1.0, 1.65, grazing);
 			float angleStepMul = clamp(0.5 * rcp(max(ndotv, 0.0625)), 0.5, 2.5);
-			uint numSteps = max(minSteps, (uint)(scale * baseMaxSteps * angleStepMul * grazingStepBoost));
+			uint numSteps = max(minSteps, (uint)(scale * baseMaxSteps * angleStepMul * grazingStepBoost * quality));
 			numSteps = min(numSteps, maxStepsCap);
 			numSteps = (numSteps + 2) & ~3;
 #endif

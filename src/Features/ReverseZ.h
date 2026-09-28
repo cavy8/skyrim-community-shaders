@@ -37,8 +37,6 @@ struct ReverseZ : Feature
 	virtual size_t GetSettingsBlobSize() const override { return sizeof(settings); }
 
 	virtual bool HasShaderDefine(RE::BSShader::Type) override;
-	virtual bool ValidateCache(CSimpleIniA& a_ini) override;
-	virtual void WriteDiskCacheInfo(CSimpleIniA& a_ini) override;
 
 	virtual void PostPostLoad() override;
 	virtual void DataLoaded() override;
@@ -55,12 +53,12 @@ struct ReverseZ : Feature
 
 	[[nodiscard]] bool IsActive() const { return activeThisBoot; }
 
-	static constexpr long kUtilityDefinesRevision = 1;
-
 	[[nodiscard]] bool IsReverseDepthView(ID3D11DepthStencilView* a_view) const;
 	[[nodiscard]] ID3D11DepthStencilView* ResolveCubemapFaceDepthView(ID3D11RenderTargetView* a_renderTarget, ID3D11DepthStencilView* a_depthView) const;
 	[[nodiscard]] ID3D11DepthStencilState* GetReversedState(ID3D11DepthStencilState* a_state);
 	[[nodiscard]] ID3D11RasterizerState* GetReversedRasterizerState(ID3D11RasterizerState* a_state);
+
+	static void SetHookPassthrough(bool a_passthrough);
 
 private:
 	bool bootLatched = false;

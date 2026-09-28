@@ -3,17 +3,8 @@
 #include "Buffer.h"
 #include "GrassMeshLibrary.h"
 
-/** @brief Which engine system a bucket's instances came from. Both arrive through BSMultiStreamInstanceTriShape. */
-enum class BucketKind : uint8_t
-{
-	kGrass = 0,
-	// Billboard tree LOD blocks (vanilla trees.lod and DynDOLOD .btt), drawn by BSDistantTreeShader.
-	kTreeLOD = 1
-};
-
 struct BucketKey
 {
-	BucketKind kind = BucketKind::kGrass;
 	uint32_t meshId = 0;
 	// An optimized draw shares the representative shape's material state.
 	RE::BSShaderMaterial* material = nullptr;
@@ -29,7 +20,6 @@ struct BucketKeyHash
 	size_t operator()(const BucketKey& k) const
 	{
 		return (std::hash<uint32_t>{}(k.meshId) * 31) ^
-		       (std::hash<uint32_t>{}(static_cast<uint32_t>(k.kind)) * 7919) ^
 		       std::hash<void*>{}(k.material) ^
 		       std::hash<void*>{}(k.tex) ^
 		       (std::hash<uint32_t>{}(k.triCount) * 131) ^
@@ -62,16 +52,19 @@ static_assert(sizeof(SliceBounds) == 32);
 /** @brief A capture queued by the cell-load hooks, applied to a bucket on the next grass frame. */
 struct PendingCapture
 {
-	BucketKind kind = BucketKind::kGrass;
 	RE::BSMultiStreamInstanceTriShape* shape = nullptr;
 	RE::BSShaderMaterial* material = nullptr;
-	RE::NiSourceTexture* diffuseTexture = nullptr;
+	RE::NiPointer<RE::NiSourceTexture> diffuseTexture;
 	std::vector<uint8_t> bytes;
 	uint32_t count = 0;
+	uint32_t triangleCount = 0;
 	uint64_t descVal = 0;
 	RE::NiPoint3 origin;
 	RE::NiPoint3 localMin{ 0.0f, 0.0f, 0.0f };
 	RE::NiPoint3 localMax{ 0.0f, 0.0f, 0.0f };
+	RE::NiPoint3 boundCenter;
+	float modelRadius = 0.0f;
+	float wavePeriod = 1.0f;
 };
 
 // Offset of the indirect args block. Uses an offset of 12 so the instance count lands on byte 16, as required for the raw UAV to have 16 byte alignment.
@@ -130,8 +123,6 @@ struct GrassBucket
 
 	// Indexed by GrassMeshLibrary::LODTier. Instances land in the main bin unless a tier claims them.
 	std::array<LODBin, (size_t)GrassMeshLibrary::LODTier::kCount> lodBins;
-
-	BucketKind kind = BucketKind::kGrass;
 
 	// Source mesh id, for easy lookup of the LOD mesh.
 	uint32_t meshId = 0;
@@ -271,18 +262,8 @@ public:
 	/** @brief Captures one GID group's instance records from the cell-load hooks. */
 	void CaptureGIDGroup(RE::BSMultiStreamInstanceTriShape* shape, RE::BSMultiStreamInstanceTriShape::GroupHeader* header, const uint16_t* instanceData, size_t dataBytes);
 
-	/** @brief Stages a raw instance-record capture. Returns false when the stride is not the expected 32 bytes, defaulting to vanilla rendering.
-	    A shape captured again replaces its earlier slice when the capture is applied, so a rebuilt tree LOD group never doubles up. */
-	bool StageCapture(RE::BSMultiStreamInstanceTriShape* shape, const void* src, uint32_t count, uint32_t stride, uint64_t descVal, RE::NiSourceTexture* tex, BucketKind kind = BucketKind::kGrass);
-
-	/** @brief Returns the bucket a captured shape folded into, or nullptr. Safe without bucketMutex; the pointer is only stable while it is held. */
-	GrassBucket* FindBucketForShape(RE::BSMultiStreamInstanceTriShape* shape);
-
-	/** @brief Returns the shape's slice inside a bucket, or nullptr. Caller holds bucketMutex. */
-	static BucketSlice* FindSlice(GrassBucket& b, RE::BSMultiStreamInstanceTriShape* shape);
-
-	/** @brief Moves a slice to a new origin, e.g. a LOD block placed after its instances were captured, and schedules the re-upload. Caller holds bucketMutex. */
-	void RefreshSliceOrigin(GrassBucket& b, BucketSlice& slice, const RE::NiPoint3& origin);
+	/** @brief Stages a raw instance-record capture. Returns false when the stride is not the expected 32 bytes, defaulting to vanilla rendering. */
+	bool StageCapture(RE::BSMultiStreamInstanceTriShape* shape, const void* src, uint32_t count, uint32_t stride, uint64_t descVal, RE::NiSourceTexture* tex);
 
 	/** @brief Stages a dead shape for removal on the next grass frame. */
 	void StageRemoval(RE::BSMultiStreamInstanceTriShape* shape);
@@ -339,8 +320,8 @@ private:
 	/** @brief Creates a bucket's UAV-writable indirect args buffer. */
 	bool CreateBucketArgsBuffer(GrassBucket& b, ID3D11Device* device);
 
-	/** @brief Caches per-type parameters (wave period, bound, mesh cost) from a source shape. */
-	void CacheBucketTypeParams(GrassBucket& b, RE::BSMultiStreamInstanceTriShape* shape);
+	/** @brief Caches per-type parameters (wave period, bound, mesh cost) from a capture. */
+	void CacheBucketTypeParams(GrassBucket& b, const PendingCapture& pc);
 
 	/** @brief Samples a grass diffuse to decide whether it uses the complex-grass layout. */
 	bool DetectComplexGrass(RE::NiSourceTexture* tex, ID3D11DeviceContext* ctx);
@@ -370,6 +351,7 @@ private:
 	float cachedComplexThreshold = -1.0f;
 
 	ID3D11ComputeShader* detectCS = nullptr;
+	bool detectCSFailed = false;  // Latches a failed compile until ClearShaderCache(), like cullCSFailed.
 	std::unique_ptr<Buffer> detectResult;
 	std::unique_ptr<Buffer> detectStaging;
 };

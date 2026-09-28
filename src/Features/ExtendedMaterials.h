@@ -34,9 +34,14 @@ struct ExtendedMaterials : Feature
 		uint EnableShadows = 1;
 		uint EnableParallaxWarpingFix = 1;
 
-		uint pad[2]{};
+		float ParallaxQuality = 1.0f;
+		uint pad{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
+	static_assert(sizeof(Settings) == 32);
+
+	static constexpr float MinParallaxQuality = 0.25f;
+	static constexpr float MaxParallaxQuality = 2.0f;
 
 	Settings settings;
 

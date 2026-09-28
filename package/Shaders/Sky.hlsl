@@ -358,12 +358,7 @@ PS_OUTPUT main(PS_INPUT input)
 
 #		if defined(EFFECTS11_CELESTIAL_EXTINCTION)
 	[branch] if (SharedData::enbSettings.Enable && SharedData::enbSettings.EnableCloudsScattering && !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSun))
-	{
-		float3 celestialTransmittance = SkyScattering::GetCelestialTransmittance(normalize(input.WorldPosition.xyz));
-		float transmittancePeak = max(celestialTransmittance.r, max(celestialTransmittance.g, celestialTransmittance.b));
-		psout.Color.xyz *= celestialTransmittance / max(transmittancePeak, 1e-4);
-		psout.Color.w *= transmittancePeak;
-	}
+		psout.Color *= SkyScattering::GetCelestialExtinction(normalize(input.WorldPosition.xyz));
 #		endif
 
 #	else
@@ -373,7 +368,12 @@ PS_OUTPUT main(PS_INPUT input)
 #	if defined(EXP_HEIGHT_FOG)
 	const bool inReflection = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InReflection) != 0;
 	if (inReflection && SharedData::exponentialHeightFogSettings.enabled) {
-		float3 skyFogPosition = normalize(input.FogPosition.xyz) * SharedData::CameraData.x;
+		float skyFogDistance = SharedData::CameraData.x;
+#		if defined(HORIZON_FIX)
+		// Match the main view (ISSAOComposite.hlsl): fog the sky out to the HorizonFix far water's horizon
+		skyFogDistance = max(skyFogDistance, SharedData::horizonFixSettings.farWaterDistance);
+#		endif
+		float3 skyFogPosition = normalize(input.FogPosition.xyz) * skyFogDistance;
 		float4 exponentialHeightFog = ExponentialHeightFog::GetExponentialHeightFogNoVolumetric(skyFogPosition, FrameBuffer::CameraPosAdjust.xyz, psout.Color.xyz, float4(input.Position.xy * FrameBuffer::DynamicResolutionParams2.xy, input.Position.z, 1));
 		psout.Color.xyz = lerp(psout.Color.xyz, exponentialHeightFog.xyz, exponentialHeightFog.w);
 	}
@@ -396,8 +396,10 @@ PS_OUTPUT main(PS_INPUT input)
 #		endif
 		psout.Color.w = 0;
 
-#	else
+#	elif !defined(DITHER) || !defined(TEX)
 	// Even without cloud shadows enabled, sun disc should be occluded by scene depth (clouds, terrain, etc.)
+	// The sun glare pass (DITHER + TEX) is skipped: vanilla fades it through the sun occlusion query,
+	// and the per-pixel reject made the glare disappear.
 	[branch] if ((Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSun) && psout.Color.w > 0.0) {
 		float depth = TexDepthSampler.Load(int3(input.Position.xy, 0));
 #		ifdef REVERSE_Z

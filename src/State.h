@@ -150,18 +150,6 @@ public:
 	void SaveTheme();
 
 	/**
-	 * @brief Validates the disk shader cache against all loaded features.
-	 * @param a_ini The cache INI to validate against.
-	 * @return True if all feature cache entries are still valid.
-	 */
-	bool ValidateCache(CSimpleIniA& a_ini);
-	/**
-	 * @brief Writes each feature's cache metadata into the disk cache INI.
-	 * @param a_ini The cache INI to write into.
-	 */
-	void WriteDiskCacheInfo(CSimpleIniA& a_ini);
-
-	/**
 	 * @brief Sets the global log level and flushes on that level.
 	 * @param a_level The spdlog severity level to apply.
 	 */
@@ -321,7 +309,8 @@ public:
 	bool isLoadingMenuOpen = false;
 	bool isMapMenuOpen = false;
 	bool isStatsMenuOpen = false;
-	bool flatWorldMapLoaded = false;
+	bool flatWorldMapLoaded = false;  ///< FlatMapMarkersSSE is loaded, which flat world map mods (e.g. FWMF) rely on
+	/** @brief The map menu is open while a flat world map mod is installed. */
 	bool IsFlatWorldMapOpen() const { return isMapMenuOpen && flatWorldMapLoaded; }
 	/**
 	 * @brief Checks whether the main menu or loading menu is cached as open.
@@ -340,6 +329,7 @@ public:
 	}
 	/** @brief Full-screen menus drawing their own art, which must not be graded by post-process effects. */
 	bool IsFullScreenMenuOpen() const { return IsMainOrLoadingMenuOpen() || isStatsMenuOpen || IsFlatWorldMapOpen(); }
+	/** @brief The main menu, a loading screen or the flat world map is open. */
 	bool IsMainLoadingOrFlatMapOpen() const { return IsMainOrLoadingMenuOpen() || IsFlatWorldMapOpen(); }
 	/** @brief A menu is rendering its own scene instead of the gameplay view, so scene-adaptive state must not track it. */
 	bool IsMenuSceneOpen() const { return IsFullScreenMenuOpen() || isMapMenuOpen; }

@@ -408,7 +408,7 @@ void DoF::ClearShaderCache()
 			}
 	}
 
-	globals::shaderCache->ClearStandaloneComputeCache(L"PostProcessing/DoF");
+	globals::shaderCache->InvalidateShaderSources();
 	CompileComputeShaders();
 }
 

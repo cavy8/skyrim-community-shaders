@@ -114,6 +114,9 @@ public:
 		float tempInfo2[4];
 		float lightParameters[4];
 	} commonData;
+	/** @brief Effective weather IDs; commonData.weather mirrors them as floats, which can't hold every form ID exactly. */
+	uint32_t currentWeatherID = 0;
+	uint32_t previousWeatherID = 0;
 	uint32_t frameCount = 0;
 
 	void UpdateCommonData();
@@ -138,9 +141,13 @@ public:
 
 		uint32_t brightness = 0xFFFFFFFF;
 		uint32_t gammaCurve = 0xFFFFFFFF;
+
+		uint32_t enableRain = 0xFFFFFFFF;
 	} ids;
 
 	const CommonVariableData& GetCommonData() const { return commonData; }
+	/** @brief The weather that dominates the current blend; weather-separated edits are written to it. */
+	uint32_t GetDominantWeatherID() const { return commonData.weather[2] > 0.5f ? currentWeatherID : previousWeatherID; }
 
 	bool IsInitialized() const { return initialized; }
 
@@ -169,8 +176,11 @@ private:
 	/** @brief Logs the resolved preset location, or why no preset is in use. */
 	void LogPresetStatus() const;
 
+	/** @brief Fills ENB tempInfo1 (cursor position, menu flag, button mask) and tempInfo2 (last left/right click). */
 	void UpdateCursorData();
+	/** @brief Fills ENB LightParameters with the sun's screen UV (xy) and visibility (w). */
 	void UpdateLightParameters();
+	/** @brief True if the effect is compiled and its enable setting (if any) is on. */
 	bool WillEffectRun(EffectBase& effect, uint32_t enableSettingID);
 
 	bool initialized = false;

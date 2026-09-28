@@ -1,6 +1,7 @@
 #include "D3D.h"
 
 #include "Features/ReverseZ.h"
+#include "Deferred.h"
 #include "Features/TerrainBlending.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -15,16 +16,20 @@ namespace Util
 
 	ID3D11ShaderResourceView* GetCurrentSceneDepthSRV(bool prefer16bit)
 	{
+		auto renderer = globals::game::renderer;
+		if (!renderer)
+			return nullptr;
+		auto& zPrepassCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+		if (globals::deferred && globals::deferred->sceneDepthFinal)
+			return zPrepassCopy.depthSRV;
+
 		auto& tb = globals::features::terrainBlending;
 		if (tb.loaded && tb.settings.Enabled) {
 			auto* srv = prefer16bit ? (tb.blendedDepthTexture16 ? tb.blendedDepthTexture16->srv.get() : nullptr) : (tb.blendedDepthTexture ? tb.blendedDepthTexture->srv.get() : nullptr);
 			if (srv)
 				return srv;
 		}
-		auto renderer = globals::game::renderer;
-		if (renderer)
-			return renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
-		return nullptr;
+		return zPrepassCopy.depthSRV;
 	}
 
 	ID3D11ShaderResourceView* GetSRVFromRTV(const ID3D11RenderTargetView* a_rtv)
@@ -141,6 +146,8 @@ namespace Util
 			macros.push_back({ "PSHADER", "" });
 		else if (!_stricmp(ProgramType, "vs_5_0"))
 			macros.push_back({ "VSHADER", "" });
+		else if (!_stricmp(ProgramType, "gs_5_0"))
+			macros.push_back({ "GEOMETRYSHADER", "" });
 		else if (!_stricmp(ProgramType, "hs_5_0"))
 			macros.push_back({ "HULLSHADER", "" });
 		else if (!_stricmp(ProgramType, "ds_5_0"))
@@ -192,6 +199,10 @@ namespace Util
 		} else if (!_stricmp(ProgramType, "vs_5_0")) {
 			ID3D11VertexShader* regShader;
 			DX::ThrowIfFailed(device->CreateVertexShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
+			return regShader;
+		} else if (!_stricmp(ProgramType, "gs_5_0")) {
+			ID3D11GeometryShader* regShader;
+			DX::ThrowIfFailed(device->CreateGeometryShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
 			return regShader;
 		} else if (!_stricmp(ProgramType, "hs_5_0")) {
 			ID3D11HullShader* regShader;

@@ -373,7 +373,7 @@ void LensFlare::ClearShaderCache()
 			}
 	}
 
-	globals::shaderCache->ClearStandaloneComputeCache(L"PostProcessing/LensFlare");
+	globals::shaderCache->InvalidateShaderSources();
 	CompileComputeShaders();
 }
 

@@ -10,7 +10,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	EnableTerrain,
 	EnableHeightBlending,
 	EnableShadows,
-	EnableParallaxWarpingFix)
+	EnableParallaxWarpingFix,
+	ParallaxQuality)
 
 void ExtendedMaterials::DataLoaded()
 {
@@ -64,6 +65,13 @@ void ExtendedMaterials::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("enable_parallax_warping_fix_tooltip"), "Enables a fix reducing parallax scale on curved and smooth normal triangles."));
 		}
+		ImGui::SliderFloat(T(TKEY("parallax_quality"), "Parallax Quality"), &settings.ParallaxQuality, MinParallaxQuality, MaxParallaxQuality, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("parallax_quality_tooltip"),
+								  "Scales how many height samples parallax takes per pixel, on meshes and terrain. "
+								  "1.00x is the default. Higher values reduce stepping and slicing at grazing angles at extra GPU cost; "
+								  "lower values are faster but show more stepping."));
+		}
 
 		ImGui::Spacing();
 		ImGui::Spacing();
@@ -89,6 +97,7 @@ void ExtendedMaterials::DrawSettings()
 void ExtendedMaterials::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	settings.ParallaxQuality = std::isfinite(settings.ParallaxQuality) ? std::clamp(settings.ParallaxQuality, MinParallaxQuality, MaxParallaxQuality) : Settings{}.ParallaxQuality;
 }
 
 void ExtendedMaterials::SaveSettings(json& o_json)

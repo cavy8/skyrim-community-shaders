@@ -166,10 +166,17 @@ namespace SnowCover
 		material.Roughness = lerp(material.Roughness, rmaos.x, mult);
 		material.Metallic = lerp(material.Metallic, rmaos.y, mult);
 		material.AO = lerp(material.AO, rmaos.z, mult * 0.5);  //always leave a part of the original ao to make it more interesting
-		material.GlintScreenSpaceScale = lerp(material.GlintScreenSpaceScale, SharedData::snowCoverSettings.Glint.x, mult);
-		material.GlintLogMicrofacetDensity = lerp(material.GlintLogMicrofacetDensity, SharedData::snowCoverSettings.Glint.y, mult);
-		material.GlintMicrofacetRoughness = lerp(material.GlintMicrofacetRoughness, SharedData::snowCoverSettings.Glint.z, mult);
-		material.GlintDensityRandomization = lerp(material.GlintDensityRandomization, SharedData::snowCoverSettings.Glint.w, mult);
+		if (material.GlintLogMicrofacetDensity > 1.1) {
+			material.GlintScreenSpaceScale = lerp(material.GlintScreenSpaceScale, SharedData::snowCoverSettings.Glint.x, mult);
+			material.GlintLogMicrofacetDensity = lerp(material.GlintLogMicrofacetDensity, SharedData::snowCoverSettings.Glint.y, mult);
+			material.GlintMicrofacetRoughness = lerp(material.GlintMicrofacetRoughness, SharedData::snowCoverSettings.Glint.z, mult);
+			material.GlintDensityRandomization = lerp(material.GlintDensityRandomization, SharedData::snowCoverSettings.Glint.w, mult);
+		} else {
+			material.GlintScreenSpaceScale = SharedData::snowCoverSettings.Glint.x;
+			material.GlintLogMicrofacetDensity = lerp(PBR::Constants::MaxGlintDensity, SharedData::snowCoverSettings.Glint.y, mult);
+			material.GlintMicrofacetRoughness = SharedData::snowCoverSettings.Glint.z;
+			material.GlintDensityRandomization = SharedData::snowCoverSettings.Glint.w;
+		}
 		return mult;
 	}
 #		else

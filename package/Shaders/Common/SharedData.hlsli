@@ -78,7 +78,8 @@ namespace SharedData
 		bool EnableHeightBlending;
 		bool EnableShadows;
 		bool EnableParallaxWarpingFix;
-		uint2 pad0;
+		float ParallaxQuality;
+		uint pad0;
 	};
 
 	struct CubemapCreatorSettings
@@ -96,7 +97,14 @@ namespace SharedData
 		float2 ZRange;
 		float2 Offset;
 		float ZBlur;
-		float3 pad0;
+		float LODShadowStrength;
+		float LODShadowResolution;
+		float pad0;
+		float4 LODShadowAxisX;
+		float4 LODShadowAxisY;
+		float4 LODShadowAxisZ;
+		float4 LODShadowCascades[3];
+		float4 LODShadowDepthBias;
 	};
 
 	struct LightLimitFixSettings
@@ -328,7 +336,7 @@ namespace SharedData
 
 		uint EnableVolumetricRays;
 		float VolumetricRaysIntensity;
-		float VolumetricRaysExtinction;
+		float VolumetricRaysDensity;
 		float VolumetricRaysSkyColorAmount;
 
 		float VolumetricRaysDesaturation;
@@ -395,6 +403,17 @@ namespace SharedData
 		float SecundaBillboardTan;
 		float SkyScatteringPad0;
 		float SkyScatteringPad1;
+
+		float3 VolumetricFogColorFilter;
+		float VolumetricFogIntensity;
+
+		float VolumetricFogCurve;
+		float VolumetricFogOpacity;
+		float VolumetricFogShadowAmount;
+		uint VolumetricFogEnableLighting;
+
+		float3 VolumetricRaysSkyColor;
+		float VolumetricRaysPad0;
 	};
 	struct TerrainBlendingSettings
 	{
@@ -561,6 +580,12 @@ namespace SharedData
 		float2 pad0;
 	};
 
+	struct HorizonFixSettings
+	{
+		float farWaterDistance;
+		float3 pad;
+	};
+
 	// Local (non-Bottle) FeatureData structs follow; mirror FeatureBuffer.cpp.
 	struct HairBacklightingSettings
 	{
@@ -603,6 +628,7 @@ namespace SharedData
 		SnowCoverSettings snowCoverSettings;
 		PostProcessingSettings postProcessingSettings;
 		VolumetricLightingSettings volumetricLightingSettings;
+		HorizonFixSettings horizonFixSettings;
 		// Local (non-Bottle) features follow.
 		HairBacklightingSettings hairBacklightingSettings;
 	};

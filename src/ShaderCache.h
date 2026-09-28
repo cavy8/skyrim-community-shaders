@@ -344,6 +344,7 @@ namespace SIE
 		ShaderCompilationTask::Status status;
 		system_clock::time_point compileTime = system_clock::now();
 		bool loadedFromDisk = false;  /**< true when the shader blob was read from the disk cache rather than compiled */
+		std::wstring diskPath;
 	};
 
 	class UpdateListener;
@@ -408,14 +409,9 @@ namespace SIE
 		void SetDiskCache(bool value);
 		/** @brief Deletes the entire on-disk shader cache directory. */
 		void DeleteDiskCache();
-		/** @brief Validates disk cache integrity against current shader sources and feature set. */
-		void ValidateDiskCache();
-		/** @brief Writes cache metadata (version, feature list) to the disk cache directory. */
-		void WriteDiskCacheInfo();
-		/** Gets whether unchanged shaders are skipped during recompilation. */
-		bool IsSkipUnchangedShaders() const;
-		/** Sets whether unchanged shaders are skipped during recompilation. */
-		void SetSkipUnchangedShaders(bool value);
+		void RemoveLegacyDiskCache();
+		void TrimDiskCache();
+		void InvalidateShaderSources();
 		/** Gets whether the filesystem watcher for hot-reload is active. */
 		bool UseFileWatcher() const;
 		/** Sets whether the filesystem watcher for hot-reload is active. */
@@ -474,7 +470,7 @@ namespace SIE
 		*/
 		bool Clear(const std::string& a_path);
 
-		bool AddCompletedShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, ID3DBlob* a_blob, bool fromDisk = false);
+		bool AddCompletedShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, ID3DBlob* a_blob, bool fromDisk = false, std::wstring diskPath = {});
 
 		enum class ClaimResult
 		{
@@ -488,6 +484,7 @@ namespace SIE
 		ID3DBlob* GetCompletedShader(const SIE::ShaderCompilationTask& a_task);
 		ID3DBlob* GetCompletedShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor);
 		bool IsShaderLoadedFromDisk(const std::string& a_key);
+		std::wstring GetShaderDiskPath(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor);
 		ShaderCompilationTask::Status GetShaderStatus(const std::string& a_key);
 		std::string GetShaderStatsString(bool a_timeOnly = false, bool a_elapsedOnly = false);
 
@@ -548,11 +545,6 @@ namespace SIE
 			std::string entryPoint,
 			std::vector<std::pair<const char*, const char*>> defines,
 			ComputeShaderReadyCallback onReady);
-
-		/// @brief Deletes a standalone compute-shader feature's own disk-cache
-		///        subtree (e.g. L"PostProcessing/DoF"), without touching any
-		///        other feature's cache.
-		void ClearStandaloneComputeCache(std::wstring_view relativeDir);
 
 		RE::BSGraphics::VertexShader* MakeAndAddVertexShader(const RE::BSShader& shader,
 			uint32_t descriptor);
@@ -857,7 +849,6 @@ namespace SIE
 			RE::BSShader::Type type;
 			std::uint32_t descriptor;
 			SIE::ShaderClass shaderClass;
-			std::wstring diskPath;
 
 			bool operator<(const hlslRecord& other) const
 			{
@@ -881,7 +872,6 @@ namespace SIE
 
 		bool isEnabled = true;
 		bool isDiskCache = true;
-		bool isSkipUnchangedShaders = true;  ///< when true, recompile a disk-cached shader only if its source is newer
 		bool isAsync = true;
 		bool showBackgroundOverlay = true;  ///< whether the progress popup renders for compiles queued after boot (see backgroundCompilation)
 		bool isDump = false;

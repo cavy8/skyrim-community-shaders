@@ -187,6 +187,12 @@ void ExtendedEffect::ApplyTimeOfDayInterpolation()
 
 // Weather blending
 
+/** @brief True when the preset's per-weather overrides are active. */
+static bool IsMultipleWeathersEnabled()
+{
+	return SettingManager::GetSingleton().GetValue<bool>(EffectManager::GetSingleton().ids.enableMultipleWeathers);
+}
+
 void ExtendedEffect::LoadWeatherData()
 {
 	weatherData.clear();
@@ -355,7 +361,7 @@ void ExtendedEffect::ApplyWeatherBlending(float blendFactor, uint32_t currentWea
 
 	const std::vector<ParsedWeatherValue>* currentValues = nullptr;
 	const std::vector<ParsedWeatherValue>* lastValues = nullptr;
-	if (!parsedWeatherData.empty() && SettingManager::GetSingleton().GetValue<bool>(EffectManager::GetSingleton().ids.enableMultipleWeathers)) {
+	if (!parsedWeatherData.empty() && IsMultipleWeathersEnabled()) {
 		if (auto it = parsedWeatherData.find(currentWeatherID); it != parsedWeatherData.end())
 			currentValues = &it->second;
 		if (auto it = parsedWeatherData.find(lastWeatherID); it != parsedWeatherData.end())
@@ -405,7 +411,8 @@ void ExtendedEffect::SyncWeatherVarFromUI(size_t index, uint32_t weatherID)
 	if (uiVar.type != UIVariableType::Float && !isVector)
 		return;
 
-	const bool usesWeather = IsWeatherSeparated(uiVar) && !IsExteriorWeatherIndoors(uiVar.separation);
+	// Must match ApplyWeatherBlending: with weather overrides off, edits belong to the base value
+	const bool usesWeather = IsWeatherSeparated(uiVar) && IsMultipleWeathersEnabled() && !IsExteriorWeatherIndoors(uiVar.separation);
 	auto* entry = usesWeather ? WeatherManager::GetSingleton().FindWeatherEntry(weatherID) : nullptr;
 	std::string iniKey = GetVariableIniKey(uiVar);
 	if (!entry || iniKey.empty()) {
@@ -447,10 +454,9 @@ void ExtendedEffect::SyncWeatherVarFromUI(size_t index, uint32_t weatherID)
 		}
 	}
 
-	auto& dirty = dirtyWeatherFiles[entry->fileName];
-	dirty.weatherID = weatherID;
+	auto& dirtyKeys = dirtyWeatherFiles[entry->fileName];
 	for (const auto& [key, value] : updates)
-		dirty.keys.insert(key);
+		dirtyKeys[key] = weatherID;
 }
 
 void ExtendedEffect::SaveWeatherOverrides()
@@ -461,19 +467,18 @@ void ExtendedEffect::SaveWeatherOverrides()
 	std::string section = GetName();
 	std::transform(section.begin(), section.end(), section.begin(), ::toupper);
 
-	for (const auto& [fileName, dirty] : dirtyWeatherFiles) {
-		auto valuesIt = weatherData.find(dirty.weatherID);
-		if (valuesIt == weatherData.end())
-			continue;
-
+	for (const auto& [fileName, dirtyKeys] : dirtyWeatherFiles) {
 		std::string filePath = (PresetManager::GetSingleton().GetENBSeriesPath() / fileName).string();
-		for (const auto& key : dirty.keys) {
+		for (const auto& [key, sourceWeatherID] : dirtyKeys) {
+			auto valuesIt = weatherData.find(sourceWeatherID);
+			if (valuesIt == weatherData.end())
+				continue;
 			auto it = valuesIt->second.find(key);
 			if (it != valuesIt->second.end() && !WritePrivateProfileStringA(section.c_str(), key.c_str(), it->second.c_str(), filePath.c_str()))
 				logger::warn("[EFFECTS11] Failed to write key '{}' to weather file '{}'", key, filePath);
 		}
 		WritePrivateProfileStringA(NULL, NULL, NULL, filePath.c_str());
-		logger::info("[EFFECTS11] Saved {} weather override(s) to '{}' for effect '{}'", dirty.keys.size(), filePath, GetName());
+		logger::info("[EFFECTS11] Saved {} weather override(s) to '{}' for effect '{}'", dirtyKeys.size(), filePath, GetName());
 	}
 
 	dirtyWeatherFiles.clear();
@@ -741,6 +746,8 @@ namespace
 				Effects11UI::Clipboard::SetColor(uiVar.vectorValue);
 			if (ImGui::MenuItem(T(TKEY("paste"), "Paste"), nullptr, false, Effects11UI::Clipboard::HasColor())) {
 				Effects11UI::Clipboard::GetColor(uiVar.vectorValue);
+				for (int i = 0; i < Effects11UI::Clipboard::kColorComponents; ++i)
+					uiVar.vectorValue[i] = std::clamp(uiVar.vectorValue[i], uiVar.floatMin, uiVar.floatMax);
 				changed = true;
 			}
 		}
@@ -871,9 +878,9 @@ namespace
 		return true;
 	}
 
-	void RenderTechniqueDropdown(Effect* effect, RenderContext& ctx)
+	void RenderTechniqueDropdown(Effect* effect, RenderContext& ctx, bool ancestorMatched)
 	{
-		if (ctx.Filtering() && !Effects11UI::ContainsNoCase(effect->techniqueDropdown.name, ctx.view.filter))
+		if (ctx.Filtering() && !ancestorMatched && !Effects11UI::ContainsNoCase(effect->techniqueDropdown.name, ctx.view.filter))
 			return;
 
 		ImGui::PushID(effect);
@@ -922,7 +929,7 @@ namespace
 	{
 		for (auto& [effect, group] : techDropdowns)
 			if (!group.empty() && group == node.fullPath && !effect->techniqueDropdown.topLevel)
-				RenderTechniqueDropdown(effect, ctx);
+				RenderTechniqueDropdown(effect, ctx, ancestorMatched);
 
 		bool inTable = false;
 		bool lastWasSeparator = false;
@@ -1023,14 +1030,13 @@ void ExtendedEffect::RenderMergedUI(std::span<Effect*> effects, UITree::FilterMo
 	if (filter != UITree::FilterMode::TopLevelOnly) {
 		for (auto& [effect, group] : techDropdowns)
 			if (effect->techniqueDropdown.topLevel || group.empty())
-				RenderTechniqueDropdown(effect, ctx);
+				RenderTechniqueDropdown(effect, ctx, false);
 	}
 
 	RenderGroupNode(tree.root, ctx, techDropdowns, false);
 
 	if (!changedEffects.empty()) {
-		auto& cd = EffectManager::GetSingleton().commonData;
-		uint32_t activeWeatherID = static_cast<uint32_t>(cd.weather[2] > 0.5f ? cd.weather[0] : cd.weather[1]);
+		const uint32_t activeWeatherID = EffectManager::GetSingleton().GetDominantWeatherID();
 		for (auto& [effect, index] : changedVars) {
 			if (auto* ext = dynamic_cast<ExtendedEffect*>(effect))
 				ext->SyncWeatherVarFromUI(index, activeWeatherID);

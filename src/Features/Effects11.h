@@ -5,6 +5,7 @@
 #include <memory>
 #include <winrt/base.h>
 
+// C4324: the aligned PerFrame cache member pads the struct
 #pragma warning(push)
 #pragma warning(disable: 4324)
 
@@ -59,7 +60,7 @@ public:
 
 		uint EnableVolumetricRays;
 		float VolumetricRaysIntensity;
-		float VolumetricRaysExtinction;
+		float VolumetricRaysDensity;
 		float VolumetricRaysSkyColorAmount;
 
 		float VolumetricRaysDesaturation;
@@ -126,8 +127,21 @@ public:
 		float SecundaBillboardTan;
 		float SkyScatteringPad0;
 		float SkyScatteringPad1;
+
+		float3 VolumetricFogColorFilter;
+		float VolumetricFogIntensity;
+
+		float VolumetricFogCurve;
+		float VolumetricFogOpacity;
+		float VolumetricFogShadowAmount;
+		uint VolumetricFogEnableLighting;
+
+		float3 VolumetricRaysSkyColor;
+		float VolumetricRaysPad0;
 	};
 	static_assert(sizeof(PerFrame) % 16 == 0);
+	static_assert(offsetof(PerFrame, VolumetricFogColorFilter) % 16 == 0);
+	static_assert(offsetof(PerFrame, VolumetricRaysSkyColor) % 16 == 0);
 	static_assert(offsetof(PerFrame, EnableCloudsScattering) % 16 == 0);
 	static_assert(offsetof(PerFrame, SkyScatteringColor) % 16 == 0);
 	static_assert(offsetof(PerFrame, SkyScatteringDustTint) % 16 == 0);
@@ -150,6 +164,13 @@ public:
 	std::unique_ptr<Texture2D> vlDepthHalf;
 	std::unique_ptr<ConstantBuffer> vlBlurCB;
 
+	ID3D11PixelShader* sunRaysMaskPS = nullptr;
+	ID3D11PixelShader* sunRaysBlurPS = nullptr;
+	ID3D11PixelShader* sunRaysCompositePS = nullptr;
+	std::unique_ptr<Texture2D> sunRaysTexA;
+	std::unique_ptr<Texture2D> sunRaysTexB;
+	std::unique_ptr<ConstantBuffer> sunRaysCB;
+
 	float3 scatteringSunColor = { 1.0f, 1.0f, 1.0f };
 	float3 scatteringSunDirection = { 0.0f, 0.0f, 1.0f };
 
@@ -171,6 +192,9 @@ public:
 
 	void DrawVolumetricRays();
 
+	/** @brief Draws the ENB [RAYS] screen-space sun (or Masser) shafts additively onto the main target. */
+	void DrawSunRays();
+
 	void OnSkyUpdateColors(RE::Sky* a_sky);
 	void OverrideWeather(RE::Sky* a_sky);
 	void CheckCommonData();
@@ -184,6 +208,7 @@ public:
 
 	__declspec(noinline) void ModifyParticle(RE::BSRenderPass* Pass);
 	void ParticleShaderHacks();
+	/** @brief True when the effect is on, the raindrop texture loaded, and RAIN "Enable" is set. */
 	bool IsRainEnabled();
 
 	/**
@@ -207,14 +232,14 @@ public:
 	bool ReplacedTonemapperThisFrame() const;
 
 private:
+	bool EnsureScatteringBlendState();
+	bool EnsureSunRaysResources(uint32_t a_width, uint32_t a_height);
+
 	uint tonemapReplacedFrame = UINT32_MAX;  ///< frameCount when the effect chain last wrote the tonemap output
 
-	// The feature buffer is rebuilt several times per frame, so the setting lookups behind
-	// GetCommonBufferData are resolved once per frame and replayed from here.
+	// The feature buffer is rebuilt several times per frame, so GetCommonBufferData's lookups are replayed from here
 	PerFrame perFrameCache{};
-	uint perFrameCacheFrame = UINT32_MAX;
-
-	uint32_t rainEnabledSettingID = UINT32_MAX;  ///< RAIN:Enable, resolved on first use
+	Util::FrameChecker perFrameCacheChecker;
 
 	struct PointLightingParams
 	{

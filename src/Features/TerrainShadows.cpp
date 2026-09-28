@@ -135,7 +135,28 @@ namespace
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TerrainShadows::Settings,
-	EnableTerrainShadow)
+	EnableTerrainShadow,
+	EnableLODShadow,
+	LODShadowResolution)
+
+namespace
+{
+	constexpr uint32_t kLODShadowResolutions[] = { 1024, 2048, 4096 };
+
+	int GetLODShadowResolutionIndex(uint32_t a_requested)
+	{
+		if (a_requested <= kLODShadowResolutions[0])
+			return 0;
+		if (a_requested >= kLODShadowResolutions[2])
+			return 2;
+		return 1;
+	}
+
+	uint32_t GetLODShadowResolution(uint32_t a_requested)
+	{
+		return kLODShadowResolutions[GetLODShadowResolutionIndex(a_requested)];
+	}
+}
 
 void TerrainShadows::PostPostLoad()
 {
@@ -184,6 +205,15 @@ void TerrainShadows::DrawSettings()
 {
 	ImGui::Checkbox(T(TKEY("enable_terrain_shadow"), "Enable Terrain Shadow"), &settings.EnableTerrainShadow);
 
+	ImGui::Checkbox(T(TKEY("enable_lod_shadow"), "Enable LOD Shadows"), &settings.EnableLODShadow);
+	Util::HelpMarker(T(TKEY("enable_lod_shadow_tooltip"), "Distant object, tree and terrain LOD shadows, captured from the water reflection cubemap.\nOnly updates while the game renders water reflections nearby."));
+	if (settings.EnableLODShadow) {
+		static constexpr const char* resolutionNames[] = { "1024", "2048", "4096" };
+		int resolutionIndex = GetLODShadowResolutionIndex(settings.LODShadowResolution);
+		if (ImGui::Combo(T(TKEY("lod_shadow_resolution"), "LOD Shadow Resolution"), &resolutionIndex, resolutionNames, IM_ARRAYSIZE(resolutionNames)))
+			settings.LODShadowResolution = kLODShadowResolutions[resolutionIndex];
+	}
+
 	if (ImGui::CollapsingHeader(T(TKEY("debug"), "Debug"))) {
 		std::string curr_worldspace = "N/A";
 		std::string curr_worldspace_name = "N/A";
@@ -197,6 +227,7 @@ void TerrainShadows::DrawSettings()
 		}
 		ImGui::Text(fmt::format("Current worldspace: {} ({})", curr_worldspace, curr_worldspace_name).c_str());
 		ImGui::Text(fmt::format("Has height map: {}", heightmaps.contains(curr_worldspace)).c_str());
+		lodShadowMap.DrawStatus();
 
 		ImGui::Separator();
 
@@ -219,6 +250,11 @@ void TerrainShadows::DrawSettings()
 			}
 			ImGui::TreePop();
 		}
+
+		if (ImGui::TreeNode(T(TKEY("lod_shadow_cascades"), "LOD Shadow Cascades"))) {
+			lodShadowMap.DrawDebugView();
+			ImGui::TreePop();
+		}
 	}
 }
 
@@ -229,6 +265,7 @@ void TerrainShadows::ClearShaderCache()
 		shadowUpdateProgram = nullptr;
 	}
 
+	lodShadowMap.ClearShaderCache();
 	CompileComputeShaders();
 }
 
@@ -317,6 +354,8 @@ void TerrainShadows::SetupResources()
 	}
 
 	CompileComputeShaders();
+
+	LODShadowMap::InstallHooks();
 }
 
 void TerrainShadows::CompileComputeShaders()
@@ -357,6 +396,16 @@ TerrainShadows::PerFrame TerrainShadows::GetCommonBufferData()
 		const float stepDescent = -0.5f * (shadowUpdateCBData.LightDeltaZ.x + shadowUpdateCBData.LightDeltaZ.y) * (data.ZRange.y - data.ZRange.x);
 		data.ZBlur = stepDescent * zBlurSteps;
 	}
+
+	const auto& lodShadow = lodShadowMap.GetReceiverData();
+	data.LODShadowStrength = lodShadow.strength;
+	data.LODShadowResolution = lodShadow.resolution;
+	data.LODShadowAxisX = lodShadow.axisX;
+	data.LODShadowAxisY = lodShadow.axisY;
+	data.LODShadowAxisZ = lodShadow.axisZ;
+	for (uint32_t cascade = 0; cascade < LODShadowMap::kCascadeCount; ++cascade)
+		data.LODShadowCascades[cascade] = lodShadow.cascades[cascade];
+	data.LODShadowDepthBias = lodShadow.depthBias;
 
 	return data;
 }
@@ -525,7 +574,7 @@ bool TerrainShadows::UpdateShadow(bool a_refreshImmediately)
 		invScale.z = cachedHeightmap->zRange.y - cachedHeightmap->zRange.x;
 		float2 dirLightPxDir = { dirLightDir.x / invScale.x * width, dirLightDir.y / invScale.y * height };
 		if (dirLightPxDir.x == 0.f && dirLightPxDir.y == 0.f)
-			dirLightPxDir = { 1.f, 0.f };
+			dirLightPxDir = float2(1.f, 0.f);
 
 		if (abs(dirLightPxDir.x) >= abs(dirLightPxDir.y)) {
 			edgePxCoord = dirLightPxDir.x > 0 ? 0 : (width - 1);
@@ -599,17 +648,22 @@ bool TerrainShadows::UpdateShadow(bool a_refreshImmediately)
 
 void TerrainShadows::ReflectionsPrepass()
 {
-	if (texShadowHeight) {
-		auto context = globals::d3d::context;
+	auto context = globals::d3d::context;
 
+	if (texShadowHeight) {
 		std::array<ID3D11ShaderResourceView*, 1> srvs = { texShadowHeight->srv.get() };
 		context->PSSetShaderResources(60, (uint)srvs.size(), srvs.data());
 		context->CSSetShaderResources(60, (uint)srvs.size(), srvs.data());
 	}
+
+	lodShadowMap.Bind(context);
 }
 
 void TerrainShadows::EarlyPrepass()
 {
+	lodShadowMap.Update(settings.EnableLODShadow, GetLODShadowResolution(settings.LODShadowResolution));
+	lodShadowMap.Bind(globals::d3d::context);
+
 	LoadHeightmap();
 
 	const auto requestedRefreshGeneration = Util::GetCompletedCelestialTransitionGeneration();

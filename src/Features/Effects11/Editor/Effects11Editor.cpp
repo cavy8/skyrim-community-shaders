@@ -75,6 +75,7 @@ namespace
 		{ "CLOUDSHADOWS", Group::Sky },
 		{ "VOLUMETRICFOG", Group::Atmosphere },
 		{ "VOLUMETRICRAYS", Group::Atmosphere },
+		{ "RAYS", Group::Atmosphere },
 		{ "GAMEVOLUMETRICRAYS", Group::Atmosphere },
 		{ "ADAPTATION", Group::Camera },
 		{ "BLOOM", Group::Camera },
@@ -148,9 +149,11 @@ namespace
 		if (a_category == "CLOUDSHADOWS")
 			return { T("feature.effects11.category.cloudshadows", "Cloud Shadows"), T("feature.effects11.category.cloudshadows_desc", "Strength of the shadows clouds cast on the ground.") };
 		if (a_category == "VOLUMETRICFOG")
-			return { T("feature.effects11.category.volumetricfog", "Volumetric Fog"), T("feature.effects11.category.volumetricfog_desc", "Brightness and color of volumetric fog.") };
+			return { T("feature.effects11.category.volumetricfog", "Volumetric Fog"), T("feature.effects11.category.volumetricfog_desc", "Brightness, color, opacity and shadowing of fog volume effects.") };
 		if (a_category == "VOLUMETRICRAYS")
 			return { T("feature.effects11.category.volumetricrays", "Volumetric Rays"), T("feature.effects11.category.volumetricrays_desc", "Effects 11 sun rays.") };
+		if (a_category == "RAYS")
+			return { T("feature.effects11.category.rays", "Sun Rays"), T("feature.effects11.category.rays_desc", "Screen-space light shafts streaming from the sun, or from Masser at night.") };
 		if (a_category == "GAMEVOLUMETRICRAYS")
 			return { T("feature.effects11.category.gamevolumetricrays", "Game Volumetric Rays"), T("feature.effects11.category.gamevolumetricrays_desc", "Adjustments to the game's own god rays.") };
 		if (a_category == "ADAPTATION")
@@ -610,8 +613,8 @@ void Effects11Editor::DrawStatus()
 				return entry->fileName;
 			return I18n::GetSingleton()->Format(TKEY("weather_no_file"), { { "id", std::format("0x{:06X}", a_id) } }, "{id} (no weather file)");
 		};
-		const auto current = static_cast<uint32_t>(commonData.weather[0]);
-		const auto previous = static_cast<uint32_t>(commonData.weather[1]);
+		const auto current = effectManager.currentWeatherID;
+		const auto previous = effectManager.previousWeatherID;
 		const float blend = std::clamp(commonData.weather[2], 0.0f, 1.0f);
 
 		std::string text = weatherName(current);
@@ -886,9 +889,9 @@ void Effects11Editor::DrawWeatherFileList()
 		Util::TextUnformattedDisabled(T(TKEY("weather_files_none"), "No weather files are loaded. Weather files are listed in enbseries/_weatherlist.ini."));
 		ImGui::PopTextWrapPos();
 	} else {
-		const auto& commonData = EffectManager::GetSingleton().commonData;
-		const auto current = static_cast<uint32_t>(commonData.weather[0]);
-		const auto previous = static_cast<uint32_t>(commonData.weather[1]);
+		const auto& effectManager = EffectManager::GetSingleton();
+		const auto current = effectManager.currentWeatherID;
+		const auto previous = effectManager.previousWeatherID;
 
 		std::vector<const WeatherManager::WeatherEntry*> sorted;
 		sorted.reserve(entries.size());
@@ -1111,7 +1114,7 @@ void Effects11Editor::DrawColorTimeOfDayRow(const Setting& a_setting, const char
 
 		float rgb[3] = { value.values[period].x, value.values[period].y, value.values[period].z };
 		constexpr ImGuiColorEditFlags flags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoTooltip |
-		                                      ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR;
+		                                      ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_NoOptions;
 		if (ImGui::ColorEdit3("##c", rgb, flags)) {
 			value.values[period] = { rgb[0], rgb[1], rgb[2] };
 			changed = true;
@@ -1418,6 +1421,11 @@ void Effects11Editor::Revert()
 {
 	RefreshPresetPaths();
 	SettingManager::GetSingleton().Load();
+	// Load only overwrites keys present in the ini, so edits to omitted keys must be reset first
+	for (const auto& file : GetEffectFiles()) {
+		for (auto& uiVar : file.effect->uiVariables)
+			Effect::RestoreDefaultValue(uiVar);
+	}
 	EffectManager::GetSingleton().Load();
 	dirty = false;
 }
@@ -1546,6 +1554,9 @@ void Effects11Editor::DrawLauncher()
 		SameLineIfFits(ImGui::CalcTextSize(T(TKEY("unsaved_changes"), "Unsaved changes")).x);
 		ImGui::AlignTextToFramePadding();
 		Util::Text::Warning("%s", T(TKEY("unsaved_changes"), "Unsaved changes"));
+		ImGui::SameLine();
+		if (Util::SuccessButton(T(TKEY("save"), "Save")))
+			Save();
 	}
 
 	DrawTonemapWarning();
@@ -1674,8 +1685,7 @@ bool Effects11Editor::IsInterior() const
 
 uint32_t Effects11Editor::EditWeatherID() const
 {
-	const auto& commonData = EffectManager::GetSingleton().commonData;
-	return static_cast<uint32_t>(commonData.weather[2] > 0.5f ? commonData.weather[0] : commonData.weather[1]);
+	return EffectManager::GetSingleton().GetDominantWeatherID();
 }
 
 std::string Effects11Editor::EditTargetFile(const std::string& a_category) const

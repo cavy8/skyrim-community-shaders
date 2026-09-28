@@ -1,5 +1,6 @@
 #include "GrassBucketStore.h"
 
+
 void GrassBucketStore::SetupResources()
 {
 	{
@@ -36,14 +37,17 @@ void GrassBucketStore::ClearShaderCache()
 	if (detectCS)
 		detectCS->Release();
 	detectCS = nullptr;
+	detectCSFailed = false;
 }
 
 ID3D11ComputeShader* GrassBucketStore::GetDetectCS()
 {
-	if (!detectCS) {
+	if (!detectCS && !detectCSFailed) {
 		detectCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\GrassOptimizations\\DetectComplexCS.hlsl", {}, "cs_5_0"));
-		if (!detectCS)
+		if (!detectCS) {
+			detectCSFailed = true;
 			logger::error("[GRASS OPTIMIZATIONS] detect CS load failed — complex detection disabled");
+		}
 	}
 	return detectCS;
 }
@@ -71,13 +75,13 @@ void GrassBucketStore::RefreshComplexGrass(float threshold, ID3D11DeviceContext*
 	cachedComplexThreshold = threshold;
 
 	for (auto& [key, b] : buckets)
-		if (b.kind == BucketKind::kGrass)
-			b.isComplex = DetectComplexGrass(b.diffuseTexture.get(), ctx);
+		b.isComplex = DetectComplexGrass(b.diffuseTexture.get(), ctx);
 }
 
 void GrassBucketStore::StageRemoval(RE::BSMultiStreamInstanceTriShape* shape)
 {
 	std::scoped_lock lk(pendingMutex);
+	std::erase_if(pendingCaptures, [shape](const PendingCapture& pc) { return pc.shape == shape; });
 	pendingRemoves.push_back(shape);
 }
 
@@ -94,7 +98,7 @@ bool GrassBucketStore::ClaimQueueSlot(RE::BSMultiStreamInstanceTriShape* shape, 
 	auto& lastQueued = it->second->lastQueuedFrame;
 	uint32_t prev = lastQueued.load(std::memory_order_relaxed);
 	if (prev == frame)
-		return false;
+		return false; 
 	return lastQueued.compare_exchange_strong(prev, frame, std::memory_order_relaxed);
 }
 
@@ -197,56 +201,21 @@ void GrassBucketStore::ApplyCaptures(std::vector<PendingCapture>& captures)
 	auto* ctx = globals::d3d::context;
 
 	for (auto& pc : captures) {
-		const bool isGrass = pc.kind == BucketKind::kGrass;
-		const uint32_t meshId = isGrass ? meshLibrary.ResolveMeshId(pc.shape) : 0u;
-		const uint32_t triCount = meshId ? 0u : (uint32_t)pc.shape->GetTrishapeRuntimeData().triangleCount;
-		const BucketKey bk{ pc.kind, meshId, pc.material, meshId ? nullptr : pc.diffuseTexture, triCount, meshId ? 0u : pc.descVal };
-
-		// A shape already in a bucket is being rebuilt by the engine (tree LOD groups re-add their
-		// instances as LOD fades). Replace its slice in place when it still belongs to the same
-		// bucket, otherwise drop the stale slice before folding the capture in as new.
-		if (GrassBucket* prior = FindBucketForShape(pc.shape)) {
-			BucketSlice* priorSlice = FindSlice(*prior, pc.shape);
-			auto priorIt = buckets.find(bk);
-			if (priorSlice && priorIt != buckets.end() && &priorIt->second == prior) {
-				auto& b = *prior;
-				const uint32_t index = (uint32_t)(priorSlice - b.slices.data());
-				b.totalInstances = b.totalInstances - std::min(priorSlice->count, b.totalInstances) + pc.count;
-				priorSlice->count = pc.count;
-				priorSlice->origin = pc.origin;
-				priorSlice->localMin = pc.localMin;
-				priorSlice->localMax = pc.localMax;
-				priorSlice->data = std::move(pc.bytes);
-				priorSlice->bufferOffset = UINT32_MAX;
-				b.sliceBounds[index].lo[0] = pc.origin.x + pc.localMin.x;
-				b.sliceBounds[index].lo[1] = pc.origin.y + pc.localMin.y;
-				b.sliceBounds[index].lo[2] = pc.origin.z + pc.localMin.z;
-				b.sliceBounds[index].hi[0] = pc.origin.x + pc.localMax.x;
-				b.sliceBounds[index].hi[1] = pc.origin.y + pc.localMax.y;
-				b.sliceBounds[index].hi[2] = pc.origin.z + pc.localMax.z;
-				// The tail from this slice on is re-laid out, since its count may have changed.
-				b.rebuildFromSlice = std::min(b.rebuildFromSlice, index);
-				b.dirty = true;
-				b.clustersValid = false;
-				b.coarseValid = false;
-				continue;
-			}
-			ApplyRemovals({ pc.shape });
-		}
-
+		const uint32_t meshId = meshLibrary.ResolveMeshId(pc.shape);
+		const uint32_t triCount = meshId ? 0u : pc.triangleCount;
+		const BucketKey bk{ meshId, pc.material, meshId ? nullptr : pc.diffuseTexture.get(), triCount, meshId ? 0u : pc.descVal };
 		auto& b = buckets[bk];
-		b.kind = pc.kind;
 		b.meshId = meshId;
-		b.diffuseTexture = RE::NiPointer<RE::NiSourceTexture>(pc.diffuseTexture);
+		b.diffuseTexture = pc.diffuseTexture;
 
 		if (b.firstNewSlice == UINT32_MAX)
 			b.firstNewSlice = (uint32_t)b.slices.size();
 
 		if (!b.typeParamsValid) {
-			CacheBucketTypeParams(b, pc.shape);
-			b.isComplex = isGrass && DetectComplexGrass(pc.diffuseTexture, ctx);
+			CacheBucketTypeParams(b, pc);
+			b.isComplex = DetectComplexGrass(pc.diffuseTexture.get(), ctx);
 		}
-		if (isGrass && frameParams.enableMeshLOD)
+		if (frameParams.enableMeshLOD)
 			meshLibrary.EnsureLODMeshes(meshId);
 
 		BucketSlice s;
@@ -412,36 +381,32 @@ void GrassBucketStore::CaptureGIDGroup(RE::BSMultiStreamInstanceTriShape* shape,
 	StageCapture(shape, instanceData, count, stride, descVal, tex);
 }
 
-bool GrassBucketStore::StageCapture(RE::BSMultiStreamInstanceTriShape* shape, const void* src, uint32_t count, uint32_t stride, uint64_t descVal, RE::NiSourceTexture* tex, BucketKind kind)
+bool GrassBucketStore::StageCapture(RE::BSMultiStreamInstanceTriShape* shape, const void* src, uint32_t count, uint32_t stride, uint64_t descVal, RE::NiSourceTexture* tex)
 {
 	if (!shape || !src || !tex || !count || stride != kGrassStride) {
-		logger::debug("[GRASS OPTIMIZATIONS] capture rejected: kind={} count={} stride={} desc={:016X} shape={:p}", (int)kind, count, stride, descVal, (void*)shape);
+		logger::debug("[GRASS OPTIMIZATIONS] capture rejected: count={} stride={} desc={:016X} shape={:p}", count, stride, descVal, (void*)shape);
 		return false;
 	}
 	auto shaderProperty = shape->GetGeometryRuntimeData().shaderProperty;
-	if (!shaderProperty)
+	if (!shaderProperty || shaderProperty->GetRTTI() != globals::rtti::BSGrassShaderPropertyRTTI.get())
+		return false;
+	auto* grassProperty = static_cast<RE::BSGrassShaderProperty*>(shaderProperty.get());
+	auto* material = grassProperty->material;
+	if (!material)
 		return false;
 
-	RE::BSShaderMaterial* material = nullptr;
-	if (kind == BucketKind::kGrass) {
-		if (shaderProperty->GetRTTI() != globals::rtti::BSGrassShaderPropertyRTTI.get())
-			return false;
-		material = static_cast<RE::BSGrassShaderProperty*>(shaderProperty.get())->material;
-		if (!material)
-			return false;
-	} else {
-		// Tree LOD carries no material; the billboard atlas plus the mesh identify the type.
-		if (shaderProperty->GetRTTI() != globals::rtti::BSDistantTreeShaderPropertyRTTI.get())
-			return false;
-	}
+	const auto& bound = shape->GetModelData().modelBound;
 
 	PendingCapture pc;
-	pc.kind = kind;
 	pc.shape = shape;
 	pc.material = material;
 	pc.descVal = descVal;
-	pc.diffuseTexture = tex;
+	pc.diffuseTexture = RE::NiPointer<RE::NiSourceTexture>(tex);
 	pc.count = count;
+	pc.triangleCount = shape->GetTrishapeRuntimeData().triangleCount;
+	pc.boundCenter = bound.center;
+	pc.modelRadius = bound.radius;
+	pc.wavePeriod = grassProperty->wavePeriod;
 	pc.origin = shape->world.translate;
 	pc.bytes.resize((size_t)count * kGrassStride);
 	std::memcpy(pc.bytes.data(), src, pc.bytes.size());
@@ -473,21 +438,16 @@ bool GrassBucketStore::StageCapture(RE::BSMultiStreamInstanceTriShape* shape, co
 	return true;
 }
 
-void GrassBucketStore::CacheBucketTypeParams(GrassBucket& b, RE::BSMultiStreamInstanceTriShape* shape)
+void GrassBucketStore::CacheBucketTypeParams(GrassBucket& b, const PendingCapture& pc)
 {
-	if (b.typeParamsValid || !shape)
+	if (b.typeParamsValid)
 		return;
 
-	if (b.kind == BucketKind::kGrass) {
-		if (auto* prop = static_cast<RE::BSGrassShaderProperty*>(shape->GetGeometryRuntimeData().shaderProperty.get()))
-			b.wavePeriod = prop->wavePeriod;
-	}
+	b.wavePeriod = pc.wavePeriod;
+	b.boundCenter = pc.boundCenter;
+	b.modelRadius = pc.modelRadius;
 
-	const auto& bound = shape->GetModelData().modelBound;
-	b.boundCenter = bound.center;
-	b.modelRadius = bound.radius;
-
-	const float tris = (float)shape->GetTrishapeRuntimeData().triangleCount;
+	const float tris = (float)pc.triangleCount;
 	const float cost = std::max(1.0f, tris / 8.0f);
 	const float w = std::sqrt(cost);
 	b.distScale = 1.0f / w;
@@ -834,7 +794,7 @@ bool GrassBucketStore::CreateBucketArgsBuffer(GrassBucket& b, ID3D11Device* devi
 	}
 	Util::SetResourceName(b.argsBuf, "GrassOptimizations::ArgsBuf");
 
-	// Windows on to the instance count, with the shader's address 0 mapping to it, so clearing the view resets the count without disturbing indexCount.
+	// Windows on to the instance count, with the shader's address 0 mapping to it, so clearing the view resets the count without disturbing indexCount. 
 	D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};
 	uav.Format = DXGI_FORMAT_R32_TYPELESS;
 	uav.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
@@ -885,7 +845,7 @@ void GrassBucketStore::UpdateCoarseBounds(GrassBucket& b)
 		mx = { 0.0f, 0.0f, 0.0f };
 	}
 
-	// Generously pad to prevent instances on the screen edge from being visibly culled.
+	// Generously pad to prevent instances on the screen edge from being visibly culled. 
 	const float pad = b.modelRadius + 128.0f;
 	mn.x -= pad;
 	mn.y -= pad;
@@ -897,43 +857,6 @@ void GrassBucketStore::UpdateCoarseBounds(GrassBucket& b)
 	b.coarseMin = mn;
 	b.coarseMax = mx;
 	b.coarseValid = true;
-}
-
-GrassBucket* GrassBucketStore::FindBucketForShape(RE::BSMultiStreamInstanceTriShape* shape)
-{
-	std::shared_lock lk(shapeBucketMutex);
-	auto it = shapeBucketId.find(shape);
-	return it != shapeBucketId.end() ? it->second : nullptr;
-}
-
-BucketSlice* GrassBucketStore::FindSlice(GrassBucket& b, RE::BSMultiStreamInstanceTriShape* shape)
-{
-	for (auto& s : b.slices)
-		if (s.shape == shape)
-			return &s;
-	return nullptr;
-}
-
-void GrassBucketStore::RefreshSliceOrigin(GrassBucket& b, BucketSlice& slice, const RE::NiPoint3& origin)
-{
-	const uint32_t index = (uint32_t)(&slice - b.slices.data());
-	if (index >= b.sliceBounds.size())
-		return;
-
-	slice.origin = origin;
-	slice.bufferOffset = UINT32_MAX;
-	b.sliceBounds[index].lo[0] = origin.x + slice.localMin.x;
-	b.sliceBounds[index].lo[1] = origin.y + slice.localMin.y;
-	b.sliceBounds[index].lo[2] = origin.z + slice.localMin.z;
-	b.sliceBounds[index].hi[0] = origin.x + slice.localMax.x;
-	b.sliceBounds[index].hi[1] = origin.y + slice.localMax.y;
-	b.sliceBounds[index].hi[2] = origin.z + slice.localMax.z;
-
-	// The origin buffer holds the old placement, so the tail from this slice is re-uploaded.
-	b.rebuildFromSlice = std::min(b.rebuildFromSlice, index);
-	b.dirty = true;
-	b.clustersValid = false;
-	b.coarseValid = false;
 }
 
 bool GrassBucketStore::DetectComplexGrass(RE::NiSourceTexture* tex, ID3D11DeviceContext* ctx)

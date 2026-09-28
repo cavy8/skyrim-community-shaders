@@ -4,6 +4,7 @@
 #include <filesystem>
 
 #include "Buffer.h"
+#include "Features/TerrainShadows/LODShadowMap.h"
 
 /** @brief Adds heightmap-based terrain shadow casting that updates dynamically with sun position. */
 struct TerrainShadows : public Feature
@@ -31,7 +32,11 @@ public:
 	struct Settings
 	{
 		bool EnableTerrainShadow = true;
+		bool EnableLODShadow = true;
+		uint32_t LODShadowResolution = 2048;
 	} settings;
+
+	LODShadowMap lodShadowMap;
 
 	bool needPrecompute = false;
 	uint shadowUpdateIdx = 0;
@@ -68,7 +73,14 @@ public:
 		float2 ZRange;
 		float2 Offset;
 		float ZBlur;  // world-space half-width of the shadow transition
-		float3 pad0;
+		float LODShadowStrength;
+		float LODShadowResolution;
+		float pad0;
+		float4 LODShadowAxisX;
+		float4 LODShadowAxisY;
+		float4 LODShadowAxisZ;
+		float4 LODShadowCascades[LODShadowMap::kCascadeCount];
+		float4 LODShadowDepthBias;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
 

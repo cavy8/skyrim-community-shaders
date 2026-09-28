@@ -1,5 +1,6 @@
 #include "LightLimitFix.h"
 #include "Effects11.h"
+#include "LightLimitFix/ShadowDiagnostics.h"
 #include "InverseSquareLighting.h"
 #include "LinearLighting.h"
 
@@ -30,7 +31,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	LocalShadowSlots,
 	LocalShadowResolution,
 	LocalShadowSamples,
-	LocalShadowFilterScale)
+	LocalShadowFilterScale,
+	LogShadowDiagnostics)
 
 static constexpr uint CLUSTER_MAX_LIGHTS = 128;
 
@@ -128,6 +130,16 @@ void LightLimitFix::DrawSettings()
 
 	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
 
+	ImGui::Checkbox(T(TKEY("log_shadow_diagnostics"), "Log Shadow Diagnostics"), &settings.LogShadowDiagnostics);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("log_shadow_diagnostics_tooltip"), "Logs local light shadow events and the lights and plugins involved to CommunityShaders.log.\nPress F11 right after a flash to write a full report."));
+	}
+	if (settings.LogShadowDiagnostics) {
+		ImGui::SameLine();
+		if (ImGui::Button(T(TKEY("write_shadow_report"), "Write Shadow Report")))
+			LocalShadowDiagnostics::RequestReport();
+	}
+
 	if (ImGui::TreeNode(T(TKEY("light_limit_vis"), "Light Limit Visualization"))) {
 		ImGui::Checkbox(T(TKEY("enable_lights_vis"), "Enable Lights Visualisation"), &settings.EnableLightsVisualisation);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -158,12 +170,16 @@ void LightLimitFix::DrawSettings()
 
 void LightLimitFix::DrawOverlay()
 {
-	if (!settings.EnableLightsVisualisation)
+	const bool reportNotice = LocalShadowDiagnostics::IsReportNoticeVisible();
+	if (!settings.EnableLightsVisualisation && !reportNotice)
 		return;
 	const float pos = ThemeManager::Constants::OVERLAY_WINDOW_POSITION * Util::GetUIScale();
 	ImGui::SetNextWindowPos(ImVec2(pos, pos), ImGuiCond_Always);
 	ImGui::Begin("##LLFDebug", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-	Util::Text::Error("%s", T(TKEY("debug_feature_enabled"), "DEBUG FEATURE - LIGHT LIMIT VISUALISATION ENABLED"));
+	if (settings.EnableLightsVisualisation)
+		Util::Text::Error("%s", T(TKEY("debug_feature_enabled"), "DEBUG FEATURE - LIGHT LIMIT VISUALISATION ENABLED"));
+	if (reportNotice)
+		ImGui::Text("%s", T(TKEY("shadow_report_written"), "Shadow report written to CommunityShaders.log"));
 	ImGui::End();
 }
 
@@ -555,6 +571,8 @@ void LightLimitFix::UpdateLights()
 	eastl::vector<LightData> lightsData{};
 	lightsData.reserve(MAX_LIGHTS);
 
+	const bool shadowDiagnostics = LocalShadowDiagnostics::IsActive();
+
 	// Process point lights
 
 	roomNodes.clear();
@@ -607,13 +625,17 @@ void LightLimitFix::UpdateLights()
 						light.lightFlags.set(LightFlags::PortalStrict);
 					}
 
+					bool withheld = false;
 					if (bsLight->IsShadowLight()) {
 						auto* shadowLight = static_cast<RE::BSShadowLight*>(bsLight);
 						light.lightFlags.set(LightFlags::ShadowCaster);
 						if (settings.EnableLocalShadows && localShadowCache) {
-							if (auto* caster = FindLocalShadowCaster(shadowLight); caster && caster->slice >= 0 && caster->lastRenderedFrame != 0) {
+							auto* caster = FindLocalShadowCaster(shadowLight);
+							if (caster && caster->slice >= 0 && caster->lastRenderedFrame != 0) {
 								light.localShadowIndex = static_cast<uint32_t>(caster->slice);
 								light.lightFlags.set(LightFlags::LocalShadow);
+							} else {
+								withheld = !caster || shadowLight->GetIsFrustumLight() || localShadowFrame - caster->firstSeenFrame < LOCAL_SHADOW_UNCACHED_GRACE_FRAMES;
 							}
 						} else {
 							TryAssignShadowMask(light, shadowLight);
@@ -622,9 +644,12 @@ void LightLimitFix::UpdateLights()
 
 					SetLightPosition(light, niLight->world.translate);
 
-					if ((light.color.x + light.color.y + light.color.z) * light.fade > 1e-4 && light.radius > 1e-4) {
+					const bool lit = !withheld && (light.color.x + light.color.y + light.color.z) * light.fade > 1e-4 && light.radius > 1e-4;
+					if (lit) {
 						lightsData.push_back(light);
 					}
+					if (shadowDiagnostics)
+						LocalShadowDiagnostics::NoteUploadedLight(bsLight, light, lit, withheld);
 				}
 			}
 		}
@@ -650,6 +675,8 @@ void LightLimitFix::UpdateLights()
 	context->Unmap(lights->resource.get(), 0);
 
 	UpdateStructure();
+
+	LocalShadowDiagnostics::EndFrame(*this);
 }
 
 void LightLimitFix::UpdateStructure()
@@ -1178,12 +1205,35 @@ LightLimitFix::LocalShadowCaster* LightLimitFix::FindLocalShadowCaster(RE::BSSha
 	return nullptr;
 }
 
+void LightLimitFix::MatchShadowDistanceToLightFade(bool a_enable)
+{
+	static float& shadowDistance = *reinterpret_cast<float*>(REL::RelocationID(528314, 415263).address());
+	static float& shadowDistanceSquared = *reinterpret_cast<float*>(REL::RelocationID(528316, 415264).address());
+	static float& lightFadeEndSquared = *reinterpret_cast<float*>(REL::RelocationID(527669, 414583).address());
+
+	const float baseSquared = shadowDistance * shadowDistance;
+	if (!a_enable) {
+		if (shadowDistanceRaised && std::isfinite(baseSquared))
+			shadowDistanceSquared = baseSquared;
+		shadowDistanceRaised = false;
+		return;
+	}
+	if (!std::isfinite(baseSquared) || !std::isfinite(lightFadeEndSquared) || lightFadeEndSquared <= 0.0f)
+		return;
+	shadowDistanceSquared = std::max(baseSquared, lightFadeEndSquared);
+	shadowDistanceRaised = true;
+}
+
 void LightLimitFix::ScheduleLocalShadowCasters()
 {
 	localShadowAllowed.clear();
 	localShadowSelecting = false;
 
-	if (!loaded || !settings.EnableLocalShadows || REL::Module::IsVR())
+	if (!loaded || REL::Module::IsVR())
+		return;
+
+	MatchShadowDistanceToLightFade(settings.EnableLocalShadows && Util::IsInterior());
+	if (!settings.EnableLocalShadows)
 		return;
 
 	auto smState = globals::game::smState;
@@ -1197,6 +1247,7 @@ void LightLimitFix::ScheduleLocalShadowCasters()
 
 	localShadowFrame++;
 	const uint32_t frame = localShadowFrame;
+	LocalShadowDiagnostics::NoteSchedule();
 
 	if (frame == 1) {
 		auto eyePosition = globals::game::frameBufferCached.GetCameraPosAdjust();
@@ -1246,10 +1297,16 @@ void LightLimitFix::ScheduleLocalShadowCasters()
 		const bool teleported = caster->lastRenderedFrame != 0 &&
 		                        caster->renderedPosition.GetSquaredDistance(niLight->world.translate) > teleportDistance * teleportDistance;
 		if (caster->niLight != niLight || teleported) {
+			if (caster->niLight && caster->slice >= 0 && caster->lastRenderedFrame != 0) {
+				const bool replaced = caster->niLight != niLight;
+				LocalShadowDiagnostics::NoteLoss(light, replaced ? LocalShadowDiagnostics::Loss::NewNiLight : LocalShadowDiagnostics::Loss::Teleported, nullptr,
+					replaced ? 0.0f : caster->renderedPosition.GetDistance(niLight->world.translate));
+			}
 			const int32_t slice = caster->slice;
 			*caster = LocalShadowCaster{};
 			caster->light = light;
 			caster->slice = slice;
+			caster->firstSeenFrame = frame;
 		}
 		caster->niLight = niLight;
 
@@ -1414,8 +1471,10 @@ bool LightLimitFix::FilterLocalShadowCaster(RE::BSShadowLight* a_light, const RE
 	// UpdateCamera's shadow-LOD sub-test zeroes lodDimmer for lights past the (much shorter)
 	// shadow distance. Rotation runs it on far more lights than vanilla, and UpdateLights
 	// multiplies fade by lodDimmer, so leaving it zeroed renders the light black.
-	if (a_light->lodDimmer == 0.0f)
+	if (a_light->lodDimmer == 0.0f) {
 		a_light->lodDimmer = 1.0f;
+		LocalShadowDiagnostics::NoteLodDimmerRestored(a_light);
+	}
 
 	if (a_camera)
 		localShadowCameraPosition = a_camera->world.translate;
@@ -1440,6 +1499,7 @@ bool LightLimitFix::FilterLocalShadowCaster(RE::BSShadowLight* a_light, const RE
 
 void LightLimitFix::ReleaseLocalShadowResources()
 {
+	LocalShadowDiagnostics::NoteCacheReleased(*this);
 	localShadowCache = nullptr;
 	localShadowBuffer = nullptr;
 	localShadowCacheSlots = 0;
@@ -1594,7 +1654,8 @@ int32_t LightLimitFix::AcquireLocalShadowSlice(RE::BSShadowLight* a_light, uint3
 	}
 
 	auto* acquirer = FindLocalShadowCaster(a_light);
-	if (evictSlice < 0 && acquirer && acquirer->dynamic) {
+	const bool preempted = evictSlice < 0 && acquirer && acquirer->dynamic;
+	if (preempted) {
 		bool victimInView = true;
 		float victimImportance = FLT_MAX;
 		for (size_t slice = 0; slice < localShadowSliceOwner.size(); slice++) {
@@ -1614,6 +1675,7 @@ int32_t LightLimitFix::AcquireLocalShadowSlice(RE::BSShadowLight* a_light, uint3
 		return -1;
 
 	if (auto* evicted = FindLocalShadowCaster(localShadowSliceOwner[evictSlice])) {
+		LocalShadowDiagnostics::NoteLoss(evicted->light, preempted ? LocalShadowDiagnostics::Loss::Preempted : LocalShadowDiagnostics::Loss::Evicted, a_light);
 		evicted->slice = -1;
 		evicted->lastRenderedFrame = 0;
 	}
@@ -1669,6 +1731,7 @@ void LightLimitFix::CopyLocalShadowMaps()
 	ForEachAccumulatedShadowLight(runtimeData.shadowLightsAccum, [&](RE::BSShadowLight* light) {
 		if (light == sunLight)
 			return;
+		LocalShadowDiagnostics::NoteRenderedCaster(*this, light);
 
 		auto* caster = FindLocalShadowCaster(light);
 		if (!caster || caster->lastRenderedFrame == frame)
@@ -1711,13 +1774,16 @@ void LightLimitFix::CopyLocalShadowMaps()
 				logger::debug("[LLF] Engine shadow slice {} claimed by {} casters this frame; skipping the copy", engineSlice, sliceClaims[engineSlice]);
 			}
 			localShadowStatCollisions++;
+			LocalShadowDiagnostics::NoteSliceCollision(light, engineSlice, sliceClaims[engineSlice]);
 			continue;
 		}
 
 		if (caster->slice < 0) {
 			caster->slice = AcquireLocalShadowSlice(light, frame);
-			if (caster->slice < 0)
+			if (caster->slice < 0) {
+				LocalShadowDiagnostics::NoteNoSlice(light);
 				continue;
+			}
 		}
 		if (localShadowDirectCopy) {
 			context->CopySubresourceRegion(localShadowCache->resource.get(), D3D11CalcSubresource(0, static_cast<UINT>(caster->slice), 1), 0, 0, 0,

@@ -110,6 +110,7 @@ public:
 	static constexpr uint32_t LOCAL_SHADOW_EVICT_AGE = 120;
 	static constexpr uint32_t LOCAL_SHADOW_REJECT_MAX_FRAMES = 120;
 	static constexpr uint32_t LOCAL_SHADOW_CAMERA_HOLD_FRAMES = 60;
+	static constexpr uint32_t LOCAL_SHADOW_UNCACHED_GRACE_FRAMES = 8;
 	static constexpr uint32_t LOCAL_SHADOW_STATIC_STARVE_FRAMES = 60;
 	static constexpr float LOCAL_SHADOW_AGE_URGENCY = 64.0f;
 	static constexpr float LOCAL_SHADOW_ACTOR_SCORE = 1000.0f;
@@ -147,6 +148,7 @@ public:
 		RE::NiLight* niLight = nullptr;
 		int32_t slice = -1;
 		uint32_t lastSeenFrame = 0;
+		uint32_t firstSeenFrame = 0;
 		uint32_t lastEvaluatedFrame = 0;
 		uint32_t lastEligibleFrame = 0;
 		uint32_t lastRenderedFrame = 0;
@@ -327,6 +329,7 @@ public:
 	ankerl::unordered_dense::map<RE::FormID, RE::NiPoint3> localShadowActorHistoryNext;
 	eastl::vector<LocalShadowData> localShadowUpload;
 	bool localShadowSelecting = false;
+	bool shadowDistanceRaised = false;
 	uint32_t localShadowFrame = 0;
 	RE::NiPoint3 localShadowCameraPosition{};
 
@@ -355,6 +358,7 @@ public:
 	 * Runs before the engine selects its (at most four) shadow-casting lights.
 	 */
 	void ScheduleLocalShadowCasters();
+	void MatchShadowDistanceToLightFade(bool a_enable);
 	/**
 	 * @brief Records the engine's own range test for a caster and hides casters not scheduled this frame.
 	 * @param a_light The shadow light being evaluated by the engine.
@@ -413,6 +417,7 @@ public:
 		uint LocalShadowResolution = 0;
 		uint LocalShadowSamples = 8;
 		float LocalShadowFilterScale = 1.0f;
+		bool LogShadowDiagnostics = false;
 	};
 
 	uint clusterSize[3] = { 16 };

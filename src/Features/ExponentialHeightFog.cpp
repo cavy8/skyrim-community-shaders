@@ -163,7 +163,7 @@ ExponentialHeightFog::Settings ExponentialHeightFog::GetCommonBufferData() const
 	ClampFollowAndHazeSettings(data);
 	data.vanillaFogDensity = 0.0f;
 
-	if (globals::state->isMapMenuOpen) {
+	if (IsSuppressed()) {
 		data.enabled = 0;
 		data.disableVanillaFog = 0;
 		return data;
@@ -207,6 +207,12 @@ ExponentialHeightFog::Settings ExponentialHeightFog::GetCommonBufferData() const
 	                                    targetOpacity;
 	data.vanillaFogDensity = -std::log(std::max(1.0f - calibratedOpacity, kMinimumFogTransmittance)) / (referenceDistance * kAnalyticalExtinctionScale);
 	return data;
+}
+
+bool ExponentialHeightFog::IsSuppressed() const
+{
+	// The world/local map keeps its vanilla fog; height fog tuned for eye level washes it out
+	return globals::state->isMapMenuOpen;
 }
 
 void ExponentialHeightFog::DrawSettings()
@@ -591,7 +597,8 @@ void ExponentialHeightFog::Prepass()
 		return;
 	}
 
-	if (globals::state->isMapMenuOpen)
+	// Shaders ignore the fog volume while suppressed, so skip building it but keep the resources
+	if (IsSuppressed())
 		return;
 
 	const auto cameraData = Util::GetCameraData();

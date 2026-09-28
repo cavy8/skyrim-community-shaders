@@ -104,7 +104,7 @@ void MotionBlur::ClearShaderCache()
 	// Textures and constant buffers are deliberately left alone: the constant buffers are
 	// only ever created by SetupResources(), so releasing them here would make
 	// UpdateConstantBuffers() bail every frame and permanently disable the pass.
-	globals::shaderCache->ClearStandaloneComputeCache(L"PostProcessing/MotionBlur");
+	globals::shaderCache->InvalidateShaderSources();
 	CompileComputeShaders();
 }
 

@@ -125,9 +125,9 @@ void LinearLighting::SetupResources()
 
 void LinearLighting::Prepass()
 {
-	bool isMainLoadingMenu = globals::state->IsMainLoadingOrFlatMapOpen();
+	bool menuArtOpen = globals::state->IsMainLoadingOrFlatMapOpen();
 	dirLightMult = 1.0f;
-	if (!settings.enableLinearLighting || isMainLoadingMenu)
+	if (!settings.enableLinearLighting || menuArtOpen)
 		return;
 
 	auto imageSpaceManager = globals::game::imageSpaceManager;
@@ -169,9 +169,9 @@ LinearLighting::PerFrameData LinearLighting::GetCommonBufferData()
 		data.waterGamma = 1.0f;
 		return data;
 	}
-	bool isMainLoadingMenu = globals::state->IsMainLoadingOrFlatMapOpen();
+	bool menuArtOpen = globals::state->IsMainLoadingOrFlatMapOpen();
 	auto data = PerFrameData{};
-	data.enableLinearLighting = settings.enableLinearLighting && !isMainLoadingMenu;
+	data.enableLinearLighting = settings.enableLinearLighting && !menuArtOpen;
 	data.isDirLightLinear = isDirLightLinear;
 	data.dirLightMult = dirLightMult;
 	data.lightGamma = settings.lightGamma;

@@ -230,7 +230,7 @@ void LUT::ClearShaderCache()
 			}
 	}
 
-	globals::shaderCache->ClearStandaloneComputeCache(L"PostProcessing/LUT");
+	globals::shaderCache->InvalidateShaderSources();
 	CompileRasterShaders();
 }
 
