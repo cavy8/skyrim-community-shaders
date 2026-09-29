@@ -4,14 +4,15 @@
 // so the pixel shader is Lighting.hlsl's, reading the textures, samplers and constants the game
 // bound for the hair cards: every lighting feature (Hair Specular, Hair Backlighting, shadows,
 // deferred output, motion vectors) applies to strands unchanged. Lighting.hlsl reads HAIR_STRANDS
-// to take the strand colour from the card texture without its alpha and to ignore the card
-// normal map. The vertex shader is this file's: it expands skinned strand control points into
+// to take the strand colour from the colour texture (t0) without its alpha and to ignore the
+// card normal map. The vertex shader is this file's: it expands skinned strand control points into
 // camera-facing ribbons and adds the procedural style (waves, curls, coils, frizz).
 
 #define HAIR_STRANDS
-// Strands sample the card colour slightly blurred so the gaps painted between card strands
-// do not show as dark dashes along a strand.
-#define HAIR_STRANDS_COLOR_MIP_BIAS 1.0
+// Strands sample their own colour texture (StrandColourImage, bound in place of the card
+// texture): at most 512 texels across, with the transparent gaps between painted locks
+// already filled, so it needs no extra blur.
+#define HAIR_STRANDS_COLOR_MIP_BIAS 0.0
 
 // Strands have no texture alpha to test: their coverage is their geometry.
 #undef DO_ALPHA_TEST

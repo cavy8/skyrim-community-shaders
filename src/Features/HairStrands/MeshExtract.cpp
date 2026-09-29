@@ -70,6 +70,110 @@ namespace Strands
 		{
 			return a_value / 255.0f * 2.0f - 1.0f;
 		}
+
+		// How much of a texel's own colour the strands keep, by its alpha: painted hair keeps
+		// all of it, and the soft edge of a lock (often painted over black) blends into its fill.
+		constexpr float kColourAlphaLow = 0.1f;
+		constexpr float kColourAlphaHigh = 0.6f;
+
+		float ColourWeight(uint8_t a_alpha)
+		{
+			const float t = std::clamp((a_alpha / 255.0f - kColourAlphaLow) / (kColourAlphaHigh - kColourAlphaLow), 0.0f, 1.0f);
+			return t * t * (3.0f - 2.0f * t);
+		}
+
+		// One level of the colour pyramid: (colour x weight, weight) per texel, or once filled,
+		// (colour, 1).
+		struct ColourLevel
+		{
+			uint32_t width = 0;
+			uint32_t height = 0;
+			std::vector<float4> texels;
+		};
+
+		ColourLevel Downsample(const ColourLevel& a_level)
+		{
+			ColourLevel half{ std::max(a_level.width / 2, 1u), std::max(a_level.height / 2, 1u), {} };
+			half.texels.resize(static_cast<size_t>(half.width) * half.height);
+			for (uint32_t y = 0; y < half.height; ++y) {
+				for (uint32_t x = 0; x < half.width; ++x) {
+					float4 sum;
+					for (uint32_t dy = 0; dy < 2; ++dy) {
+						for (uint32_t dx = 0; dx < 2; ++dx)
+							sum += a_level.texels[static_cast<size_t>(std::min(y * 2 + dy, a_level.height - 1)) * a_level.width + std::min(x * 2 + dx, a_level.width - 1)];
+					}
+					half.texels[static_cast<size_t>(y) * half.width + x] = sum * 0.25f;
+				}
+			}
+			return half;
+		}
+
+		// Bilinear, clamped, at a position in texels (texel centres at +0.5).
+		float4 SampleLevel(const ColourLevel& a_level, float a_x, float a_y)
+		{
+			const float x = std::clamp(a_x - 0.5f, 0.0f, a_level.width - 1.0f);
+			const float y = std::clamp(a_y - 0.5f, 0.0f, a_level.height - 1.0f);
+			const auto x0 = static_cast<uint32_t>(x), y0 = static_cast<uint32_t>(y);
+			const uint32_t x1 = std::min(x0 + 1, a_level.width - 1), y1 = std::min(y0 + 1, a_level.height - 1);
+			const auto at = [&](uint32_t a_cx, uint32_t a_cy) { return a_level.texels[static_cast<size_t>(a_cy) * a_level.width + a_cx]; };
+			return float4::Lerp(float4::Lerp(at(x0, y0), at(x1, y0), x - x0), float4::Lerp(at(x0, y1), at(x1, y1), x - x0), y - y0);
+		}
+
+		uint32_t PackColour(const float4& a_colour)
+		{
+			const auto channel = [](float a_value) { return static_cast<uint32_t>(std::lround(std::clamp(a_value, 0.0f, 1.0f) * 255.0f)); };
+			return channel(a_colour.x) | (channel(a_colour.y) << 8) | (channel(a_colour.z) << 16) | 0xFF000000u;
+		}
+
+		// Push-pull: average the alpha-weighted colour down a pyramid, then, from the top, give
+		// each level's missing weight the filled colour of the level above. Every level then has
+		// the painted hair's colour everywhere and serves as that mip.
+		void BuildStrandColour(const DirectX::Image& a_image, bool a_srgb, StrandColourImage& o_colour)
+		{
+			std::vector<ColourLevel> levels(1);
+			auto& base = levels[0];
+			base.width = static_cast<uint32_t>(a_image.width);
+			base.height = static_cast<uint32_t>(a_image.height);
+			base.texels.resize(static_cast<size_t>(base.width) * base.height);
+			for (uint32_t y = 0; y < base.height; ++y) {
+				const uint8_t* row = a_image.pixels + y * a_image.rowPitch;
+				for (uint32_t x = 0; x < base.width; ++x) {
+					const uint8_t* texel = row + x * 4;
+					const float weight = ColourWeight(texel[3]);
+					base.texels[static_cast<size_t>(y) * base.width + x] = float4(texel[0] / 255.0f * weight, texel[1] / 255.0f * weight, texel[2] / 255.0f * weight, weight);
+				}
+			}
+			while (levels.back().width > 1 || levels.back().height > 1)
+				levels.push_back(Downsample(levels.back()));
+
+			float4& top = levels.back().texels[0];
+			if (top.w <= 1e-6f)
+				return;  // nothing painted
+			top = float4(top.x / top.w, top.y / top.w, top.z / top.w, 1.0f);
+			for (size_t k = levels.size() - 1; k-- > 0;) {
+				auto& level = levels[k];
+				const auto& above = levels[k + 1];
+				const float scaleX = static_cast<float>(above.width) / level.width;
+				const float scaleY = static_cast<float>(above.height) / level.height;
+				for (uint32_t y = 0; y < level.height; ++y) {
+					for (uint32_t x = 0; x < level.width; ++x) {
+						float4& texel = level.texels[static_cast<size_t>(y) * level.width + x];
+						const float4 fill = SampleLevel(above, (x + 0.5f) * scaleX, (y + 0.5f) * scaleY);
+						const float missing = 1.0f - std::min(texel.w, 1.0f);
+						texel = float4(texel.x + fill.x * missing, texel.y + fill.y * missing, texel.z + fill.z * missing, 1.0f);
+					}
+				}
+			}
+
+			o_colour.width = base.width;
+			o_colour.height = base.height;
+			o_colour.srgb = a_srgb;
+			o_colour.mips.resize(levels.size());
+			for (size_t k = 0; k < levels.size(); ++k) {
+				o_colour.mips[k].resize(levels[k].texels.size());
+				std::ranges::transform(levels[k].texels, o_colour.mips[k].begin(), PackColour);
+			}
+		}
 	}
 
 	bool ExtractHairMesh(RE::BSGeometry* a_geometry, HairMeshData& o_mesh, std::string& o_error)
@@ -322,9 +426,10 @@ namespace Strands
 		return ok ? ReadbackStatus::Done : ReadbackStatus::Failed;
 	}
 
-	bool DecodeCoverage(const CoverageReadback& a_readback, CoverageMask& o_mask, std::string& o_error)
+	bool DecodeCoverage(const CoverageReadback& a_readback, CoverageMask& o_mask, StrandColourImage& o_colour, std::string& o_error)
 	{
 		o_mask = {};
+		o_colour = {};
 		if (a_readback.bytes.empty()) {
 			o_error = "no texture data";
 			return false;
@@ -357,6 +462,9 @@ namespace Strands
 			for (uint32_t x = 0; x < o_mask.width; ++x)
 				o_mask.alpha[static_cast<size_t>(y) * o_mask.width + x] = row[x * 4 + 3];
 		}
+		// The colour bytes are as stored (the format was only relabelled linear): the strand
+		// texture takes the source's colour space so it samples the same.
+		BuildStrandColour(*decoded, DirectX::IsSRGB(a_readback.format), o_colour);
 		return true;
 	}
 }

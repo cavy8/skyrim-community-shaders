@@ -198,6 +198,36 @@ namespace Strands
 			return globals::state->frameCount;
 		}
 
+		// The strands' colour texture, mips included; null if it cannot be created.
+		winrt::com_ptr<ID3D11ShaderResourceView> CreateColourTexture(const StrandColourImage& a_image, uint64_t& o_bytes)
+		{
+			o_bytes = 0;
+			D3D11_TEXTURE2D_DESC desc{};
+			desc.Width = a_image.width;
+			desc.Height = a_image.height;
+			desc.MipLevels = static_cast<UINT>(a_image.mips.size());
+			desc.ArraySize = 1;
+			desc.Format = a_image.srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+			desc.SampleDesc.Count = 1;
+			desc.Usage = D3D11_USAGE_IMMUTABLE;
+			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			std::vector<D3D11_SUBRESOURCE_DATA> init(a_image.mips.size());
+			for (size_t k = 0; k < init.size(); ++k) {
+				init[k] = { a_image.mips[k].data(), std::max(a_image.width >> k, 1u) * 4u, 0 };
+				o_bytes += a_image.mips[k].size() * sizeof(uint32_t);
+			}
+			winrt::com_ptr<ID3D11Texture2D> texture;
+			winrt::com_ptr<ID3D11ShaderResourceView> srv;
+			if (FAILED(globals::d3d::device->CreateTexture2D(&desc, init.data(), texture.put())) ||
+				FAILED(globals::d3d::device->CreateShaderResourceView(texture.get(), nullptr, srv.put()))) {
+				o_bytes = 0;
+				return nullptr;
+			}
+			Util::SetResourceName(texture.get(), "HairStrands::StrandColour");
+			Util::SetResourceName(srv.get(), "HairStrands::StrandColour SRV");
+			return srv;
+		}
+
 		// a_node, if it is the skeleton node of that name.
 		RE::NiAVObject* IfNamed(RE::NiAVObject* a_node, const char* a_name)
 		{
@@ -220,8 +250,9 @@ namespace Strands
 		uint32_t serial = 0;  // tells a replaced asset from its successor
 		State state = State::Queued;
 		std::string error;
-		HairMeshData mesh;          // released once the job starts
-		CoverageReadback readback;  // decoded into mesh.coverage by the job
+		HairMeshData mesh;              // released once the job starts
+		CoverageReadback readback;      // decoded into mesh.coverage and colourImage by the job
+		StrandColourImage colourImage;  // taken when the job finishes
 		StrandStyle style;
 		std::future<std::unique_ptr<StrandAssetData>> job;
 
@@ -235,9 +266,11 @@ namespace Strands
 		float headRadius = 0.0f;
 		std::unique_ptr<Buffer> restPoints;
 		std::unique_ptr<Buffer> strandInfo;
+		winrt::com_ptr<ID3D11ShaderResourceView> colour;  // the strands' colour texture; null: the card texture
+		uint64_t colourBytes = 0;
 		uint32_t lastUsedFrame = 0;
 
-		uint64_t GpuBytes() const { return static_cast<uint64_t>(strandCount) * (pointsPerStrand * sizeof(RestPoint) + sizeof(StrandInfo)); }
+		uint64_t GpuBytes() const { return static_cast<uint64_t>(strandCount) * (pointsPerStrand * sizeof(RestPoint) + sizeof(StrandInfo)) + colourBytes; }
 	};
 
 	struct StrandRenderer::Instance
@@ -473,6 +506,8 @@ namespace Strands
 				continue;
 			}
 			auto data = asset->job.get();
+			const StrandColourImage colourImage = std::move(asset->colourImage);
+			asset->colourImage = {};
 			if (!data) {
 				asset->state = Asset::State::Failed;
 				continue;
@@ -492,9 +527,12 @@ namespace Strands
 				asset->restPoints->CreateSRV(BufferSRVDesc(static_cast<uint32_t>(data->points.size())));
 				asset->strandInfo = std::make_unique<Buffer>(StructuredDesc(sizeof(StrandInfo), asset->strandCount, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0), &strandsInit, "HairStrands::StrandInfo");
 				asset->strandInfo->CreateSRV(BufferSRVDesc(asset->strandCount));
+				if (!colourImage.Empty())
+					asset->colour = CreateColourTexture(colourImage, asset->colourBytes);
 				asset->state = Asset::State::Ready;
-				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}", asset->key, asset->strandCount,
-					asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "root", asset->guideCount, asset->headRadius);
+				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}", asset->key, asset->strandCount,
+					asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "root", asset->guideCount, asset->headRadius,
+					asset->colour ? std::format("{}x{} strand colour", colourImage.width, colourImage.height) : std::string("card colour"));
 			} catch (const std::exception& e) {
 				asset->state = Asset::State::Failed;
 				asset->error = "GPU upload failed";
@@ -515,7 +553,7 @@ namespace Strands
 				try {
 					if (!asset->readback.bytes.empty()) {
 						std::string coverageError;
-						if (!DecodeCoverage(asset->readback, asset->mesh.coverage, coverageError))
+						if (!DecodeCoverage(asset->readback, asset->mesh.coverage, asset->colourImage, coverageError))
 							logger::warn("[HairStrands] {}: {}; strands fill the whole cards", asset->key, coverageError);
 						asset->readback = {};
 					}
@@ -1240,6 +1278,12 @@ namespace Strands
 		context->VSGetConstantBuffers(7, 1, &oldCB);
 		ID3D11ShaderResourceView* oldSRVs[3]{};
 		context->VSGetShaderResources(0, 3, oldSRVs);
+		// The lighting draw reads its colour from t0: the strands' gap-filled colour texture
+		// in place of the card texture.
+		ID3D11ShaderResourceView* colour = a_depthOnly ? nullptr : asset.colour.get();
+		ID3D11ShaderResourceView* oldColour = nullptr;
+		if (colour)
+			context->PSGetShaderResources(0, 1, &oldColour);
 		winrt::com_ptr<ID3D11RasterizerState> oldRS;
 		context->RSGetState(oldRS.put());
 		winrt::com_ptr<ID3D11DepthStencilState> oldDepthState;
@@ -1258,6 +1302,8 @@ namespace Strands
 		context->PSSetShader(a_depthOnly ? nullptr : a_variant.ps.get(), nullptr, 0);
 		context->VSSetConstantBuffers(7, 1, &drawBuffer);
 		context->VSSetShaderResources(0, 3, srvs);
+		if (colour)
+			context->PSSetShaderResources(0, 1, &colour);
 		context->RSSetState(GetNoCullState(oldRS.get()));
 		context->OMSetDepthStencilState(GetStrandDepthState(oldDepthState.get(), reversedDepth), stencilRef);
 		if (a_viewport)
@@ -1269,6 +1315,11 @@ namespace Strands
 		context->OMSetDepthStencilState(oldDepthState.get(), stencilRef);
 		context->RSSetState(oldRS.get());
 		context->VSSetShaderResources(0, 3, oldSRVs);
+		if (colour) {
+			context->PSSetShaderResources(0, 1, &oldColour);
+			if (oldColour)
+				oldColour->Release();
+		}
 		context->VSSetConstantBuffers(7, 1, &oldCB);
 		context->PSSetShader(oldPS.get(), nullptr, 0);
 		context->VSSetShader(oldVS.get(), nullptr, 0);

@@ -41,6 +41,22 @@ namespace Strands
 	};
 
 	/**
+	 * The hair texture's colour for strands, at the coverage mask's size. Strands have no
+	 * alpha, and a strand's texture coordinates cross transparent texels (gaps between painted
+	 * locks, tapered tips), whose colour is whatever the artist left there: black in many hair
+	 * textures. Here every texel is filled from the painted hair around it, weighted by alpha.
+	 */
+	struct StrandColourImage
+	{
+		uint32_t width = 0;
+		uint32_t height = 0;
+		bool srgb = false;                        // in the source texture's colour space
+		std::vector<std::vector<uint32_t>> mips;  // RGBA8 (alpha 255), width x height down to 1 x 1
+
+		bool Empty() const { return mips.empty(); }
+	};
+
+	/**
 	 * One mip of the hair's diffuse texture on its way to the CPU: copied to a staging
 	 * texture on the render thread, mapped once the GPU is done with it, decoded on a worker.
 	 */
@@ -101,6 +117,10 @@ namespace Strands
 	bool BeginCoverageReadback(const RE::BSRenderPass* a_pass, CoverageReadback& o_readback, std::string& o_error);
 	/** @brief Maps the staging copy once the GPU has written it. Render thread only. */
 	ReadbackStatus PollCoverageReadback(CoverageReadback& io_readback);
-	/** @brief Decodes a finished readback (any format, block-compressed included) into alpha. Any thread. */
-	bool DecodeCoverage(const CoverageReadback& a_readback, CoverageMask& o_mask, std::string& o_error);
+	/**
+	 * @brief Decodes a finished readback (any format, block-compressed included). Any thread.
+	 * @param o_mask   Receives the alpha.
+	 * @param o_colour Receives the colour with transparent texels filled; left empty if nothing is painted.
+	 */
+	bool DecodeCoverage(const CoverageReadback& a_readback, CoverageMask& o_mask, StrandColourImage& o_colour, std::string& o_error);
 }

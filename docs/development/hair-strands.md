@@ -81,7 +81,7 @@ other strand follows. It works on SMP and non-SMP hair alike, and SMP bone motio
 guides it. See [Physics](#physics-strandsimcshlsl). The solver was checked against a Python
 port, not yet in game.
 
-The first `0-2-0` run (Vanilla Hair Remake SMP with Sassy SnW's retexture) showed this fault:
+The first `0-2-0` run (Vanilla Hair Remake SMP with Sassy SnW's retexture) showed two faults:
 
 -   Tips flew about unless stiffness was 1 (fixed in `0-2-1`). Followers turned their offset
     from the guide by the guide's bend, so the offset acted as a lever. That hair's strands
@@ -90,6 +90,12 @@ The first `0-2-0` run (Vanilla Hair Remake SMP with Sassy SnW's retexture) showe
     target as the guide and stretched 35%. A follower twice the guide's length strayed 12×
     as far. Followers now take the guide's displacement from its target. See
     [Physics](#physics-strandsimcshlsl).
+-   Black spots at strand tips and dashes inside the hair (fixed in `0-2-2`). Strands took
+    the texture colour without its alpha, and 86% of that retexture's transparent texels
+    are black. Of the other textures checked, KS Hairdos' fill them with hair colour, and an
+    Apachii one is dark there too. Tips taper into transparency, and strands cross
+    transparent gaps between painted locks. Strands now have their own colour texture with
+    those texels filled. See [Why it is built this way](#why-it-is-built-this-way).
 
 This is build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
@@ -103,9 +109,9 @@ This is build-verified, and the generator fixes are checked on real meshes (see
 | Resolve style (file → preset → editor override) | `StrandRenderer::ResolveStyle` | render | first draw, and after style files or settings change |
 | Copy mesh (bind pose, weights, UVs) | `MeshExtract.cpp` | render | once per hair and style |
 | Copy one mip of the diffuse texture to a staging texture, map it once the GPU is done | `BeginCoverageReadback`, `PollCoverageReadback` | render | once per hair and style, a frame or two before generation |
-| Decode the texture's alpha (any format, BC included, via DirectXTex) | `DecodeCoverage` | worker | start of the generation job |
+| Decode the texture's alpha (any format, BC included, via DirectXTex) and fill its colour for strands | `DecodeCoverage` | worker | start of the generation job |
 | Generate strands, pick guide strands, fit the head collider | `StrandGenerator.cpp` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
-| Upload asset | `StrandRenderer::BeginFrame` | render | when the job finishes |
+| Upload asset (strands, colour texture) | `StrandRenderer::BeginFrame` | render | when the job finishes |
 | LOD, bone palette, colliders, simulation and skinning compute | `PrepareStrands` (`UpdateLod`, `Skin`, `PrepareSimulation`) | render, in `SetupGeometry` | first pass of the hair each rendered frame (depth prepass or lighting) |
 | Draw strand depth | `StrandRenderer::Draw` (depth only) | render, in the Utility `RestoreGeometry` | every Utility draw of the hair that writes depth (the depth prepass) |
 | Draw ribbons | `StrandRenderer::Draw` | render, in `RestoreGeometry` | every main-view lighting draw of the hair |
@@ -124,8 +130,19 @@ Everything lives in `src/Features/HairStrands.{h,cpp}` (feature, settings, UI) a
     `ShaderCache::GetDefinesString(shader, modifiedPixelDescriptor)`), so its pixel shader is
     `Lighting.hlsl`'s. Deferred output, motion vectors, Hair Specular, Hair Backlighting and
     Light Limit Fix all apply to strands with no per-feature work. Only VS/PS, input layout,
-    topology, VS `b7`/`t0-t2` and the rasterizer state are swapped, and all of them are put
-    back exactly.
+    topology, VS `b7`/`t0-t2`, PS `t0` (lighting draws) and the rasterizer state are swapped,
+    and all of them are put back exactly.
+-   **Strands have their own colour texture.** A strand has no alpha, but its texture
+    coordinates cross transparent texels: gaps between painted locks, and the tapered tips.
+    Their colour is whatever the artist left there, black in many hair textures. The
+    generation job builds a copy of the read-back mip (at most 512 texels across) in which
+    every texel is filled from the painted hair around it. It weights the colour by alpha
+    (smoothstep 0.1–0.6) and fills by push-pull: the weighted colour is averaged down a
+    pyramid, then each level's missing weight is filled from the level above. Painted texels
+    keep their colour exactly, and each filled level is that mip. The texture keeps the
+    source's colour space, and the lighting draw binds it at PS `t0` in place of the card
+    texture. On Sassy SnW's `hairlong.dds`, transparent texels went from luminance 0.09 to
+    0.41 (painted hair: 0.39). Without a readback (no alpha), strands use the card texture.
 -   **Skin from the bone palette, not the card vertices.** Each strand point gets the
     barycentric blend of its triangle's bone weights (top four, unorm8). A compute shader
     applies `boneWorld × skinToBone`, the same transform the game skins the cards with.
@@ -398,8 +415,9 @@ strands most: raise `density` or the root width for it.
 Both are in `Lighting.hlsl`, both are additive, and both are gated on `HAIR_STRANDS`. Only
 `StrandLighting.hlsl` defines that, so card permutations compile unchanged.
 
-1. After the non-landscape base colour and normal sample: strands take the card colour
-   (mip bias +1) with alpha 1 and a flat normal.
+1. After the non-landscape base colour and normal sample: strands take the colour at `t0`
+   (their own colour texture, see above; `HAIR_STRANDS_COLOR_MIP_BIAS` is 0) with alpha 1
+   and a flat normal.
 2. After the double-sided TBN flip: strands restore the unflipped TBN, because a
    camera-facing ribbon has no back side.
 
@@ -482,6 +500,8 @@ Check these first in game:
 -   Physics (`0-2-0`): the tuning is from the NumPy port, not seen in game. Check first that
     still hair sits exactly where it did without physics (a visible offset means the
     follow pass is off), then tune the presets.
+-   The strand colour texture binds at PS `t0`, which is `TexColorSampler` in every Lighting
+    permutation hair uses. Strands in a flat colour or another texture would point here.
 -   The hair's skin instance lists `NPC Head [Head]` (non-SMP and most SMP hair) and that
     bone's parents are `NPC Neck [Neck]`, `NPC Spine2 [Spn2]` and `NPC Spine1 [Spn1]`, with
     the clavicles and arms under spine 2. Without them there is only the head sphere.
