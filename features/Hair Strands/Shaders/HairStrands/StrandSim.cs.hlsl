@@ -13,6 +13,12 @@
 // Stiffness is authored per 1/60 s. Steps shorter than that (high frame rates) scale it as a
 // compliance (XPBD), and give back the damping the 60 Hz projections carry on the motion
 // relative to the target, so the hair moves the same at any frame rate.
+//
+// Velocity is the step's change in position and nothing else. Dynamic follow-the-leader
+// (Mueller et al. 2012) also takes each length correction back out of the velocity of the
+// point before it; under a steady load (tilted head, wind) those corrections never stop, and
+// with the shape and bend constraints that velocity kept the tips shaking at 5-8 Hz. Swings
+// are damped instead by RelativeDamping, which only ever takes energy out.
 
 #include "HairStrands/Skinning.hlsli"
 
@@ -23,9 +29,9 @@ RWStructuredBuffer<HairStrands::GuidePoint> Guides : register(u0);
 
 namespace HairStrandsSim
 {
-	// Share of each length correction taken back out of the velocity of the point before it
-	// (dynamic follow-the-leader, Mueller et al. 2012). Without it, hair looks heavy at the tips.
-	static const float LengthDamping = 0.9;
+	// Velocity relative to the target lost per 1/60 s: swings about the styled shape die down
+	// in about a second, while the hair still moves freely with the head.
+	static const float RelativeDamping = 0.2;
 	static const float MaxSpeed = 3000.0;  // units/s
 	// A point is never pushed deeper than its target already lies inside a collider, and never
 	// left deeper than this fraction of the radius: the styled shape itself never collides.
@@ -159,6 +165,7 @@ namespace HairStrandsSim
 		const float total = 1.0 - (1.0 - shape) * (1.0 - BendStiffness);
 		const float totalStep = 1.0 - (1.0 - shapeStep) * (1.0 - HairStrandsSim::StepStiffness(BendStiffness, StepTime));
 		relativeKeep[i] = total < 1.0 ? min(pow(saturate(1.0 - total), StepTime * 60.0) / max(1.0 - totalStep, 1e-6), 1.0) : 0.0;
+		relativeKeep[i] *= pow(1.0 - HairStrandsSim::RelativeDamping, StepTime * 60.0);
 	}
 
 	const bool dynamics = Steps > 0 && StepTime > 0.0 && !reset;
@@ -186,7 +193,6 @@ namespace HairStrandsSim
 				wind -= along * dot(wind, along);
 				start[i] = x[i];
 				x[i] += v * h + (Gravity + wind) * (h * h);
-				velocity[i] = 0;  // now: the length correction handed down from the next point
 			}
 			x[0] = lerp(startTarget[0], target[0], toFraction);
 
@@ -217,15 +223,13 @@ namespace HairStrandsSim
 					float3 fixedPoint = x[i - 1] + direction * length(restSegment);
 					if (collide)
 						fixedPoint = HairStrandsSim::Collide(fixedPoint, stepTarget);
-					velocity[i - 1] += fixedPoint - x[i];
 					x[i] = fixedPoint;
 				}
 			}
 
-			// velocity[i] now holds the correction handed down from point i + 1.
 			[loop] for (i = 1; i < n; ++i)
 			{
-				float3 v = (x[i] - start[i] - HairStrandsSim::LengthDamping * velocity[i]) / h;
+				float3 v = (x[i] - start[i]) / h;
 				const float speed = length(v);
 				if (speed > HairStrandsSim::MaxSpeed)
 					v *= HairStrandsSim::MaxSpeed / speed;

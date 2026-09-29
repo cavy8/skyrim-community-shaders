@@ -97,6 +97,19 @@ The first `0-2-0` run (Vanilla Hair Remake SMP with Sassy SnW's retexture) showe
     transparent gaps between painted locks. Strands now have their own colour texture with
     those texels filled. See [Why it is built this way](#why-it-is-built-this-way).
 
+The second run (`0-2-2`) showed:
+
+-   Tips still twitched, on every hairstyle, with SMP or without (fixed in `0-2-3`). Dynamic
+    follow-the-leader damping fed each length correction back into the velocity of the
+    point before it. Under a steady load (any head tilt, or wind) those corrections never
+    stop. Together with the local shape constraint, which turns each segment by its
+    parent's current direction, that made the strand flutter. In the NumPy port, with the
+    head held still and tilted, 69 of 224 cases (4 lock shapes, the 5 presets and 2 slider
+    extremes, 8 tilts) never came to rest and moved up to 2 units a frame. A 3.8-unit lock
+    shook at a 5° tilt. Without that damping none did, at 30, 60, 144 and 240 fps. Velocity
+    relative to the target now loses 0.2 per 1/60 s instead. See
+    [Physics](#physics-strandsimcshlsl).
+
 This is build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -316,18 +329,21 @@ that amplified every bend of a short guide (see the `0-2-1` notes at the top).
     `rootStiffness` → `tipStiffness` along the strand), a local shape constraint (each
     segment keeps its rest direction relative to its parent segment, turned by the
     parent's shortest-arc rotation; the first segment keeps its rest direction), and
-    follow-the-leader length constraints with collision. Velocities come from the move
-    minus 0.9 of each length correction handed down from the next point (dynamic FTL,
-    Müller et al. 2012), clamped at 3,000 units/s.
+    follow-the-leader length constraints with collision. Velocities are the step's move,
+    clamped at 3,000 units/s. Dynamic FTL damping (Müller et al. 2012) is left out: under a
+    steady load it made strands flutter (see the `0-2-3` notes at the top).
 -   **Same motion at any frame rate.** Stiffness and damping are authored per 1/60 s. A
     shorter step scales stiffness as a compliance (XPBD: `h² / (h² + α)`, with α fitted so
     the authored value holds at 1/60 s). Position projections also damp the motion relative
     to the target by `1 − s` per step, which shorter steps lose; that is given back on the
-    velocity relative to the target. Air drag (`damping`) applies to world velocity. In the
-    NumPy port (`tools/hair_strands_sim_check.py`), a 20-unit lock 0.3 s into a sprint
-    start lagged 8.5, 5.0 and 3.5 units at 30, 60 and 144 fps with plain per-frame scaling;
-    with this scheme it lags 5.4, 5.4, 5.6 and 5.4 at 30, 60, 144 and 240 fps, and settles
-    within 3–4 s at every rate. Shorter steps with the plain scaling kept oscillating.
+    velocity relative to the target. Air drag (`damping`) applies to world velocity.
+    Velocity relative to the target also loses 0.2 per 1/60 s (`RelativeDamping`), which
+    settles swings and only ever takes energy out. In the NumPy port
+    (`tools/hair_strands_sim_check.py`), a 20-unit lock 0.3 s into a sprint start lagged
+    8.5, 5.0 and 3.5 units at 30, 60 and 144 fps with plain per-frame scaling; with this
+    scheme it lags 4.8, 4.8, 4.3 and 4.7 at 30, 60, 144 and 240 fps, and settles within
+    3 s at every rate. A fast 70° turn peaks 1.55–1.65 units off target and settles in
+    1.1–1.2 s at 60 to 240 fps. Shorter steps with the plain scaling kept oscillating.
 -   **Gravity is preloaded.** The styled shape is how hair hangs with the head upright, so
     only the change as the head tilts acts: `g × (down − R_head × down)`, with `g` = 687
     units/s² × `gravity`. Without that, hair would sag below its style at rest. The
@@ -441,7 +457,8 @@ permutation bit.
     a NumPy port of `StrandSim.cs.hlsl` on a hanging lock: still head, sprint start and
     stop, fast 70° turn, 60° bow and a shoulder capsule, at 30 to 240 fps. It fails if the
     lock leaves its target while still, stretches, lags differently across frame rates or
-    does not settle. It also runs followers beside and longer than a 3.8-unit guide
+    does not settle. A 3.8-unit scalp lock and the hanging lock, held still on a tilted
+    head, must come to rest (under 0.005 units a frame after 4 s). It also runs followers beside and longer than a 3.8-unit guide
     through idle sway and snap turns, and fails if one strays further than its guide or
     changes length by more than 10%. Port solver and follow changes to it first (a few
     minutes to run), then tune.
@@ -499,7 +516,9 @@ Check these first in game:
     skinned motion vectors. A mismatch would show as ghosting on moving hair with TAA or DLSS.
 -   Physics (`0-2-0`): the tuning is from the NumPy port, not seen in game. Check first that
     still hair sits exactly where it did without physics (a visible offset means the
-    follow pass is off), then tune the presets.
+    follow pass is off), then tune the presets. Since `0-2-3` a fast turn swings about 40%
+    less than in `0-2-0` (peak 1.55 units against 2.58). More inertia or less tip stiffness
+    gives more swing.
 -   The strand colour texture binds at PS `t0`, which is `TexColorSampler` in every Lighting
     permutation hair uses. Strands in a flat colour or another texture would point here.
 -   The hair's skin instance lists `NPC Head [Head]` (non-SMP and most SMP hair) and that

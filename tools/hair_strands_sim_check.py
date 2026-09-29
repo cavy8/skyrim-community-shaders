@@ -3,8 +3,9 @@
 One 20-unit lock hangs from a head that stays still, sprints and stops, turns fast, bows,
 and turns into a shoulder capsule, at 30, 60, 144 and 240 fps. The solver must stay exactly
 on its target while still, never stretch, lag the same at every frame rate, and settle.
-Then followers beside and longer than a short guide, through idle sway and snap turns, must
-stray no further than their guide and keep their length.
+Locks held still under a load (a tilted head, which gravity pulls like a steady wind) must
+come to rest rather than shake. Then followers beside and longer than a short guide, through
+idle sway and snap turns, must stray no further than their guide and keep their length.
 
 Keep the port in step with features/Hair Strands/Shaders/HairStrands/StrandSim.cs.hlsl,
 StrandSkin.cs.hlsl and StrandRenderer::PrepareSimulation; pass --verbose for the time series.
@@ -22,7 +23,7 @@ ITERATIONS = 3  # kSimIterations
 STEP = 1.0 / 60.0  # kSimStep
 MAX_FRAME = 1.0 / 30.0  # kMaxFrameTime
 GRAVITY = 687.0  # kGravity
-LENGTH_DAMPING = 0.9
+RELATIVE_DAMPING = 0.2
 MAX_SPEED = 3000.0
 MIN_COLLIDER_DEPTH = 0.5
 TELEPORT = 40.0
@@ -117,6 +118,7 @@ class Guide:
             total = 1.0 - (1.0 - shape) * (1.0 - style["bend"])
             total_step = 1.0 - (1.0 - shape_step) * (1.0 - step_stiffness(style["bend"], h))
             relative_keep[i] = min((1.0 - total) ** (h * 60.0) / max(1.0 - total_step, 1e-6), 1.0) if total < 1.0 else 0.0
+            relative_keep[i] *= (1.0 - RELATIVE_DAMPING) ** (h * 60.0)
 
         down = -head[:, 2] / np.linalg.norm(head[:, 2])
         gravity = (np.array([0, 0, -1.0]) - down) * GRAVITY * style["gravity"]
@@ -131,7 +133,6 @@ class Guide:
                 vi = (target_velocity + (v[i] - target_velocity) * relative_keep[i]) * keep
                 x[i] = x[i] + vi * h + gravity * h * h
             x[0] = step_target[0]
-            correction = np.zeros_like(x)
             for _ in range(ITERATIONS):
                 for i in range(1, n):
                     x[i] += (step_target[i] - x[i]) * stiffness[i]
@@ -148,21 +149,21 @@ class Guide:
                     fixed = x[i - 1] + normalize(x[i] - x[i - 1], normalize(segment, np.array([0, 0, -1.0]))) * np.linalg.norm(segment)
                     if colliders:
                         fixed = collide(fixed, step_target[i], colliders)
-                    correction[i - 1] += fixed - x[i]
                     x[i] = fixed
             for i in range(1, n):
-                vi = (x[i] - start[i] - LENGTH_DAMPING * correction[i]) / h
+                vi = (x[i] - start[i]) / h
                 speed = np.linalg.norm(vi)
                 v[i] = vi * (MAX_SPEED / speed) if speed > MAX_SPEED else vi
             v[0] = 0
         self.x, self.v, self.target = x, v, target
 
 
-def head_transform(translation=(0, 0, 0), pitch=0.0, yaw=0.0, pivot=None):
-    p, y = math.radians(pitch), math.radians(yaw)
+def head_transform(translation=(0, 0, 0), pitch=0.0, yaw=0.0, pivot=None, roll=0.0):
+    p, y, r = math.radians(pitch), math.radians(yaw), math.radians(roll)
     rx = np.array([[1, 0, 0], [0, math.cos(p), -math.sin(p)], [0, math.sin(p), math.cos(p)]])
+    ry = np.array([[math.cos(r), 0, math.sin(r)], [0, 1, 0], [-math.sin(r), 0, math.cos(r)]])
     rz = np.array([[math.cos(y), -math.sin(y), 0], [math.sin(y), math.cos(y), 0], [0, 0, 1]])
-    r = rz @ rx
+    r = rz @ ry @ rx
     t = np.array(translation, dtype=float)
     if pivot is not None:
         t = t + np.asarray(pivot) - r @ np.asarray(pivot)
@@ -226,6 +227,27 @@ def idle(s):
 def snap(s):
     """A third-person character snapping to the camera's heading: 90 degrees in 0.05 s, every second."""
     return head_transform(yaw=90.0 * (int(s) + min((s - int(s)) / 0.05, 1.0)))
+
+
+def held(rest, style, pitch, roll, fps=60, seconds=5.0):
+    """The worst frame-to-frame move of any point over the last second, the head held still and tilted."""
+    head = head_transform(pitch=pitch, roll=roll, pivot=(0, 0, 110.0))
+    guide = Guide(rest)
+    guide.frame(head, head, 1.0 / fps, style)
+    worst, last = 0.0, None
+    for k in range(int(seconds * fps)):
+        guide.frame(head, head, 1.0 / fps, style)
+        if k >= int((seconds - 1.0) * fps):
+            if last is not None:
+                worst = max(worst, np.linalg.norm(guide.x - last, axis=1).max())
+            last = guide.x.copy()
+    return worst
+
+
+def scalp_lock(points=14, length=3.8):
+    """A short lock lying along the back of the skull, like vanilla hair cards."""
+    angle = math.radians(40.0) + length / 9.0 * np.linspace(0.0, 1.0, points)
+    return np.c_[np.zeros(points), -9.3 * np.sin(angle), 110.0 + 9.3 * np.cos(angle)]
 
 
 def lock(length, offset, points=14):
@@ -299,6 +321,16 @@ def main():
     log = run(STRAIGHT, 60, turn, 3.0, shoulder)
     closest = min(min(np.linalg.norm(p - closest_on_segment(p, shoulder[0][0], shoulder[0][1])) for p in r[3]) for r in log)
     check("collision keeps points out of the capsule core", closest >= 3.5 * MIN_COLLIDER_DEPTH - 1e-3, f"closest {closest:.2f} (floor {3.5 * MIN_COLLIDER_DEPTH:.2f})")
+
+    # Under a steady load the lock must come to rest. Dynamic follow-the-leader damping fed each
+    # length correction back into the velocity of the point before; with the shape and bend
+    # constraints that kept tips shaking up to 2 units a frame with the head held still.
+    t = np.linspace(0.0, 1.0, 20)
+    hanging = np.c_[np.zeros(20), -3.0 - 2.0 * np.sin(t * math.pi * 0.5), 120.0 - 20.0 * t]
+    for rest_name, rest in (("3.8-unit scalp lock", scalp_lock()), ("20-unit lock", hanging)):
+        for style_name, style in (("straight", STRAIGHT), ("locs", LOCS)):
+            worst = max(held(rest, style, pitch, roll) for pitch, roll in ((-20.0, 0.0), (-60.0, 0.0), (0.0, 70.0)))
+            check(f"{style_name} {rest_name} comes to rest on a tilted head", worst < 0.005, f"worst move {worst:.4f} per frame after 4 s")
 
     # Followers must not amplify their guide: turning the offset from the guide with the
     # guide's bend made a follower beside a 3.8-unit guide stray 12x as far and stretch 35%.
