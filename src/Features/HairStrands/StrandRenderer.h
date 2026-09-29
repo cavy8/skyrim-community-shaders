@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "StrandGenerator.h"
@@ -120,8 +121,8 @@ namespace Strands
 	 * assets (shared by every actor wearing the same hair and style), the per-actor skinned
 	 * buffers, the strand Lighting shader variants and the draw injection.
 	 *
-	 * Game objects are only ever read inside the Lighting shader's SetupGeometry and
-	 * RestoreGeometry for the pass being drawn, when they are guaranteed alive; everything
+	 * Game objects are only ever read inside the Lighting and Utility shaders' SetupGeometry
+	 * and RestoreGeometry for the pass being drawn, when they are guaranteed alive; everything
 	 * cached between frames is keyed by pointer but never dereferenced outside those calls.
 	 */
 	class StrandRenderer
@@ -138,8 +139,9 @@ namespace Strands
 		/** @brief Before the game's BSLightingShader::RestoreGeometry: draws the pass's strands. */
 		void OnRestoreGeometry(RE::BSRenderPass* a_pass);
 		/**
-		 * @brief After the game's BSUtilityShader::SetupGeometry: hides cards that strands replace
-		 * from the depth prepass too, so their depth does not outline the hair. Shadow maps keep them.
+		 * @brief After the game's BSUtilityShader::SetupGeometry: skins the strands and hides the
+		 * cards they replace; passes that write depth (the depth prepass) get the strands' depth,
+		 * so the shadow mask and other screen-space passes see the strands. Shadow maps keep the cards.
 		 */
 		void OnUtilitySetupGeometry(RE::BSRenderPass* a_pass);
 
@@ -174,11 +176,17 @@ namespace Strands
 		/** @brief The viewport the hidden cards would have used, for the strands drawn in their place. */
 		bool GetCardViewport(D3D11_VIEWPORT& o_viewport);
 		bool EnsureInstanceBuffers(Instance& a_instance);
+		/** @brief The strand shaders for a lighting permutation, compiling them on first request; null until ready. */
 		ShaderVariant* GetVariant(uint32_t a_pixelDescriptor);
+		/** @brief The strand shaders for a lighting permutation if already compiled, without requesting them. */
+		ShaderVariant* FindVariant(uint32_t a_pixelDescriptor);
 		bool EnsureSkinShader();
+		/** @brief LOD and skinning, once per rendered frame; true if the hair draws strands this frame. */
+		bool PrepareStrands(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin);
 		bool UpdateLod(Instance& a_instance, RE::BSGeometry* a_geometry);
 		bool Skin(Instance& a_instance, RE::NiSkinInstance* a_skin);
-		void Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport);
+		/** @brief Draws the strands with the bound pass state; a_depthOnly draws depth alone, and only if the pass writes depth. */
+		void Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport, bool a_depthOnly);
 		ID3D11RasterizerState* GetNoCullState(ID3D11RasterizerState* a_current);
 		/** @brief The pass's depth state with writes on and an equal test widened to less/greater-equal. */
 		ID3D11DepthStencilState* GetStrandDepthState(ID3D11DepthStencilState* a_current, bool a_reversedDepth);
@@ -211,9 +219,11 @@ namespace Strands
 		RE::BSRenderPass* currentPass = nullptr;
 		Instance* currentInstance = nullptr;
 		ShaderVariant* currentVariant = nullptr;
+		bool currentDepthOnly = false;  // a Utility pass: the strands' depth, if it writes depth
 		bool cardsHidden = false;
 		D3D11_VIEWPORT savedViewport{};
 		bool loggedViewportMiss = false;
+		std::unordered_set<uint32_t> loggedDepthPasses;  // Utility descriptors that drew strand depth
 
 		RenderStats stats;
 		uint64_t strandsThisFrame = 0;

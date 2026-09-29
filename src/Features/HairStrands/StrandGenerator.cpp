@@ -20,6 +20,9 @@ namespace Strands
 		constexpr float kRootBudgetShare = 0.85f;      // of kMaxStrands, the rest left for fill strands
 		constexpr float kCoverageGap = 0.5f;           // a transparent stretch longer than this ends a strand
 		constexpr uint32_t kCoverageProbeGrid = 4;     // barycentric grid probing a triangle for any hair
+		constexpr float kClumpAlignment = 0.5f;        // a strand joins its clump if its root runs within 60 degrees of the guide's
+		constexpr float kIslandAxisRatio = 1.5f;       // Auto: a UV island flows along U only when this much longer that way
+		constexpr float kIslandUVScale = 4096.0f;      // UVs closer than 1/4096 join one island
 
 		struct Triangle
 		{
@@ -28,8 +31,13 @@ namespace Strands
 			std::array<int32_t, 3> neighbor{ -1, -1, -1 };  // across edge i = (v[i], v[i+1])
 			float3 normal;
 			float3 flow;
+			float3 flowU;                // Auto: the U direction, taken where the hair runs along U
+			float unitsPerU = 0.0f;      // surface length of one unit of U, and of V
+			float unitsPerV = 0.0f;
 			float area = 0.0f;
+			uint64_t positionKey = 0;  // the same for a triangle and its back face
 			int32_t component = -1;
+			bool alongU = false;
 			bool valid = false;
 		};
 
@@ -102,6 +110,8 @@ namespace Strands
 			void BuildTriangles();
 			void BuildAdjacency();
 			void BuildComponents();
+			void DropBackFaces();
+			void ChooseFlowAxis();
 			float3 FindHeadCentre() const;
 			void OrientFlow();
 			void BuildVertexFields();
@@ -159,6 +169,8 @@ namespace Strands
 			uint32_t currentStamp = 0;
 			std::vector<uint32_t> crossed;
 			std::vector<TraceSample> samples;  // the last traced streamline
+			mutable std::vector<uint32_t> traceStamp;  // last trace that entered each triangle
+			mutable uint32_t traceId = 0;
 			uint32_t strandBudget = GeneratorLimits::kMaxStrands;
 		};
 
@@ -167,9 +179,9 @@ namespace Strands
 			const auto count = static_cast<uint32_t>(mesh.positions.size());
 			weldId.resize(count);
 			positionId.resize(count);
-			std::unordered_map<uint64_t, uint32_t> welded, positions;
-			welded.reserve(count);
+			std::unordered_map<uint64_t, uint32_t> positions;
 			positions.reserve(count);
+			std::vector<std::vector<uint32_t>> sides;  // per position, the first vertex of each side
 			uint32_t positionCount = 0;
 			for (uint32_t v = 0; v < count; ++v) {
 				const auto& p = mesh.positions[v];
@@ -181,19 +193,20 @@ namespace Strands
 				if (positionId[v] == positionCount)
 					++positionCount;
 
-				// Back faces of double-sided cards share positions but not normals; keep them
-				// apart so each side stays a manifold sheet. Bucket = dominant normal axis/sign.
-				uint64_t bucket = 0;
-				if (!mesh.normals.empty()) {
-					const auto& n = mesh.normals[v];
-					const float ax = std::abs(n.x), ay = std::abs(n.y), az = std::abs(n.z);
-					const int axis = ax >= ay && ax >= az ? 0 : (ay >= az ? 1 : 2);
-					bucket = static_cast<uint64_t>(axis * 2 + (Component(n, axis) < 0.0f ? 1 : 0));
+				// Back faces of double-sided cards share positions but face the other way; keep
+				// them apart so each side stays a manifold sheet. A vertex joins the side at its
+				// position that faces its way: comparing normals with each other, not with fixed
+				// axes, so a card that curves round the head stays one sheet.
+				if (positionId[v] >= sides.size())
+					sides.resize(positionId[v] + 1);
+				auto& positionSides = sides[positionId[v]];
+				const auto side = std::ranges::find_if(positionSides, [&](uint32_t a_first) { return mesh.normals.empty() || mesh.normals[a_first].Dot(mesh.normals[v]) > 0.0f; });
+				if (side != positionSides.end()) {
+					weldId[v] = weldId[*side];
+				} else {
+					weldId[v] = weldedCount++;
+					positionSides.push_back(v);
 				}
-				const uint64_t key = (static_cast<uint64_t>(positionId[v]) << 3) | bucket;
-				weldId[v] = welded.try_emplace(key, weldedCount).first->second;
-				if (weldId[v] == weldedCount)
-					++weldedCount;
 			}
 		}
 
@@ -218,12 +231,16 @@ namespace Strands
 				tri.normal = n / twiceArea;
 				tri.area = 0.5f * twiceArea;
 
-				// A back face duplicating a front face (same positions) is converted once.
-				std::array<uint32_t, 3> ids{ positionId[tri.v[0]], positionId[tri.v[1]], positionId[tri.v[2]] };
-				std::ranges::sort(ids);
-				const uint64_t key = (static_cast<uint64_t>(ids[0]) * 0x9E3779B97F4A7C15ull) ^ (static_cast<uint64_t>(ids[1]) * 0xC2B2AE3D27D4EB4Full) ^ (static_cast<uint64_t>(ids[2]) * 0x165667B19E3779F9ull);
-				if (!seen.insert(key).second)
+				// A back face is converted once. One on the front's own welded vertices is the same
+				// sheet: keep its first copy. One on vertices of its own is a sheet of its own,
+				// dropped a whole side at a time (DropBackFaces).
+				const auto tripleKey = [](std::array<uint32_t, 3> a_ids) {
+					std::ranges::sort(a_ids);
+					return (static_cast<uint64_t>(a_ids[0]) * 0x9E3779B97F4A7C15ull) ^ (static_cast<uint64_t>(a_ids[1]) * 0xC2B2AE3D27D4EB4Full) ^ (static_cast<uint64_t>(a_ids[2]) * 0x165667B19E3779F9ull);
+				};
+				if (!seen.insert(tripleKey(tri.w)).second)
 					continue;
+				tri.positionKey = tripleKey({ positionId[tri.v[0]], positionId[tri.v[1]], positionId[tri.v[2]] });
 
 				const auto& ua = mesh.uvs[tri.v[0]];
 				const auto& ub = mesh.uvs[tri.v[1]];
@@ -260,7 +277,77 @@ namespace Strands
 				if (length < 1e-6f)
 					continue;
 				tri.flow = flow / length;
+				tri.unitsPerU = dPdu.Length();
+				tri.unitsPerV = dPdv.Length();
+				tri.flowU = tri.unitsPerU > 1e-6f ? dPdu / tri.unitsPerU : tri.flow;
 				tri.valid = true;
+			}
+		}
+
+		void Generator::ChooseFlowAxis()
+		{
+			if (style.flowAxis != FlowAxis::Auto)
+				return;
+
+			// Atlases lay most strips of hair along V, but not all: vanilla's long strip runs along
+			// U. Each UV island is one strip, and follows whichever axis it is clearly longer along
+			// on the surface. Vertices sharing a position and a UV are one island vertex.
+			const auto count = static_cast<uint32_t>(mesh.positions.size());
+			std::vector<uint32_t> parent(count);
+			std::iota(parent.begin(), parent.end(), 0u);
+			const auto find = [&](uint32_t a_x) {
+				while (parent[a_x] != a_x)
+					a_x = parent[a_x] = parent[parent[a_x]];
+				return a_x;
+			};
+			const auto unite = [&](uint32_t a_a, uint32_t a_b) { parent[find(a_a)] = find(a_b); };
+			std::unordered_map<uint64_t, uint32_t> firstVertex;
+			firstVertex.reserve(count);
+			for (uint32_t v = 0; v < count; ++v) {
+				const auto qu = static_cast<uint64_t>(std::lround(mesh.uvs[v].x * kIslandUVScale)) & 0xFFFFF;
+				const auto qv = static_cast<uint64_t>(std::lround(mesh.uvs[v].y * kIslandUVScale)) & 0xFFFFF;
+				const auto [it, inserted] = firstVertex.try_emplace((static_cast<uint64_t>(positionId[v]) << 40) | (qu << 20) | qv, v);
+				if (!inserted)
+					unite(v, it->second);
+			}
+			for (const auto& tri : tris) {
+				if (tri.valid) {
+					unite(tri.v[0], tri.v[1]);
+					unite(tri.v[1], tri.v[2]);
+				}
+			}
+
+			struct Island
+			{
+				float area = 0.0f;
+				float unitsPerU = 0.0f;  // area weighted sums
+				float unitsPerV = 0.0f;
+				float uMin = FLT_MAX, uMax = -FLT_MAX, vMin = FLT_MAX, vMax = -FLT_MAX;
+			};
+			std::unordered_map<uint32_t, Island> islands;
+			for (const auto& tri : tris) {
+				if (!tri.valid)
+					continue;
+				auto& island = islands[find(tri.v[0])];
+				island.area += tri.area;
+				island.unitsPerU += tri.unitsPerU * tri.area;
+				island.unitsPerV += tri.unitsPerV * tri.area;
+				for (uint32_t v : tri.v) {
+					island.uMin = std::min(island.uMin, mesh.uvs[v].x);
+					island.uMax = std::max(island.uMax, mesh.uvs[v].x);
+					island.vMin = std::min(island.vMin, mesh.uvs[v].y);
+					island.vMax = std::max(island.vMax, mesh.uvs[v].y);
+				}
+			}
+			for (auto& tri : tris) {
+				if (!tri.valid)
+					continue;
+				const auto& island = islands[find(tri.v[0])];
+				const float lengthU = (island.uMax - island.uMin) * island.unitsPerU;
+				const float lengthV = (island.vMax - island.vMin) * island.unitsPerV;
+				tri.alongU = lengthU > kIslandAxisRatio * lengthV;
+				if (tri.alongU)
+					tri.flow = tri.flowU;
 			}
 		}
 
@@ -315,6 +402,40 @@ namespace Strands
 			}
 		}
 
+		void Generator::DropBackFaces()
+		{
+			// Double-sided cards list every triangle twice, facing both ways, and the weld keeps
+			// the two sides apart as separate sheets. Decide per sheet: drop a sheet that mostly
+			// repeats earlier kept ones, keep any other whole, overlap included. Dropping copy by
+			// copy leaves holes wherever a mesh interleaves the sides or a sheet shares a band with
+			// another's back, and every strand crossing a hole stops there.
+			int32_t componentCount = 0;
+			for (const auto& tri : tris)
+				componentCount = std::max(componentCount, tri.component + 1);
+			std::vector<std::vector<uint32_t>> members(componentCount);
+			for (uint32_t t = 0; t < tris.size(); ++t) {
+				if (tris[t].valid)
+					members[tris[t].component].push_back(t);
+			}
+
+			std::unordered_set<uint64_t> kept;
+			kept.reserve(tris.size());
+			for (const auto& sheet : members) {
+				float area = 0.0f, repeated = 0.0f;
+				for (uint32_t t : sheet) {
+					area += tris[t].area;
+					repeated += kept.contains(tris[t].positionKey) ? tris[t].area : 0.0f;
+				}
+				const bool dropSheet = repeated > 0.5f * area;
+				for (uint32_t t : sheet) {
+					if (dropSheet)
+						tris[t].valid = false;
+					else
+						kept.insert(tris[t].positionKey);
+				}
+			}
+		}
+
 		float3 Generator::FindHeadCentre() const
 		{
 			for (size_t b = 0; b < mesh.boneNames.size(); ++b) {
@@ -339,18 +460,20 @@ namespace Strands
 				return;
 
 			// Hair flows away from the head and, on balance, downwards: orient each connected
-			// piece so its flow agrees with both, weighted by area.
-			std::unordered_map<int32_t, float> score;
+			// piece so its flow agrees with both, weighted by area. Strips along U and along V
+			// are laid out independently, so each axis within a piece is oriented on its own.
+			const auto group = [](const Triangle& a_tri) { return static_cast<int64_t>(a_tri.component) * 2 + (a_tri.alongU ? 1 : 0); };
+			std::unordered_map<int64_t, float> score;
 			for (const auto& tri : tris) {
 				if (!tri.valid)
 					continue;
 				const float3 centre = (Position(tri.v[0]) + Position(tri.v[1]) + Position(tri.v[2])) / 3.0f;
 				float3 radial = centre - headCentre;
 				radial.Normalize();
-				score[tri.component] += tri.area * (tri.flow.Dot(radial) - 0.5f * tri.flow.z);
+				score[group(tri)] += tri.area * (tri.flow.Dot(radial) - 0.5f * tri.flow.z);
 			}
 			for (auto& tri : tris) {
-				if (tri.valid && score[tri.component] < 0.0f)
+				if (tri.valid && score[group(tri)] < 0.0f)
 					tri.flow = -tri.flow;
 			}
 		}
@@ -397,6 +520,9 @@ namespace Strands
 			float length = 0.0f;
 			float3 previousDir = float3::Zero;
 			uint32_t zeroCrossings = 0;
+			const uint32_t id = ++traceId;
+			uint32_t cameFrom = UINT32_MAX;
+			traceStamp[tri] = id;
 			a_onSample(pos, tri, 0.0f);
 
 			for (uint32_t stepIndex = 0; stepIndex < kMaxStepsPerStrand && length < a_maxLength; ++stepIndex) {
@@ -455,6 +581,14 @@ namespace Strands
 						stop = true;  // a boundary: the tip (or root, tracing backwards)
 						break;
 					}
+					// A streamline re-entering a triangle circles (a bun, a closed lock): it would
+					// wind round until the length cap.
+					if (traceStamp[next] == id && static_cast<uint32_t>(next) != cameFrom) {
+						stop = true;
+						break;
+					}
+					traceStamp[next] = id;
+					cameFrom = tri;
 					tri = static_cast<uint32_t>(next);
 				}
 				a_onSample(pos, tri, length);
@@ -808,34 +942,50 @@ namespace Strands
 			if (style.clumpStrength <= 0.0f && style.clumpTwist == 0.0f)
 				return;
 
+			// Each clump gathers round its longest strand, compared at equal distance from the
+			// root. An average of point k across members would not do: point k sits at a
+			// different distance on strands of different length, and that average (like any
+			// average of strands on a curved scalp) lies inside the head.
 			const float exponent = 0.35f + 0.65f * (1.0f - style.clumpStrength);
-			std::vector<float3> centre(points);
+			std::vector<float3> guide(points);
+			const auto rootDirection = [&](uint32_t a_strand) {
+				float3 d = o_asset.points[a_strand * points + 1].position - o_asset.points[a_strand * points].position;
+				d.Normalize();
+				return d;
+			};
 			for (const auto& members : clumps) {
 				if (members.size() < 2)
 					continue;
-				std::ranges::fill(centre, float3::Zero);
-				for (uint32_t s : members)
-					for (uint32_t k = 0; k < points; ++k)
-						centre[k] += o_asset.points[s * points + k].position;
-				for (auto& c : centre)
-					c /= static_cast<float>(members.size());
+				const uint32_t guideStrand = *std::ranges::max_element(members, [&](uint32_t a, uint32_t b) { return o_asset.strands[a].length < o_asset.strands[b].length; });
+				for (uint32_t k = 0; k < points; ++k)
+					guide[k] = o_asset.points[guideStrand * points + k].position;
+				const float guideLength = std::max(o_asset.strands[guideStrand].length, 1e-4f);
+				const float3 guideDirection = rootDirection(guideStrand);
+				const auto guideAt = [&](float a_distance, float3& o_axis) {
+					const float x = std::clamp(a_distance / guideLength, 0.0f, 1.0f) * (points - 1);
+					const uint32_t i = std::min(static_cast<uint32_t>(x), points - 2);
+					o_axis = guide[i + 1] - guide[i];
+					return float3::Lerp(guide[i], guide[i + 1], x - i);
+				};
 
 				for (uint32_t s : members) {
+					// Strands leaving the cell another way (a parting, a crown whorl) stay apart.
+					if (s == guideStrand || rootDirection(s).Dot(guideDirection) < kClumpAlignment)
+						continue;
 					const float length = o_asset.strands[s].length;
 					for (uint32_t k = 0; k < points; ++k) {
 						auto& point = o_asset.points[s * points + k];
-						float3 rel = point.position - centre[k];
-						if (style.clumpTwist != 0.0f) {
-							float3 axis = centre[std::min(k + 1, points - 1)] - centre[k > 0 ? k - 1 : 0];
-							if (axis.LengthSquared() > 1e-8f) {
-								axis.Normalize();
-								const float angle = DirectX::XM_2PI * style.clumpTwist * point.t * length;
-								const float c = std::cos(angle), sn = std::sin(angle);
-								rel = rel * c + axis.Cross(rel) * sn + axis * axis.Dot(rel) * (1.0f - c);
-							}
+						float3 axis;
+						const float3 centre = guideAt(point.t * length, axis);
+						float3 rel = point.position - centre;
+						if (style.clumpTwist != 0.0f && axis.LengthSquared() > 1e-8f) {
+							axis.Normalize();
+							const float angle = DirectX::XM_2PI * style.clumpTwist * point.t * length;
+							const float c = std::cos(angle), sn = std::sin(angle);
+							rel = rel * c + axis.Cross(rel) * sn + axis * axis.Dot(rel) * (1.0f - c);
 						}
 						const float pull = style.clumpStrength * std::pow(point.t, exponent);
-						point.position = centre[k] + rel * (1.0f - pull);
+						point.position = centre + rel * (1.0f - pull);
 					}
 				}
 			}
@@ -871,6 +1021,8 @@ namespace Strands
 			BuildTriangles();
 			BuildAdjacency();
 			BuildComponents();
+			DropBackFaces();
+			ChooseFlowAxis();
 			OrientFlow();
 			BuildVertexFields();
 
@@ -882,6 +1034,7 @@ namespace Strands
 
 			visits.assign(tris.size(), 0);
 			visitStamp.assign(tris.size(), 0);
+			traceStamp.assign(tris.size(), 0);
 
 			std::vector<Seed> seeds;
 			SeedMode mode = style.seeding;

@@ -28,8 +28,57 @@ permutation that is still compiling. Two causes:
     deferred composite shaded the card silhouette from an empty G-buffer.
 
 The strands now draw with their own depth state, and the cards are hidden from the depth
-prepass as well. See [Why it is built this way](#why-it-is-built-this-way). This is
-build-verified only. Work through [Unverified assumptions](#unverified-assumptions) first.
+prepass as well. See [Why it is built this way](#why-it-is-built-this-way).
+
+The third run (`0-1-1`) showed five faults, fixed in `0-1-2`:
+
+-   Some hair exploded into huge, long strands (up to 40,000 strands averaging 60-90 units).
+    `MeshExtract` read positions as half floats unless `VF_FULLPREC` was set. SSE always
+    stores float positions, and plain `BSTriShape` hair (flags `0x5b`) does not carry the
+    flag, so every attribute of those meshes was read from the wrong bytes. Positions are
+    now always floats, and a layout that disagrees with the descriptor's size fails the
+    conversion.
+-   Criss-crossing sheets of strands: the same cause (strands across garbage triangles).
+-   Strands through heads. Clumping averaged point *k* of every strand in a clump, but point
+    *k* sits at a different distance on strands of different length, and that average lies
+    inside the skull. On KS Simonne, clumped points up to 5.5 units off the hair surface.
+    The width-sized depth nudge also lifted strands on cards tucked under the scalp through
+    the skin.
+-   Distant shadows over the hair. The sun and shadow-light shadows come from a
+    screen-space shadow mask built from the depth prepass, and with the cards gone from the
+    prepass the mask at hair pixels held the shadow of whatever was behind the hair.
+-   Thin, see-through hair. The pixel-width floor counted output pixels, not rendered
+    ones, so with DLSS strands were narrower than a rendered pixel. The exploded hairs also
+    took 40,000 strands each out of the per-frame budget, which thinned the rest.
+
+The first `0-1-2` build, run the same day, showed vanilla Nord hair as ladders of short
+strands over sky-coloured holes:
+
+-   Holes: the prepass hook drew strand depth only while `inWorld` was set, but the depth
+    prepass (`Main_RenderDepth`) runs before the world pass sets it. The cards kept their
+    prepass depth while the lighting pass hid them, so the head behind failed its depth test
+    and only strands just in front of the card surface drew. The instance itself now marks
+    the world's hair.
+-   Stubs (median strand 1.1 units). Vanilla's atlas lays one strip sideways (hair along U),
+    and every strand on those cards ran across the strip. And vanilla hair is fully
+    double-sided with front and back copies interleaved: keeping the first copy of each
+    triangle left each side a checkerboard of isolated triangles, so every strand ended
+    within one. KS Simonne lost length the same way at bands shared with another sheet's
+    back (median 2.9 units). See [Conversion algorithm](#conversion-algorithm-strandgeneratorcpp).
+
+The second `0-1-2` build fixed the hair but broke the world: terrain vanished, and other
+objects dropped out or drew in the wrong order. With ReverseZ on, the depth prepass binds a
+flipped depth test (`GREATER_EQUAL`). The strand draw read the pass's states back through
+ReverseZ's read-back hooks, which return the unflipped ones, and then restored those raw.
+That left `LESS_EQUAL` bound while the game and ReverseZ both still took the flipped state
+as bound, so every later prepass draw tested depth backwards and wrote none. Terrain
+Blending draws terrain from the prepass depth, so the terrain disappeared. The lighting
+pass had escaped until then only because the hair's `EQUAL` test reads the same either
+way. The states are now read with the passthrough on, as bound.
+
+This is build-verified, and the generator fixes are checked on real meshes (see
+[Verifying changes](#verifying-changes)). Work through
+[Unverified assumptions](#unverified-assumptions) first.
 
 ## Pipeline
 
@@ -42,7 +91,8 @@ build-verified only. Work through [Unverified assumptions](#unverified-assumptio
 | Decode the texture's alpha (any format, BC included, via DirectXTex) | `DecodeCoverage` | worker | start of the generation job |
 | Generate strands | `StrandGenerator.cpp` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
 | Upload asset | `StrandRenderer::BeginFrame` | render | when the job finishes |
-| LOD, bone palette, skinning compute | `UpdateLod`, `Skin` | render, in `SetupGeometry` | first lighting draw of the hair each frame |
+| LOD, bone palette, skinning compute | `PrepareStrands` (`UpdateLod`, `Skin`) | render, in `SetupGeometry` | first pass of the hair each rendered frame (depth prepass or lighting) |
+| Draw strand depth | `StrandRenderer::Draw` (depth only) | render, in the Utility `RestoreGeometry` | every Utility draw of the hair that writes depth (the depth prepass) |
 | Draw ribbons | `StrandRenderer::Draw` | render, in `RestoreGeometry` | every main-view lighting draw of the hair |
 
 Everything lives in `src/Features/HairStrands.{h,cpp}` (feature, settings, UI) and
@@ -77,20 +127,33 @@ Everything lives in `src/Features/HairStrands.{h,cpp}` (feature, settings, UI) a
     The strands are drawn with the card's own viewport. It is read back from the one the game
     applied, so a dynamic resolution scale applied there is kept. If the hidden viewport never
     reaches the draw, the log says `Hiding the cards did not reach the draw` once.
--   **Cards leave the depth prepass too.** Alpha-tested hair writes its depth in a Utility
-    shader prepass before the lighting pass. A hook on `BSUtilityShader` slots 6 and 7 hides
-    the cards there with the same viewport trick, except in shadow-map passes
-    (`RenderShadowmap`), so cards still cast the shadows. The prepass runs before the
-    lighting pass decides, so it follows the last lighting pass that drew strands for that
-    hair, and stops as soon as the hair leaves the strand distance.
+-   **The depth prepass gets the strands' depth, not the cards'.** Alpha-tested hair writes
+    its depth in a Utility shader prepass (`RenderDepth`) before the lighting pass. The
+    screen-space shadow mask (sun and shadow lights) and other screen-space passes are
+    built from that depth. A hook on `BSUtilityShader` slots 6 and 7 hides the cards in
+    every Utility pass with the same viewport trick. Where the pass writes depth, it draws
+    the strands with the strand VS and no pixel shader, and logs each such Utility
+    descriptor once (`Strand depth drawn in Utility pass`). The lighting pass then draws the
+    same depth again. Shadow-map passes (`RenderShadowmap`) and reflections keep the cards,
+    so cards still cast the shadows. The prepass runs in `Main_RenderDepth`, before the world
+    pass sets `inWorld`. Only an instance a world lighting pass created is touched, and that
+    is what marks the world's hair. Skinning runs once
+    per rendered frame (`State::frameCount`, counted at Present) in whichever of the hair's
+    passes comes first, so the prepass and the lighting pass use the same pose whatever
+    order the feature's per-frame hooks run in. The prepass uses the strand shaders of the
+    lighting permutation that last drew the hair. If this frame's permutation is still
+    compiling, the lighting pass shades with those too, because the cards cannot come back
+    once their depth is gone.
 -   **Strands bring their own depth state.** The hair's lighting pass tests depth with
     `EQUAL`. The strand draw uses the pass's own depth-stencil state with writes on and
     `EQUAL` widened to `LESS_EQUAL`, or `GREATER_EQUAL` when the projection is reversed
-    (ReverseZ; detected from the camera projection's z row). The VS also moves each ribbon a
-    ribbon width nearer along its view ray. That covers the same pixels but gives nearer
-    depth, so strands lying on a card or at the scalp are not lost to the hairline or to
-    their own tilt. All state is set and restored with ReverseZ's hook passthrough on,
-    because the values read back are already mapped.
+    (ReverseZ; detected from the camera projection's z row). The VS also moves each ribbon
+    0.02 units nearer along its view ray, so strands lying on the hairline cap do not
+    z-fight it. It is a fixed distance on purpose: a nudge the size of the ribbon (which
+    grows with distance and LOD) lifted strands on cards tucked under the scalp through the
+    skin. All state, and the card viewport, is read, set and restored with ReverseZ's hook
+    passthrough on. Its read-back hooks return the unflipped states, and an unflipped state
+    restored raw stays bound behind the game's cache.
 -   **Procedural style in the vertex shader.** The generator makes the low-frequency shape
     (flow, clumps, volume) as 4–32 control points per strand. The VS adds curls, coils, waves
     and frizz analytically on a Catmull-Rom spline. That keeps memory small, makes those
@@ -120,16 +183,29 @@ hidden.
 
 ## Conversion algorithm (`StrandGenerator.cpp`)
 
-1. **Weld** positions (1/1000 unit), with a normal-direction bucket so the two sides of a
-   double-sided card stay separate. Drop exact duplicate back faces.
+1. **Weld** positions (1/1000 unit). Vertices at one position join only if their normals
+   face the same way (dot above 0), so the two sides of a double-sided card stay separate
+   sheets while a card that curves round the head stays one. A triangle repeated on the same
+   welded vertices (a back face sharing the front's vertices) is dropped. Back faces on
+   vertices of their own are dropped a sheet at a time: a sheet more than half of whose area
+   repeats earlier kept sheets goes, and any other sheet is kept whole, overlap included.
+   Dropping copy by copy leaves an interleaved double-sided mesh (vanilla hair lists front
+   and back alternately) as two checkerboards of isolated triangles. It also cuts holes
+   where a sheet shares a band with another's back. Either way, strands stop at every hole.
 2. **Flow** per triangle = ∂P/∂V from the UVs (or ±U/±V when set), projected into the
-   triangle. With `flowAxis: auto`, each connected piece is flipped so its flow runs away
-   from the skull centre (the `NPC Head` bone + 5 units up) and, on balance, downwards.
-   Real hair UV V only loosely tracks root→tip (KS/Apachii: correlation with height about
-   -0.55 to -0.7), hence the per-piece vote rather than a fixed sign.
+   triangle. With `flowAxis: auto`, each UV island (vertices sharing a position and a UV;
+   one strip of the atlas) flows along U instead when it is more than 1.5× longer that way
+   on the surface. Vanilla's atlas lays one strip sideways (V 0.74–0.88): 24% of the Nord
+   hair's card area and 71% of `0_td18_hair_9`'s. Each connected piece is then flipped so its
+   flow runs away from the skull centre (the `NPC Head` bone + 5 units up) and, on balance,
+   downwards; a piece's U and V strips vote separately. Real hair UV V only loosely tracks
+   root→tip (KS/Apachii: correlation with height about -0.55 to -0.7), hence the vote
+   rather than a fixed sign.
 3. **Trace** streamlines across welded edge adjacency, following barycentrically
    interpolated vertex flow. A strand stops at a boundary, at a fold (neighbour normals
-   more than about 100° apart), or where the flow reverses.
+   more than about 100° apart), where the flow reverses, or where it re-enters a triangle
+   it already crossed (other than stepping straight back): flow circling a bun or a closed
+   lock would otherwise wind round to the 200-unit cap.
 4. **Seed.** Roots are placed along boundary edges the flow enters, `density` per unit of
    width across the flow (85% of the 40k strand cap). A fill pass adds whole streamlines
    through any triangle the roots under-visited. `seeding: auto` switches to area seeding
@@ -144,9 +220,13 @@ hidden.
    readback, or `coverageThreshold` 0), the whole card counts, as before.
 6. **Resample** every strand to one point count per asset: the 95th-percentile length
    divided by `segmentLength`, clamped to 4–32 points. Then lift points off the surface
-   (layer jitter plus `volume` towards the tip), clump by root grid cell within a
-   connected piece (pull plus optional twist), and shuffle. Because of the shuffle, any
-   prefix of the strand list is an even thinning, which is what LOD draws.
+   (layer jitter plus `volume` towards the tip), clump, and shuffle. A clump is the strands
+   of one connected piece whose roots share a grid cell. Each member is pulled (plus
+   optional twist) towards the clump's longest strand at the same distance from the root,
+   so the clump centre is a real strand on the hair surface. Members whose roots leave the
+   cell more than 60° away from that strand (a parting, a crown whorl) are not pulled.
+   Because of the shuffle, any prefix of the strand list is an even thinning, which is
+   what LOD draws.
 
 ## LOD and budget
 
@@ -157,6 +237,8 @@ hidden.
     × `DensityScale` × budget share. Width is scaled by 1/fraction (up to `MaxWidthScale`)
     so coverage stays about the same. Where that is still under `MinPixelWidth`, the
     fraction drops further, because the VS widens thin strands to the pixel floor anyway.
+    The floor counts rendered pixels (the dynamic-resolution height, so an upscaler's
+    lower render resolution is accounted for), not output pixels.
     Past `LodEnd` (with 5% hysteresis) the cards come back.
 -   Curve detail (render points per control segment) comes from the curl or wave period
     up close and falls to 1 at `LodEnd`, capped by `MaxSubdivisions`.
@@ -242,8 +324,22 @@ permutation bit.
 -   Converter: `StrandGenerator.cpp` only needs `float3` and friends plus `logger`. It
     builds on its own with a small shim (SimpleMath, a `logger` stub, `RE::BSGeometry`
     declared) and synthetic cards. That is how the 2026-09-28 checks ran: root/tip
-    orientation with flipped V, double-sided dedupe, weight normalisation, every preset,
-    area seeding and UV exclusion. Eight generations take 0.25 s.
+    orientation with flipped V, double-sided cards with back faces on shared and on their
+    own interleaved vertices, strips along U, weight normalisation, every preset, area
+    seeding and UV exclusion. Check strand *length*, not just validity: an early
+    double-sided test passed while making 1.5-unit stubs. Eight generations take 0.25 s.
+-   Real meshes: a small Python NIF reader dumps a skinned shape (positions, UVs, normals,
+    bone weights mapped through the partition bone lists, triangles, bone names and bind
+    origins) for the same harness. Measure strand lengths against the mesh's bounding box
+    (looping streamlines) and each point's distance to the nearest mesh vertex (clumping or
+    lift pulling strands off the hair). On 2026-09-28, KS Simonne went from 6-16 strands at
+    the 200-unit cap to none (max 33.4 on a 47-unit mesh). Its worst clumped point went
+    from 3.2-5.5 units off the hair to 1.8-3.4. The child hair `0_td18_hair_9` (flags
+    `0x5b`) gives 2,413 strands of median length 3.6, where the game had made 40,000
+    averaging 58. With the per-strip axis and per-sheet back-face drop, median strand
+    lengths are 12.6 on vanilla Nord hair (was 1.1), 13.9 on `0_td18_hair_9` (was 3.6) and
+    22.4 on Simonne (was 2.9). Unclumped strand points stay within 2.3 units of a mesh
+    vertex. To see why strands end, count `Trace`'s stop reasons in a scratch copy.
 
 ## Unverified assumptions
 
@@ -258,11 +354,16 @@ Check these first in game:
     root-parent transform. Strands offset from the cards would point here.
 -   Setting `viewPort` + `DIRTY_VIEWPORT` in the shadow state reaches `RSSetViewports` on
     the card draw. If it does not, the log warns once and cards show under the strands.
--   The hair's depth prepass is a Utility pass without `RenderShadowmap`. If card outlines
-    still show as flat sky-coloured shapes around the strands, it is some other pass.
--   Frame order: the depth prepass runs before `Prepass()` (`BeginFrame`), so it sees the
-    previous frame's number. The prepass rule tolerates either order. When a hair first
-    switches to strands, expect one frame of card outline.
+-   The hair's depth prepass is a Utility pass that writes depth, outside shadow maps and
+    reflections. The log should name its descriptor once (`Strand depth drawn in Utility
+    pass`, expected to include the `RenderDepth` bit 0x2000). If that line never appears, or card
+    outlines still show as flat sky-coloured shapes, the prepass is reaching neither hook.
+-   The strand VS draws the same depth in the Utility prepass as in the lighting pass: it
+    reads only its own `b7`/`t0-t2` and `ViewProj` from `b12`, the game's single per-frame
+    buffer bound for every shader. Holes in moving hair would point here.
+-   A hair switches to strands in the prepass only after its lighting pass has drawn strands
+    once (the prepass needs that permutation's shaders), so expect one frame of card outline
+    when it first converts.
 -   The diffuse texture from `BSLightingShaderMaterialBase::diffuseTexture->rendererTexture`
     is the one the card draw samples, and its alpha is coverage. A hair whose log line says
     `strands fill the whole cards` had no usable alpha.

@@ -169,6 +169,13 @@ namespace Strands
 		{
 			return { a_point.x, a_point.y, a_point.z };
 		}
+
+		// The rendered frame, counted at Present: the same for a hair's depth prepass and its
+		// lighting pass, whichever order the feature's per-frame hooks run in.
+		uint32_t RenderFrame()
+		{
+			return globals::state->frameCount;
+		}
 	}
 
 	struct StrandRenderer::Asset
@@ -228,15 +235,16 @@ namespace Strands
 		uint32_t paletteBones = 0;
 		std::vector<float4> paletteData;
 		std::vector<float4> previousAbsolute;  // last frame's palette, absolute translations
-		uint32_t previousFrame = 0;
+		uint32_t previousFrame = 0;            // RenderFrame() of previousAbsolute
 
 		uint32_t lastSeenFrame = 0;
-		uint32_t lastSkinnedFrame = UINT32_MAX;
+		uint32_t lastSkinnedFrame = UINT32_MAX;  // RenderFrame() of the last skinning
 		float distance = 0.0f;
 		bool allowed = false;
 		float budgetScale = 1.0f;
 		bool lodActive = false;
-		uint32_t lastHiddenFrame = UINT32_MAX;  // last frame the lighting pass drew strands in place of the cards
+		uint32_t strandDescriptor = 0;           // lighting permutation whose strand shaders drew this hair last
+		uint32_t lastPrepassFrame = UINT32_MAX;  // RenderFrame() in which the depth prepass drew the strands
 
 		// This frame's draw parameters.
 		bool drawThisFrame = false;
@@ -382,6 +390,7 @@ namespace Strands
 		currentPass = nullptr;
 		currentInstance = nullptr;
 		currentVariant = nullptr;
+		currentDepthOnly = false;
 
 		if (library.GetGeneration() != libraryGeneration) {
 			libraryGeneration = library.GetGeneration();
@@ -592,7 +601,7 @@ namespace Strands
 	{
 		for (const auto& [geometry, other] : instances) {
 			if (other->isHair && other->actorId == a_layer.actorId && other->key.vertexCount == a_layer.key.vertexCount && other->key.triangleCount == a_layer.key.triangleCount &&
-				other->drawThisFrame && other->lastSkinnedFrame != UINT32_MAX && frame - other->lastSkinnedFrame <= 1)
+				other->drawThisFrame && other->lastSkinnedFrame != UINT32_MAX && RenderFrame() - other->lastSkinnedFrame <= 1)
 				return true;
 		}
 		return false;
@@ -657,6 +666,13 @@ namespace Strands
 			Classify(*slot, a_pass, a_geometry);
 		}
 		return slot.get();
+	}
+
+	StrandRenderer::ShaderVariant* StrandRenderer::FindVariant(uint32_t a_pixelDescriptor)
+	{
+		std::scoped_lock lock(variantMutex);
+		auto it = variants.find(a_pixelDescriptor);
+		return it != variants.end() && it->second->Ready() ? it->second.get() : nullptr;
 	}
 
 	StrandRenderer::ShaderVariant* StrandRenderer::GetVariant(uint32_t a_pixelDescriptor)
@@ -769,9 +785,13 @@ namespace Strands
 		const float widthScale = std::min(1.0f / fraction, settings.maxWidthScale);
 
 		// Strands thinner than the pixel floor are widened by the vertex shader anyway; draw
-		// correspondingly fewer so the hair does not thicken with distance.
+		// correspondingly fewer so the hair does not thicken with distance. The floor is in
+		// rendered pixels: with an upscaler an output pixel is a fraction of one, and strands
+		// that thin alias into a faint, see-through fuzz after temporal resolve.
 		const float proj11 = std::abs(shadowState.cameraData.getEye().projMat.m[1][1]);
-		const float pixelsPerUnitAtOne = 0.5f * static_cast<float>(globals::game::graphicsState->screenHeight) * std::max(proj11, 1e-3f);
+		const auto* graphicsState = globals::game::graphicsState;
+		const float renderHeight = Util::ConvertToDynamic(float2(static_cast<float>(graphicsState->screenWidth), static_cast<float>(graphicsState->screenHeight)), true).y;
+		const float pixelsPerUnitAtOne = 0.5f * renderHeight * std::max(proj11, 1e-3f);
 		a_instance.minWidthPerDistance = settings.minPixelWidth / pixelsPerUnitAtOne;
 		const float floorWidth = a_instance.minWidthPerDistance * std::max(a_instance.distance, 1.0f);
 		const float rootWidth = style.rootWidth * widthScale;
@@ -818,7 +838,7 @@ namespace Strands
 
 		// Last frame's palette gives the motion vectors; without one (first frame, or a gap)
 		// the hair moves only with the camera this frame.
-		const bool havePrevious = a_instance.previousAbsolute.size() == absolute.size() && a_instance.previousFrame + 1 == frame;
+		const bool havePrevious = a_instance.previousAbsolute.size() == absolute.size() && a_instance.previousFrame + 1 == RenderFrame();
 		const auto& previous = havePrevious ? a_instance.previousAbsolute : absolute;
 		const float eyeRows[3] = { eye.x, eye.y, eye.z };
 		const float previousEyeRows[3] = { previousEye.x, previousEye.y, previousEye.z };
@@ -830,7 +850,7 @@ namespace Strands
 			a_instance.paletteData[bones * 3 + i].w -= previousEyeRows[i % 3];
 		}
 		a_instance.previousAbsolute = std::move(absolute);
-		a_instance.previousFrame = frame;
+		a_instance.previousFrame = RenderFrame();
 
 		auto* context = globals::d3d::context;
 		try {
@@ -936,12 +956,28 @@ namespace Strands
 		return slot.get();
 	}
 
-	void StrandRenderer::Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport)
+	void StrandRenderer::Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport, bool a_depthOnly)
 	{
 		auto* context = globals::d3d::context;
 		auto& shadowState = globals::game::shadowState->GetRuntimeData();
 		const auto& asset = *a_instance.asset;
 		const auto& style = a_instance.style;
+
+		if (a_depthOnly) {
+			// Of the passes that hid the cards, only those writing depth need the strands' depth.
+			winrt::com_ptr<ID3D11DepthStencilState> depthState;
+			UINT ref = 0;
+			context->OMGetDepthStencilState(depthState.put(), &ref);
+			if (depthState) {
+				D3D11_DEPTH_STENCIL_DESC desc{};
+				depthState->GetDesc(&desc);
+				if (!desc.DepthEnable || desc.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ZERO)
+					return;
+			}
+			const uint32_t descriptor = globals::state->currentPixelDescriptor;
+			if (loggedDepthPasses.insert(descriptor).second)
+				logger::info("[HairStrands] Strand depth drawn in Utility pass {:#x}", descriptor);
+		}
 
 		StrandDrawCB cb{};
 		cb.pointsPerStrand = asset.pointsPerStrand;
@@ -964,9 +1000,14 @@ namespace Strands
 
 		const bool annotate = globals::state->frameAnnotations;
 		if (annotate)
-			globals::state->BeginPerfEvent("Hair Strands");
+			globals::state->BeginPerfEvent(a_depthOnly ? "Hair Strands Depth" : "Hair Strands");
 
-		// Everything below is put back exactly, so the game's cached state stays true.
+		// Everything below is put back exactly, so the game's cached state stays true. ReverseZ
+		// flips the depth test and rasterizer state as it binds them, and its read-back hooks
+		// return the unflipped ones: read, set and restore them raw, as bound. An unflipped state
+		// restored raw stays bound behind the game's and ReverseZ's backs, and every later draw
+		// with the same state tests depth backwards.
+		ReverseZ::SetHookPassthrough(true);
 		winrt::com_ptr<ID3D11VertexShader> oldVS;
 		context->VSGetShader(oldVS.put(), nullptr, nullptr);
 		winrt::com_ptr<ID3D11PixelShader> oldPS;
@@ -987,15 +1028,14 @@ namespace Strands
 		// Depth values are reversed when the camera's projection is (ReverseZ): its z row is ~0, not ~1.
 		const bool reversedDepth = std::abs(shadowState.cameraData.getEye().projMat.m[2][2]) < 0.5f;
 
-		// The states read back above are the ones bound, already mapped by ReverseZ's hooks:
-		// set and restore them raw so they are not mapped a second time.
-		ReverseZ::SetHookPassthrough(true);
 		ID3D11Buffer* drawBuffer = drawCB->CB();
 		ID3D11ShaderResourceView* srvs[3] = { asset.restPoints->srv.get(), asset.strandInfo->srv.get(), a_instance.skinned->srv.get() };
 		context->IASetInputLayout(nullptr);
 		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+		// The depth prepass needs only the strands' depth: the same vertex shader as their lighting
+		// draw, so both passes produce the same depth, and no pixel shader.
 		context->VSSetShader(a_variant.vs.get(), nullptr, 0);
-		context->PSSetShader(a_variant.ps.get(), nullptr, 0);
+		context->PSSetShader(a_depthOnly ? nullptr : a_variant.ps.get(), nullptr, 0);
 		context->VSSetConstantBuffers(7, 1, &drawBuffer);
 		context->VSSetShaderResources(0, 3, srvs);
 		context->RSSetState(GetNoCullState(oldRS.get()));
@@ -1083,24 +1123,34 @@ namespace Strands
 			return;
 
 		auto* variant = GetVariant(descriptor);
-		if (!variant || !EnsureSkinShader())
-			return;
-
-		if (instance->lastSkinnedFrame != frame) {
-			instance->lastSkinnedFrame = frame;
-			instance->drawThisFrame = EnsureInstanceBuffers(*instance) && UpdateLod(*instance, geometry) && Skin(*instance, skin);
-			if (instance->drawThisFrame) {
-				strandsThisFrame += instance->activeStrands;
-				++drawnThisFrame;
-			}
+		if (variant) {
+			instance->strandDescriptor = descriptor;
+		} else if (instance->lastPrepassFrame == RenderFrame()) {
+			// The depth prepass already drew the strands in place of the cards, so the cards
+			// cannot come back this frame: while this permutation compiles, shade with the one
+			// that drew the prepass.
+			variant = FindVariant(instance->strandDescriptor);
 		}
-		if (!instance->drawThisFrame)
+		if (!variant || !EnsureSkinShader() || !PrepareStrands(*instance, geometry, skin))
 			return;
 
 		currentInstance = instance;
 		currentVariant = variant;
-		instance->lastHiddenFrame = frame;
 		HideCards(a_pass);
+	}
+
+	bool StrandRenderer::PrepareStrands(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin)
+	{
+		// Once per rendered frame, in whichever of the hair's passes comes first.
+		if (a_instance.lastSkinnedFrame != RenderFrame()) {
+			a_instance.lastSkinnedFrame = RenderFrame();
+			a_instance.drawThisFrame = EnsureInstanceBuffers(a_instance) && UpdateLod(a_instance, a_geometry) && Skin(a_instance, a_skin);
+			if (a_instance.drawThisFrame) {
+				strandsThisFrame += a_instance.activeStrands;
+				++drawnThisFrame;
+			}
+		}
+		return a_instance.drawThisFrame;
 	}
 
 	void StrandRenderer::RestoreHiddenViewport()
@@ -1108,6 +1158,7 @@ namespace Strands
 		currentPass = nullptr;
 		currentInstance = nullptr;
 		currentVariant = nullptr;
+		currentDepthOnly = false;
 		if (cardsHidden) {
 			// The last hidden pass never reached RestoreGeometry: never leave the viewport hidden.
 			auto& shadowState = globals::game::shadowState->GetRuntimeData();
@@ -1131,23 +1182,33 @@ namespace Strands
 			return;
 		auto it = instances.find(geometry);
 		auto* skin = geometry->GetGeometryRuntimeData().skinInstance.get();
-		if (it == instances.end() || !skin || !skin->skinPartition || it->second->skinInstance != skin || it->second->vertexCount != skin->skinPartition->vertexCount)
+		if (it == instances.end() || !skin || !skin->skinPartition || !skin->skinData || it->second->skinInstance != skin || it->second->vertexCount != skin->skinPartition->vertexCount)
 			return;
-		const Instance& instance = *it->second;
+		Instance& instance = *it->second;
 
 		if (instance.layer) {
 			if (TwinDrawsStrands(instance))
 				HideCards(a_pass);
 			return;
 		}
-		// The depth prepass runs before the lighting pass decides: follow the last lighting
-		// pass, unless the hair has since left the strand distance (the cards then come back).
-		if (!instance.isHair || instance.lastHiddenFrame == UINT32_MAX || frame - instance.lastHiddenFrame > 1 || !instance.allowed)
+
+		// The depth prepass takes the strands' depth in place of the cards'. The shadow mask and
+		// every other screen-space pass built from this depth then see the strands, not whatever
+		// lies behind them. The lighting pass that follows draws the same depth again. The
+		// prepass (Main_RenderDepth) runs before the world pass, so inWorld is not set yet; the
+		// instance itself, created by a world lighting pass, says this is the world's hair.
+		if (!instance.isHair || !instance.converted || !instance.asset || instance.asset->state != Asset::State::Ready)
 			return;
-		auto& shadowState = globals::game::shadowState->GetRuntimeData();
-		const float distance = (ToFloat3(geometry->worldBound.center) - ToFloat3(shadowState.posAdjust.getEye())).Length();
-		if (distance > settings.lodEnd * (instance.lodActive ? kLodHysteresis : 1.0f))
+		if (a_pass->shaderProperty && a_pass->shaderProperty->alpha < 0.99f)
 			return;
+		auto* variant = FindVariant(instance.strandDescriptor);
+		if (!variant || !EnsureSkinShader() || !PrepareStrands(instance, geometry, skin))
+			return;
+
+		instance.lastPrepassFrame = RenderFrame();
+		currentInstance = &instance;
+		currentVariant = variant;
+		currentDepthOnly = true;
 		HideCards(a_pass);
 	}
 
@@ -1169,7 +1230,10 @@ namespace Strands
 		// resolution scale it applied shows in its size; apply the same to the saved one.
 		D3D11_VIEWPORT applied{};
 		UINT count = 1;
+		// Raw, as bound: ReverseZ's read-back hook returns the unflipped depth range.
+		ReverseZ::SetHookPassthrough(true);
 		globals::d3d::context->RSGetViewports(&count, &applied);
+		ReverseZ::SetHookPassthrough(false);
 		const float scaleX = applied.Width / kHiddenViewportSize;
 		const float scaleY = applied.Height / kHiddenViewportSize;
 		if (count == 0 || applied.TopLeftX < kHiddenViewportOrigin * 0.1f || scaleX <= 0.0f || scaleY <= 0.0f) {
@@ -1192,12 +1256,13 @@ namespace Strands
 			currentPass = nullptr;
 			currentInstance = nullptr;
 			currentVariant = nullptr;
+			currentDepthOnly = false;
 			return;
 		}
 		if (currentInstance && currentVariant) {
 			D3D11_VIEWPORT viewport{};
 			const bool haveViewport = cardsHidden && GetCardViewport(viewport);
-			Draw(*currentInstance, *currentVariant, haveViewport ? &viewport : nullptr);
+			Draw(*currentInstance, *currentVariant, haveViewport ? &viewport : nullptr, currentDepthOnly);
 		}
 		if (cardsHidden) {
 			auto& shadowState = globals::game::shadowState->GetRuntimeData();
@@ -1208,5 +1273,6 @@ namespace Strands
 		currentPass = nullptr;
 		currentInstance = nullptr;
 		currentVariant = nullptr;
+		currentDepthOnly = false;
 	}
 }

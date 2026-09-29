@@ -59,9 +59,11 @@ namespace Strands
 	/**
 	 * @brief Converts a hair mesh into strands following its texture flow.
 	 *
-	 * Flow is the direction the chosen texture axis (V by default) runs across each
-	 * triangle; with FlowAxis::Auto each connected piece is oriented to point away from
-	 * the head. Strands are streamlines of that flow traced across the welded mesh, seeded
+	 * Flow is the direction the chosen texture axis runs across each triangle. With
+	 * FlowAxis::Auto each UV island (one strip of the atlas) takes V, or U where it is
+	 * clearly longer along U, and each connected piece is oriented to point away from the
+	 * head. Double-sided cards keep one side. Strands are streamlines of that flow traced
+	 * across the welded mesh, seeded
 	 * along upstream boundary edges (roots), plus fill streamlines through any triangles
 	 * the roots missed, or scattered over the surface for very short hair. Pure CPU; safe
 	 * to run on a worker thread.

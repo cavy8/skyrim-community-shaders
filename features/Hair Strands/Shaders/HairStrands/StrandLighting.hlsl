@@ -82,6 +82,7 @@ StructuredBuffer<HairStrands::SkinnedPoint> SkinnedPoints : register(t2);
 namespace HairStrandsVS
 {
 	static const float TwoPi = 6.28318530718;
+	static const float DepthNudge = 0.02;  // units, about 0.3 mm
 
 	float3 CatmullRom(float3 p0, float3 p1, float3 p2, float3 p3, float t)
 	{
@@ -199,10 +200,11 @@ VS_OUTPUT main(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 
 	const float4 worldPosition = float4(position, 1.0);
 	const float4 viewPos = mul(ViewProj, worldPosition);
-	// Drawn a ribbon width nearer along its own view ray: the same pixels, but a strand lying
-	// on its card or at the scalp wins the depth test against the hairline and the card
-	// surface it follows, even where the camera-facing ribbon tilts behind that surface.
-	vsout.Position = mul(ViewProj, float4(position - normalize(position) * max(width, 0.05), 1.0));
+	// Drawn slightly nearer along its own view ray: the same pixels, but a strand lying on the
+	// hairline cap wins the depth test instead of z-fighting it. A fixed distance, not the
+	// ribbon width: the width grows with distance and LOD, and would lift strands on cards
+	// tucked under the scalp through the skin.
+	vsout.Position = mul(ViewProj, float4(position - normalize(position) * HairStrandsVS::DepthNudge, 1.0));
 
 	const float2 uv = lerp(float2(r1.U, r1.V), float2(r2.U, r2.V), f);
 	vsout.TexCoord0.xy = uv * TexcoordOffset.zw + TexcoordOffset.xy;

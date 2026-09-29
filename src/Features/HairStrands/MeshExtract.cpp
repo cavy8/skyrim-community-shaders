@@ -24,7 +24,6 @@ namespace Strands
 			int32_t uv = -1;
 			int32_t normal = -1;
 			int32_t skinning = -1;
-			bool fullPrecision = false;
 			uint32_t stride = 0;
 		};
 
@@ -33,9 +32,10 @@ namespace Strands
 			VertexLayout layout;
 			uint32_t offset = 0;
 			if (a_desc.HasFlag(Vertex::VF_VERTEX)) {
+				// SSE positions are always three floats plus the bitangent's x, whether or not
+				// VF_FULLPREC is set (a Fallout 4 flag many SSE meshes carry, and many do not).
 				layout.position = static_cast<int32_t>(offset);
-				layout.fullPrecision = a_desc.HasFlag(Vertex::VF_FULLPREC);
-				offset += layout.fullPrecision ? 16 : 8;
+				offset += 16;
 			}
 			if (a_desc.HasFlag(Vertex::VF_UV)) {
 				layout.uv = static_cast<int32_t>(offset);
@@ -114,6 +114,14 @@ namespace Strands
 			o_error = "vertex data has no UV or skinning";
 			return false;
 		}
+		// The descriptor's size nibble must agree, or every attribute would be read from the
+		// wrong bytes and the strands would scatter.
+		const auto rawDesc = std::bit_cast<uint64_t>(dataPartition->vertexDesc);
+		const uint32_t declaredStride = static_cast<uint32_t>(rawDesc & 0xF) * 4;
+		if (declaredStride != layout.stride) {
+			o_error = std::format("unexpected vertex layout (flags {:#x}, stride {} but {} declared)", rawDesc >> 44, layout.stride, declaredStride);
+			return false;
+		}
 
 		o_mesh.positions.resize(vertexCount);
 		o_mesh.uvs.resize(vertexCount);
@@ -144,13 +152,8 @@ namespace Strands
 		for (uint32_t v = 0; v < vertexCount; ++v) {
 			const uint8_t* vertex = raw + static_cast<size_t>(v) * layout.stride;
 			if (layout.position >= 0) {
-				const uint8_t* p = vertex + layout.position;
-				if (layout.fullPrecision) {
-					const auto* f = reinterpret_cast<const float*>(p);
-					o_mesh.positions[v] = { f[0], f[1], f[2] };
-				} else {
-					o_mesh.positions[v] = { Half(p), Half(p + 2), Half(p + 4) };
-				}
+				const auto* f = reinterpret_cast<const float*>(vertex + layout.position);
+				o_mesh.positions[v] = { f[0], f[1], f[2] };
 			}
 			const uint8_t* uv = vertex + layout.uv;
 			o_mesh.uvs[v] = { Half(uv), Half(uv + 2) };

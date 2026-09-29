@@ -37,7 +37,7 @@ namespace Strands
 		Count
 	};
 
-	/** @brief Which texture direction runs from root to tip. Auto orients V away from the head. */
+	/** @brief Which texture direction runs from root to tip. Auto picks V or U per atlas strip and orients it away from the head. */
 	enum class FlowAxis : uint32_t
 	{
 		Auto,
