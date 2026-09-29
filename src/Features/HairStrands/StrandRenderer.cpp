@@ -42,6 +42,16 @@ namespace Strands
 		constexpr float kBackRadius = 6.5f;
 		constexpr float kShoulderRadius = 3.5f;
 		constexpr float kArmRadius = 3.0f;
+		// Head field (the actor's head mesh as a radial height field, see BuildHeadField).
+		constexpr uint32_t kHeadFieldSize = 64;           // HAIR_STRANDS_HEAD_FIELD_SIZE: texels a side, about 3 degrees each
+		constexpr float kHeadFieldSampleSpacing = 0.2f;   // units between the surface points splatted into it
+		constexpr float kHeadFieldMinHeadWeight = 0.5f;   // vertices less on the head bone (the neck) are left to the neck capsule
+		constexpr float kHeadFieldMaxRadius = 30.0f;      // units; anything further out is not the head
+		constexpr uint32_t kHeadFieldFillPasses = 3;      // closes eye and mouth holes; the neck opening stays empty
+		constexpr float kHeadFieldMinCoverage = 0.5f;     // of the directions; less and the head sphere is used
+		constexpr float kHeadFieldMaxRadiusRatio = 1.5f;  // of the median radius: the nose, not a muzzle or ear tips
+		constexpr float kHeadFieldMinMedianRatio = 0.7f;  // median radius over the head sphere's: a head round the same centre
+		constexpr float kHeadFieldMaxMedianRatio = 2.0f;
 
 		const wchar_t* kLightingShaderPath = L"Data\\Shaders\\HairStrands\\StrandLighting.hlsl";
 		const wchar_t* kSkinShaderPath = L"Data\\Shaders\\HairStrands\\StrandSkin.cs.hlsl";
@@ -236,6 +246,58 @@ namespace Strands
 		{
 			return a_node && _stricmp(a_node->name.c_str(), a_name) == 0 ? a_node : nullptr;
 		}
+
+		// Octahedral map of a unit direction to [0, 1]^2, as HairStrandsSkin::HeadFieldUV.
+		float2 OctahedralUV(float3 a_direction)
+		{
+			a_direction /= std::max(std::abs(a_direction.x) + std::abs(a_direction.y) + std::abs(a_direction.z), 1e-8f);
+			float2 p{ a_direction.x, a_direction.y };
+			if (a_direction.z < 0.0f)
+				p = { (1.0f - std::abs(a_direction.y)) * (a_direction.x >= 0.0f ? 1.0f : -1.0f), (1.0f - std::abs(a_direction.x)) * (a_direction.y >= 0.0f ? 1.0f : -1.0f) };
+			return { p.x * 0.5f + 0.5f, p.y * 0.5f + 0.5f };
+		}
+
+		int32_t FindBone(const std::vector<std::string>& a_names, std::string_view a_fragment)
+		{
+			for (size_t b = 0; b < a_names.size(); ++b) {
+				if (ToLower(a_names[b]).find(a_fragment) != std::string::npos)
+					return static_cast<int32_t>(b);
+			}
+			return -1;
+		}
+
+		// The actor's head mesh: the geometry of its Face head part, a child of the face node
+		// named by the part's editor ID (or the first skinned geometry under that child).
+		RE::BSGeometry* FindFaceGeometry(RE::Actor* a_actor)
+		{
+			auto* faceNode = a_actor->GetFaceNodeSkinned();
+			auto* npc = a_actor->GetActorBase();
+			if (!faceNode || !npc)
+				return nullptr;
+			const auto find = [&](RE::BGSHeadPart** a_parts, uint32_t a_count) -> RE::BSGeometry* {
+				for (uint32_t i = 0; a_parts && i < a_count; ++i) {
+					const auto* part = a_parts[i];
+					if (!part || part->type != RE::BGSHeadPart::HeadPartType::kFace)
+						continue;
+					auto* object = faceNode->GetObjectByName(part->formEditorID);
+					if (auto* geometry = object ? object->AsGeometry() : nullptr)
+						return geometry;
+					if (auto* node = object ? object->AsNode() : nullptr) {
+						for (auto& child : node->GetChildren()) {
+							auto* geometry = child ? child->AsGeometry() : nullptr;
+							if (geometry && geometry->GetGeometryRuntimeData().skinInstance)
+								return geometry;
+						}
+					}
+				}
+				return nullptr;
+			};
+			if (npc->HasOverlays()) {
+				if (auto* geometry = find(npc->GetBaseOverlays(), npc->GetNumBaseOverlays()))
+					return geometry;
+			}
+			return find(npc->headParts, static_cast<uint32_t>(std::max<std::int8_t>(npc->numHeadParts, 0)));
+		}
 	}
 
 	struct StrandRenderer::Asset
@@ -326,10 +388,12 @@ namespace Strands
 		float3 skinPreviousEye;
 
 		// Simulation.
-		float simWeight = 0.0f;              // 1 up close, fading to 0 (plain skinning) at the physics distance
-		float3 simEye;                       // camera the stored guide state is relative to
-		uint32_t lastSimFrame = UINT32_MAX;  // RenderFrame() of the last simulation; UINT32_MAX: restart
-		uint32_t simAssetSerial = 0;         // the asset the stored guide state belongs to
+		float simWeight = 0.0f;                 // 1 up close, fading to 0 (plain skinning) at the physics distance
+		float3 simEye;                          // camera the stored guide state is relative to
+		uint32_t lastSimFrame = UINT32_MAX;     // RenderFrame() of the last simulation; UINT32_MAX: restart
+		uint32_t simAssetSerial = 0;            // the asset the stored guide state belongs to
+		std::unique_ptr<Buffer> headField;      // the actor's head surface; null: the head sphere
+		uint32_t headFieldSerial = UINT32_MAX;  // the asset the head field was built (or tried) for
 	};
 
 	struct StrandRenderer::ShaderVariant
@@ -1008,15 +1072,16 @@ namespace Strands
 		context->CSGetShader(oldShader.put(), nullptr, nullptr);
 		ID3D11Buffer* oldCB = nullptr;
 		context->CSGetConstantBuffers(0, 1, &oldCB);
-		ID3D11ShaderResourceView* oldSRVs[4]{};
-		context->CSGetShaderResources(0, 4, oldSRVs);
+		ID3D11ShaderResourceView* oldSRVs[5]{};
+		context->CSGetShaderResources(0, 5, oldSRVs);
 		ID3D11UnorderedAccessView* oldUAV = nullptr;
 		context->CSGetUnorderedAccessViews(0, 1, &oldUAV);
 
 		ID3D11Buffer* cbBuffer = skinCB->CB();
-		ID3D11ShaderResourceView* srvs[4] = { a_instance.asset->restPoints->srv.get(), a_instance.palette->srv.get(), a_instance.asset->strandInfo->srv.get(), nullptr };
+		ID3D11ShaderResourceView* headField = (cb.flags & SkinCB::kHeadField) ? a_instance.headField->srv.get() : nullptr;
+		ID3D11ShaderResourceView* srvs[5] = { a_instance.asset->restPoints->srv.get(), a_instance.palette->srv.get(), a_instance.asset->strandInfo->srv.get(), nullptr, headField };
 		context->CSSetConstantBuffers(0, 1, &cbBuffer);
-		context->CSSetShaderResources(0, 4, srvs);
+		context->CSSetShaderResources(0, 5, srvs);
 		if (simulate) {
 			// The guides first: every strand follows one.
 			ID3D11UnorderedAccessView* guideUAV = a_instance.guideState->uav.get();
@@ -1033,7 +1098,7 @@ namespace Strands
 		context->Dispatch((cb.pointCount + 63) / 64, 1, 1);
 
 		context->CSSetUnorderedAccessViews(0, 1, &oldUAV, nullptr);
-		context->CSSetShaderResources(0, 4, oldSRVs);
+		context->CSSetShaderResources(0, 5, oldSRVs);
 		context->CSSetConstantBuffers(0, 1, &oldCB);
 		context->CSSetShader(oldShader.get(), nullptr, 0);
 		for (auto* srv : oldSRVs) {
@@ -1092,7 +1157,9 @@ namespace Strands
 		restDown.Normalize();
 
 		o_cb.headBone = frameBone;
-		o_cb.flags = SkinCB::kFollow | (reset ? SkinCB::kReset : 0u) | (settings.collision ? SkinCB::kCollide : 0u);
+		const bool headField = settings.collision && haveHead && a_instance.headField;
+		o_cb.flags = SkinCB::kFollow | (reset ? SkinCB::kReset : 0u) | (settings.collision ? SkinCB::kCollide : 0u) | (headField ? SkinCB::kHeadField : 0u);
+		o_cb.headFieldCentre = asset.headCentre;
 		o_cb.simWeight = a_instance.simWeight;
 		// Without a head bone, the full skinning is the only target there is.
 		o_cb.guidance = haveHead ? settings.smpGuidance : 1.0f;
@@ -1121,6 +1188,141 @@ namespace Strands
 		return true;
 	}
 
+	void StrandRenderer::BuildHeadField(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin)
+	{
+		// The head sphere is fitted inside the hair, so it lies well inside the forehead, face
+		// and back of the head: hair pressed that way went into the head before it stopped. The
+		// head mesh itself is stored as a radial height field around the hair's skull centre:
+		// per direction, the distance to the outermost head surface.
+		const auto& asset = *a_instance.asset;
+		a_instance.headFieldSerial = asset.serial;
+		a_instance.headField.reset();
+		const auto log = [&](std::string_view a_text) {
+			if (a_instance.isPlayer)
+				logger::info("[HairStrands] {}: {}", a_instance.key.ToString(), a_text);
+			else
+				logger::debug("[HairStrands] {}: {}", a_instance.key.ToString(), a_text);
+		};
+		auto* userData = a_geometry->GetUserData();
+		auto* actor = userData ? userData->As<RE::Actor>() : nullptr;
+		if (!actor || asset.headBone < 0 || static_cast<uint32_t>(asset.headBone) >= a_skin->skinData->GetBoneCount())
+			return;
+		auto* face = FindFaceGeometry(actor);
+		auto* faceSkin = face ? face->GetGeometryRuntimeData().skinInstance.get() : nullptr;
+		if (!faceSkin || !faceSkin->skinData) {
+			log("no skinned head mesh; collision uses the head sphere");
+			return;
+		}
+		HairMeshData mesh;
+		std::string error;
+		if (!ExtractHairMesh(face, mesh, error)) {
+			log(std::format("head mesh {} unreadable ({}); collision uses the head sphere", face->name.c_str(), error));
+			return;
+		}
+		const int32_t faceHead = FindBone(mesh.boneNames, "npc head");
+		if (faceHead < 0) {
+			log(std::format("head mesh {} is not skinned to the head bone; collision uses the head sphere", face->name.c_str()));
+			return;
+		}
+
+		// Head mesh skin space -> head bone -> the hair's skin space. Bind poses only: the field
+		// rides the head bone, whatever pose either mesh is drawn in.
+		const RE::NiTransform toHair = a_skin->skinData->GetBoneDataSkinToBone(asset.headBone).Invert() * faceSkin->skinData->GetBoneDataSkinToBone(faceHead);
+		std::vector<float3> points(mesh.positions.size());
+		std::vector<uint8_t> onHead(mesh.positions.size(), 0);
+		for (size_t v = 0; v < points.size(); ++v) {
+			float headWeight = 0.0f;
+			for (int i = 0; i < 4; ++i)
+				headWeight += mesh.boneIndices[v][i] == faceHead ? mesh.boneWeights[v][i] : 0.0f;
+			const auto& position = mesh.positions[v];
+			const RE::NiPoint3 p = toHair * RE::NiPoint3(position.x, position.y, position.z);
+			points[v] = float3(p.x, p.y, p.z) - asset.headCentre;
+			onHead[v] = headWeight >= kHeadFieldMinHeadWeight;
+		}
+
+		// Splat points over every head triangle; each texel keeps the outermost.
+		constexpr uint32_t size = kHeadFieldSize;
+		std::vector<float> field(size * size, 0.0f);
+		const auto splat = [&](const float3& a_point) {
+			const float radius = a_point.Length();
+			if (!(radius > 1e-3f) || radius > kHeadFieldMaxRadius)
+				return;
+			const float2 uv = OctahedralUV(a_point / radius);
+			const uint32_t x = std::min(static_cast<uint32_t>(std::max(uv.x, 0.0f) * size), size - 1);
+			const uint32_t y = std::min(static_cast<uint32_t>(std::max(uv.y, 0.0f) * size), size - 1);
+			field[y * size + x] = std::max(field[y * size + x], radius);
+		};
+		for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+			const uint32_t i0 = mesh.indices[t], i1 = mesh.indices[t + 1], i2 = mesh.indices[t + 2];
+			if (i0 >= points.size() || i1 >= points.size() || i2 >= points.size() || !onHead[i0] || !onHead[i1] || !onHead[i2])
+				continue;
+			const float3 a = points[i0], ab = points[i1] - a, ac = points[i2] - a;
+			const float longest = std::max({ ab.Length(), ac.Length(), (ac - ab).Length() });
+			if (!std::isfinite(longest) || longest > kHeadFieldMaxRadius)
+				continue;
+			const uint32_t steps = std::clamp(static_cast<uint32_t>(std::ceil(longest / kHeadFieldSampleSpacing)), 1u, 64u);
+			for (uint32_t i = 0; i <= steps; ++i) {
+				for (uint32_t j = 0; i + j <= steps; ++j)
+					splat(a + ab * (static_cast<float>(i) / steps) + ac * (static_cast<float>(j) / steps));
+			}
+		}
+
+		// Close small holes (eye sockets, the mouth) from their surroundings. A texel needs at
+		// least four filled neighbours, so the straight edge of the neck opening does not grow.
+		for (uint32_t pass = 0; pass < kHeadFieldFillPasses; ++pass) {
+			std::vector<float> filled = field;
+			for (uint32_t y = 0; y < size; ++y) {
+				for (uint32_t x = 0; x < size; ++x) {
+					if (field[y * size + x] > 0.0f)
+						continue;
+					float sum = 0.0f;
+					uint32_t count = 0;
+					for (uint32_t ny = y ? y - 1 : 0; ny <= std::min(y + 1, size - 1); ++ny) {
+						for (uint32_t nx = x ? x - 1 : 0; nx <= std::min(x + 1, size - 1); ++nx) {
+							if (field[ny * size + nx] > 0.0f) {
+								sum += field[ny * size + nx];
+								++count;
+							}
+						}
+					}
+					if (count >= 4)
+						filled[y * size + x] = sum / count;
+				}
+			}
+			field.swap(filled);
+		}
+
+		std::vector<float> radii;
+		std::ranges::copy_if(field, std::back_inserter(radii), [](float a_radius) { return a_radius > 0.0f; });
+		const float coverage = static_cast<float>(radii.size()) / field.size();
+		if (coverage < kHeadFieldMinCoverage) {
+			log(std::format("head mesh {} covers only {:.0f}% of directions; collision uses the head sphere", face->name.c_str(), coverage * 100.0f));
+			return;
+		}
+		// A head round the hair's skull centre has a median radius near the sphere fitted inside
+		// the hair. Anything else means the two meshes do not share that centre.
+		std::ranges::nth_element(radii, radii.begin() + radii.size() / 2);
+		const float median = radii[radii.size() / 2];
+		if (!(median > asset.headRadius * kHeadFieldMinMedianRatio && median < asset.headRadius * kHeadFieldMaxMedianRatio)) {
+			log(std::format("head mesh {} does not sit round the hair's skull centre (median radius {:.1f}, head sphere {:.1f}); collision uses the head sphere", face->name.c_str(), median, asset.headRadius));
+			return;
+		}
+		// Long ears, muzzles and horns: hair passing into their directions would be thrown out
+		// to their tips.
+		for (auto& radius : field)
+			radius = std::min(radius, median * kHeadFieldMaxRadiusRatio);
+		D3D11_SUBRESOURCE_DATA init{ field.data(), 0, 0 };
+		try {
+			a_instance.headField = std::make_unique<Buffer>(StructuredDesc(sizeof(float), size * size, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0), &init, "HairStrands::HeadField");
+			a_instance.headField->CreateSRV(BufferSRVDesc(size * size));
+		} catch (const std::exception& e) {
+			a_instance.headField.reset();
+			logger::error("[HairStrands] Could not create the head field: {}", e.what());
+			return;
+		}
+		log(std::format("head collider from head mesh {} ({:.0f}% of directions)", face->name.c_str(), coverage * 100.0f));
+	}
+
 	uint32_t StrandRenderer::GatherColliders(const Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, float4* o_colliders) const
 	{
 		uint32_t count = 0;
@@ -1134,13 +1336,15 @@ namespace Strands
 			++count;
 		};
 
-		// The head: a sphere round the skull centre, fitted just inside the strands when they
-		// were generated.
+		// The head: without the head field, a sphere round the skull centre, fitted just inside
+		// the strands when they were generated.
 		const auto& asset = *a_instance.asset;
-		const float4* rows = &a_palette[a_frameBone * 3];
-		const float4 centre(asset.headCentre.x, asset.headCentre.y, asset.headCentre.z, 1.0f);
-		const float3 headCentre(rows[0].Dot(centre), rows[1].Dot(centre), rows[2].Dot(centre));
-		add(headCentre, headCentre, asset.headRadius * float3(rows[0].x, rows[1].x, rows[2].x).Length());
+		if (!a_instance.headField) {
+			const float4* rows = &a_palette[a_frameBone * 3];
+			const float4 centre(asset.headCentre.x, asset.headCentre.y, asset.headCentre.z, 1.0f);
+			const float3 headCentre(rows[0].Dot(centre), rows[1].Dot(centre), rows[2].Dot(centre));
+			add(headCentre, headCentre, asset.headRadius * float3(rows[0].x, rows[1].x, rows[2].x).Length());
+		}
 
 		// The body, from the head bone down its humanoid skeleton. The radii are well inside a
 		// body, and the shader never pushes a point further out than its own target lies.
@@ -1423,7 +1627,11 @@ namespace Strands
 		// Once per rendered frame, in whichever of the hair's passes comes first.
 		if (a_instance.lastSkinnedFrame != RenderFrame()) {
 			a_instance.lastSkinnedFrame = RenderFrame();
-			a_instance.drawThisFrame = EnsureInstanceBuffers(a_instance) && UpdateLod(a_instance, a_geometry) && Skin(a_instance, a_skin);
+			a_instance.drawThisFrame = EnsureInstanceBuffers(a_instance) && UpdateLod(a_instance, a_geometry);
+			// Only hair drawn and simulated reads its actor's head mesh.
+			if (a_instance.drawThisFrame && a_instance.simWeight > 0.0f && settings.collision && a_instance.style.simulate && a_instance.headFieldSerial != a_instance.asset->serial)
+				BuildHeadField(a_instance, a_geometry, a_skin);
+			a_instance.drawThisFrame = a_instance.drawThisFrame && Skin(a_instance, a_skin);
 			if (a_instance.drawThisFrame) {
 				strandsThisFrame += a_instance.activeStrands;
 				++drawnThisFrame;

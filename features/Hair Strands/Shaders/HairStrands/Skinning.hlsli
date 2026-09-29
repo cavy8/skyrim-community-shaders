@@ -7,10 +7,13 @@
 #include "HairStrands/Common.hlsli"
 
 #define HAIR_STRANDS_MAX_COLLIDERS 8
+// Texels per side of the head field's octahedral map (kHeadFieldSize).
+#define HAIR_STRANDS_HEAD_FIELD_SIZE 64
 
-#define HAIR_STRANDS_FLAG_FOLLOW 1   // strands follow their simulated guides
-#define HAIR_STRANDS_FLAG_RESET 2    // guides restart from their targets
-#define HAIR_STRANDS_FLAG_COLLIDE 4  // guides keep out of the colliders
+#define HAIR_STRANDS_FLAG_FOLLOW 1      // strands follow their simulated guides
+#define HAIR_STRANDS_FLAG_RESET 2       // guides restart from their targets
+#define HAIR_STRANDS_FLAG_COLLIDE 4     // guides keep out of the colliders
+#define HAIR_STRANDS_FLAG_HEAD_FIELD 8  // every strand keeps out of the head field (t4)
 
 // Mirrors Strands::SkinCB (StrandRenderer.h).
 cbuffer SkinCB : register(b0)
@@ -46,6 +49,9 @@ cbuffer SkinCB : register(b0)
 	uint Steps;          // 0 while paused
 	float SwingDamping;  // velocity relative to the target lost per 1/60 s
 
+	float3 HeadFieldCentre;  // skin space: where the head field's directions start
+	float HeadFieldPad;
+
 	// Capsules, camera-relative: (end A, radius), (end B, unused). A sphere has A = B.
 	float4 Colliders[HAIR_STRANDS_MAX_COLLIDERS * 2];
 };
@@ -55,9 +61,27 @@ StructuredBuffer<HairStrands::RestPoint> RestPoints : register(t0);
 // then BoneCount rows for the previous frame (relative to the previous frame's camera).
 StructuredBuffer<float4> Palette : register(t1);
 StructuredBuffer<HairStrands::StrandInfo> Strands : register(t2);
+// The actor's head mesh, rigid on the head bone: per direction from HeadFieldCentre (an
+// octahedral map, HAIR_STRANDS_HEAD_FIELD_SIZE texels a side), the distance in skin units to
+// its outermost surface; 0 where the head has none (the neck opening).
+StructuredBuffer<float> HeadField : register(t4);
 
 namespace HairStrandsSkin
 {
+	// A point is never pushed deeper than its target already lies inside a collider, and never
+	// left deeper than this fraction of the collider's radius: the styled shape never collides.
+	static const float MinColliderDepth = 0.5;
+
+	float3x3 Inverse(float3x3 a_m)
+	{
+		const float3 c0 = cross(a_m[1], a_m[2]);
+		const float3 c1 = cross(a_m[2], a_m[0]);
+		const float3 c2 = cross(a_m[0], a_m[1]);
+		const float det = dot(a_m[0], c0);
+		if (abs(det) < 1e-12)
+			return float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+		return transpose(float3x3(c0, c1, c2)) / det;
+	}
 	float3x4 LoadBone(uint a_bone, uint a_base)
 	{
 		uint row = a_base + a_bone * 3;
@@ -109,6 +133,70 @@ namespace HairStrandsSkin
 	{
 		const float lengthSquared = dot(a_v, a_v);
 		return lengthSquared > 1e-12 ? a_v * rsqrt(lengthSquared) : a_fallback;
+	}
+
+	// Octahedral map of a unit direction to [0, 1]^2 (StrandRenderer's OctahedralUV).
+	float2 HeadFieldUV(float3 a_direction)
+	{
+		const float3 d = a_direction / max(abs(a_direction.x) + abs(a_direction.y) + abs(a_direction.z), 1e-8);
+		float2 p = d.xy;
+		if (d.z < 0.0)
+			p = (1.0 - abs(d.yx)) * float2(d.x >= 0.0 ? 1.0 : -1.0, d.y >= 0.0 ? 1.0 : -1.0);
+		return p * 0.5 + 0.5;
+	}
+
+	// Distance from HeadFieldCentre to the head's surface along a unit direction (skin units).
+	float HeadSurface(float3 a_direction)
+	{
+		const int size = HAIR_STRANDS_HEAD_FIELD_SIZE;
+		const float2 texel = HeadFieldUV(a_direction) * size - 0.5;
+		const float2 base = floor(texel);
+		const float2 f = texel - base;
+		const int2 a = clamp(int2(base), 0, size - 1);
+		const int2 b = clamp(int2(base) + 1, 0, size - 1);
+		const float top = lerp(HeadField[a.y * size + a.x], HeadField[a.y * size + b.x], f.x);
+		const float bottom = lerp(HeadField[b.y * size + a.x], HeadField[b.y * size + b.x], f.x);
+		return lerp(top, bottom, f.y);
+	}
+
+	// The head bone's frame, which the head field is rigid in: skin space to camera-relative and back.
+	struct HeadFrame
+	{
+		float3x3 fromSkin;
+		float3x3 toSkin;
+		float3 origin;
+	};
+
+	HeadFrame LoadHeadFrame(uint a_base)
+	{
+		const float3x4 head = LoadBone(HeadBone, a_base);
+		HeadFrame frame;
+		frame.fromSkin = (float3x3)head;
+		frame.toSkin = Inverse(frame.fromSkin);
+		frame.origin = float3(head[0].w, head[1].w, head[2].w);
+		return frame;
+	}
+
+	// How far a camera-relative point lies inside the head (skin units, 0 outside).
+	float HeadDepth(float3 a_p, HeadFrame a_head)
+	{
+		const float3 q = mul(a_head.toSkin, a_p - a_head.origin) - HeadFieldCentre;
+		const float distance = length(q);
+		return distance > 1e-6 ? max(HeadSurface(q / distance) - distance, 0.0) : 0.0;
+	}
+
+	// Pushes a camera-relative point out of the head along the direction from the field's centre,
+	// to no less depth than a_targetDepth (its target's, from HeadDepth).
+	float3 CollideHead(float3 a_p, float a_targetDepth, HeadFrame a_head)
+	{
+		const float3 q = mul(a_head.toSkin, a_p - a_head.origin) - HeadFieldCentre;
+		const float distance = length(q);
+		const float3 direction = SafeNormalize(q, float3(0, 0, 1));
+		const float surface = HeadSurface(direction);
+		const float allowed = max(surface - a_targetDepth, surface * MinColliderDepth);
+		if (!(surface > 0.0) || distance >= allowed)
+			return a_p;
+		return a_head.origin + mul(a_head.fromSkin, HeadFieldCentre + direction * allowed);
 	}
 }
 

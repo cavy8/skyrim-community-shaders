@@ -153,6 +153,15 @@ to the target, in place of the fixed `RelativeDamping` of 0.2. Air drag is a fix
 [Physics](#physics-strandsimcshlsl). Styles saved before `0-2-6` hold an air drag value in
 `damping` (0.04-0.18): re-save them or their swings settle more slowly than the presets'.
 
+The same run showed hair going into the head while walking, and the front hair flying about
+(fixed in `0-2-7`). The head sphere is fitted inside the hair, so it lies well inside the
+forehead, face and back of the head. In the NumPy port a fringe pressed back by the walk went
+0.26-1.64 units into an ellipsoid head before the sphere stopped it, and with world drag at
+0.4 it went 2.5 units in and jittered. Only guides collided, and followers take their guide's
+displacement, so strands nearer the scalp than their guide went in further. Collision now uses
+the actor's own head mesh (see [Physics](#physics-strandsimcshlsl)), for guides and for every
+strand point: the fringe stays out of the head at 0.00 units.
+
 This is build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -168,6 +177,7 @@ This is build-verified, and the generator fixes are checked on real meshes (see
 | Decode the texture's alpha (any format, BC included, via DirectXTex) and fill its colour for strands | `DecodeCoverage` | worker | start of the generation job |
 | Generate strands, pick guide strands, fit the head collider | `StrandGenerator.cpp` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
 | Upload asset (strands, colour texture) | `StrandRenderer::BeginFrame` | render | when the job finishes |
+| Read the actor's head mesh into the head field | `BuildHeadField` | render, in `SetupGeometry` | once per actor and hair asset, with physics and collision on |
 | LOD, bone palette, colliders, simulation and skinning compute | `PrepareStrands` (`UpdateLod`, `Skin`, `PrepareSimulation`) | render, in `SetupGeometry` | first pass of the hair each rendered frame (depth prepass or lighting) |
 | Draw strand depth | `StrandRenderer::Draw` (depth only) | render, in the Utility `RestoreGeometry` | every Utility draw of the hair that writes depth (the depth prepass) |
 | Draw ribbons | `StrandRenderer::Draw` | render, in `RestoreGeometry` | every main-view lighting draw of the hair |
@@ -419,12 +429,32 @@ that amplified every bend of a short guide (see the `0-2-1` notes at the top).
 -   **Wind** is the weather's (`Sky::windSpeed`, `windAngle`; none indoors), up to 600
     units/s² at full wind speed × **Wind Strength** × `windResponse`. It pushes across the
     strand, stronger towards the tip, with slow gusts out of phase per strand.
--   **Collision.** The head sphere, and capsules found up the head bone's own skeleton:
+-   **Collision.** The head, and capsules found up the head bone's own skeleton:
     neck (neck → head, radius 3), chest (spine 2 → neck, 5.5), back (spine 1 → spine 2,
     6.5), shoulders (clavicle → upper arm, 3.5) and upper arms (upper arm → forearm, 3).
     Radii scale with the head bone's world scale. A point is pushed out to at most its own
-    target's distance from the collider, and never left deeper than half the radius, so the
+    target's depth inside the collider, and never left deeper than half the radius, so the
     styled shape itself never collides.
+-   **The head field.** The head is the actor's own head mesh (its Face head part: FaceGen
+    and RaceMenu morphs included), read once per actor and hair (`BuildHeadField`). It is
+    stored as a radial height field: a 64 × 64 octahedral map of directions from the hair's
+    skull centre (about 3° a texel), each holding the distance to the outermost head surface.
+    The mesh is brought into the hair's skin space through both meshes' bind poses on the
+    head bone, so the field rides the head bone rigidly; vertices less than half on the head
+    bone (the neck) are left out and the neck capsule covers them. Points 0.2 units apart over
+    every head triangle are splatted into it, each texel keeping the outermost; texels with
+    four or more filled neighbours are filled from them three times (eye sockets, the mouth),
+    and the neck opening stays empty (no collision). Radii are capped at 1.5× the median, so
+    ears, muzzles and horns cannot throw passing hair out to their tips. A point is pushed out
+    along its direction from the centre, never deeper than its target lies below the surface
+    at the target's own direction. Guides collide in the simulation, and every strand point is
+    kept out once more after following its guide (`StrandSkin.cs.hlsl`, previous positions
+    against last frame's head). On a synthetic head with eye holes (a mirror of the build and
+    lookup), the field is within +0.13 units of the true surface everywhere (median +0.04).
+    Without a head mesh skinned to the head bone, when it covers under half the directions,
+    or when its median radius is not within 0.7-2× the head sphere's (the meshes do not share
+    that centre), the head sphere is used as before; the reason is logged (info for the player,
+    debug for others).
 -   **Restarts.** A guide restarts from its targets when it is first simulated, after more
     than 2 frames unsimulated, when its asset changes, and (per strand, on the GPU) when
     its root moves more than 40 units in a frame (teleports, loads). Non-finite state falls
@@ -603,6 +633,11 @@ Check these first in game:
     the clavicles and arms under spine 2. Without them there is only the head sphere.
 -   The body collider radii (neck 3 to back 6.5) are guesses meant to sit inside any body.
     Hair floating off the shoulders means they are too large; hair through them, too small.
+-   The head field (`0-2-7`): the player's log should say `head collider from head mesh …
+    (N% of directions)`, with N around 85-90. The Face head part hangs under the face node by
+    its editor ID, its CPU vertex data is kept (as the hair's), and its skin lists
+    `NPC Head [Head]`. Hair pushed off the head by a constant gap, or into it, would mean the
+    bind-pose chain (hair skin → head bone → head mesh skin) is off.
 -   `RE::GetSecondsSinceLastFrame()` is real frame time, and `UI::GameIsPaused()` covers
     menus. Slow-motion kill cameras may play hair at full speed.
 
@@ -611,7 +646,8 @@ Check these first in game:
 -   Strand shadow maps and self-shadowing beyond Hair Specular's, and deep opacity maps.
     Cards cast the shadows.
 -   Hair-hair collision, and colliders fitted to the actual body mesh (breasts, armour,
-    weapons on the back). Colliders come from bones with fixed radii.
+    weapons on the back). Below the head, colliders come from bones with fixed radii. The
+    body is skinned to many bones, so a rigid field like the head's would not fit it.
 -   Wind from anything but the weather (spells, dragons, player speed beyond air drag).
 -   Wigs have no model path in their key (no head part), so they match on shape name and
     vertex/triangle count.

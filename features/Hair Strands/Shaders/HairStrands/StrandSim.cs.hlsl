@@ -8,7 +8,8 @@
 // with damping, gravity and wind) and pulled back into shape over a few iterations of a global
 // shape constraint (towards the target, strongest at the root), a local shape constraint (each
 // segment keeps its bend relative to the one before it), follow-the-leader length constraints
-// and collision. The root stays on its target.
+// and collision: with the head field (the actor's own head mesh, see Skinning.hlsli) and with
+// capsules down the body. The root stays on its target.
 //
 // The global shape stiffness falls from the root's to the tip's over FreeLength units of strand,
 // or over the whole strand if it is longer. Loads (air drag, gravity as the head tilts, wind,
@@ -54,9 +55,6 @@ namespace HairStrandsSim
 	// Strand length over which the shape stiffness falls from the root's to the tip's (about
 	// 28 cm, shoulder length): only hair further than this from the scalp swings fully free.
 	static const float FreeLength = 20.0;  // units
-	// A point is never pushed deeper than its target already lies inside a collider, and never
-	// left deeper than this fraction of the radius: the styled shape itself never collides.
-	static const float MinColliderDepth = 0.5;
 	static const float SixtiethOfASecond = 1.0 / 60.0;
 
 	// Stiffness authored for a 1/60 s step, for a step of a_step seconds (compliance form).
@@ -94,22 +92,11 @@ namespace HairStrandsSim
 			const float3 away = a_p - closest;
 			const float distance = length(away);
 			const float targetDistance = length(a_target - ClosestOnSegment(a_target, a, b));
-			const float allowed = max(min(radius, targetDistance), radius * MinColliderDepth);
+			const float allowed = max(min(radius, targetDistance), radius * HairStrandsSkin::MinColliderDepth);
 			if (distance < allowed)
 				a_p = closest + HairStrandsSkin::SafeNormalize(away, HairStrandsSkin::SafeNormalize(a_target - closest, float3(0, 0, 1))) * allowed;
 		}
 		return a_p;
-	}
-
-	float3x3 Inverse(float3x3 a_m)
-	{
-		const float3 c0 = cross(a_m[1], a_m[2]);
-		const float3 c1 = cross(a_m[2], a_m[0]);
-		const float3 c2 = cross(a_m[0], a_m[1]);
-		const float det = dot(a_m[0], c0);
-		if (abs(det) < 1e-12)
-			return float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
-		return transpose(float3x3(c0, c1, c2)) / det;
 	}
 
 	// Slow, uneven gusts, out of step from strand to strand; in [0.1, 1].
@@ -140,6 +127,10 @@ namespace HairStrandsSim
 	float relativeKeep[MAX_POINTS];  // velocity relative to the target kept per step
 	uint i;
 
+	// The head field rides the head bone: this frame's pose for every step.
+	const bool collideHead = (Flags & HAIR_STRANDS_FLAG_HEAD_FIELD) != 0;
+	const HairStrandsSkin::HeadFrame head = HairStrandsSkin::LoadHeadFrame(0);
+
 	// A root that jumped (teleport, load, animation snap) restarts the whole strand.
 	bool reset = (Flags & HAIR_STRANDS_FLAG_RESET) != 0;
 	if (!reset) {
@@ -168,7 +159,7 @@ namespace HairStrandsSim
 			velocity[i] = 0;
 			startTarget[i] = target[i];
 		} else {
-			const float3x3 motion = mul((float3x3)targetCurrent, HairStrandsSim::Inverse((float3x3)targetPrevious));
+			const float3x3 motion = mul((float3x3)targetCurrent, HairStrandsSkin::Inverse((float3x3)targetPrevious));
 			const float3 position = old.Position + EyeShift;
 			const float3 lastTarget = previousTarget + previousToCurrent;
 			const float3 carried = target[i] + mul(motion, position - lastTarget);
@@ -247,6 +238,8 @@ namespace HairStrandsSim
 					float3 fixedPoint = x[i - 1] + direction * length(restSegment);
 					if (collide)
 						fixedPoint = HairStrandsSim::Collide(fixedPoint, stepTarget);
+					if (collideHead)
+						fixedPoint = HairStrandsSkin::CollideHead(fixedPoint, HairStrandsSkin::HeadDepth(stepTarget, head), head);
 					x[i] = fixedPoint;
 				}
 			}

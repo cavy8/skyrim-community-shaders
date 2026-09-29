@@ -4,7 +4,8 @@ One 20-unit lock hangs from a head that stays still, sprints and stops, turns fa
 and turns into a shoulder capsule, at 30, 60, 144 and 240 fps. The solver must stay exactly
 on its target while still, never stretch, lag the same at every frame rate, and settle.
 Locks held still under a load (a tilted head, which gravity pulls like a steady wind) must
-come to rest rather than shake, even on a head on its side. Short scalp locks must keep their
+come to rest rather than shake, even on a head on its side. A fringe over the forehead must stay
+out of the head (an ellipsoid head field) while walking and sprinting. Short scalp locks must keep their
 shape through one step aside or a small turn, and once the head is still no lock may keep
 flicking back and forth.
 Then followers beside and longer than a short guide, through idle sway and snap turns, must
@@ -73,6 +74,39 @@ def collide(p, target, colliders):
     return p
 
 
+class HeadField:
+    """The head field (StrandRenderer::BuildHeadField, HairStrandsSkin::CollideHead) of an
+    ellipsoid head: per direction from the skull centre, the distance to the head's surface."""
+
+    def __init__(self, centre=(0.0, 0.0, 110.0), axes=(8.0, 10.0, 10.0), offset=(0.0, 1.0, -1.0)):
+        self.centre, self.axes, self.offset = np.array(centre), np.array(axes), np.array(offset)
+
+    def surface(self, d):
+        o = -self.offset
+        a = np.sum((d / self.axes) ** 2)
+        b = 2.0 * np.sum(d * o / self.axes ** 2)
+        c = np.sum((o / self.axes) ** 2) - 1.0
+        return (-b + math.sqrt(b * b - 4.0 * a * c)) / (2.0 * a)
+
+    def local(self, p, head):
+        return np.linalg.solve(head[:, :3], p - head[:, 3]) - self.centre
+
+    def depth(self, p, head):
+        q = self.local(p, head)
+        distance = np.linalg.norm(q)
+        return max(self.surface(q / distance) - distance, 0.0) if distance > 1e-6 else 0.0
+
+    def collide(self, p, target_depth, head):
+        q = self.local(p, head)
+        distance = np.linalg.norm(q)
+        direction = normalize(q, np.array([0, 0, 1.0]))
+        surface = self.surface(direction)
+        allowed = max(surface - target_depth, surface * MIN_COLLIDER_DEPTH)
+        if distance >= allowed:
+            return p
+        return head[:, 3] + head[:, :3] @ (self.centre + direction * allowed)
+
+
 def step_stiffness(per_sixtieth, step):
     if per_sixtieth >= 1.0:
         return 1.0
@@ -94,7 +128,7 @@ class Guide:
         # How far along the stiffness fall-off the tip gets (the shader reads StrandInfo.Length).
         self.reach = min(np.linalg.norm(np.diff(rest, axis=0), axis=1).sum() / FREE_LENGTH, 1.0)
 
-    def frame(self, head, head_previous, dt, style, colliders=()):
+    def frame(self, head, head_previous, dt, style, colliders=(), head_field=None):
         """One frame for one guide: head and head_previous are 3x4 skin-to-world transforms."""
         n = len(self.rest)
         last = n - 1
@@ -157,6 +191,8 @@ class Guide:
                     fixed = x[i - 1] + normalize(x[i] - x[i - 1], normalize(segment, np.array([0, 0, -1.0]))) * np.linalg.norm(segment)
                     if colliders:
                         fixed = collide(fixed, step_target[i], colliders)
+                    if head_field:
+                        fixed = head_field.collide(fixed, head_field.depth(step_target[i], head), head)
                     x[i] = fixed
             for i in range(1, n):
                 v[i] = (x[i] - start[i]) / h
@@ -319,6 +355,42 @@ def run_follower(motion, fps, seconds, length, offset):
     return worst_guide, worst_follower, min(lengths), max(lengths)
 
 
+def fringe(field, points=12, lift=0.3):
+    """A lock over the forehead (+Y), from the hairline down to the brow, lift units off the head."""
+    out = []
+    for elevation in np.radians(np.linspace(60.0, 5.0, points)):
+        d = np.array([0.0, math.cos(elevation), math.sin(elevation)])
+        out.append(field.centre + d * (field.surface(d) + lift))
+    return np.array(out)
+
+
+def walk(s):
+    """Walking forward (+Y) at 130 units/s after 0.3 s, with a 1.2-unit bob, surge and nod per step."""
+    y = 130.0 * s - 19.5 if s > 0.3 else 216.7 * s * s
+    return head_transform((0, y + math.sin(4 * math.pi * s), 1.2 * math.sin(4 * math.pi * s)), pitch=2.0 * math.sin(2 * math.pi * s), pivot=(0, 0, 100.0))
+
+
+def fringe_in_head(style, motion, collider, fps=60, seconds=4.0):
+    """How deep the fringe goes into the head (after 0.3 s), with the head sphere or the head field."""
+    field = HeadField()
+    guide = Guide(fringe(field))
+    previous = motion(0.0)
+    guide.frame(previous, previous, 1.0 / fps, style)
+    worst, deviation = 0.0, 0.0
+    for k in range(1, int(seconds * fps) + 1):
+        current = motion(k / fps)
+        if collider == "sphere":
+            centre = current[:, :3] @ field.centre + current[:, 3]
+            guide.frame(current, previous, 1.0 / fps, style, [(centre, centre, 8.0)])
+        else:
+            guide.frame(current, previous, 1.0 / fps, style, head_field=field)
+        previous = current
+        deviation = max(deviation, np.linalg.norm(guide.x - guide.target, axis=1).max())
+        if k / fps > 0.3:
+            worst = max(worst, max(field.depth(p, current) for p in guide.x))
+    return worst, deviation
+
+
 def peak_deviation(rest, motion, fps, seconds=2.0):
     """The furthest any point gets from its target through a motion, as a fraction of the lock's length."""
     guide = Guide(rest)
@@ -397,6 +469,16 @@ def main():
     log = run(STRAIGHT, 60, turn, 3.0, shoulder)
     closest = min(min(np.linalg.norm(p - closest_on_segment(p, shoulder[0][0], shoulder[0][1])) for p in r[3]) for r in log)
     check("collision keeps points out of the capsule core", closest >= 3.5 * MIN_COLLIDER_DEPTH - 1e-3, f"closest {closest:.2f} (floor {3.5 * MIN_COLLIDER_DEPTH:.2f})")
+
+    # The head sphere lies inside the forehead (it is fitted inside the hair), so a fringe pressed
+    # back went into the head before it stopped. The head field is the head's own surface.
+    depth, deviation = fringe_in_head(STRAIGHT, still, "field")
+    check("fringe held still stays on target with the head field", deviation < 1e-4, f"max deviation {deviation:.2e}")
+    for motion_name, motion in (("walking", walk), ("sprinting", sprint)):
+        for style_name, style in (("straight", STRAIGHT), ("locs", LOCS)):
+            sphere, _ = fringe_in_head(style, motion, "sphere")
+            depth, _ = fringe_in_head(style, motion, "field")
+            check(f"{style_name} fringe stays out of the head {motion_name}", depth <= 0.05, f"{depth:.2f} units deep (head sphere: {sphere:.2f})")
 
     # Under a steady load the lock must come to rest. Dynamic follow-the-leader damping fed each
     # length correction back into the velocity of the point before; with the shape and bend

@@ -77,9 +77,10 @@ namespace Strands
 	{
 		enum Flags : uint32_t
 		{
-			kFollow = 1,   // strands follow their simulated guides
-			kReset = 2,    // guides restart from their targets
-			kCollide = 4,  // guides keep out of the colliders
+			kFollow = 1,     // strands follow their simulated guides
+			kReset = 2,      // guides restart from their targets
+			kCollide = 4,    // guides keep out of the colliders
+			kHeadField = 8,  // every strand keeps out of the head field (t4)
 		};
 
 		uint32_t pointCount;
@@ -113,10 +114,13 @@ namespace Strands
 		uint32_t steps;
 		float swingDamping;
 
+		float3 headFieldCentre;  // skin space
+		float headFieldPad;
+
 		float4 colliders[kMaxColliders * 2];
 	};
 	STATIC_ASSERT_ALIGNAS_16(SkinCB);
-	static_assert(sizeof(SkinCB) == 128 + kMaxColliders * 32);
+	static_assert(sizeof(SkinCB) == 144 + kMaxColliders * 32);
 
 	/** @brief Global options the renderer reads every frame (owned by the HairStrands feature). */
 	struct RenderSettings
@@ -274,7 +278,14 @@ namespace Strands
 		 * @return false if the hair is not simulated this frame (plain skinning).
 		 */
 		bool PrepareSimulation(Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb);
-		/** @brief The head sphere and, when the hair hangs from a humanoid head, neck, torso and arm capsules. */
+		/**
+		 * @brief Builds a_instance's head field from its actor's head mesh (the Face head part),
+		 * once per asset. Leaves it empty, and the head sphere in use, if the actor has no
+		 * readable head mesh skinned to the hair's head bone.
+		 * @param a_skin The skin instance of the hair being drawn (its head bone's bind pose).
+		 */
+		void BuildHeadField(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin);
+		/** @brief The head sphere (without a head field) and, when the hair hangs from a humanoid head, neck, torso and arm capsules. */
 		uint32_t GatherColliders(const Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, float4* o_colliders) const;
 		/** @brief Draws the strands with the bound pass state; a_depthOnly draws depth alone, and only if the pass writes depth. */
 		void Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport, bool a_depthOnly);

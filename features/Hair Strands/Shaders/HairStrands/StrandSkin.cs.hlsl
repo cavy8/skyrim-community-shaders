@@ -8,6 +8,10 @@
 // The guide's rotation turns only the normal. Turning the offset from the guide with it would
 // make the offset a lever: a strand beside a short guide, or longer than it, would swing and
 // stretch by the offset times every bend of the guide.
+//
+// Only guides collide in the simulation. A strand nearer the scalp than its guide can be
+// carried into the head by the guide's displacement, so each strand point is also kept out of
+// the head field (never deeper than its own target lies).
 
 #include "HairStrands/Skinning.hlsli"
 
@@ -49,8 +53,15 @@ RWStructuredBuffer<HairStrands::SkinnedPoint> Skinned : register(u0);
 		const HairStrands::GuidePoint a = Guides[guide * PointsPerStrand + j];
 		const HairStrands::GuidePoint b = Guides[guide * PointsPerStrand + j + 1];
 
-		const float3 followed = target + lerp(a.Position - a.Target, b.Position - b.Target, w);
-		const float3 followedPrevious = previousTarget + lerp(a.PreviousPosition - a.PreviousTarget, b.PreviousPosition - b.PreviousTarget, w);
+		float3 followed = target + lerp(a.Position - a.Target, b.Position - b.Target, w);
+		float3 followedPrevious = previousTarget + lerp(a.PreviousPosition - a.PreviousTarget, b.PreviousPosition - b.PreviousTarget, w);
+		// The guide's displacement can carry a strand lying closer to the scalp into the head.
+		if (Flags & HAIR_STRANDS_FLAG_HEAD_FIELD) {
+			const HairStrandsSkin::HeadFrame head = HairStrandsSkin::LoadHeadFrame(0);
+			const HairStrandsSkin::HeadFrame previousHead = HairStrandsSkin::LoadHeadFrame(BoneCount * 3);
+			followed = HairStrandsSkin::CollideHead(followed, HairStrandsSkin::HeadDepth(target, head), head);
+			followedPrevious = HairStrandsSkin::CollideHead(followedPrevious, HairStrandsSkin::HeadDepth(previousTarget, previousHead), previousHead);
+		}
 		const float4 rotation = normalize(lerp(a.Rotation, dot(a.Rotation, b.Rotation) < 0.0 ? -b.Rotation : b.Rotation, w));
 
 		result.Position = lerp(result.Position, followed, SimWeight);
