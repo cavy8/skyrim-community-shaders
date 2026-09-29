@@ -208,6 +208,12 @@ namespace Strands
 		 * so the shadow mask and other screen-space passes see the strands. Shadow maps keep the cards.
 		 */
 		void OnUtilitySetupGeometry(RE::BSRenderPass* a_pass);
+		/**
+		 * @brief After the game's BSEffectShader::SetupGeometry: hides effect shaders drawn over
+		 * hair that draws strands (magic effect membranes, overlays such as dirt and blood). They
+		 * follow the cards' geometry, which the strands replace.
+		 */
+		void OnEffectSetupGeometry(RE::BSRenderPass* a_pass);
 
 		/** @brief Drops every compiled shader so edited HLSL is recompiled. */
 		void ClearShaders();
@@ -245,6 +251,8 @@ namespace Strands
 		std::shared_ptr<Asset> RequestAsset(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry);
 		/** @brief True if a_layer's twin (same actor, same mesh counts) drew strands this frame or the last. */
 		bool TwinDrawsStrands(const Instance& a_layer) const;
+		/** @brief True if a_instance drew strands this frame or the last. */
+		static bool DrawsStrands(const Instance& a_instance);
 		void HideCards(RE::BSRenderPass* a_pass);
 		/** @brief The viewport the hidden cards would have used, for the strands drawn in their place. */
 		bool GetCardViewport(D3D11_VIEWPORT& o_viewport);

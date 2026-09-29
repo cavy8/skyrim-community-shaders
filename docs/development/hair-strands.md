@@ -109,6 +109,12 @@ The second run (`0-2-2`) showed:
     shook at a 5° tilt. Without that damping none did, at 30, 60, 144 and 240 fps. Velocity
     relative to the target now loses 0.2 per 1/60 s instead. See
     [Physics](#physics-strandsimcshlsl).
+-   Dirt and Blood's overlays drew in the shape of the hidden cards (fixed in `0-2-4`). Its
+    spells play effect shaders (11 `EFSH` records in its plugin). An effect shader on an
+    actor sets `effectData` on each shape's shader property, and the engine draws that
+    shape again with `BSEffectShader`. Only the Lighting and Utility passes were hooked.
+    Effect passes over hair that draws strands are now hidden. See
+    [Why it is built this way](#why-it-is-built-this-way).
 
 This is build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
@@ -190,6 +196,12 @@ Everything lives in `src/Features/HairStrands.{h,cpp}` (feature, settings, UI) a
     lighting permutation that last drew the hair. If this frame's permutation is still
     compiling, the lighting pass shades with those too, because the cards cannot come back
     once their depth is gone.
+-   **Effect shaders over the hair are hidden with the cards.** A magic effect membrane or
+    an overlay such as Dirt and Blood's draws the hair's own geometry again with
+    `BSEffectShader`, so it traces the cards. A hook on `BSEffectShader` slots 6 and 7
+    hides that pass with the same viewport trick when the hair (for a layer, its twin) drew
+    strands this frame or the last. Reflections keep the cards, and so their effects. The
+    effect does not show on the strands at all (see [Not done](#not-done-candidates)).
 -   **Strands bring their own depth state.** The hair's lighting pass tests depth with
     `EQUAL`. The strand draw uses the pass's own depth-stencil state with writes on and
     `EQUAL` widened to `LESS_EQUAL`, or `GREATER_EQUAL` when the projection is reversed
@@ -542,3 +554,6 @@ Check these first in game:
 -   Beards and other facial hair keep their cards. They would need their own flow and
     density rules, since beard cards lie flat on the skin.
 -   Model-space-normal hair permutations keep their cards.
+-   Effect shaders on strand hair (magic effect membranes, Dirt and Blood) are hidden, not
+    drawn on the strands. That needs a strand variant of `Effect.hlsl`, as
+    `StrandLighting.hlsl` is of `Lighting.hlsl`, with its own membrane permutations.

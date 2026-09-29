@@ -699,11 +699,15 @@ namespace Strands
 	bool StrandRenderer::TwinDrawsStrands(const Instance& a_layer) const
 	{
 		for (const auto& [geometry, other] : instances) {
-			if (other->isHair && other->actorId == a_layer.actorId && other->key.vertexCount == a_layer.key.vertexCount && other->key.triangleCount == a_layer.key.triangleCount &&
-				other->drawThisFrame && other->lastSkinnedFrame != UINT32_MAX && RenderFrame() - other->lastSkinnedFrame <= 1)
+			if (other->isHair && other->actorId == a_layer.actorId && other->key.vertexCount == a_layer.key.vertexCount && other->key.triangleCount == a_layer.key.triangleCount && DrawsStrands(*other))
 				return true;
 		}
 		return false;
+	}
+
+	bool StrandRenderer::DrawsStrands(const Instance& a_instance)
+	{
+		return a_instance.drawThisFrame && a_instance.lastSkinnedFrame != UINT32_MAX && RenderFrame() - a_instance.lastSkinnedFrame <= 1;
 	}
 
 	void StrandRenderer::ResolveStyle(Instance& a_instance)
@@ -1481,6 +1485,29 @@ namespace Strands
 		currentVariant = variant;
 		currentDepthOnly = true;
 		HideCards(a_pass);
+	}
+
+	void StrandRenderer::OnEffectSetupGeometry(RE::BSRenderPass* a_pass)
+	{
+		RestoreHiddenViewport();
+
+		// An effect shader on the hair's shader property draws the cards' geometry again with
+		// its own textures: a membrane from a magic effect, or an overlay such as dirt and blood.
+		// The strands have no such pass, and the cards must not show: the effect is hidden with
+		// them. Reflections keep the cards, and their effects.
+		auto* state = globals::state;
+		if (state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections))
+			return;
+		auto* geometry = a_pass->geometry;
+		if (!geometry)
+			return;
+		auto it = instances.find(geometry);
+		auto* skin = geometry->GetGeometryRuntimeData().skinInstance.get();
+		if (it == instances.end() || !skin || !skin->skinPartition || it->second->skinInstance != skin || it->second->vertexCount != skin->skinPartition->vertexCount)
+			return;
+		const Instance& instance = *it->second;
+		if (instance.layer ? TwinDrawsStrands(instance) : instance.isHair && DrawsStrands(instance))
+			HideCards(a_pass);
 	}
 
 	void StrandRenderer::HideCards(RE::BSRenderPass* a_pass)

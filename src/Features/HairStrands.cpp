@@ -85,6 +85,9 @@ void HairStrands::PostPostLoad()
 	// The depth prepass (Utility shader) must not keep the outline of cards the strands replace.
 	stl::write_vfunc<0x6, Hooks::BSUtilityShader_SetupGeometry>(RE::VTABLE_BSUtilityShader[0]);
 	stl::write_vfunc<0x7, Hooks::BSUtilityShader_RestoreGeometry>(RE::VTABLE_BSUtilityShader[0]);
+	// Effect shaders drawn over the hair (magic effect membranes, dirt and blood) follow the cards.
+	stl::write_vfunc<0x6, Hooks::BSEffectShader_SetupGeometry>(RE::VTABLE_BSEffectShader[0]);
+	stl::write_vfunc<0x7, Hooks::BSEffectShader_RestoreGeometry>(RE::VTABLE_BSEffectShader[0]);
 	hooksInstalled = true;
 	logger::info("[HairStrands] Installed hooks; {} authored style entries", library.GetEntryCount());
 }
@@ -115,6 +118,22 @@ void HairStrands::Hooks::BSUtilityShader_SetupGeometry::thunk(RE::BSShader* This
 }
 
 void HairStrands::Hooks::BSUtilityShader_RestoreGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
+{
+	auto& feature = globals::features::hairStrands;
+	if (feature.settings.Enable && feature.renderer)
+		feature.renderer->OnRestoreGeometry(Pass);
+	func(This, Pass, RenderFlags);
+}
+
+void HairStrands::Hooks::BSEffectShader_SetupGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
+{
+	func(This, Pass, RenderFlags);
+	auto& feature = globals::features::hairStrands;
+	if (feature.settings.Enable && feature.renderer)
+		feature.renderer->OnEffectSetupGeometry(Pass);
+}
+
+void HairStrands::Hooks::BSEffectShader_RestoreGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
 	auto& feature = globals::features::hairStrands;
 	if (feature.settings.Enable && feature.renderer)
