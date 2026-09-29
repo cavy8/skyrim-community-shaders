@@ -386,7 +386,7 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		changed |= ImGui::SliderFloat(T(TKEY("style_root_stiffness"), "Root Stiffness"), &a_style.rootStiffness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("style_root_stiffness_tooltip"), "How firmly strands hold their styled shape near the roots. 1 is rigid."));
 		changed |= ImGui::SliderFloat(T(TKEY("style_tip_stiffness"), "Tip Stiffness"), &a_style.tipStiffness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-		tooltip(T(TKEY("style_tip_stiffness_tooltip"), "How firmly strands hold their styled shape at the tips. Low values let the ends\nswing freely."));
+		tooltip(T(TKEY("style_tip_stiffness_tooltip"), "How firmly strands hold their styled shape at the tips. Low values let the ends\nswing freely. Reached 20 units (about 28 cm) from the root: shorter strands stay stiffer."));
 		changed |= ImGui::SliderFloat(T(TKEY("style_bend_stiffness"), "Bend Stiffness"), &a_style.bendStiffness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("style_bend_stiffness_tooltip"), "How firmly each strand keeps its own curve as it moves. High values keep curls\nand waves springy; low values let strands fold."));
 		changed |= ImGui::SliderFloat(T(TKEY("style_damping"), "Damping"), &a_style.damping, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);

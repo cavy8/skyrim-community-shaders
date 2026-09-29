@@ -4,8 +4,11 @@ One 20-unit lock hangs from a head that stays still, sprints and stops, turns fa
 and turns into a shoulder capsule, at 30, 60, 144 and 240 fps. The solver must stay exactly
 on its target while still, never stretch, lag the same at every frame rate, and settle.
 Locks held still under a load (a tilted head, which gravity pulls like a steady wind) must
-come to rest rather than shake. Then followers beside and longer than a short guide, through
-idle sway and snap turns, must stray no further than their guide and keep their length.
+come to rest rather than shake, even on a head on its side. Short scalp locks must keep their
+shape through one step aside or a small turn, and once the head is still no lock may keep
+flicking back and forth.
+Then followers beside and longer than a short guide, through idle sway and snap turns, must
+stray no further than their guide and keep their length.
 
 Keep the port in step with features/Hair Strands/Shaders/HairStrands/StrandSim.cs.hlsl,
 StrandSkin.cs.hlsl and StrandRenderer::PrepareSimulation; pass --verbose for the time series.
@@ -24,7 +27,9 @@ STEP = 1.0 / 60.0  # kSimStep
 MAX_FRAME = 1.0 / 30.0  # kMaxFrameTime
 GRAVITY = 687.0  # kGravity
 RELATIVE_DAMPING = 0.2
+BEND_DAMPING = 0.8
 MAX_SPEED = 3000.0
+FREE_LENGTH = 20.0
 MIN_COLLIDER_DEPTH = 0.5
 TELEPORT = 40.0
 
@@ -86,6 +91,8 @@ class Guide:
         self.rest = np.c_[rest, np.ones(len(rest))]
         self.x = None
         self.v = np.zeros((len(rest), 3))
+        # How far along the stiffness fall-off the tip gets (the shader reads StrandInfo.Length).
+        self.reach = min(np.linalg.norm(np.diff(rest, axis=0), axis=1).sum() / FREE_LENGTH, 1.0)
 
     def frame(self, head, head_previous, dt, style, colliders=()):
         """One frame for one guide: head and head_previous are 3x4 skin-to-world transforms."""
@@ -112,7 +119,7 @@ class Guide:
             x[i] = self.x[i] + (carried - self.x[i]) * carry
             v[i] = self.v[i] + (motion @ self.v[i] - self.v[i]) * carry
             start_target[i] = previous_target[i] + (target[i] - previous_target[i]) * carry
-            shape = style["root"] + (style["tip"] - style["root"]) * i / last
+            shape = style["root"] + (style["tip"] - style["root"]) * i / last * self.reach
             shape_step = step_stiffness(shape, h)
             stiffness[i] = per_iteration(shape_step)
             total = 1.0 - (1.0 - shape) * (1.0 - style["bend"])
@@ -124,6 +131,7 @@ class Guide:
         gravity = (np.array([0, 0, -1.0]) - down) * GRAVITY * style["gravity"]
         keep = (1.0 - style["damping"]) ** (h * 60.0)
         bend = per_iteration(step_stiffness(style["bend"], h))
+        bend_keep = (1.0 - BEND_DAMPING) ** (h * 60.0)
         for k in range(steps):
             at = lambda f: start_target + (target - start_target) * f
             step_from, step_target = at(k / steps), at((k + 1) / steps)
@@ -151,10 +159,25 @@ class Guide:
                         fixed = collide(fixed, step_target[i], colliders)
                     x[i] = fixed
             for i in range(1, n):
-                vi = (x[i] - start[i]) / h
-                speed = np.linalg.norm(vi)
-                v[i] = vi * (MAX_SPEED / speed) if speed > MAX_SPEED else vi
+                v[i] = (x[i] - start[i]) / h
             v[0] = 0
+            # Bending motion: relative to the targets, each point is pulled towards the velocity
+            # it would have if its segment turned with the one before it, root to tip.
+            target_velocity = (target - start_target) / (h * steps)
+            before, relative = np.zeros(3), v[1] - target_velocity[1]
+            for i in range(1, n - 1):
+                parent = x[i] - x[i - 1]
+                after = v[i + 1] - target_velocity[i + 1]
+                if parent @ parent > 1e-12:
+                    turn = np.cross(parent, relative - before) / (parent @ parent)
+                    rigid = relative + np.cross(turn, x[i + 1] - x[i])
+                    after = rigid + (after - rigid) * bend_keep
+                    v[i + 1] = target_velocity[i + 1] + after
+                before, relative = relative, after
+            for i in range(1, n):
+                speed = np.linalg.norm(v[i])
+                if speed > MAX_SPEED:
+                    v[i] *= MAX_SPEED / speed
         self.x, self.v, self.target = x, v, target
 
 
@@ -229,6 +252,17 @@ def snap(s):
     return head_transform(yaw=90.0 * (int(s) + min((s - int(s)) / 0.05, 1.0)))
 
 
+def small_step(s):
+    """One step aside: 15 units in 0.5 s from 0.2 s, then still."""
+    u = min(max((s - 0.2) / 0.5, 0.0), 1.0)
+    return head_transform((0, 15.0 * u * u * (3.0 - 2.0 * u), 0))
+
+
+def small_turn(s):
+    """A 15 degree turn in 0.25 s from 0.2 s, then still."""
+    return head_transform(yaw=15.0 * min(max((s - 0.2) / 0.25, 0.0), 1.0))
+
+
 def held(rest, style, pitch, roll, fps=60, seconds=5.0):
     """The worst frame-to-frame move of any point over the last second, the head held still and tilted."""
     head = head_transform(pitch=pitch, roll=roll, pivot=(0, 0, 110.0))
@@ -285,6 +319,48 @@ def run_follower(motion, fps, seconds, length, offset):
     return worst_guide, worst_follower, min(lengths), max(lengths)
 
 
+def peak_deviation(rest, motion, fps, seconds=2.0):
+    """The furthest any point gets from its target through a motion, as a fraction of the lock's length."""
+    guide = Guide(rest)
+    dt = 1.0 / fps
+    previous = motion(0.0)
+    guide.frame(previous, previous, dt, STRAIGHT)
+    worst = 0.0
+    for k in range(1, int(seconds * fps) + 1):
+        current = motion(k / fps)
+        guide.frame(current, previous, dt, STRAIGHT)
+        previous = current
+        worst = max(worst, np.linalg.norm(guide.x - guide.target, axis=1).max())
+    return worst / np.linalg.norm(np.diff(rest, axis=0), axis=1).sum()
+
+
+def turnbacks(rest, motion, still_from, fps, jitter, seconds=2.5):
+    """How often the tip turns back (moves of 0.005 units or more) once the head is still.
+
+    Frame times are jittered by the given fraction, as in game, so the step count changes
+    from frame to frame at 60 fps."""
+    rng = np.random.default_rng(7)
+    guide = Guide(rest)
+    previous = motion(0.0)
+    guide.frame(previous, previous, 1.0 / fps, STRAIGHT)
+    s, offset, move, last, count = 0.0, None, np.zeros(3), None, 0
+    while s < seconds:
+        dt = min(max((1.0 + jitter * rng.normal()) / fps, 0.002), MAX_FRAME)
+        s += dt
+        current = motion(s)
+        guide.frame(current, previous, dt, STRAIGHT)
+        previous = current
+        tip = guide.x[-1] - guide.target[-1]
+        if s > still_from and offset is not None:
+            move += tip - offset
+            if np.linalg.norm(move) >= 0.005:
+                if last is not None and move @ last < 0.0:
+                    count += 1
+                last, move = move, np.zeros(3)
+        offset = tip
+    return count
+
+
 def main():
     verbose = "--verbose" in sys.argv
     failures = []
@@ -324,13 +400,31 @@ def main():
 
     # Under a steady load the lock must come to rest. Dynamic follow-the-leader damping fed each
     # length correction back into the velocity of the point before; with the shape and bend
-    # constraints that kept tips shaking up to 2 units a frame with the head held still.
+    # constraints that kept tips shaking up to 2 units a frame with the head held still. A head
+    # on its side (anyone lying down) loads short segments hardest: a bend constraint moving both
+    # ends of each segment never came to rest there.
     t = np.linspace(0.0, 1.0, 20)
     hanging = np.c_[np.zeros(20), -3.0 - 2.0 * np.sin(t * math.pi * 0.5), 120.0 - 20.0 * t]
-    for rest_name, rest in (("3.8-unit scalp lock", scalp_lock()), ("20-unit lock", hanging)):
+    for rest_name, rest in (("1.5-unit scalp lock", scalp_lock(length=1.5)), ("3.8-unit scalp lock", scalp_lock()), ("20-unit lock", hanging)):
         for style_name, style in (("straight", STRAIGHT), ("locs", LOCS)):
-            worst = max(held(rest, style, pitch, roll) for pitch, roll in ((-20.0, 0.0), (-60.0, 0.0), (0.0, 70.0)))
+            worst = max(held(rest, style, pitch, roll) for pitch, roll in ((-20.0, 0.0), (-60.0, 0.0), (-90.0, 0.0), (0.0, 70.0)))
             check(f"{style_name} {rest_name} comes to rest on a tilted head", worst < 0.005, f"worst move {worst:.4f} per frame after 4 s")
+
+    # Loads move points about the same distance on any strand. With the stiffness falling over
+    # each strand's own length, a 3.8-unit lock swung 19% of its length off target on one step
+    # aside (a 20-unit lock: 6%), and a 1.5-unit lock 31%, its tip hooked over.
+    for rest_name, rest in (("3.8-unit scalp lock", scalp_lock()), ("1.5-unit scalp lock", scalp_lock(length=1.5))):
+        for motion_name, motion in (("small step", small_step), ("small turn", small_turn)):
+            worst = max(peak_deviation(rest, motion, fps) for fps in (60, 144))
+            check(f"{rest_name} holds its shape through a {motion_name}", worst <= 0.1, f"{worst:.2f} of its length off target at most")
+
+    # Once the head is still, a swing dies down. The length and bend constraints move only each
+    # segment's far point, so corrections run on down the strand; without the bend damping a wave
+    # ran to the tip and back, and the tip turned back 4-12 times after one step.
+    for rest_name, rest in (("20-unit lock", hanging), ("3.8-unit scalp lock", scalp_lock())):
+        for fps in (60, 144):
+            count = max(turnbacks(rest, motion, 1.0, fps, 0.1) for motion in (small_step, small_turn))
+            check(f"{rest_name} stops swinging when the head stops, {fps} fps", count <= 2, f"tip turned back {count} times")
 
     # Followers must not amplify their guide: turning the offset from the guide with the
     # guide's bend made a follower beside a 3.8-unit guide stray 12x as far and stretch 35%.

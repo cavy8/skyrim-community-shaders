@@ -1237,7 +1237,7 @@
     "feature.hair_strands.style_source_auto": "Automatic",
     "feature.hair_strands.style_source_edited": "Edited (unsaved)",
     "feature.hair_strands.style_tip_stiffness": "Tip Stiffness",
-    "feature.hair_strands.style_tip_stiffness_tooltip": "How firmly strands hold their styled shape at the tips. Low values let the ends\nswing freely.",
+    "feature.hair_strands.style_tip_stiffness_tooltip": "How firmly strands hold their styled shape at the tips. Low values let the ends\nswing freely. Reached 20 units (about 28 cm) from the root: shorter strands stay stiffer.",
     "feature.hair_strands.style_tip_width": "Tip Width",
     "feature.hair_strands.style_tip_width_tooltip": "Width of a strand at its tip.",
     "feature.hair_strands.style_volume": "Volume",

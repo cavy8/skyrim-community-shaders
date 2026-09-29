@@ -10,15 +10,31 @@
 // segment keeps its bend relative to the one before it), follow-the-leader length constraints
 // and collision. The root stays on its target.
 //
+// The global shape stiffness falls from the root's to the tip's over FreeLength units of strand,
+// or over the whole strand if it is longer. Loads (air drag, gravity as the head tilts, wind,
+// the head's own acceleration) move points by about the same distance on any strand, so with the
+// fall-off spread over each strand's own length a short lock swung through a far larger angle
+// than a long one, and its tip hooked over. A short lock now has the stiffness of the same
+// length of long hair near its root.
+//
 // Stiffness is authored per 1/60 s. Steps shorter than that (high frame rates) scale it as a
 // compliance (XPBD), and give back the damping the 60 Hz projections carry on the motion
 // relative to the target, so the hair moves the same at any frame rate.
 //
-// Velocity is the step's change in position and nothing else. Dynamic follow-the-leader
-// (Mueller et al. 2012) also takes each length correction back out of the velocity of the
-// point before it; under a steady load (tilted head, wind) those corrections never stop, and
-// with the shape and bend constraints that velocity kept the tips shaking at 5-8 Hz. Swings
-// are damped instead by RelativeDamping, which only ever takes energy out.
+// Velocity is the step's change in position, with bending motion damped. Dynamic
+// follow-the-leader (Mueller et al. 2012) also takes each length correction back out of the
+// velocity of the point before it; under a steady load (tilted head, wind) those corrections
+// never stop, and with the shape and bend constraints that velocity kept the tips shaking at
+// 5-8 Hz. Swings are damped instead by RelativeDamping, which only ever takes energy out.
+//
+// The length and local shape constraints only move each segment's far point, so a swing's
+// corrections run on down the strand: after the head stopped, a wave ran to the tip and back
+// for about a second. Moving both ends instead stops that wave, but under a heavy load (a head on
+// its side, a lock with short segments) the strand then never settles, and jitters.
+// Instead, BendDamping takes out bending motion: relative to its target, each point loses that
+// share of the difference from the velocity it would have if its segment turned with the one
+// before it. A swing of the whole strand keeps its speed, and velocity alone is touched, so a
+// strand at rest under any load stays at rest.
 
 #include "HairStrands/Skinning.hlsli"
 
@@ -32,7 +48,13 @@ namespace HairStrandsSim
 	// Velocity relative to the target lost per 1/60 s: swings about the styled shape die down
 	// in about a second, while the hair still moves freely with the head.
 	static const float RelativeDamping = 0.2;
+	// Bending motion (each segment turning against the one before it) lost per 1/60 s: waves
+	// down the strand die at once, and swings of whole locks are left alone.
+	static const float BendDamping = 0.8;
 	static const float MaxSpeed = 3000.0;  // units/s
+	// Strand length over which the shape stiffness falls from the root's to the tip's (about
+	// 28 cm, shoulder length): only hair further than this from the scalp swings fully free.
+	static const float FreeLength = 20.0;  // units
 	// A point is never pushed deeper than its target already lies inside a collider, and never
 	// left deeper than this fraction of the radius: the styled shape itself never collides.
 	static const float MinColliderDepth = 0.5;
@@ -106,6 +128,8 @@ namespace HairStrandsSim
 	const uint n = min(PointsPerStrand, MAX_POINTS);
 	const uint base = guide * PointsPerStrand;
 	const float lastIndex = max((float)n - 1.0, 1.0);
+	// How far along the stiffness fall-off the tip gets: all the way on strands of FreeLength or longer.
+	const float reach = saturate(Strands[guide].Length / HairStrandsSim::FreeLength);
 	const float3 previousToCurrent = EyeShift - PreviousEyeShift;  // previous frame's camera to this frame's
 
 	float3 x[MAX_POINTS];
@@ -159,7 +183,7 @@ namespace HairStrandsSim
 		Guides[base + i].PreviousTarget = previousTarget;
 		Guides[base + i].PreviousPosition = previousPosition;
 
-		const float shape = lerp(RootStiffness, TipStiffness, i / lastIndex);
+		const float shape = lerp(RootStiffness, TipStiffness, i / lastIndex * reach);
 		const float shapeStep = HairStrandsSim::StepStiffness(shape, StepTime);
 		stiffness[i] = HairStrandsSim::PerIteration(shapeStep);
 		const float total = 1.0 - (1.0 - shape) * (1.0 - BendStiffness);
@@ -172,6 +196,7 @@ namespace HairStrandsSim
 	if (dynamics) {
 		const float h = StepTime;
 		const float bend = HairStrandsSim::PerIteration(HairStrandsSim::StepStiffness(BendStiffness, h));
+		const float bendKeep = pow(1.0 - HairStrandsSim::BendDamping, h * 60.0);  // bending motion kept per step
 		const float gust = HairStrandsSim::Gust(Strands[guide].Random);
 		const bool collide = (Flags & HAIR_STRANDS_FLAG_COLLIDE) != 0 && ColliderCount > 0;
 
@@ -228,14 +253,37 @@ namespace HairStrandsSim
 			}
 
 			[loop] for (i = 1; i < n; ++i)
-			{
-				float3 v = (x[i] - start[i]) / h;
-				const float speed = length(v);
-				if (speed > HairStrandsSim::MaxSpeed)
-					v *= HairStrandsSim::MaxSpeed / speed;
-				velocity[i] = v;
-			}
+				velocity[i] = (x[i] - start[i]) / h;
 			velocity[0] = 0;
+
+			// Bending motion: relative to the targets (whose velocity is constant over the frame),
+			// pull each point towards the velocity it would have if its segment turned with the
+			// one before it. Root to tip, so each point sees its parent's damped velocity.
+			const float frameTime = h * Steps;
+			float3 before = 0;  // the root follows its target
+			float3 relative = velocity[1] - (target[1] - startTarget[1]) / frameTime;
+			[loop] for (i = 1; i + 1 < n; ++i)
+			{
+				const float3 parent = x[i] - x[i - 1];
+				const float3 targetVelocity = (target[i + 1] - startTarget[i + 1]) / frameTime;
+				float3 after = velocity[i + 1] - targetVelocity;
+				const float parentSquared = dot(parent, parent);
+				if (parentSquared > 1e-12) {
+					const float3 turn = cross(parent, relative - before) / parentSquared;
+					const float3 rigid = relative + cross(turn, x[i + 1] - x[i]);
+					after = lerp(rigid, after, bendKeep);
+					velocity[i + 1] = targetVelocity + after;
+				}
+				before = relative;
+				relative = after;
+			}
+
+			[loop] for (i = 1; i < n; ++i)
+			{
+				const float speed = length(velocity[i]);
+				if (speed > HairStrandsSim::MaxSpeed)
+					velocity[i] *= HairStrandsSim::MaxSpeed / speed;
+			}
 		}
 	}
 
