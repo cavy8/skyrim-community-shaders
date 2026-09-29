@@ -1,4 +1,5 @@
 #include "Common/Color.hlsli"
+#include "Common/FlareOcclusion.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/Math.hlsli"
 #include "Common/Permutation.hlsli"
@@ -61,6 +62,35 @@ cbuffer PerGeometry : register(b2)
 	float2 TexCoordOff : packoffset(c16);
 };
 
+#	if defined(DITHER) && defined(TEX)
+/** @brief Fraction of the sun's neighbourhood showing sky, since the vanilla sun query quad sees gaps between distant ridges. */
+float GetSunGlareVisibility()
+{
+	// Scene depth belongs to the main view, not the reflection camera
+	if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InReflection)
+		return 1.0;
+
+	float4 sunPositionCS = mul(FrameBuffer::CameraViewProj, float4(SharedData::SunDirection.xyz, 0.0));
+	if (sunPositionCS.w <= 0.0)
+		return 1.0;
+
+	float2 sunUV = sunPositionCS.xy / sunPositionCS.w * float2(0.5, -0.5) + 0.5;
+	uint visibleSamples = 0;
+	[unroll] for (uint i = 0; i < FlareOcclusion::SampleCount; i++)
+	{
+		float2 sampleUV = sunUV + FlareOcclusion::GetSampleOffset(i);
+		float sampleDepth = SharedData::GetDepth(sampleUV);
+#		ifdef REVERSE_Z
+		bool isSky = FrameBuffer::IsReverseProjection() ? sampleDepth <= 0.0 : sampleDepth >= 1.0;
+#		else
+		bool isSky = sampleDepth >= 1.0;
+#		endif
+		visibleSamples += FrameBuffer::IsOutsideFrame(sampleUV) || isSky;
+	}
+	return FlareOcclusion::GetVisibility(visibleSamples);
+}
+#	endif
+
 VS_OUTPUT main(VS_INPUT input)
 {
 	VS_OUTPUT vsout;
@@ -117,6 +147,9 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.Color.w = BlendColor[0].w * input.Color.w;
 	vsout.SkyBlendColor0 = float4(BlendColor[0].xyz * VParams, 0);
 	vsout.SkyBlendColor2 = float4(BlendColor[2].xyz * VParams, 0);
+#		if defined(DITHER) && defined(TEX)
+	vsout.Color.w *= GetSunGlareVisibility();
+#		endif
 #	endif      // OCCLUSION MOONMASK HORIZFADE
 
 #	ifdef REVERSE_Z
@@ -385,7 +418,8 @@ PS_OUTPUT main(PS_INPUT input)
 	psout.Normal = float4(0.5, 0.5, 0, psout.Color.w);
 
 #	if defined(CLOUD_SHADOWS) && defined(CLOUDS) && !defined(DEFERRED)
-	psout.CloudShadows = psout.Color.w;
+	// A broadcast alpha would square coverage under SRC_ALPHA blending.
+	psout.CloudShadows = float4(1, 1, 1, psout.Color.w);
 
 	// Keep sun behind scene depth to prevent halo leaks through geometry.
 	float depth = TexDepthSampler.Load(int3(input.Position.xy, 0));
@@ -398,7 +432,7 @@ PS_OUTPUT main(PS_INPUT input)
 
 #	elif !defined(DITHER) || !defined(TEX)
 	// Even without cloud shadows enabled, sun disc should be occluded by scene depth (clouds, terrain, etc.)
-	// The sun glare pass (DITHER + TEX) is skipped: vanilla fades it through the sun occlusion query,
+	// The sun glare pass (DITHER + TEX) is skipped: it fades by depth coverage in the VS instead,
 	// and the per-pixel reject made the glare disappear.
 	[branch] if ((Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSun) && psout.Color.w > 0.0) {
 		float depth = TexDepthSampler.Load(int3(input.Position.xy, 0));

@@ -83,7 +83,7 @@ namespace ProceduralSun
 
 	float GetCloudTransmission(float capturedCloudOcclusion, float opticalDepthScale)
 	{
-		float cloudOpacity = sqrt(saturate(capturedCloudOcclusion));
+		float cloudOpacity = saturate(capturedCloudOcclusion);
 		if (opticalDepthScale <= 0.0f || cloudOpacity <= 0.0f)
 			return 1.0f;
 		return pow(saturate(1.0f - cloudOpacity), opticalDepthScale);

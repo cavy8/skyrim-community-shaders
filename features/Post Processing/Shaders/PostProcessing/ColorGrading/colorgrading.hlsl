@@ -157,6 +157,31 @@ float3 OklchAdjustments(float3 val)
 	return mul(fromXYZ, mul(sRGB_2_XYZ_MAT, OklabToRgb(oklab)));
 }
 
+float3 ApplyHighlights(float3 color, float luma, float3 midtonesGain, float3 highlightsGain,
+	float3 midtonesOffset, float3 highlightsOffset, float highlightBegin, float highlightEnd)
+{
+	float begin = max(highlightBegin, 0.0f);
+	float width = max(highlightEnd - begin, EPSILON_DIVISION);
+	float t = saturate((luma - begin) / width);
+	float weight = t * t * (3.0f - 2.0f * t);
+	float integral = width * t * t * t * (1.0f - 0.5f * t) + max(luma - (begin + width), 0.0f);
+	float integratedWeight = integral / max(luma, EPSILON_DIVISION);
+	float3 gainWeight = highlightsGain < midtonesGain ? integratedWeight : weight;
+	float3 gain = midtonesGain + (highlightsGain - midtonesGain) * gainWeight;
+	float3 offsetDelta = highlightsOffset - midtonesOffset;
+	float3 offset = midtonesOffset + max(offsetDelta, 0.0f) * weight;
+	[branch] if (any(offsetDelta < 0.0f))
+	{
+		float transitionIntegral = width * t * t * t *
+		                           (1.0f - 0.5f * t - t * t * (9.0f / 5.0f - 2.0f * t + 4.0f / 7.0f * t * t));
+		float3 available = max(color / max(luma, EPSILON_DIVISION), 0.0f) *
+		                   (min(midtonesGain, highlightsGain) * integral + max(midtonesGain - highlightsGain, 0.0f) * transitionIntegral);
+		float3 reduction = max(-offsetDelta, 0.0f);
+		offset -= reduction * available / max(reduction + available, EPSILON_DIVISION);
+	}
+	return color * gain + offset;
+}
+
 float3 ShadowsMidtonesHighlights(float3 color, float3 shadowsGain, float3 midtonesGain, float3 highlightsGain,
 	float3 shadowsOff, float3 midtonesOff, float3 highlightsOff,
 	float shadowBegin, float shadowEnd, float highlightBegin, float highlightEnd)
@@ -164,14 +189,26 @@ float3 ShadowsMidtonesHighlights(float3 color, float3 shadowsGain, float3 midton
 	float luma = dot(color, workingToXYZ[1].xyz);
 
 	float shadowWeight = 1.0 - smoothstep(shadowBegin, shadowEnd, luma);
-	float highlightWeight = smoothstep(highlightBegin, highlightEnd, luma);
-	float midtoneWeight = 1.0 - shadowWeight - highlightWeight;
 
-	// Per-zone gain + offset (industry standard: allows both color scaling and color shift)
-	float3 gain = shadowsGain * shadowWeight + midtonesGain * midtoneWeight + highlightsGain * highlightWeight;
-	float3 offset = shadowsOff * shadowWeight + midtonesOff * midtoneWeight + highlightsOff * highlightWeight;
+	float3 graded;
+	[branch] if (any(highlightsGain < midtonesGain) || any(highlightsOff < midtonesOff))
+	{
+		graded = ApplyHighlights(color, luma, midtonesGain, highlightsGain,
+			midtonesOff, highlightsOff, highlightBegin, highlightEnd);
+		graded += shadowWeight * (color * (shadowsGain - midtonesGain) + shadowsOff - midtonesOff);
+	}
+	else
+	{
+		float highlightWeight = smoothstep(highlightBegin, highlightEnd, luma);
+		float midtoneWeight = 1.0 - shadowWeight - highlightWeight;
 
-	return color * gain + offset;
+		// Per-zone gain + offset (industry standard: allows both color scaling and color shift)
+		float3 gain = shadowsGain * shadowWeight + midtonesGain * midtoneWeight + highlightsGain * highlightWeight;
+		float3 offset = shadowsOff * shadowWeight + midtonesOff * midtoneWeight + highlightsOff * highlightWeight;
+		graded = color * gain + offset;
+	}
+
+	return graded;
 }
 
 float2 IlluminantChromaticity(float temp)

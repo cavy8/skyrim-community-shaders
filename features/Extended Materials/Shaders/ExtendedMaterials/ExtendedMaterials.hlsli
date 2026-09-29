@@ -37,6 +37,10 @@ namespace ExtendedMaterials
 	static const float ParallaxNearShadowQuality = 1.0;
 	static const float ParallaxFarShadowQuality = 0.5;
 	static const float TerrainParallaxShadowMaxMipLevel = 2.0;
+	static const float NormalMapShadowMaxDistance = 4096.0;
+	static const float NormalMapShadowBaseSteps = 12.0;
+	static const float NormalMapShadowMinNormalZ = 0.35;
+	static const float NormalMapShadowPointLightQuality = 0.5;
 
 	inline uint ParallaxShadowTapCount(float quality)
 	{
@@ -97,10 +101,119 @@ namespace ExtendedMaterials
 		return GetMipLevelFromDims(coords, textureDims);
 	}
 
-#	if defined(LANDSCAPE)
-#		include "ExtendedMaterials/ExtendedMaterialsTerrain.hlsli"
+#	if defined(EMAT)
+#		if defined(LANDSCAPE)
+#			include "ExtendedMaterials/ExtendedMaterialsTerrain.hlsli"
+#		endif
+#		include "ExtendedMaterials/ExtendedMaterialsParallaxCore.hlsli"
 #	endif
-#	include "ExtendedMaterials/ExtendedMaterialsParallaxCore.hlsli"
+
+#	if defined(EMAT_NMS)
+	float GetNormalMapShadowFootprint(float2 coords)
+	{
+		float2 dx = ddx(coords);
+		float2 dy = ddy(coords);
+		return sqrt(min(dot(dx, dx), dot(dy, dy)));
+	}
+
+	float GetNormalMapShadowQuality(float viewDepth)
+	{
+		return viewDepth < ParallaxCheapDistance ? ParallaxNearShadowQuality : ParallaxFarShadowQuality;
+	}
+
+	float GetNormalMapShadowStrength(float viewDepth)
+	{
+		if (!SharedData::extendedMaterialSettings.EnableNormalMapShadows)
+			return 0.0;
+		return saturate(4.0 - 4.0 * viewDepth / NormalMapShadowMaxDistance);
+	}
+
+#		if defined(LANDSCAPE)
+	float3 SampleTerrainShadowNormal(float2 coords, float mipLevel, float4 w1, float2 w2, StochasticOffsets sharedOffset)
+	{
+		float4 n = 0.0;
+		[branch] if (w1.x > 0.01) n += w1.x * float4(TerrainParallaxTexSample(TexNormalSampler, coords, mipLevel, sharedOffset).xyz, 1.0);
+		[branch] if (w1.y > 0.01) n += w1.y * float4(TerrainParallaxTexSample(TexLandNormal2Sampler, coords, mipLevel, sharedOffset).xyz, 1.0);
+		[branch] if (w1.z > 0.01) n += w1.z * float4(TerrainParallaxTexSample(TexLandNormal3Sampler, coords, mipLevel, sharedOffset).xyz, 1.0);
+		[branch] if (w1.w > 0.01) n += w1.w * float4(TerrainParallaxTexSample(TexLandNormal4Sampler, coords, mipLevel, sharedOffset).xyz, 1.0);
+		[branch] if (w2.x > 0.01) n += w2.x * float4(TerrainParallaxTexSample(TexLandNormal5Sampler, coords, mipLevel, sharedOffset).xyz, 1.0);
+		[branch] if (w2.y > 0.01) n += w2.y * float4(TerrainParallaxTexSample(TexLandNormal6Sampler, coords, mipLevel, sharedOffset).xyz, 1.0);
+		return n.xyz * 2.0 - n.w;
+	}
+
+	float GetNormalMapShadowMultiplier(float2 coords, float footprint, float3 L, float quality, float strength, float noise, float4 w1, float2 w2, StochasticOffsets sharedOffset)
+#		else
+	float GetNormalMapShadowMultiplier(float2 coords, float footprint, float3 L, float quality, float strength, float noise, Texture2D<float4> tex, SamplerState texSampler, bool applyMeshTV, StochasticOffsets meshOffset)
+#		endif
+	{
+		const float heightScale = SharedData::extendedMaterialSettings.NormalMapShadowHeightScale;
+		float invLenXY = rcp(max(length(L.xy), 1e-5));
+		float tanElevation = max(L.z, 0.0) * invLenXY;
+		float maxRise = heightScale * rcp(NormalMapShadowMinNormalZ) - tanElevation;
+		float visibility = 1.0;
+
+		[branch] if (strength > 0.0 && maxRise > 0.0)
+		{
+			float2 dir = L.xy * invLenXY;
+			float traceLength = SharedData::extendedMaterialSettings.NormalMapShadowLength;
+			float hardness = SharedData::extendedMaterialSettings.NormalMapShadowHardness;
+			uint numSteps = clamp((uint)(NormalMapShadowBaseSteps * quality * SharedData::extendedMaterialSettings.ParallaxQuality + 0.5), 4u, 32u);
+			float invSteps = rcp((float)numSteps);
+
+			float2 texDims;
+#		if defined(LANDSCAPE)
+			TexNormalSampler.GetDimensions(texDims.x, texDims.y);
+#		else
+			tex.GetDimensions(texDims.x, texDims.y);
+#		endif
+			float texDim = max(texDims.x, texDims.y);
+
+			float height = 0.0;
+			float occlusion = 0.0;
+			float prevEnd = 0.0;
+			[loop] for (uint i = 1; i <= numSteps; i++)
+			{
+				float t = (float)i * invSteps;
+				float end = traceLength * t * t;
+				float stepLength = end - prevEnd;
+				float2 sampleCoords = coords + dir * (prevEnd + stepLength * noise);
+				float mipLevel = log2(max(max(footprint, stepLength) * texDim, 1.0));
+
+				float3 n = float3(0.0, 0.0, 1.0);
+#		if defined(LANDSCAPE)
+				n = SampleTerrainShadowNormal(sampleCoords, mipLevel, w1, w2, sharedOffset);
+#		else
+#			if defined(DO_ALPHA_TEST)
+				if (TexColorSampler.SampleLevel(texSampler, sampleCoords, mipLevel).w < AlphaTestRefRS)
+					break;
+#			endif
+#			if defined(TERRAIN_VARIATION)
+				[branch] if (applyMeshTV)
+				{
+					n = StochasticEffectParallax(tex, texSampler, sampleCoords, mipLevel, meshOffset).xyz * 2.0 - 1.0;
+				}
+				else
+#			endif
+				{
+					n = tex.SampleLevel(texSampler, sampleCoords, mipLevel).xyz * 2.0 - 1.0;
+				}
+#		endif
+
+				float slope = -dot(n.xy, dir) * rcp(max(n.z, NormalMapShadowMinNormalZ));
+				height += stepLength * (heightScale * slope - tanElevation);
+				occlusion = max(occlusion, height * rcp(end) * (1.0 - t * t));
+
+				if (occlusion * hardness >= 1.0 || height + maxRise * (traceLength - end) <= 0.0)
+					break;
+				prevEnd = end;
+			}
+
+			visibility = 1.0 - saturate(occlusion * hardness) * strength;
+		}
+
+		return visibility;
+	}
+#	endif
 }
 
 #endif  // EXTENDED_MATERIALS_HLSLI

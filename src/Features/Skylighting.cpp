@@ -599,11 +599,9 @@ void Skylighting::RenderOcclusion()
 				if (!precipObject) {
 					precipObject = precip->lastPrecip;
 				}
-				if (precipObject) {
+				auto particleShaderProperty = precipObject ? netimmerse_cast<RE::BSParticleShaderProperty*>(precipObject->GetGeometryRuntimeData().shaderProperty.get()) : nullptr;
+				if (particleShaderProperty && particleShaderProperty->particleEmitter) {
 					precip->SetupMask();
-					auto& effect = precipObject->GetGeometryRuntimeData().shaderProperty;
-					auto shaderProp = effect.get();
-					auto particleShaderProperty = netimmerse_cast<RE::BSParticleShaderProperty*>(shaderProp);
 					auto rain = (RE::BSParticleShaderRainEmitter*)(particleShaderProperty->particleEmitter);
 
 					globals::profiler->BeginPass("Skylighting::PrecipMask");

@@ -97,6 +97,13 @@ public:
 	 */
 	Caster GetMoonLightCaster(const RE::Sky* sky) const;
 
+	/**
+	 * @brief Gets the world-space direction towards the current shadow caster, without the minimum shadow elevation clamp.
+	 * @param sky The sky whose root rotation maps Sky Sync's directions into world space.
+	 * @return The unit direction, or nullopt if Sky Sync did not update the caster this frame.
+	 */
+	std::optional<RE::NiPoint3> GetCelestialLightDirection(const RE::Sky* sky) const;
+
 private:
 	enum class CellFlagExt : uint16_t
 	{
@@ -127,6 +134,8 @@ private:
 	{
 		RE::NiPoint3 currentDir = { 0.0f, 0.0f, 1.0f };
 		RE::NiPoint3 startDir = { 0.0f, 0.0f, 1.0f };
+		RE::NiPoint3 celestialDir = { 0.0f, 0.0f, 1.0f };  // currentDir before elevation locking
+		RE::NiPoint3 startCelestialDir = { 0.0f, 0.0f, 1.0f };
 		Caster target = Caster::Sun;
 		Caster previousTarget = Caster::Sun;
 		float fadeTimer = 0.0f;
@@ -144,6 +153,8 @@ private:
 		static void SetElevation(RE::NiPoint3& dir, float elevRadians);
 		static void ClampDirection(RE::NiPoint3& dir);
 		static float ComputeVLFactor(const RE::NiPoint3& current, const RE::NiPoint3& target);
+		/** @brief Linearly interpolates two directions by @p t and renormalizes the result. */
+		static RE::NiPoint3 LerpDirection(const RE::NiPoint3& from, const RE::NiPoint3& to, float t);
 		void Reset();
 	};
 
@@ -160,6 +171,7 @@ private:
 
 	inline static RE::NiPoint3* gSunPosition = nullptr;
 	inline static RE::BSVolumetricLightingRenderData* gVolumetricLighting = nullptr;
+	inline static RE::Setting* gSunAlphaTransTime = nullptr;
 
 	RE::TESObjectCELL* currentCell = nullptr;
 	bool currentCellInterior = false;
@@ -188,6 +200,9 @@ private:
 	void SetSkyRotation(const RE::Sky* sky, RE::TESObjectCELL* cell);
 
 	void ProcessSun(const RE::Sky* sky, RE::NiPoint3 dirs[], float intensities[]);
+
+	/** @brief Zeroes the sun disc and glare alpha outside vanilla's sun fade window, whose exclusive bounds leave them opaque at the exact end hours. */
+	static void HideSunOutsideFadeWindow(const RE::Sky* sky);
 
 	void ProcessMoon(const RE::Sky* sky, Caster type, RE::NiPoint3 dirs[], float intensities[]);
 

@@ -79,7 +79,12 @@ namespace SharedData
 		bool EnableShadows;
 		bool EnableParallaxWarpingFix;
 		float ParallaxQuality;
-		uint pad0;
+		bool EnableNormalMapShadows;
+
+		float NormalMapShadowHeightScale;
+		float NormalMapShadowLength;
+		float NormalMapShadowHardness;
+		uint HeightMapShadowMode;
 	};
 
 	struct CubemapCreatorSettings

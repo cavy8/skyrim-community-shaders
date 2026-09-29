@@ -832,6 +832,10 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #		define EMAT_ENVMAP
 #	endif
 
+#	if defined(EXTENDED_MATERIALS) && !defined(LOD) && !defined(MODELSPACENORMALS) && !defined(TREE_ANIM) && !defined(SKIN) && !defined(HAIR) && !defined(EYE) && !defined(FACEGEN) && !defined(FACEGEN_RGB_TINT)
+#		define EMAT_NMS
+#	endif
+
 #	if defined(DYNAMIC_CUBEMAPS)
 #		include "DynamicCubemaps/DynamicCubemaps.hlsli"
 #	endif
@@ -840,7 +844,7 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #		include "Common/PBR.hlsli"
 #	endif
 
-#	if defined(EMAT)
+#	if defined(EMAT) || defined(EMAT_NMS)
 #		include "ExtendedMaterials/ExtendedMaterials.hlsli"
 #	endif
 
@@ -988,7 +992,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float2 uvOriginal = uv;
 
 	// Lattice cell comes from the geometric UV, before the parallax block below rewrites uv.
-#	if !defined(LANDSCAPE) && (defined(TERRAIN_VARIATION_MESH) || defined(EMAT))
+#	if !defined(LANDSCAPE) && (defined(TERRAIN_VARIATION_MESH) || defined(EMAT) || defined(EMAT_NMS))
 	StochasticOffsets meshOffset = (StochasticOffsets)0;
 #		if defined(TERRAIN_VARIATION_MESH)
 	const bool applyMeshTV = (Permutation::ExtraFeatureDescriptor & Permutation::ExtraFeatureFlags::TVMeshVariation) != 0;
@@ -1043,6 +1047,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(EMAT)
+#		if defined(EMAT_NMS)
+	uint heightMapShadowMode = SharedData::extendedMaterialSettings.EnableNormalMapShadows ? SharedData::extendedMaterialSettings.HeightMapShadowMode : 0;
+#		else
+	uint heightMapShadowMode = 0;
+#		endif
+	bool parallaxShadowsEnabled = SharedData::extendedMaterialSettings.EnableShadows && heightMapShadowMode != 1;
+	bool parallaxShadowsReplaceNms = parallaxShadowsEnabled && heightMapShadowMode == 0;
 	float parallaxShadowQuality = viewPosition.z < ExtendedMaterials::ParallaxCheapDistance ? ExtendedMaterials::ParallaxNearShadowQuality : ExtendedMaterials::ParallaxFarShadowQuality;
 	float terrainDirectionalShadowQuality = parallaxShadowQuality;
 #		define COMPUTE_TERRAIN_SHADOW_BASE(OUT_SH0) ExtendedMaterials::ComputeTerrainParallaxShadowBaseHeight(input, uv, terrainShadowMipLevel, displacementParams, sharedOffset, OUT_SH0)
@@ -1146,7 +1157,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if (SharedData::extendedMaterialSettings.EnableParallax) {
 		mipLevel = ExtendedMaterials::GetMipLevel(uv, TexParallaxSampler);
 		uv = ExtendedMaterials::GetParallaxCoords(uv, mipLevel, viewDirection, tbnTr, TexParallaxSampler, SampParallaxSampler, 0, displacementParams, applyMeshTV, meshOffset);
-		if (SharedData::extendedMaterialSettings.EnableShadows && parallaxShadowQuality > 0.0) {
+		if (parallaxShadowsEnabled && parallaxShadowQuality > 0.0) {
 			MESH_TV_HEIGHT(sh0, TexParallaxSampler, SampParallaxSampler, uv, mipLevel, 0);
 		}
 	}
@@ -1181,7 +1192,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				complexMaterialParallax = true;
 				mipLevel = ExtendedMaterials::GetMipLevel(uv, TexEnvMaskSampler);
 				uv = ExtendedMaterials::GetParallaxCoords(uv, mipLevel, viewDirection, tbnTr, TexEnvMaskSampler, SampTerrainParallaxSampler, 3, displacementParams, applyMeshTV, meshOffset);
-				if (SharedData::extendedMaterialSettings.EnableShadows && parallaxShadowQuality > 0.0) {
+				if (parallaxShadowsEnabled && parallaxShadowQuality > 0.0) {
 					MESH_TV_HEIGHT(sh0, TexEnvMaskSampler, SampEnvMaskSampler, uv, mipLevel, 3);
 				}
 				MESH_TV_SAMPLE(complexMaterialColor, TexEnvMaskSampler, SampEnvMaskSampler, uv);
@@ -1230,7 +1241,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		}
 		mipLevel = ExtendedMaterials::GetMipLevel(uv, TexParallaxSampler);
 		uv = ExtendedMaterials::GetParallaxCoords(uv, mipLevel, refractedViewDirection, tbnTr, TexParallaxSampler, SampParallaxSampler, 0, displacementParams, applyMeshTV, meshOffset);
-		if (SharedData::extendedMaterialSettings.EnableShadows && parallaxShadowQuality > 0.0) {
+		if (parallaxShadowsEnabled && parallaxShadowQuality > 0.0) {
 			MESH_TV_HEIGHT(sh0, TexParallaxSampler, SampParallaxSampler, uv, mipLevel, 0);
 		}
 	}
@@ -1326,7 +1337,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			ExtendedMaterials::TerrainHasAnyDisplacement() &&
 			ExtendedMaterials::TerrainMaxWeightedHeightScale(input, displacementParams) > 0.01;
 		// sh0 feeds point-light terrain shadows (hasTerrainParallaxShadow), not only POM.
-		if ((doTerrainPom || hasTerrainParallaxShadow) && SharedData::extendedMaterialSettings.EnableShadows && terrainDirectionalShadowQuality > 0.0) {
+		if ((doTerrainPom || hasTerrainParallaxShadow) && parallaxShadowsEnabled && terrainDirectionalShadowQuality > 0.0) {
 			hasCachedTerrainShadowBaseHeight = COMPUTE_TERRAIN_SHADOW_BASE(sh0);
 			if (doTerrainPom && hasCachedTerrainShadowBaseHeight) {
 				float3 dirLightDirectionTS = mul(DirLightDirection, tbn).xyz;
@@ -1415,6 +1426,25 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if ((PBRFlags & PBR::Flags::Glint) != 0) {
 		glintParameters = MultiLayerParallaxData;
 	}
+#		endif
+#	endif
+
+#	if defined(EMAT_NMS)
+	float nmsFootprint = ExtendedMaterials::GetNormalMapShadowFootprint(uv);
+	float nmsQuality = ExtendedMaterials::GetNormalMapShadowQuality(viewPosition.z);
+	float nmsStrength = (inWorld && !inReflection) ? ExtendedMaterials::GetNormalMapShadowStrength(viewPosition.z) : 0.0;
+#		if defined(LANDSCAPE)
+	if (parallaxShadowsReplaceNms && LANDSCAPE_PARALLAX_ENABLED && ExtendedMaterials::TerrainHasAnyDisplacement())
+		nmsStrength = 0.0;
+#		elif defined(PARALLAX)
+	if (parallaxShadowsReplaceNms && SharedData::extendedMaterialSettings.EnableParallax)
+		nmsStrength = 0.0;
+#		elif defined(EMAT_ENVMAP)
+	if (parallaxShadowsReplaceNms && complexMaterialParallax)
+		nmsStrength = 0.0;
+#		elif defined(TRUE_PBR)
+	if (parallaxShadowsReplaceNms && PBRParallax)
+		nmsStrength = 0.0;
 #		endif
 #	endif
 
@@ -2403,7 +2433,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(EMAT) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
-	[branch] if (inWorld && SharedData::extendedMaterialSettings.EnableShadows)
+	[branch] if (inWorld && parallaxShadowsEnabled)
 	{
 		float3 dirLightDirectionTS = mul(refractedDirLightDirection, tbn).xyz;
 #		if defined(LANDSCAPE)
@@ -2429,6 +2459,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif  // LANDSCAPE
 	}
 #	endif  // defined(EMAT) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
+
+#	if defined(EMAT_NMS)
+	[branch] if (nmsStrength > 0.0 && dirLightAngle > 0.0 && dirDetailedShadow > 0.0)
+	{
+		float3 nmsDirLightDirectionTS = mul(refractedDirLightDirection, tbn).xyz;
+#		if defined(LANDSCAPE)
+		dirDetailedShadow *= ExtendedMaterials::GetNormalMapShadowMultiplier(uv, nmsFootprint, nmsDirLightDirectionTS, nmsQuality, nmsStrength, screenNoise, input.LandBlendWeights1, input.LandBlendWeights2.xy, sharedOffset);
+#		else
+		dirDetailedShadow *= ExtendedMaterials::GetNormalMapShadowMultiplier(uv, nmsFootprint, nmsDirLightDirectionTS, nmsQuality, nmsStrength, screenNoise, TexNormalSampler, SampNormalSampler, applyMeshTV, meshOffset);
+#		endif
+	}
+#	endif
 
 #	if defined(CS_HAIR_SHADING)
 	if (SharedData::hairSpecularSettings.Enabled) {
@@ -2634,7 +2676,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #			if defined(EMAT) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
 		[branch] if (
-			SharedData::extendedMaterialSettings.EnableShadows &&
+			parallaxShadowsEnabled &&
 			!(light.lightFlags & LightLimitFix::LightFlags::Simple) &&
 			lightAngle > 0.0 &&
 			shadowComponent != 0.0)
@@ -2655,6 +2697,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif
 		}
 #			endif  // defined(EMAT) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
+
+#			if defined(EMAT_NMS)
+		[branch] if (nmsStrength > 0.0 && lightAngle > 0.0 && shadowComponent != 0.0 && !(light.lightFlags & LightLimitFix::LightFlags::Simple))
+		{
+			float3 nmsLightDirectionTS = mul(refractedLightDirection, tbn).xyz;
+			float nmsPointQuality = nmsQuality * ExtendedMaterials::NormalMapShadowPointLightQuality;
+#				if defined(LANDSCAPE)
+			parallaxShadow *= ExtendedMaterials::GetNormalMapShadowMultiplier(uv, nmsFootprint, nmsLightDirectionTS, nmsPointQuality, nmsStrength, screenNoise, input.LandBlendWeights1, input.LandBlendWeights2.xy, sharedOffset);
+#				else
+			parallaxShadow *= ExtendedMaterials::GetNormalMapShadowMultiplier(uv, nmsFootprint, nmsLightDirectionTS, nmsPointQuality, nmsStrength, screenNoise, TexNormalSampler, SampNormalSampler, applyMeshTV, meshOffset);
+#				endif
+		}
+#			endif
 
 		DirectContext pointLightContext;
 		DirectLightingOutput pointLightOutput;

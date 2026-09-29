@@ -62,8 +62,10 @@
 		{
 			const float quality = SharedData::extendedMaterialSettings.ParallaxQuality;
 			const uint minSteps = 4;
+#if defined(LANDSCAPE)
+			const uint maxStepsCap = clamp((uint)(40.0 * quality + 0.5), 8u, 64u);
+#else
 			const uint maxStepsCap = clamp((uint)(32.0 * quality + 0.5), 8u, 64u);
-#if !defined(LANDSCAPE)
 			const float baseMaxSteps = 8;
 #endif
 
@@ -71,30 +73,33 @@
 			float grazing = (1.0 - ndotv);
 			grazing *= grazing;
 
-#if defined(LANDSCAPE)
 			// Step count from UV travel in texels (and a grazing angle floor), so grazing rays do not skip height features between samples.
 			// Texels are counted at the mip being sampled, so the march thins out with distance
 			// because the heightfield genuinely holds fewer texels there.
+#if !defined(LANDSCAPE)
+			float2 texDims;
+			tex.GetDimensions(texDims.x, texDims.y);
+			float maxTexDim = max(texDims.x, texDims.y);
+#endif
 			float mipTexDim = maxTexDim * exp2(-mipLevel);
 			float uvMarchSpan = dot(abs(parallaxDir), maxHeight + minHeight);
-			float texelsPerStep = lerp(3.5, 1.75, grazing) * rcp(quality);
 			float marchTexels = uvMarchSpan * mipTexDim;
-			uint uvSteps = (uint)(marchTexels * rcp(texelsPerStep) + 0.5);
+#if defined(LANDSCAPE)
+			float texelsPerStep = lerp(3.5, 1.75, grazing) * rcp(quality);
 			uint angleSteps = (uint)(lerp((float)minSteps, (float)maxStepsCap, grazing) + 0.5);
+#else
+			float texelsPerStep = lerp(7.0, 3.5, grazing) * rcp(quality);
+			float grazingStepBoost = lerp(1.0, 1.65, grazing);
+			float angleStepMul = clamp(0.5 * rcp(max(ndotv, 0.0625)), 0.5, 2.5);
+			uint angleSteps = (uint)(scale * baseMaxSteps * angleStepMul * grazingStepBoost * quality);
+#endif
+			uint uvSteps = (uint)(marchTexels * rcp(texelsPerStep) + 0.5);
 			// Past one step per texel the extra taps land in a texel already read.
 			uint numSteps = min(max(uvSteps, angleSteps), (uint)(marchTexels + 0.5));
 			numSteps = clamp(numSteps, minSteps, maxStepsCap);
 			numSteps = (numSteps + 2) & ~3;
-#else
-			float grazingStepBoost = lerp(1.0, 1.65, grazing);
-			float angleStepMul = clamp(0.5 * rcp(max(ndotv, 0.0625)), 0.5, 2.5);
-			uint numSteps = max(minSteps, (uint)(scale * baseMaxSteps * angleStepMul * grazingStepBoost * quality));
-			numSteps = min(numSteps, maxStepsCap);
-			numSteps = (numSteps + 2) & ~3;
-#endif
 
-			uint contactIters = grazing > 0.2 ? 4u : 2u;
-			uint secantIters = grazing > 0.25 ? 2u : 1u;
+			uint contactIters = grazing > 0.2 ? 2u : 1u;
 
 			float stepSize = rcp((float)numSteps);
 
@@ -102,8 +107,8 @@
 #if defined(LANDSCAPE)
 			// Full-step ray-start dither breaks residual step bands on terrain.
 			float rayDither = saturate(noise);
-			float2 prevOffset = parallaxDir * minHeight + coords.xy - offsetPerStep * rayDither;
-			float prevBound = 1.0 - rayDither * stepSize;
+			float2 prevOffset = parallaxDir * minHeight + coords.xy + offsetPerStep * rayDither;
+			float prevBound = 1.0 + rayDither * stepSize;
 #else
 			float2 prevOffset = parallaxDir * minHeight + coords.xy;
 			float prevBound = 1.0;
@@ -211,8 +216,7 @@
 					}
 				}
 
-				// Secant iterations on f(t) = h(t) - t.
-				[loop] for (uint i = 0; i < secantIters; i++)
+				// Secant step on f(t) = h(t) - t.
 				{
 					float denominator = fNear - fFar;
 					float r = abs(denominator) > EPSILON_DIVISION ? saturate(fNear / denominator) : 0.5;

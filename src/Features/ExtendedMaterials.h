@@ -17,7 +17,8 @@ struct ExtendedMaterials : Feature
 				T("feature.extended_materials.key_feature_2", "Complex material blending"),
 				T("feature.extended_materials.key_feature_3", "Terrain heightmap support"),
 				T("feature.extended_materials.key_feature_4", "Parallax shadows"),
-				T("feature.extended_materials.key_feature_5", "Height-based texture blending") } };
+				T("feature.extended_materials.key_feature_5", "Height-based texture blending"),
+				T("feature.extended_materials.key_feature_6", "Normal mapping shadows without height maps") } };
 	};
 
 	/** @brief Returns true only for Lighting shader type. */
@@ -35,13 +36,24 @@ struct ExtendedMaterials : Feature
 		uint EnableParallaxWarpingFix = 1;
 
 		float ParallaxQuality = 1.0f;
-		uint pad{};
+		uint EnableNormalMapShadows = 1;
+
+		float NormalMapShadowHeightScale = 1.0f;
+		float NormalMapShadowLength = 0.05f;
+		float NormalMapShadowHardness = 10.0f;
+		uint HeightMapShadowMode = 0;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
-	static_assert(sizeof(Settings) == 32);
+	static_assert(sizeof(Settings) == 48);
 
 	static constexpr float MinParallaxQuality = 0.25f;
 	static constexpr float MaxParallaxQuality = 2.0f;
+	static constexpr float MinNormalMapShadowHeightScale = 0.1f;
+	static constexpr float MaxNormalMapShadowHeightScale = 4.0f;
+	static constexpr float MinNormalMapShadowLength = 0.005f;
+	static constexpr float MaxNormalMapShadowLength = 0.25f;
+	static constexpr float MinNormalMapShadowHardness = 1.0f;
+	static constexpr float MaxNormalMapShadowHardness = 64.0f;
 
 	Settings settings;
 
