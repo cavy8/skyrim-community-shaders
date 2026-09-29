@@ -111,7 +111,7 @@ namespace Strands
 		uint32_t iterations;
 		uint32_t colliderCount;
 		uint32_t steps;
-		float pad;
+		float swingDamping;
 
 		float4 colliders[kMaxColliders * 2];
 	};

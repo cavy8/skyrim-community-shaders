@@ -26,15 +26,15 @@ ITERATIONS = 3  # kSimIterations
 STEP = 1.0 / 60.0  # kSimStep
 MAX_FRAME = 1.0 / 30.0  # kMaxFrameTime
 GRAVITY = 687.0  # kGravity
-RELATIVE_DAMPING = 0.2
+AIR_DRAG = 0.06  # kAirDrag
 BEND_DAMPING = 0.8
 MAX_SPEED = 3000.0
 FREE_LENGTH = 20.0
 MIN_COLLIDER_DEPTH = 0.5
 TELEPORT = 40.0
 
-STRAIGHT = dict(root=0.5, tip=0.03, bend=0.35, damping=0.06, gravity=1.0, inertia=0.85)
-LOCS = dict(root=0.45, tip=0.02, bend=0.3, damping=0.04, gravity=1.2, inertia=0.9)
+STRAIGHT = dict(root=0.4, tip=0.03, bend=0.35, damping=0.4, gravity=1.0, inertia=0.85)
+LOCS = dict(root=0.35, tip=0.02, bend=0.3, damping=0.25, gravity=1.2, inertia=0.9)
 
 
 def normalize(v, fallback):
@@ -125,11 +125,11 @@ class Guide:
             total = 1.0 - (1.0 - shape) * (1.0 - style["bend"])
             total_step = 1.0 - (1.0 - shape_step) * (1.0 - step_stiffness(style["bend"], h))
             relative_keep[i] = min((1.0 - total) ** (h * 60.0) / max(1.0 - total_step, 1e-6), 1.0) if total < 1.0 else 0.0
-            relative_keep[i] *= (1.0 - RELATIVE_DAMPING) ** (h * 60.0)
+            relative_keep[i] *= (1.0 - style["damping"]) ** (h * 60.0)
 
         down = -head[:, 2] / np.linalg.norm(head[:, 2])
         gravity = (np.array([0, 0, -1.0]) - down) * GRAVITY * style["gravity"]
-        keep = (1.0 - style["damping"]) ** (h * 60.0)
+        keep = (1.0 - AIR_DRAG) ** (h * 60.0)
         bend = per_iteration(step_stiffness(style["bend"], h))
         bend_keep = (1.0 - BEND_DAMPING) ** (h * 60.0)
         for k in range(steps):

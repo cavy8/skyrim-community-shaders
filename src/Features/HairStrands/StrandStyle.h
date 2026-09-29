@@ -96,10 +96,10 @@ namespace Strands
 		// Motion: the simulation reads these every frame. Stiffnesses and damping are per
 		// 1/60 s and converted to the frame's actual length.
 		bool simulate = true;
-		float rootStiffness = 0.5f;   // pull back to the styled shape per 1/60 s, at the root
+		float rootStiffness = 0.4f;   // pull back to the styled shape per 1/60 s, at the root
 		float tipStiffness = 0.03f;   // the same at the tip (low: tips swing freely)
 		float bendStiffness = 0.35f;  // how firmly each strand keeps its own curve as it moves
-		float damping = 0.06f;        // velocity lost per 1/60 s (air drag)
+		float damping = 0.4f;         // velocity relative to the head lost per 1/60 s (swings die down)
 		float gravity = 1.0f;         // pull of gravity as the head tilts (1: real gravity)
 		float inertia = 0.85f;        // 0: moves rigidly with the head and bones, 1: lags behind with full inertia
 		float windResponse = 1.0f;    // how much the weather's wind moves the hair

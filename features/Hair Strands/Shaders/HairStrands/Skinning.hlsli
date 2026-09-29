@@ -43,8 +43,8 @@ cbuffer SkinCB : register(b0)
 
 	uint Iterations;  // constraint iterations per step
 	uint ColliderCount;
-	uint Steps;  // 0 while paused
-	float Pad;
+	uint Steps;          // 0 while paused
+	float SwingDamping;  // velocity relative to the target lost per 1/60 s
 
 	// Capsules, camera-relative: (end A, radius), (end B, unused). A sphere has A = B.
 	float4 Colliders[HAIR_STRANDS_MAX_COLLIDERS * 2];

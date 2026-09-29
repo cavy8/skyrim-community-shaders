@@ -160,7 +160,6 @@ namespace Strands
 			style.flyaways = 0.03f;
 			style.tipStiffness = 0.04f;
 			style.bendStiffness = 0.45f;
-			style.damping = 0.07f;
 			break;
 		case HairPreset::Curly:
 			style.density = 14.0f;
@@ -174,10 +173,10 @@ namespace Strands
 			style.frizz = 0.08f;
 			style.flyaways = 0.04f;
 			// Curls are springy: they keep their shape and bounce rather than swing.
-			style.rootStiffness = 0.55f;
+			style.rootStiffness = 0.45f;
 			style.tipStiffness = 0.08f;
 			style.bendStiffness = 0.7f;
-			style.damping = 0.1f;
+			style.damping = 0.3f;
 			style.inertia = 0.75f;
 			break;
 		case HairPreset::Coily:
@@ -198,10 +197,10 @@ namespace Strands
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.03f;
 			// A coily cloud holds its shape and barely sways.
-			style.rootStiffness = 0.7f;
+			style.rootStiffness = 0.55f;
 			style.tipStiffness = 0.35f;
 			style.bendStiffness = 0.85f;
-			style.damping = 0.18f;
+			style.damping = 0.5f;
 			style.gravity = 0.5f;
 			style.inertia = 0.5f;
 			style.windResponse = 0.4f;
@@ -218,10 +217,10 @@ namespace Strands
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.05f;
 			// Heavy ropes: they swing wide and settle slowly.
-			style.rootStiffness = 0.45f;
+			style.rootStiffness = 0.35f;
 			style.tipStiffness = 0.02f;
 			style.bendStiffness = 0.3f;
-			style.damping = 0.04f;
+			style.damping = 0.25f;
 			style.gravity = 1.2f;
 			style.inertia = 0.9f;
 			style.windResponse = 0.6f;

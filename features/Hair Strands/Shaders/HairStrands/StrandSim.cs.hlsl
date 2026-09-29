@@ -25,7 +25,9 @@
 // follow-the-leader (Mueller et al. 2012) also takes each length correction back out of the
 // velocity of the point before it; under a steady load (tilted head, wind) those corrections
 // never stop, and with the shape and bend constraints that velocity kept the tips shaking at
-// 5-8 Hz. Swings are damped instead by RelativeDamping, which only ever takes energy out.
+// 5-8 Hz. Swings are damped instead by SwingDamping (the style's damping), which only ever
+// takes energy out. Air drag (VelocityKeep) acts on world velocity: it is what makes hair trail
+// while running, so it stays small.
 //
 // The length and local shape constraints only move each segment's far point, so a swing's
 // corrections run on down the strand: after the head stopped, a wave ran to the tip and back
@@ -45,9 +47,6 @@ RWStructuredBuffer<HairStrands::GuidePoint> Guides : register(u0);
 
 namespace HairStrandsSim
 {
-	// Velocity relative to the target lost per 1/60 s: swings about the styled shape die down
-	// in about a second, while the hair still moves freely with the head.
-	static const float RelativeDamping = 0.2;
 	// Bending motion (each segment turning against the one before it) lost per 1/60 s: waves
 	// down the strand die at once, and swings of whole locks are left alone.
 	static const float BendDamping = 0.8;
@@ -189,7 +188,7 @@ namespace HairStrandsSim
 		const float total = 1.0 - (1.0 - shape) * (1.0 - BendStiffness);
 		const float totalStep = 1.0 - (1.0 - shapeStep) * (1.0 - HairStrandsSim::StepStiffness(BendStiffness, StepTime));
 		relativeKeep[i] = total < 1.0 ? min(pow(saturate(1.0 - total), StepTime * 60.0) / max(1.0 - totalStep, 1e-6), 1.0) : 0.0;
-		relativeKeep[i] *= pow(1.0 - HairStrandsSim::RelativeDamping, StepTime * 60.0);
+		relativeKeep[i] *= pow(saturate(1.0 - SwingDamping), StepTime * 60.0);
 	}
 
 	const bool dynamics = Steps > 0 && StepTime > 0.0 && !reset;
@@ -206,7 +205,7 @@ namespace HairStrandsSim
 			const float toFraction = (float)(step + 1) / Steps;
 
 			// Integrate. Motion relative to the target is damped by what the 60 Hz projections
-			// would take out; all motion loses the air drag.
+			// would take out and by the swing damping; all motion loses the air drag.
 			[loop] for (i = 1; i < n; ++i)
 			{
 				const float3 stepTarget = lerp(startTarget[i], target[i], toFraction);

@@ -145,6 +145,14 @@ The third run (`0-2-4`) had calmer hair at rest, but the smallest movement sent 
 With both, one step aside swings those locks 7% and 3% of their length (medians), and walking
 off and stopping 12% and 6%.
 
+After the fourth run (`0-2-5`) the owner found the defaults too springy and asked for damping
+0.4 and root stiffness 0.4 (`0-2-6`). `damping` was air drag on world velocity. At 0.4 a run
+blew a 20-unit lock 76% of its length off target, and a fringe over the forehead 102%, back
+into the head (NumPy port, 350 units/s). `damping` now takes out swings: velocity relative
+to the target, in place of the fixed `RelativeDamping` of 0.2. Air drag is a fixed 0.06. See
+[Physics](#physics-strandsimcshlsl). Styles saved before `0-2-6` hold an air drag value in
+`damping` (0.04-0.18): re-save them or their swings settle more slowly than the presets'.
+
 This is build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -386,21 +394,24 @@ that amplified every bend of a short guide (see the `0-2-1` notes at the top).
     far a point may swing has to depend on how far it is from the root, not on how far along
     its own strand. The global shape stiffness falls from `rootStiffness` to `tipStiffness`
     over the first 20 units (`FreeLength`, about 28 cm), or over the whole strand if it is
-    longer, as before `0-2-5`. With the Straight preset (0.5 → 0.03) a 4-unit lock ends at
-    0.41 and a 10-unit lock at 0.27.
+    longer, as before `0-2-5`. With the Straight preset (0.4 → 0.03) a 4-unit lock ends at
+    0.33 and a 10-unit lock at 0.22.
 -   **Same motion at any frame rate.** Stiffness and damping are authored per 1/60 s. A
     shorter step scales stiffness as a compliance (XPBD: `h² / (h² + α)`, with α fitted so
     the authored value holds at 1/60 s). Position projections also damp the motion relative
     to the target by `1 − s` per step, which shorter steps lose; that is given back on the
-    velocity relative to the target. Air drag (`damping`) applies to world velocity.
-    Velocity relative to the target also loses 0.2 per 1/60 s (`RelativeDamping`), which
-    settles swings and only ever takes energy out. In the NumPy port
-    (`tools/hair_strands_sim_check.py`), a 20-unit lock 0.3 s into a sprint start lagged
-    8.5, 5.0 and 3.5 units at 30, 60 and 144 fps with plain per-frame scaling; with this
-    scheme it lags 4.9, 4.9, 4.7 and 4.7 at 30, 60, 144 and 240 fps (3.5 at all four once
-    running), and settles within 3 s at every rate. A fast 70° turn peaks 0.6-0.75 units off
-    target as it starts, and is back within 0.1 units by 0.5 s at 30 to 240 fps. Shorter
-    steps with the plain scaling kept oscillating.
+    velocity relative to the target.
+-   **Damping and air drag.** A style's `damping` (default 0.4) is the share of velocity
+    relative to the target lost per 1/60 s (`SwingDamping`): it settles swings, only ever
+    takes energy out, and does not slow hair that moves with the head. Air drag (`kAirDrag`,
+    0.06 per 1/60 s) applies to world velocity, and is what makes hair trail while running,
+    so it stays small and is not a style field. Until `0-2-6` `damping` was the air drag and
+    swings lost a fixed 0.2. In the NumPy port (`tools/hair_strands_sim_check.py`), a
+    20-unit lock 0.3 s into a sprint start lagged 8.5, 5.0 and 3.5 units at 30, 60 and 144 fps
+    with plain per-frame scaling. With this scheme and the `0-2-6` defaults it lags 3.8 units
+    once running at 30, 60, 144 and 240 fps alike, and settles within 3 s at every rate. A
+    fast 70° turn peaks 0.5 units off target as it starts. Shorter steps with the plain
+    scaling kept oscillating.
 -   **Gravity is preloaded.** The styled shape is how hair hangs with the head upright, so
     only the change as the head tilts acts: `g × (down − R_head × down)`, with `g` = 687
     units/s² × `gravity`. Without that, hair would sag below its style at rest. The
@@ -462,8 +473,9 @@ with no `match` applies to all hair.
     `coverageThreshold`, `seed`, `excludeUV`), render (`rootWidth`, `tipWidth`, `waveAmplitude`, `waveLength`,
     `curlRadius`, `curlLength`, `curlStart`, `frizz`, `flyaways`) and motion (`simulate`,
     `rootStiffness`, `tipStiffness`, `bendStiffness`, `damping`, `gravity`, `inertia`,
-    `windResponse`; stiffness and damping per 1/60 s; `tipStiffness` is reached 20 units from
-    the root, so shorter strands stay stiffer). Tooltips in the editor explain each field.
+    `windResponse`; stiffness and damping per 1/60 s; `damping` takes out motion relative to
+    the head, not air drag; `tipStiffness` is reached 20 units from the root, so shorter
+    strands stay stiffer). Tooltips in the editor explain each field.
     Units are Skyrim units, about 1.4 cm. Motion fields apply live.
 -   In-game editor: select a hair in view, edit it, and the change applies to every actor
     wearing it. Render fields apply live; generation fields apply when the slider is
@@ -474,11 +486,11 @@ with no `match` applies to all hair.
 
 | Preset | What it changes |
 | --- | --- |
-| Straight | defaults: light clumping, little frizz; free-swinging tips (stiffness 0.5 → 0.03, bend 0.35, damping 0.06, inertia 0.85) |
+| Straight | defaults: light clumping, little frizz; free-swinging tips (stiffness 0.4 → 0.03, bend 0.35, damping 0.4, inertia 0.85) |
 | Wavy | per-lock sine waves (period 4); a little stiffer (tip 0.04, bend 0.45) |
-| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets; springy (tip 0.08, bend 0.7, damping 0.1) |
-| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show; holds its shape (tip 0.35, bend 0.85, gravity 0.5, inertia 0.5) |
-| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists); heavy (tip 0.02, damping 0.04, gravity 1.2, inertia 0.9) |
+| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets; springy (stiffness 0.45 → 0.08, bend 0.7, damping 0.3) |
+| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show; holds its shape (stiffness 0.55 → 0.35, bend 0.85, damping 0.5, gravity 0.5, inertia 0.5) |
+| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists); heavy (stiffness 0.35 → 0.02, damping 0.25, gravity 1.2, inertia 0.9) |
 
 Short hair (buzz cuts, fades, fuzz) is covered by area seeding, not a preset. Long hair just
 gets more control points, up to 32. Dark hair over a light background shows gaps between
@@ -580,9 +592,10 @@ Check these first in game:
     still hair sits exactly where it did without physics (a visible offset means the
     follow pass is off), then tune the presets. Since `0-2-5` hair under 20 units keeps its
     shape far better, and a 20-unit lock no longer swings back after a fast turn: it peaks
-    as the turn starts (0.6-0.75 units; 1.55 in `0-2-3`, 2.58 in `0-2-0`). Hair of 20 units
-    or more rests as before under a load (a 60° bow: 2.84 units off target). More inertia or
-    less stiffness gives more swing; short hair needs a lower `rootStiffness` as well.
+    as the turn starts (0.5 units with the `0-2-6` defaults; 1.55 in `0-2-3`, 2.58 in
+    `0-2-0`). Under a load a 20-unit lock rests 3.1 units off target (a 60° bow; 2.84
+    before `0-2-6` lowered `rootStiffness`). More inertia, less stiffness or less damping
+    gives more swing; short hair needs a lower `rootStiffness` as well.
 -   The strand colour texture binds at PS `t0`, which is `TexColorSampler` in every Lighting
     permutation hair uses. Strands in a flat colour or another texture would point here.
 -   The hair's skin instance lists `NPC Head [Head]` (non-SMP and most SMP hair) and that

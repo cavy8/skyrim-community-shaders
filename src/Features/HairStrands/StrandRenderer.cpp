@@ -33,6 +33,9 @@ namespace Strands
 		constexpr float kTeleportDistance = 40.0f;     // a root moving further in one frame restarts its strand
 		constexpr float kGravity = 687.0f;             // 9.81 m/s^2 in units (1.428 cm)
 		constexpr float kWindAcceleration = 600.0f;    // at the weather's full wind speed
+		// World velocity lost per 1/60 s. Hair trails while running by about this much of its
+		// speed per frame, so it stays small: a style's damping takes out swings instead.
+		constexpr float kAirDrag = 0.06f;
 		// Body colliders, radii at scale 1: well inside a body, so hair resting on it stays put.
 		constexpr float kNeckRadius = 3.0f;
 		constexpr float kChestRadius = 5.5f;
@@ -1102,7 +1105,8 @@ namespace Strands
 		o_cb.tipStiffness = style.tipStiffness;
 		o_cb.bendStiffness = style.bendStiffness;
 		o_cb.wind = frameWind * style.windResponse;
-		o_cb.velocityKeep = std::pow(1.0f - style.damping, stepTime * 60.0f);
+		o_cb.velocityKeep = std::pow(1.0f - kAirDrag, stepTime * 60.0f);
+		o_cb.swingDamping = style.damping;
 		o_cb.carry = 1.0f - style.inertia;
 		o_cb.time = simulationTime;
 		o_cb.teleportDistance = kTeleportDistance;

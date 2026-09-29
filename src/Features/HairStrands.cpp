@@ -389,8 +389,8 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		tooltip(T(TKEY("style_tip_stiffness_tooltip"), "How firmly strands hold their styled shape at the tips. Low values let the ends\nswing freely. Reached 20 units (about 28 cm) from the root: shorter strands stay stiffer."));
 		changed |= ImGui::SliderFloat(T(TKEY("style_bend_stiffness"), "Bend Stiffness"), &a_style.bendStiffness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("style_bend_stiffness_tooltip"), "How firmly each strand keeps its own curve as it moves. High values keep curls\nand waves springy; low values let strands fold."));
-		changed |= ImGui::SliderFloat(T(TKEY("style_damping"), "Damping"), &a_style.damping, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-		tooltip(T(TKEY("style_damping_tooltip"), "Air drag: how quickly motion dies down. Low values swing and bounce longer."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_damping"), "Damping"), &a_style.damping, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_damping_tooltip"), "How quickly swings die down: the share of the hair's motion relative to the head\nlost per 1/60 s. Low values swing and bounce longer. It does not slow the hair as\nthe head moves, so it never makes hair trail further when running."));
 		changed |= ImGui::SliderFloat(T(TKEY("style_gravity"), "Gravity"), &a_style.gravity, 0.0f, L::kMaxGravity, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("style_gravity_tooltip"), "How strongly hair falls when the head tilts or bows. The styled shape is how the\nhair hangs with the head upright, so it does not sag further."));
 		changed |= ImGui::SliderFloat(T(TKEY("style_inertia"), "Inertia"), &a_style.inertia, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);

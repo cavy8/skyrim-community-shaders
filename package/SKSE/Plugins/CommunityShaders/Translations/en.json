@@ -1184,7 +1184,7 @@
     "feature.hair_strands.style_curl_start": "Curl Start",
     "feature.hair_strands.style_curl_start_tooltip": "Fraction of the strand, from the root, over which curls grow to their full radius.",
     "feature.hair_strands.style_damping": "Damping",
-    "feature.hair_strands.style_damping_tooltip": "Air drag: how quickly motion dies down. Low values swing and bounce longer.",
+    "feature.hair_strands.style_damping_tooltip": "How quickly swings die down: the share of the hair's motion relative to the head\nlost per 1/60 s. Low values swing and bounce longer. It does not slow the hair as\nthe head moves, so it never makes hair trail further when running.",
     "feature.hair_strands.style_delete": "Delete Saved Style",
     "feature.hair_strands.style_delete_tooltip": "Removes this hairstyle's entry from the in-game editor's style file. Styles\nshipped in other style files are not touched.",
     "feature.hair_strands.style_density": "Density",
