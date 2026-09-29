@@ -162,6 +162,16 @@ displacement, so strands nearer the scalp than their guide went in further. Coll
 the actor's own head mesh (see [Physics](#physics-strandsimcshlsl)), for guides and for every
 strand point: the fringe stays out of the head at 0.00 units.
 
+KS Hairdos looked semi-transparent from some directions (fixed in `0-2-8`). Each KS hair is
+two copies of one mesh: the Hair part, alpha **blended** (`NiAlphaProperty` 0x12ED, test 40),
+and a Misc "Hl" part, alpha **tested** only (0x12EE, test 200). The Hl copy was hidden as a
+layer, and the strands drew in the blended pass. Blended geometry is drawn forward, after the
+deferred passes, and has no depth prepass, so the prepass held whatever lay behind the hair:
+the `0-1-2` "distant shadows over the hair" fault, which the strand prepass depth had fixed
+only for alpha-tested hair. The Hl copy's own passes now draw the strands (see
+[Why it is built this way](#why-it-is-built-this-way)), so KS hair takes the same path as
+vanilla hair.
+
 This is build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -243,6 +253,16 @@ Everything lives in `src/Features/HairStrands.{h,cpp}` (feature, settings, UI) a
     lighting permutation that last drew the hair. If this frame's permutation is still
     compiling, the lighting pass shades with those too, because the cards cannot come back
     once their depth is gone.
+-   **Blended hair with an alpha-tested layer draws its strands in the layer's passes.** When
+    a hidden layer (see [What converts](#what-converts)) is alpha-tested and its twin is
+    blended (KS Hairdos' "Hl" parts; `DrawsTwin`), the layer's depth prepass draws the
+    strands' depth and its deferred lighting pass draws the strands, with a strand variant of
+    the layer's own permutation. The blended pass then only hides its cards. The twin is
+    skinned with its own geometry and skin instance, read from the layer's pass only once that
+    geometry is found under the same actor's face node (`LiveTwinSkin`), so it is alive. Until
+    the layer's strand permutation has compiled, the blended pass draws the strands as before,
+    over the prepass depth. Blended hair without an alpha-tested layer is still drawn forward
+    with no prepass depth.
 -   **Effect shaders over the hair are hidden with the cards.** A magic effect membrane or
     an overlay such as Dirt and Blood's draws the hair's own geometry again with
     `BSEffectShader`, so it traces the cards. A hook on `BSEffectShader` slots 6 and 7
@@ -281,7 +301,8 @@ The Misc extra parts of a Hair part are either its hairline or a second layer of
 hair. Checked on 2026-09-28 against `Skyrim.esm` and `KS Hairdo's.esp`: every hairline is a
 Misc extra part, and KS "HL" parts reuse the hair's mesh (identical vertex and triangle
 counts). A Misc extra part is hidden while a strand shape of the same actor with the same
-counts draws strands. Otherwise it keeps its cards: a hairline is a scalp cap that stays
+counts draws strands; if the part is alpha-tested and that hair blended (every KS hair), the
+part's passes draw the strands. Otherwise it keeps its cards: a hairline is a scalp cap that stays
 under the strands, where it covers the gaps between them. Two Hair shapes of one actor with
 identical counts are handled the same way: the first seen becomes strands, the other is
 hidden.
@@ -631,6 +652,11 @@ Check these first in game:
 -   The hair's skin instance lists `NPC Head [Head]` (non-SMP and most SMP hair) and that
     bone's parents are `NPC Neck [Neck]`, `NPC Spine2 [Spn2]` and `NPC Spine1 [Spn1]`, with
     the clavicles and arms under spine 2. Without them there is only the head sphere.
+-   KS hair (`0-2-8`): the log should name a Utility descriptor for strand depth drawn in the
+    Hl part's prepass, and RenderDoc should show `Hair Strands` inside the deferred pass, not
+    the blended one. KS hair still see-through after that would point at strand coverage
+    (density × width per layer of cards: at the defaults about 0.7 at the root and 0.2 at the
+    tip), not at the pass.
 -   The body collider radii (neck 3 to back 6.5) are guesses meant to sit inside any body.
     Hair floating off the shoulders means they are too large; hair through them, too small.
 -   The head field (`0-2-7`): the player's log should say `head collider from head mesh …

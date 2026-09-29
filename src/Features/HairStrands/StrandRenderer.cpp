@@ -298,6 +298,39 @@ namespace Strands
 			}
 			return find(npc->headParts, static_cast<uint32_t>(std::max<std::int8_t>(npc->numHeadParts, 0)));
 		}
+
+		// True if a_target is a_node or hangs under it within a_depth levels. a_target is only
+		// compared, never read.
+		bool Contains(RE::NiAVObject* a_node, const RE::NiAVObject* a_target, int a_depth)
+		{
+			if (!a_node)
+				return false;
+			if (a_node == a_target)
+				return true;
+			auto* node = a_depth > 0 ? a_node->AsNode() : nullptr;
+			if (!node)
+				return false;
+			for (auto& child : node->GetChildren()) {
+				if (Contains(child.get(), a_target, a_depth - 1))
+					return true;
+			}
+			return false;
+		}
+
+		// The skin instance of a layer's twin, drawn from the layer's pass. The twin's geometry is
+		// read only once it is found under the same actor's face node, which proves it alive.
+		RE::NiSkinInstance* LiveTwinSkin(RE::BSGeometry* a_layerGeometry, RE::BSGeometry* a_twinGeometry, const RE::NiSkinInstance* a_twinSkin, uint32_t a_twinVertexCount)
+		{
+			auto* userData = a_layerGeometry->GetUserData();
+			auto* actor = userData ? userData->As<RE::Actor>() : nullptr;
+			auto* faceNode = actor ? actor->GetFaceNodeSkinned() : nullptr;
+			if (!faceNode || !Contains(faceNode, a_twinGeometry, 3))
+				return nullptr;
+			auto* skin = a_twinGeometry->GetGeometryRuntimeData().skinInstance.get();
+			if (!skin || skin != a_twinSkin || !skin->skinPartition || !skin->skinData || skin->skinPartition->vertexCount != a_twinVertexCount)
+				return nullptr;
+			return skin;
+		}
 	}
 
 	struct StrandRenderer::Asset
@@ -346,8 +379,9 @@ namespace Strands
 
 		HairKey key;
 		RE::FormID actorId = 0;
-		bool isHair = false;  // drawn as strands when converted
-		bool layer = false;   // a card layer over hair drawn as strands: hidden while its twin has strands
+		bool isHair = false;   // drawn as strands when converted
+		bool layer = false;    // a card layer over hair drawn as strands: hidden while its twin has strands
+		bool blended = false;  // alpha-blended cards: drawn forward, after the deferred passes, with no depth prepass
 		bool isPlayer = false;
 		bool converted = false;
 		bool authored = false;
@@ -377,6 +411,7 @@ namespace Strands
 		bool lodActive = false;
 		uint32_t strandDescriptor = 0;           // lighting permutation whose strand shaders drew this hair last
 		uint32_t lastPrepassFrame = UINT32_MAX;  // RenderFrame() in which the depth prepass drew the strands
+		uint32_t layerDrawFrame = UINT32_MAX;    // RenderFrame() in which its alpha-tested layer drew the strands
 
 		// This frame's draw parameters.
 		bool drawThisFrame = false;
@@ -716,6 +751,7 @@ namespace Strands
 		// pieces of a hair mesh keep their own look.
 		if (!IsHairTintShader(a_pass) || !HasAlpha(a_geometry))
 			return;
+		a_instance.blended = static_cast<const RE::NiAlphaProperty*>(a_geometry->GetGeometryRuntimeData().alphaProperty.get())->GetAlphaBlending();
 
 		// Head parts: only the Hair type becomes strands. Brows, lashes and beards are hair
 		// tinted too but stay cards. The Misc extra parts of a hair are its hairline (a scalp
@@ -763,13 +799,27 @@ namespace Strands
 		}
 	}
 
-	bool StrandRenderer::TwinDrawsStrands(const Instance& a_layer) const
+	std::pair<RE::BSGeometry*, StrandRenderer::Instance*> StrandRenderer::FindStrandTwin(const Instance& a_layer) const
 	{
 		for (const auto& [geometry, other] : instances) {
 			if (other->isHair && other->actorId == a_layer.actorId && other->key.vertexCount == a_layer.key.vertexCount && other->key.triangleCount == a_layer.key.triangleCount && DrawsStrands(*other))
-				return true;
+				return { geometry, other.get() };
 		}
-		return false;
+		return { nullptr, nullptr };
+	}
+
+	bool StrandRenderer::TwinDrawsStrands(const Instance& a_layer) const
+	{
+		return FindStrandTwin(a_layer).second != nullptr;
+	}
+
+	bool StrandRenderer::DrawsTwin(const Instance& a_layer, const Instance& a_twin)
+	{
+		// KS Hairdos ship each hair as a blended mesh (alpha test 40) and an alpha-tested "Hl"
+		// copy (alpha test 200). Drawn in the blended pass, the strands had no depth in the
+		// prepass, so the shadow mask and every other screen-space pass built from it saw
+		// whatever lay behind the hair, and they were lit forward rather than deferred.
+		return !a_layer.blended && a_twin.blended && a_twin.converted && a_twin.asset && a_twin.asset->state == Asset::State::Ready;
 	}
 
 	bool StrandRenderer::DrawsStrands(const Instance& a_instance)
@@ -1572,8 +1622,22 @@ namespace Strands
 		Instance* instance = FindOrCreateInstance(a_pass, geometry);
 		instance->lastSeenFrame = frame;
 		if (instance->layer) {
-			if (TwinDrawsStrands(*instance))
-				HideCards(a_pass);
+			const auto [twinGeometry, twin] = FindStrandTwin(*instance);
+			if (!twin)
+				return;
+			HideCards(a_pass);
+			// An alpha-tested layer under blended hair (KS Hairdos' "Hl" parts) draws the strands
+			// in its own deferred pass: see DrawsTwin.
+			if (!DrawsTwin(*instance, *twin) || (a_pass->shaderProperty && a_pass->shaderProperty->alpha < 0.99f))
+				return;
+			auto* twinSkin = LiveTwinSkin(geometry, twinGeometry, twin->skinInstance, twin->vertexCount);
+			auto* variant = GetVariant(descriptor);
+			if (!twinSkin || !variant || !EnsureSkinShader() || !PrepareStrands(*twin, twinGeometry, twinSkin))
+				return;
+			twin->strandDescriptor = descriptor;
+			twin->layerDrawFrame = RenderFrame();
+			currentInstance = twin;
+			currentVariant = variant;
 			return;
 		}
 		if (!instance->isHair)
@@ -1604,6 +1668,11 @@ namespace Strands
 		// A fading actor keeps its cards: strands have no alpha to fade with.
 		if (a_pass->shaderProperty && a_pass->shaderProperty->alpha < 0.99f)
 			return;
+		// Its alpha-tested layer drew the strands this frame: only the cards go.
+		if (instance->layerDrawFrame == RenderFrame()) {
+			HideCards(a_pass);
+			return;
+		}
 
 		auto* variant = GetVariant(descriptor);
 		if (variant) {
@@ -1674,8 +1743,22 @@ namespace Strands
 		Instance& instance = *it->second;
 
 		if (instance.layer) {
-			if (TwinDrawsStrands(instance))
-				HideCards(a_pass);
+			const auto [twinGeometry, twin] = FindStrandTwin(instance);
+			if (!twin)
+				return;
+			HideCards(a_pass);
+			// The blended hair over an alpha-tested layer has no depth prepass of its own: the
+			// strands' depth goes in the layer's (see DrawsTwin).
+			if (!DrawsTwin(instance, *twin) || (a_pass->shaderProperty && a_pass->shaderProperty->alpha < 0.99f))
+				return;
+			auto* twinSkin = LiveTwinSkin(geometry, twinGeometry, twin->skinInstance, twin->vertexCount);
+			auto* variant = FindVariant(twin->strandDescriptor);
+			if (!twinSkin || !variant || !EnsureSkinShader() || !PrepareStrands(*twin, twinGeometry, twinSkin))
+				return;
+			twin->lastPrepassFrame = RenderFrame();
+			currentInstance = twin;
+			currentVariant = variant;
+			currentDepthOnly = true;
 			return;
 		}
 

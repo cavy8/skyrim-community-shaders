@@ -253,8 +253,16 @@ namespace Strands
 		void Classify(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry);
 		void ResolveStyle(Instance& a_instance);
 		std::shared_ptr<Asset> RequestAsset(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry);
+		/** @brief a_layer's twin (same actor, same mesh counts) if it drew strands this frame or the last, and its geometry (compare only). */
+		std::pair<RE::BSGeometry*, Instance*> FindStrandTwin(const Instance& a_layer) const;
 		/** @brief True if a_layer's twin (same actor, same mesh counts) drew strands this frame or the last. */
 		bool TwinDrawsStrands(const Instance& a_layer) const;
+		/**
+		 * @brief True if a_layer draws its twin's strands in its own passes: an alpha-tested layer
+		 * under blended hair. Blended hair is drawn forward, after the deferred passes, and has no
+		 * depth prepass; its alpha-tested layer has both, as alpha-tested hair does.
+		 */
+		static bool DrawsTwin(const Instance& a_layer, const Instance& a_twin);
 		/** @brief True if a_instance drew strands this frame or the last. */
 		static bool DrawsStrands(const Instance& a_instance);
 		void HideCards(RE::BSRenderPass* a_pass);
