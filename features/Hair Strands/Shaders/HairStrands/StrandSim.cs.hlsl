@@ -134,7 +134,6 @@ namespace HairStrandsSim
 
 		const HairStrands::GuidePoint old = Guides[base + i];
 		float3 previousPosition = previousTarget;
-		float4 previousRotation = float4(0, 0, 0, 1);
 		if (reset) {
 			x[i] = target[i];
 			velocity[i] = 0;
@@ -149,12 +148,10 @@ namespace HairStrandsSim
 			// The carry already moved the state that much of the way: the targets cover the rest.
 			startTarget[i] = lerp(lastTarget, target[i], Carry);
 			previousPosition = old.Position + PreviousEyeShift;
-			previousRotation = old.Rotation;
 		}
 		// Unconditional writes: fxc cannot map partial UAV writes in this branch (X4532).
 		Guides[base + i].PreviousTarget = previousTarget;
 		Guides[base + i].PreviousPosition = previousPosition;
-		Guides[base + i].PreviousRotation = previousRotation;
 
 		const float shape = lerp(RootStiffness, TipStiffness, i / lastIndex);
 		const float shapeStep = HairStrandsSim::StepStiffness(shape, StepTime);

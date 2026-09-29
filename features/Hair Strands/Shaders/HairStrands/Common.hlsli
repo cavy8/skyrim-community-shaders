@@ -41,7 +41,6 @@ namespace HairStrands
 	struct GuidePoint
 	{
 		float4 Rotation;  // shortest arc from the target's tangent to the simulated tangent
-		float4 PreviousRotation;
 		float3 Position;
 		float Pad0;
 		float3 Velocity;  // units per second

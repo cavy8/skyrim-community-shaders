@@ -81,6 +81,16 @@ other strand follows. It works on SMP and non-SMP hair alike, and SMP bone motio
 guides it. See [Physics](#physics-strandsimcshlsl). The solver was checked against a Python
 port, not yet in game.
 
+The first `0-2-0` run (Vanilla Hair Remake SMP with Sassy SnW's retexture) showed this fault:
+
+-   Tips flew about unless stiffness was 1 (fixed in `0-2-1`). Followers turned their offset
+    from the guide by the guide's bend, so the offset acted as a lever. That hair's strands
+    average 3.8 units over 14 points, so a guide bends a lot per unit of offset. In the
+    NumPy port at idle, a follower 2.5 units beside such a guide strayed 7× as far from its
+    target as the guide and stretched 35%. A follower twice the guide's length strayed 12×
+    as far. Followers now take the guide's displacement from its target. See
+    [Physics](#physics-strandsimcshlsl).
+
 This is build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -264,11 +274,13 @@ hidden.
 ## Physics (`StrandSim.cs.hlsl`)
 
 Only guide strands are simulated, one thread each. `StrandSkin.cs.hlsl` then moves every
-strand point with its guide at the same distance from the root: its offset from the guide's
-target is turned by the guide's rotation there (shortest arc from the target's tangent to
-the simulated one) and added to the guide's position. The previous position is built the
-same way from the guide's previous state, so motion vectors carry the simulated motion. A
-strand longer than its guide continues past the guide's tip along the tip's rotation.
+strand point with its guide at the same distance from the root: the point moves off its own
+target by as much as the guide has moved off the guide's target there. The previous position
+is built the same way from the guide's previous state, so motion vectors carry the simulated
+motion. Past its guide's tip, a longer strand takes the tip's displacement. The guide's
+rotation there (shortest arc from the target's tangent to the simulated one) turns only the
+normal. Turning the offset from the guide too (the `0-2-0` follow) made the offset a lever
+that amplified every bend of a short guide (see the `0-2-1` notes at the top).
 
 -   **Targets, and how SMP guides.** A guide point chases its target: the point skinned by
     the head bone alone (the styled shape, rigid on the head), blended towards its full
@@ -320,8 +332,8 @@ strand longer than its guide continues past the guide's tip along the tip's rota
 -   **Not simulated:** style `simulate` off, area-seeded (short) hair, or past the physics
     distance. Such hair is plain skinning, as before `0-2-0`.
 
-State per instance: `HairStrands::GuideState`, 112 bytes per guide point (a 2,500-guide,
-20-point hair is 5.6 MB). Positions are camera relative, stored against the camera of the
+State per instance: `HairStrands::GuideState`, 96 bytes per guide point (a 2,500-guide,
+20-point hair is 4.8 MB). Positions are camera relative, stored against the camera of the
 simulation that wrote them and shifted by the camera's move each frame.
 
 ## Authoring styles
@@ -411,7 +423,10 @@ permutation bit.
     a NumPy port of `StrandSim.cs.hlsl` on a hanging lock: still head, sprint start and
     stop, fast 70° turn, 60° bow and a shoulder capsule, at 30 to 240 fps. It fails if the
     lock leaves its target while still, stretches, lags differently across frame rates or
-    does not settle. Port solver changes to it first (a few minutes to run), then tune.
+    does not settle. It also runs followers beside and longer than a 3.8-unit guide
+    through idle sway and snap turns, and fails if one strays further than its guide or
+    changes length by more than 10%. Port solver and follow changes to it first (a few
+    minutes to run), then tune.
 -   Converter: `StrandGenerator.cpp` only needs `float3` and friends plus `logger`. It
     builds on its own with a small shim (SimpleMath, a `logger` stub, `RE::BSGeometry`
     declared) and synthetic cards. That is how the 2026-09-28 checks ran: root/tip
@@ -466,7 +481,7 @@ Check these first in game:
     skinned motion vectors. A mismatch would show as ghosting on moving hair with TAA or DLSS.
 -   Physics (`0-2-0`): the tuning is from the NumPy port, not seen in game. Check first that
     still hair sits exactly where it did without physics (a visible offset means the
-    follow pass's offset/rotation is off), then tune the presets.
+    follow pass is off), then tune the presets.
 -   The hair's skin instance lists `NPC Head [Head]` (non-SMP and most SMP hair) and that
     bone's parents are `NPC Neck [Neck]`, `NPC Spine2 [Spn2]` and `NPC Spine1 [Spn1]`, with
     the clavicles and arms under spine 2. Without them there is only the head sphere.

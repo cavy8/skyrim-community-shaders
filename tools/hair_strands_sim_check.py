@@ -3,9 +3,12 @@
 One 20-unit lock hangs from a head that stays still, sprints and stops, turns fast, bows,
 and turns into a shoulder capsule, at 30, 60, 144 and 240 fps. The solver must stay exactly
 on its target while still, never stretch, lag the same at every frame rate, and settle.
+Then followers beside and longer than a short guide, through idle sway and snap turns, must
+stray no further than their guide and keep their length.
 
-Keep the port in step with features/Hair Strands/Shaders/HairStrands/StrandSim.cs.hlsl and
-StrandRenderer::PrepareSimulation; pass --verbose for the time series. Exit code 1 on failure.
+Keep the port in step with features/Hair Strands/Shaders/HairStrands/StrandSim.cs.hlsl,
+StrandSkin.cs.hlsl and StrandRenderer::PrepareSimulation; pass --verbose for the time series.
+Exit code 1 on failure.
 
     python tools/hair_strands_sim_check.py
 """
@@ -215,6 +218,51 @@ def at(log, seconds):
     return min(log, key=lambda row: abs(row[0] - seconds))
 
 
+def idle(s):
+    """Breathing and idle sway: a 0.6-unit bob and a 3 degree nod."""
+    return head_transform((0, 0, 0.6 * math.sin(2 * math.pi * 0.4 * s)), pitch=3.0 * math.sin(2 * math.pi * 0.3 * s), pivot=(0, 0, 110.0))
+
+
+def snap(s):
+    """A third-person character snapping to the camera's heading: 90 degrees in 0.05 s, every second."""
+    return head_transform(yaw=90.0 * (int(s) + min((s - int(s)) / 0.05, 1.0)))
+
+
+def lock(length, offset, points=14):
+    t = np.linspace(0.0, 1.0, points)
+    return np.c_[np.full(points, offset[0]), offset[1] - 3.0 - 1.5 * np.sin(t * math.pi * 0.5), 112.0 + offset[2] - length * t]
+
+
+def follow(guide, guide_length, target, length):
+    """StrandSkin.cs.hlsl: a follower moves off its target as far as its guide has at the same distance from the root."""
+    n = len(guide.x)
+    along = np.clip(np.linspace(0.0, 1.0, len(target)) * length / guide_length, 0.0, 1.0) * (n - 1)
+    j = np.minimum(along.astype(int), n - 2)
+    w = (along - j)[:, None]
+    displacement = guide.x - guide.target
+    return target + displacement[j] * (1.0 - w) + displacement[j + 1] * w
+
+
+def run_follower(motion, fps, seconds, length, offset):
+    """A short guide (vanilla-style cards: 3.8 units, 14 points) and one follower beside it."""
+    guide = Guide(lock(3.8, (0, 0, 0)))
+    rest = np.c_[lock(length, offset), np.ones(14)]
+    dt = 1.0 / fps
+    previous = motion(0.0)
+    guide.frame(previous, previous, dt, STRAIGHT)
+    worst_guide, worst_follower, lengths = 0.0, 0.0, []
+    for k in range(1, int(seconds * fps) + 1):
+        current = motion(k / fps)
+        guide.frame(current, previous, dt, STRAIGHT)
+        previous = current
+        target = rest @ current.T
+        x = follow(guide, 3.8, target, length)
+        worst_guide = max(worst_guide, np.linalg.norm(guide.x - guide.target, axis=1).max())
+        worst_follower = max(worst_follower, np.linalg.norm(x - target, axis=1).max())
+        lengths.append(np.linalg.norm(np.diff(x, axis=0), axis=1).sum() / np.linalg.norm(np.diff(target, axis=0), axis=1).sum())
+    return worst_guide, worst_follower, min(lengths), max(lengths)
+
+
 def main():
     verbose = "--verbose" in sys.argv
     failures = []
@@ -251,6 +299,15 @@ def main():
     log = run(STRAIGHT, 60, turn, 3.0, shoulder)
     closest = min(min(np.linalg.norm(p - closest_on_segment(p, shoulder[0][0], shoulder[0][1])) for p in r[3]) for r in log)
     check("collision keeps points out of the capsule core", closest >= 3.5 * MIN_COLLIDER_DEPTH - 1e-3, f"closest {closest:.2f} (floor {3.5 * MIN_COLLIDER_DEPTH:.2f})")
+
+    # Followers must not amplify their guide: turning the offset from the guide with the
+    # guide's bend made a follower beside a 3.8-unit guide stray 12x as far and stretch 35%.
+    for motion_name, motion in (("idle", idle), ("snap turn", snap)):
+        for length, offset in ((3.8, (0, 2.5, 0)), (8.0, (1.5, 0, 0))):
+            guide_dev, follower_dev, shortest, longest = run_follower(motion, 60, 3.0, length, offset)
+            ok = follower_dev <= guide_dev + 1e-3 and 0.9 <= shortest and longest <= 1.1
+            check(f"{motion_name}: {length}-unit follower tracks its 3.8-unit guide", ok,
+                  f"guide {guide_dev:.2f}, follower {follower_dev:.2f} off target, length x{shortest:.2f}-{longest:.2f}")
 
     print(f"\n{len(failures)} failed" if failures else "\nall passed")
     return 1 if failures else 0

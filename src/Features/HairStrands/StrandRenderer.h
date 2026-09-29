@@ -57,7 +57,6 @@ namespace Strands
 	struct GuidePoint
 	{
 		float4 rotation;
-		float4 previousRotation;
 		float3 position;
 		float pad0;
 		float3 velocity;
@@ -69,7 +68,7 @@ namespace Strands
 		float3 previousTarget;
 		float pad4;
 	};
-	static_assert(sizeof(GuidePoint) == 112);
+	static_assert(sizeof(GuidePoint) == 96);
 
 	inline constexpr uint32_t kMaxColliders = 8;
 

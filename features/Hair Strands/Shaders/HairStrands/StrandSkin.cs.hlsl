@@ -2,10 +2,12 @@
 // follow their simulated guide strands. One thread per control point; only the strands the
 // LOD keeps are dispatched.
 //
-// A strand point follows its guide at the same distance from the root: its offset from the
-// guide's target is turned by the guide's rotation there and added to the guide's simulated
-// position. Previous positions go the same way with the guide's previous state, so motion
-// vectors carry the simulated motion.
+// A strand point follows its guide at the same distance from the root: it moves off its own
+// target by as much as the guide has moved off the guide's target there. Previous positions go
+// the same way with the guide's previous state, so motion vectors carry the simulated motion.
+// The guide's rotation turns only the normal. Turning the offset from the guide with it would
+// make the offset a lever: a strand beside a short guide, or longer than it, would swing and
+// stretch by the offset times every bend of the guide.
 
 #include "HairStrands/Skinning.hlsli"
 
@@ -47,10 +49,8 @@ RWStructuredBuffer<HairStrands::SkinnedPoint> Skinned : register(u0);
 		const HairStrands::GuidePoint a = Guides[guide * PointsPerStrand + j];
 		const HairStrands::GuidePoint b = Guides[guide * PointsPerStrand + j + 1];
 
-		const float3 followed = lerp(a.Position + HairStrandsSkin::Rotate(a.Rotation, target - a.Target),
-			b.Position + HairStrandsSkin::Rotate(b.Rotation, target - b.Target), w);
-		const float3 followedPrevious = lerp(a.PreviousPosition + HairStrandsSkin::Rotate(a.PreviousRotation, previousTarget - a.PreviousTarget),
-			b.PreviousPosition + HairStrandsSkin::Rotate(b.PreviousRotation, previousTarget - b.PreviousTarget), w);
+		const float3 followed = target + lerp(a.Position - a.Target, b.Position - b.Target, w);
+		const float3 followedPrevious = previousTarget + lerp(a.PreviousPosition - a.PreviousTarget, b.PreviousPosition - b.PreviousTarget, w);
 		const float4 rotation = normalize(lerp(a.Rotation, dot(a.Rotation, b.Rotation) < 0.0 ? -b.Rotation : b.Rotation, w));
 
 		result.Position = lerp(result.Position, followed, SimWeight);
