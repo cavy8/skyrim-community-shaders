@@ -140,14 +140,16 @@ features:
       - src/Features/HairStrands/
       - features/Hair Strands/
       - docs/development/hair-strands.md
+      - tools/hair_strands_sim_check.py
     note: >-
       Owner request 2026-09-28: converts hair card meshes into GPU-skinned strands drawn inside the
       hair's own lighting pass (BSLightingShader vtable 6/7 hooks) with a strand variant of the
       hair's Lighting permutation (HairStrands/StrandLighting.hlsl includes Lighting.hlsl). Depends
       on Lighting.hlsl's VS_OUTPUT layout, its non-landscape base-colour/normal sampling and the
       double-sided TBN flip: re-check the hair_strands hunks after a Bottle sync that touches them.
-      Not in .github/configs/shader-validation.yaml: compile StrandLighting.hlsl (VS and PS) and
-      StrandSkin.cs.hlsl by hand with fxc after shader edits. See docs/development/hair-strands.md.
+      Not in .github/configs/shader-validation.yaml: compile StrandLighting.hlsl (VS and PS),
+      StrandSkin.cs.hlsl and StrandSim.cs.hlsl by hand with fxc after shader edits. See
+      docs/development/hair-strands.md.
 
   Screenshot:
     policy: bottle-plus-components

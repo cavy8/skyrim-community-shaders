@@ -53,14 +53,71 @@ namespace Strands
 	STATIC_ASSERT_ALIGNAS_16(StrandDrawCB);
 	static_assert(sizeof(StrandDrawCB) == 80);
 
-	/** @brief Mirrors cbuffer SkinCB (b0) in HairStrands/StrandSkin.cs.hlsl. */
+	/** @brief Mirrors GuidePoint in HairStrands/Common.hlsli: one simulated guide point (GPU only). */
+	struct GuidePoint
+	{
+		float4 rotation;
+		float4 previousRotation;
+		float3 position;
+		float pad0;
+		float3 velocity;
+		float pad1;
+		float3 target;
+		float pad2;
+		float3 previousPosition;
+		float pad3;
+		float3 previousTarget;
+		float pad4;
+	};
+	static_assert(sizeof(GuidePoint) == 112);
+
+	inline constexpr uint32_t kMaxColliders = 8;
+
+	/** @brief Mirrors cbuffer SkinCB (b0) in HairStrands/Skinning.hlsli, shared by both strand compute shaders. */
 	struct alignas(16) SkinCB
 	{
+		enum Flags : uint32_t
+		{
+			kFollow = 1,   // strands follow their simulated guides
+			kReset = 2,    // guides restart from their targets
+			kCollide = 4,  // guides keep out of the colliders
+		};
+
 		uint32_t pointCount;
 		uint32_t boneCount;
-		uint32_t pad[2];
+		uint32_t pointsPerStrand;
+		uint32_t guideCount;
+
+		uint32_t headBone;
+		uint32_t flags;
+		float simWeight;
+		float guidance;
+
+		float3 gravity;
+		float stepTime;
+
+		float3 eyeShift;
+		float rootStiffness;
+		float3 previousEyeShift;
+		float tipStiffness;
+
+		float3 wind;
+		float bendStiffness;
+
+		float velocityKeep;
+		float carry;
+		float time;
+		float teleportDistance;
+
+		uint32_t iterations;
+		uint32_t colliderCount;
+		uint32_t steps;
+		float pad;
+
+		float4 colliders[kMaxColliders * 2];
 	};
 	STATIC_ASSERT_ALIGNAS_16(SkinCB);
+	static_assert(sizeof(SkinCB) == 128 + kMaxColliders * 32);
 
 	/** @brief Global options the renderer reads every frame (owned by the HairStrands feature). */
 	struct RenderSettings
@@ -76,6 +133,12 @@ namespace Strands
 		float maxWidthScale = 4.0f;
 		uint32_t maxSubdivisions = 4;
 		uint32_t maxStrandsPerFrame = 200000;
+
+		bool physics = true;
+		float physicsDistance = 400.0f;  // simulation fades out over the last quarter of this
+		float smpGuidance = 0.35f;       // how much bone (SMP) motion, beyond the head's, moves the targets
+		float windStrength = 1.0f;
+		bool collision = true;
 	};
 
 	/** @brief What the editor and statistics show for one tracked hair. */
@@ -114,6 +177,8 @@ namespace Strands
 		uint32_t pendingJobs = 0;
 		uint64_t strandsDrawn = 0;
 		uint64_t gpuBytes = 0;
+		uint32_t simulatedHair = 0;
+		uint64_t guidesSimulated = 0;
 	};
 
 	/**
@@ -166,6 +231,15 @@ namespace Strands
 		struct Instance;
 		struct ShaderVariant;
 
+		/** @brief One compute shader, compiled on first request. */
+		struct ComputeShader
+		{
+			winrt::com_ptr<ID3D11ComputeShader> shader;
+			bool requested = false;
+			bool failed = false;
+			uint32_t generation = 0;  // bumped by ClearShaders, so a stale compile is dropped
+		};
+
 		Instance* FindOrCreateInstance(RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry);
 		void Classify(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry);
 		void ResolveStyle(Instance& a_instance);
@@ -180,11 +254,21 @@ namespace Strands
 		ShaderVariant* GetVariant(uint32_t a_pixelDescriptor);
 		/** @brief The strand shaders for a lighting permutation if already compiled, without requesting them. */
 		ShaderVariant* FindVariant(uint32_t a_pixelDescriptor);
+		/** @brief The shader once compiled (null until then); requests the compile on first call. a_failure is logged if it fails. */
+		winrt::com_ptr<ID3D11ComputeShader> EnsureComputeShader(ComputeShader& a_slot, const wchar_t* a_path, const char* a_failure);
 		bool EnsureSkinShader();
 		/** @brief LOD and skinning, once per rendered frame; true if the hair draws strands this frame. */
 		bool PrepareStrands(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin);
 		bool UpdateLod(Instance& a_instance, RE::BSGeometry* a_geometry);
 		bool Skin(Instance& a_instance, RE::NiSkinInstance* a_skin);
+		/**
+		 * @brief Fills the simulation part of a_cb for this frame.
+		 * @param a_palette This frame's skin-to-world rows, absolute translations.
+		 * @return false if the hair is not simulated this frame (plain skinning).
+		 */
+		bool PrepareSimulation(Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb);
+		/** @brief The head sphere and, when the hair hangs from a humanoid head, neck, torso and arm capsules. */
+		uint32_t GatherColliders(const Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, float4* o_colliders) const;
 		/** @brief Draws the strands with the bound pass state; a_depthOnly draws depth alone, and only if the pass writes depth. */
 		void Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport, bool a_depthOnly);
 		ID3D11RasterizerState* GetNoCullState(ID3D11RasterizerState* a_current);
@@ -205,10 +289,15 @@ namespace Strands
 		std::mutex variantMutex;
 		std::unordered_map<uint32_t, std::shared_ptr<ShaderVariant>> variants;
 
-		std::mutex skinShaderMutex;
-		winrt::com_ptr<ID3D11ComputeShader> skinShader;
-		bool skinShaderRequested = false;
-		bool skinShaderFailed = false;
+		std::mutex computeShaderMutex;
+		ComputeShader skinShader;
+		ComputeShader simShader;
+
+		// Simulation clock: frame time (0 while paused) and the weather's wind, read once per frame.
+		float frameDeltaTime = 0.0f;
+		float simulationTime = 0.0f;
+		float3 frameWind;
+		uint32_t nextAssetSerial = 0;
 
 		std::unique_ptr<ConstantBuffer> drawCB;
 		std::unique_ptr<ConstantBuffer> skinCB;
@@ -228,5 +317,7 @@ namespace Strands
 		RenderStats stats;
 		uint64_t strandsThisFrame = 0;
 		uint32_t drawnThisFrame = 0;
+		uint32_t simulatedThisFrame = 0;
+		uint64_t guidesThisFrame = 0;
 	};
 }

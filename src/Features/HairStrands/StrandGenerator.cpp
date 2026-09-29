@@ -16,13 +16,18 @@ namespace Strands
 		constexpr float kFoldThreshold = -0.2f;      // neighbour normals this opposed end a strand
 		constexpr float kShortHairLength = 1.0f;     // Auto seeding: median below this is short hair
 		constexpr uint32_t kMaxStepsPerStrand = 4096;
-		constexpr uint32_t kMaxCrossingsPerStep = 64;  // triangles one step may cross (slivers)
-		constexpr float kRootBudgetShare = 0.85f;      // of kMaxStrands, the rest left for fill strands
-		constexpr float kCoverageGap = 0.5f;           // a transparent stretch longer than this ends a strand
-		constexpr uint32_t kCoverageProbeGrid = 4;     // barycentric grid probing a triangle for any hair
-		constexpr float kClumpAlignment = 0.5f;        // a strand joins its clump if its root runs within 60 degrees of the guide's
-		constexpr float kIslandAxisRatio = 1.5f;       // Auto: a UV island flows along U only when this much longer that way
-		constexpr float kIslandUVScale = 4096.0f;      // UVs closer than 1/4096 join one island
+		constexpr uint32_t kMaxCrossingsPerStep = 64;   // triangles one step may cross (slivers)
+		constexpr float kRootBudgetShare = 0.85f;       // of kMaxStrands, the rest left for fill strands
+		constexpr float kCoverageGap = 0.5f;            // a transparent stretch longer than this ends a strand
+		constexpr uint32_t kCoverageProbeGrid = 4;      // barycentric grid probing a triangle for any hair
+		constexpr float kClumpAlignment = 0.5f;         // a strand joins its clump if its root runs within 60 degrees of the guide's
+		constexpr float kIslandAxisRatio = 1.5f;        // Auto: a UV island flows along U only when this much longer that way
+		constexpr float kIslandUVScale = 4096.0f;       // UVs closer than 1/4096 join one island
+		constexpr float kGuideSearchCell = 2.0f;        // grid cell for finding a strand's guide
+		constexpr int32_t kGuideSearchRings = 4;        // widest grid search before trying every guide
+		constexpr float kHeadRadiusPercentile = 0.02f;  // share of strand points allowed inside the head collider
+		constexpr float kMinHeadRadius = 2.0f;
+		constexpr float kMaxHeadRadius = 10.0f;
 
 		struct Triangle
 		{
@@ -31,8 +36,8 @@ namespace Strands
 			std::array<int32_t, 3> neighbor{ -1, -1, -1 };  // across edge i = (v[i], v[i+1])
 			float3 normal;
 			float3 flow;
-			float3 flowU;                // Auto: the U direction, taken where the hair runs along U
-			float unitsPerU = 0.0f;      // surface length of one unit of U, and of V
+			float3 flowU;            // Auto: the U direction, taken where the hair runs along U
+			float unitsPerU = 0.0f;  // surface length of one unit of U, and of V
 			float unitsPerV = 0.0f;
 			float area = 0.0f;
 			uint64_t positionKey = 0;  // the same for a triangle and its back face
@@ -112,6 +117,7 @@ namespace Strands
 			void BuildComponents();
 			void DropBackFaces();
 			void ChooseFlowAxis();
+			int32_t FindHeadBone() const;
 			float3 FindHeadCentre() const;
 			void OrientFlow();
 			void BuildVertexFields();
@@ -147,6 +153,10 @@ namespace Strands
 			void BuildStrands(const std::vector<Seed>& a_seeds, StrandAssetData& o_asset);
 			void ApplyClumping(StrandAssetData& o_asset, const std::vector<Seed>& a_seeds) const;
 			void Shuffle(StrandAssetData& o_asset);
+			/** @brief Picks the guide strands (a prefix of the shuffled list) and the guide each strand follows. */
+			void AssignGuides(StrandAssetData& o_asset) const;
+			/** @brief Fits the head collider: a sphere round the skull centre, just inside the strands. */
+			void FitHeadCollider(StrandAssetData& o_asset) const;
 
 			const HairMeshData& mesh;
 			const StrandStyle& style;
@@ -168,7 +178,7 @@ namespace Strands
 			std::vector<uint32_t> visitStamp;  // last strand counted per triangle
 			uint32_t currentStamp = 0;
 			std::vector<uint32_t> crossed;
-			std::vector<TraceSample> samples;  // the last traced streamline
+			std::vector<TraceSample> samples;          // the last traced streamline
 			mutable std::vector<uint32_t> traceStamp;  // last trace that entered each triangle
 			mutable uint32_t traceId = 0;
 			uint32_t strandBudget = GeneratorLimits::kMaxStrands;
@@ -436,14 +446,21 @@ namespace Strands
 			}
 		}
 
-		float3 Generator::FindHeadCentre() const
+		int32_t Generator::FindHeadBone() const
 		{
-			for (size_t b = 0; b < mesh.boneNames.size(); ++b) {
+			for (size_t b = 0; b < mesh.boneNames.size() && b < mesh.boneBindPositions.size(); ++b) {
 				std::string name = mesh.boneNames[b];
 				std::ranges::transform(name, name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 				if (name.find("npc head") != std::string::npos)
-					return mesh.boneBindPositions[b] + float3(0.0f, 0.0f, kSkullCentreOffset);
+					return static_cast<int32_t>(b);
 			}
+			return -1;
+		}
+
+		float3 Generator::FindHeadCentre() const
+		{
+			if (const int32_t bone = FindHeadBone(); bone >= 0)
+				return mesh.boneBindPositions[bone] + float3(0.0f, 0.0f, kSkullCentreOffset);
 			// No head bone (wigs on odd skeletons): a point just under the top of the mesh.
 			float3 lo(FLT_MAX), hi(-FLT_MAX);
 			for (const auto& p : mesh.positions) {
@@ -935,7 +952,6 @@ namespace Strands
 				if (inserted)
 					clumps.emplace_back();
 				clumps[it->second].push_back(s);
-				o_asset.strands[s].clump = it->second;
 				o_asset.strands[s].clumpRandom = Hash01(it->second * 2654435761u + style.seed);
 			}
 
@@ -1007,6 +1023,100 @@ namespace Strands
 			o_asset.strands = std::move(shuffledStrands);
 		}
 
+		void Generator::AssignGuides(StrandAssetData& o_asset) const
+		{
+			const uint32_t strands = o_asset.StrandCount();
+			const uint32_t points = o_asset.pointsPerStrand;
+			if (strands == 0 || points < 2)
+				return;
+			// The list is shuffled, so its first strands are an even thinning of the hair.
+			const uint32_t guides = std::min(strands, std::clamp((strands + GeneratorLimits::kStrandsPerGuide - 1) / GeneratorLimits::kStrandsPerGuide, GeneratorLimits::kMinGuides, GeneratorLimits::kMaxGuides));
+			o_asset.guideCount = guides;
+
+			// The point a_distance from a strand's root (clamped to its ends).
+			const auto at = [&](uint32_t a_strand, float a_distance) {
+				const float length = std::max(o_asset.strands[a_strand].length, 1e-4f);
+				const float x = std::clamp(a_distance / length, 0.0f, 1.0f) * (points - 1);
+				const uint32_t i = std::min(static_cast<uint32_t>(x), points - 2);
+				const RestPoint* p = &o_asset.points[static_cast<size_t>(a_strand) * points];
+				return float3::Lerp(p[i].position, p[i + 1].position, x - i);
+			};
+			const auto cellOf = [](float a_value) { return static_cast<int32_t>(std::floor(a_value / kGuideSearchCell)); };
+			const auto key = [](int32_t a_x, int32_t a_y, int32_t a_z) {
+				return (static_cast<uint64_t>(a_x) & 0x1FFFFF) | ((static_cast<uint64_t>(a_y) & 0x1FFFFF) << 21) | ((static_cast<uint64_t>(a_z) & 0x1FFFFF) << 42);
+			};
+			std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
+			for (uint32_t g = 0; g < guides; ++g) {
+				const float3& root = o_asset.points[static_cast<size_t>(g) * points].position;
+				grid[key(cellOf(root.x), cellOf(root.y), cellOf(root.z))].push_back(g);
+			}
+
+			// A strand follows the nearby guide that runs most like it: closest at its root,
+			// middle and tip, each compared with the guide's point at the same distance from
+			// the root. Guides shorter than the strand lose on the tip, and guides of another
+			// lock that only share the root area lose on the middle and tip.
+			for (uint32_t s = 0; s < strands; ++s) {
+				if (s < guides) {
+					o_asset.strands[s].guide = s;
+					continue;
+				}
+				const float length = o_asset.strands[s].length;
+				const float3 probes[3] = { at(s, 0.0f), at(s, 0.5f * length), at(s, length) };
+				const auto cost = [&](uint32_t a_guide) {
+					float sum = 0.0f;
+					for (int k = 0; k < 3; ++k)
+						sum += (probes[k] - at(a_guide, 0.5f * k * length)).LengthSquared();
+					return sum;
+				};
+				uint32_t best = 0;
+				float bestCost = FLT_MAX;
+				const int32_t cx = cellOf(probes[0].x), cy = cellOf(probes[0].y), cz = cellOf(probes[0].z);
+				for (int32_t ring = 1; ring <= kGuideSearchRings && bestCost == FLT_MAX; ring *= 2) {
+					for (int32_t dz = -ring; dz <= ring; ++dz) {
+						for (int32_t dy = -ring; dy <= ring; ++dy) {
+							for (int32_t dx = -ring; dx <= ring; ++dx) {
+								const auto it = grid.find(key(cx + dx, cy + dy, cz + dz));
+								if (it == grid.end())
+									continue;
+								for (uint32_t g : it->second) {
+									if (const float c = cost(g); c < bestCost) {
+										bestCost = c;
+										best = g;
+									}
+								}
+							}
+						}
+					}
+				}
+				if (bestCost == FLT_MAX) {
+					for (uint32_t g = 0; g < guides; ++g) {
+						if (const float c = cost(g); c < bestCost) {
+							bestCost = c;
+							best = g;
+						}
+					}
+				}
+				o_asset.strands[s].guide = best;
+			}
+		}
+
+		void Generator::FitHeadCollider(StrandAssetData& o_asset) const
+		{
+			o_asset.headBone = FindHeadBone();
+			o_asset.headCentre = headCentre;
+			if (o_asset.points.empty())
+				return;
+			// Just inside all but the innermost few strand points: those lie on the scalp or
+			// are tucked under it, and the styled shape must never collide.
+			std::vector<float> distances;
+			distances.reserve(o_asset.points.size());
+			for (const auto& point : o_asset.points)
+				distances.push_back((point.position - headCentre).Length());
+			const size_t k = static_cast<size_t>(distances.size() * kHeadRadiusPercentile);
+			std::nth_element(distances.begin(), distances.begin() + k, distances.end());
+			o_asset.headRadius = std::clamp(distances[k] * 0.95f, kMinHeadRadius, kMaxHeadRadius);
+		}
+
 		bool Generator::Run(StrandAssetData& o_asset, std::string& o_error)
 		{
 			o_asset = {};
@@ -1067,6 +1177,8 @@ namespace Strands
 			BuildStrands(seeds, o_asset);
 			ApplyClumping(o_asset, seeds);
 			Shuffle(o_asset);
+			AssignGuides(o_asset);
+			FitHeadCollider(o_asset);
 			return true;
 		}
 	}

@@ -127,6 +127,14 @@ namespace Strands
 		a_style.frizz = std::clamp(a_style.frizz, 0.0f, 1.0f);
 		a_style.flyaways = std::clamp(a_style.flyaways, 0.0f, 0.5f);
 
+		a_style.rootStiffness = std::clamp(a_style.rootStiffness, 0.0f, 1.0f);
+		a_style.tipStiffness = std::clamp(a_style.tipStiffness, 0.0f, 1.0f);
+		a_style.bendStiffness = std::clamp(a_style.bendStiffness, 0.0f, 1.0f);
+		a_style.damping = std::clamp(a_style.damping, 0.0f, 1.0f);
+		a_style.gravity = std::clamp(a_style.gravity, 0.0f, StyleLimits::kMaxGravity);
+		a_style.inertia = std::clamp(a_style.inertia, 0.0f, 1.0f);
+		a_style.windResponse = std::clamp(a_style.windResponse, 0.0f, StyleLimits::kMaxWindResponse);
+
 		// Malformed or absurd rectangles would only waste time; keep a bounded, ordered list.
 		if (a_style.excludeUV.size() > StyleLimits::kMaxExcludeRects)
 			a_style.excludeUV.resize(StyleLimits::kMaxExcludeRects);
@@ -150,6 +158,9 @@ namespace Strands
 			style.volume = 0.25f;
 			style.frizz = 0.04f;
 			style.flyaways = 0.03f;
+			style.tipStiffness = 0.04f;
+			style.bendStiffness = 0.45f;
+			style.damping = 0.07f;
 			break;
 		case HairPreset::Curly:
 			style.density = 14.0f;
@@ -162,6 +173,12 @@ namespace Strands
 			style.volume = 0.4f;
 			style.frizz = 0.08f;
 			style.flyaways = 0.04f;
+			// Curls are springy: they keep their shape and bounce rather than swing.
+			style.rootStiffness = 0.55f;
+			style.tipStiffness = 0.08f;
+			style.bendStiffness = 0.7f;
+			style.damping = 0.1f;
+			style.inertia = 0.75f;
 			break;
 		case HairPreset::Coily:
 			// Afro-textured hair: tight coils that start at the root, almost no clumping
@@ -180,6 +197,14 @@ namespace Strands
 			style.flyaways = 0.08f;
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.03f;
+			// A coily cloud holds its shape and barely sways.
+			style.rootStiffness = 0.7f;
+			style.tipStiffness = 0.35f;
+			style.bendStiffness = 0.85f;
+			style.damping = 0.18f;
+			style.gravity = 0.5f;
+			style.inertia = 0.5f;
+			style.windResponse = 0.4f;
 			break;
 		case HairPreset::Locs:
 			// Strands collapse onto their clump centre and twist around it: ropes.
@@ -192,6 +217,14 @@ namespace Strands
 			style.flyaways = 0.05f;
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.05f;
+			// Heavy ropes: they swing wide and settle slowly.
+			style.rootStiffness = 0.45f;
+			style.tipStiffness = 0.02f;
+			style.bendStiffness = 0.3f;
+			style.damping = 0.04f;
+			style.gravity = 1.2f;
+			style.inertia = 0.9f;
+			style.windResponse = 0.6f;
 			break;
 		case HairPreset::Auto:
 		case HairPreset::Straight:
@@ -249,6 +282,14 @@ namespace Strands
 		o_json["curlStart"] = a_style.curlStart;
 		o_json["frizz"] = a_style.frizz;
 		o_json["flyaways"] = a_style.flyaways;
+		o_json["simulate"] = a_style.simulate;
+		o_json["rootStiffness"] = a_style.rootStiffness;
+		o_json["tipStiffness"] = a_style.tipStiffness;
+		o_json["bendStiffness"] = a_style.bendStiffness;
+		o_json["damping"] = a_style.damping;
+		o_json["gravity"] = a_style.gravity;
+		o_json["inertia"] = a_style.inertia;
+		o_json["windResponse"] = a_style.windResponse;
 		json rects = json::array();
 		for (const auto& rect : a_style.excludeUV)
 			rects.push_back({ rect.minU, rect.minV, rect.maxU, rect.maxV });
@@ -292,6 +333,16 @@ namespace Strands
 		ReadFloat(a_json, "curlStart", style.curlStart);
 		ReadFloat(a_json, "frizz", style.frizz);
 		ReadFloat(a_json, "flyaways", style.flyaways);
+
+		if (auto it = a_json.find("simulate"); it != a_json.end() && it->is_boolean())
+			style.simulate = it->get<bool>();
+		ReadFloat(a_json, "rootStiffness", style.rootStiffness);
+		ReadFloat(a_json, "tipStiffness", style.tipStiffness);
+		ReadFloat(a_json, "bendStiffness", style.bendStiffness);
+		ReadFloat(a_json, "damping", style.damping);
+		ReadFloat(a_json, "gravity", style.gravity);
+		ReadFloat(a_json, "inertia", style.inertia);
+		ReadFloat(a_json, "windResponse", style.windResponse);
 
 		if (auto it = a_json.find("excludeUV"); it != a_json.end() && it->is_array()) {
 			for (const auto& rect : *it) {

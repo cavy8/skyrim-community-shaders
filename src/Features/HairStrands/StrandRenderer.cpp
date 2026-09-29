@@ -9,6 +9,7 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include "Utils/D3D.h"
+#include "Utils/Game.h"
 
 namespace Strands
 {
@@ -22,8 +23,28 @@ namespace Strands
 		constexpr float kHiddenViewportOrigin = 30000.0f;  // past any render target, even scaled by dynamic resolution
 		constexpr float kHiddenViewportSize = 1024.0f;     // big enough to read the dynamic resolution scale back from
 
+		// Simulation.
+		constexpr uint32_t kSimIterations = 3;
+		constexpr uint32_t kMaxSimGapFrames = 2;       // unsimulated longer than this: restart from the targets
+		constexpr float kMaxFrameTime = 1.0f / 30.0f;  // longer frames slow the hair rather than destabilise it
+		constexpr float kSimStep = 1.0f / 60.0f;       // longest step; stiffness and damping are authored for it
+		constexpr float kSimFadeStart = 0.75f;         // of the physics distance
+		constexpr float kSimTimeWrap = 3600.0f;        // keeps the gust clock precise
+		constexpr float kTeleportDistance = 40.0f;     // a root moving further in one frame restarts its strand
+		constexpr float kGravity = 687.0f;             // 9.81 m/s^2 in units (1.428 cm)
+		constexpr float kWindAcceleration = 600.0f;    // at the weather's full wind speed
+		// Body colliders, radii at scale 1: well inside a body, so hair resting on it stays put.
+		constexpr float kNeckRadius = 3.0f;
+		constexpr float kChestRadius = 5.5f;
+		constexpr float kBackRadius = 6.5f;
+		constexpr float kShoulderRadius = 3.5f;
+		constexpr float kArmRadius = 3.0f;
+
 		const wchar_t* kLightingShaderPath = L"Data\\Shaders\\HairStrands\\StrandLighting.hlsl";
 		const wchar_t* kSkinShaderPath = L"Data\\Shaders\\HairStrands\\StrandSkin.cs.hlsl";
+		const wchar_t* kSimShaderPath = L"Data\\Shaders\\HairStrands\\StrandSim.cs.hlsl";
+		const char* kSkinShaderFailure = "Strand skinning shader failed to compile; strands are off";
+		const char* kSimShaderFailure = "Strand simulation shader failed to compile; strands are not simulated";
 
 		using LightingFlags = SIE::ShaderCache::LightingShaderFlags;
 		using UtilityFlags = SIE::ShaderCache::UtilityShaderFlags;
@@ -176,6 +197,12 @@ namespace Strands
 		{
 			return globals::state->frameCount;
 		}
+
+		// a_node, if it is the skeleton node of that name.
+		RE::NiAVObject* IfNamed(RE::NiAVObject* a_node, const char* a_name)
+		{
+			return a_node && _stricmp(a_node->name.c_str(), a_name) == 0 ? a_node : nullptr;
+		}
 	}
 
 	struct StrandRenderer::Asset
@@ -190,6 +217,7 @@ namespace Strands
 		};
 
 		std::string key;
+		uint32_t serial = 0;  // tells a replaced asset from its successor
 		State state = State::Queued;
 		std::string error;
 		HairMeshData mesh;          // released once the job starts
@@ -201,6 +229,10 @@ namespace Strands
 		uint32_t pointsPerStrand = 0;
 		float averageLength = 0.0f;
 		SeedMode seedingUsed = SeedMode::Roots;
+		uint32_t guideCount = 0;
+		int32_t headBone = -1;
+		float3 headCentre;
+		float headRadius = 0.0f;
 		std::unique_ptr<Buffer> restPoints;
 		std::unique_ptr<Buffer> strandInfo;
 		uint32_t lastUsedFrame = 0;
@@ -231,6 +263,8 @@ namespace Strands
 
 		std::unique_ptr<Buffer> skinned;
 		uint32_t skinnedCapacity = 0;
+		std::unique_ptr<Buffer> guideState;  // simulated guide points, kept between frames
+		uint32_t guideCapacity = 0;
 		std::unique_ptr<Buffer> palette;
 		uint32_t paletteBones = 0;
 		std::vector<float4> paletteData;
@@ -254,6 +288,12 @@ namespace Strands
 		float minWidthPerDistance = 0.0f;
 		float3 skinEye;
 		float3 skinPreviousEye;
+
+		// Simulation.
+		float simWeight = 0.0f;              // 1 up close, fading to 0 (plain skinning) at the physics distance
+		float3 simEye;                       // camera the stored guide state is relative to
+		uint32_t lastSimFrame = UINT32_MAX;  // RenderFrame() of the last simulation; UINT32_MAX: restart
+		uint32_t simAssetSerial = 0;         // the asset the stored guide state belongs to
 	};
 
 	struct StrandRenderer::ShaderVariant
@@ -308,10 +348,13 @@ namespace Strands
 			// dropping the map entry only stops new draws from using it.
 			variants.clear();
 		}
-		std::scoped_lock lock(skinShaderMutex);
-		skinShader = nullptr;
-		skinShaderRequested = false;
-		skinShaderFailed = false;
+		std::scoped_lock lock(computeShaderMutex);
+		for (auto* slot : { &skinShader, &simShader }) {
+			slot->shader = nullptr;
+			slot->requested = false;
+			slot->failed = false;
+			++slot->generation;
+		}
 	}
 
 	void StrandRenderer::InvalidateStyles()
@@ -392,6 +435,16 @@ namespace Strands
 		currentVariant = nullptr;
 		currentDepthOnly = false;
 
+		// Simulation clock and the weather's wind, once per frame. Paused, the hair holds still.
+		const bool paused = globals::game::ui && globals::game::ui->GameIsPaused();
+		frameDeltaTime = paused ? 0.0f : std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, kMaxFrameTime);
+		simulationTime = std::fmod(simulationTime + frameDeltaTime, kSimTimeWrap);
+		frameWind = {};
+		if (auto* sky = globals::game::sky; sky && settings.physics && !Util::IsInterior()) {
+			const float strength = std::clamp(sky->windSpeed, 0.0f, 1.0f) * kWindAcceleration * settings.windStrength;
+			frameWind = { std::sin(sky->windAngle) * strength, std::cos(sky->windAngle) * strength, 0.0f };
+		}
+
 		if (library.GetGeneration() != libraryGeneration) {
 			libraryGeneration = library.GetGeneration();
 			InvalidateStyles();
@@ -428,6 +481,10 @@ namespace Strands
 			asset->pointsPerStrand = data->pointsPerStrand;
 			asset->averageLength = data->averageLength;
 			asset->seedingUsed = data->seedingUsed;
+			asset->guideCount = data->guideCount;
+			asset->headBone = data->headBone;
+			asset->headCentre = data->headCentre;
+			asset->headRadius = data->headRadius;
 			D3D11_SUBRESOURCE_DATA pointsInit{ data->points.data(), 0, 0 };
 			D3D11_SUBRESOURCE_DATA strandsInit{ data->strands.data(), 0, 0 };
 			try {
@@ -436,8 +493,8 @@ namespace Strands
 				asset->strandInfo = std::make_unique<Buffer>(StructuredDesc(sizeof(StrandInfo), asset->strandCount, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0), &strandsInit, "HairStrands::StrandInfo");
 				asset->strandInfo->CreateSRV(BufferSRVDesc(asset->strandCount));
 				asset->state = Asset::State::Ready;
-				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding)", asset->key, asset->strandCount, asset->pointsPerStrand, asset->averageLength,
-					asset->seedingUsed == SeedMode::Area ? "area" : "root");
+				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}", asset->key, asset->strandCount,
+					asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "root", asset->guideCount, asset->headRadius);
 			} catch (const std::exception& e) {
 				asset->state = Asset::State::Failed;
 				asset->error = "GPU upload failed";
@@ -521,7 +578,7 @@ namespace Strands
 				continue;
 			++stats.trackedHair;
 			stats.convertedHair += instance->converted ? 1 : 0;
-			stats.gpuBytes += static_cast<uint64_t>(instance->skinnedCapacity) * sizeof(SkinnedPoint);
+			stats.gpuBytes += static_cast<uint64_t>(instance->skinnedCapacity) * sizeof(SkinnedPoint) + static_cast<uint64_t>(instance->guideCapacity) * sizeof(GuidePoint);
 		}
 		for (const auto& [key, asset] : assets) {
 			++stats.assets;
@@ -530,8 +587,12 @@ namespace Strands
 		}
 		stats.strandsDrawn = strandsThisFrame;
 		stats.drawnHair = drawnThisFrame;
+		stats.simulatedHair = simulatedThisFrame;
+		stats.guidesSimulated = guidesThisFrame;
 		strandsThisFrame = 0;
 		drawnThisFrame = 0;
+		simulatedThisFrame = 0;
+		guidesThisFrame = 0;
 	}
 
 	void StrandRenderer::Classify(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry)
@@ -638,6 +699,7 @@ namespace Strands
 
 		auto asset = std::make_shared<Asset>();
 		asset->key = key;
+		asset->serial = ++nextAssetSerial;
 		asset->style = a_instance.style;
 		asset->lastUsedFrame = frame;
 		std::string error;
@@ -713,29 +775,32 @@ namespace Strands
 		return nullptr;
 	}
 
-	bool StrandRenderer::EnsureSkinShader()
+	winrt::com_ptr<ID3D11ComputeShader> StrandRenderer::EnsureComputeShader(ComputeShader& a_slot, const wchar_t* a_path, const char* a_failure)
 	{
-		std::scoped_lock lock(skinShaderMutex);
-		if (skinShader)
-			return true;
-		if (skinShaderRequested || skinShaderFailed)
-			return false;
-		skinShaderRequested = true;
-		globals::shaderCache->EnqueueComputeShaderCompile(kSkinShaderPath, "main", {}, [this](ID3D11ComputeShader* a_shader) {
-			std::scoped_lock lock(skinShaderMutex);
-			if (!skinShaderRequested) {  // ClearShaders ran while this compiled
+		std::scoped_lock lock(computeShaderMutex);
+		if (a_slot.shader || a_slot.requested || a_slot.failed)
+			return a_slot.shader;
+		a_slot.requested = true;
+		globals::shaderCache->EnqueueComputeShaderCompile(a_path, "main", {}, [this, &a_slot, generation = a_slot.generation, a_failure](ID3D11ComputeShader* a_shader) {
+			std::scoped_lock lock(computeShaderMutex);
+			if (generation != a_slot.generation) {  // ClearShaders ran while this compiled
 				if (a_shader)
 					a_shader->Release();
 				return;
 			}
 			if (a_shader) {
-				skinShader.attach(a_shader);
+				a_slot.shader.attach(a_shader);
 			} else {
-				skinShaderFailed = true;
-				logger::error("[HairStrands] Strand skinning shader failed to compile; strands are off");
+				a_slot.failed = true;
+				logger::error("[HairStrands] {}", a_failure);
 			}
 		});
-		return false;
+		return nullptr;
+	}
+
+	bool StrandRenderer::EnsureSkinShader()
+	{
+		return EnsureComputeShader(skinShader, kSkinShaderPath, kSkinShaderFailure) != nullptr;
 	}
 
 	bool StrandRenderer::EnsureInstanceBuffers(Instance& a_instance)
@@ -775,6 +840,7 @@ namespace Strands
 		a_instance.lodActive = a_instance.distance <= end;
 		if (!a_instance.lodActive || !a_instance.allowed)
 			return false;
+		a_instance.simWeight = settings.physics ? 1.0f - Smoothstep(settings.physicsDistance * kSimFadeStart, settings.physicsDistance, a_instance.distance) : 0.0f;
 
 		const auto& asset = *a_instance.asset;
 		const auto& style = a_instance.style;
@@ -849,8 +915,9 @@ namespace Strands
 			a_instance.paletteData[bones * 3 + i] = previous[i];
 			a_instance.paletteData[bones * 3 + i].w -= previousEyeRows[i % 3];
 		}
-		a_instance.previousAbsolute = std::move(absolute);
-		a_instance.previousFrame = RenderFrame();
+		const auto skinProgram = EnsureComputeShader(skinShader, kSkinShaderPath, kSkinShaderFailure);
+		if (!skinProgram)
+			return false;
 
 		auto* context = globals::d3d::context;
 		try {
@@ -870,30 +937,58 @@ namespace Strands
 		std::memcpy(mapped.pData, a_instance.paletteData.data(), a_instance.paletteData.size() * sizeof(float4));
 		context->Unmap(a_instance.palette->resource.get(), 0);
 
-		const uint32_t points = a_instance.activeStrands * a_instance.asset->pointsPerStrand;
-		skinCB->Update(SkinCB{ points, bones, { 0, 0 } });
+		// The palette is on the GPU: from here on the frame is skinned (and simulated).
+		SkinCB cb{};
+		cb.pointCount = a_instance.activeStrands * a_instance.asset->pointsPerStrand;
+		cb.boneCount = bones;
+		cb.pointsPerStrand = a_instance.asset->pointsPerStrand;
+		cb.guideCount = a_instance.asset->guideCount;
+		const auto simProgram = settings.physics ? EnsureComputeShader(simShader, kSimShaderPath, kSimShaderFailure) : nullptr;
+		const bool simulate = simProgram && PrepareSimulation(a_instance, a_skin, absolute, eye, previousEye, cb);
+		if (!simulate) {
+			a_instance.lastSimFrame = UINT32_MAX;
+			// Physics off for this hair: free its guide state. Past the physics distance it is kept.
+			if (!settings.physics || !a_instance.style.simulate) {
+				a_instance.guideState.reset();
+				a_instance.guideCapacity = 0;
+			}
+		}
+		a_instance.previousAbsolute = std::move(absolute);
+		a_instance.previousFrame = RenderFrame();
 
-		// Mid-pass dispatch: put back every compute binding it touches.
+		skinCB->Update(cb);
+
+		// Mid-pass dispatches: put back every compute binding they touch.
 		winrt::com_ptr<ID3D11ComputeShader> oldShader;
 		context->CSGetShader(oldShader.put(), nullptr, nullptr);
 		ID3D11Buffer* oldCB = nullptr;
 		context->CSGetConstantBuffers(0, 1, &oldCB);
-		ID3D11ShaderResourceView* oldSRVs[2]{};
-		context->CSGetShaderResources(0, 2, oldSRVs);
+		ID3D11ShaderResourceView* oldSRVs[4]{};
+		context->CSGetShaderResources(0, 4, oldSRVs);
 		ID3D11UnorderedAccessView* oldUAV = nullptr;
 		context->CSGetUnorderedAccessViews(0, 1, &oldUAV);
 
-		ID3D11Buffer* cb = skinCB->CB();
-		ID3D11ShaderResourceView* srvs[2] = { a_instance.asset->restPoints->srv.get(), a_instance.palette->srv.get() };
-		ID3D11UnorderedAccessView* uav = a_instance.skinned->uav.get();
-		context->CSSetShader(skinShader.get(), nullptr, 0);
-		context->CSSetConstantBuffers(0, 1, &cb);
-		context->CSSetShaderResources(0, 2, srvs);
-		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-		context->Dispatch((points + 63) / 64, 1, 1);
+		ID3D11Buffer* cbBuffer = skinCB->CB();
+		ID3D11ShaderResourceView* srvs[4] = { a_instance.asset->restPoints->srv.get(), a_instance.palette->srv.get(), a_instance.asset->strandInfo->srv.get(), nullptr };
+		context->CSSetConstantBuffers(0, 1, &cbBuffer);
+		context->CSSetShaderResources(0, 4, srvs);
+		if (simulate) {
+			// The guides first: every strand follows one.
+			ID3D11UnorderedAccessView* guideUAV = a_instance.guideState->uav.get();
+			context->CSSetUnorderedAccessViews(0, 1, &guideUAV, nullptr);
+			context->CSSetShader(simProgram.get(), nullptr, 0);
+			context->Dispatch((cb.guideCount + 63) / 64, 1, 1);
+		}
+		// The guide state moves from the UAV slot to t3: unbind it as a UAV first.
+		ID3D11UnorderedAccessView* skinnedUAV = a_instance.skinned->uav.get();
+		context->CSSetUnorderedAccessViews(0, 1, &skinnedUAV, nullptr);
+		ID3D11ShaderResourceView* guideSRV = simulate ? a_instance.guideState->srv.get() : nullptr;
+		context->CSSetShaderResources(3, 1, &guideSRV);
+		context->CSSetShader(skinProgram.get(), nullptr, 0);
+		context->Dispatch((cb.pointCount + 63) / 64, 1, 1);
 
 		context->CSSetUnorderedAccessViews(0, 1, &oldUAV, nullptr);
-		context->CSSetShaderResources(0, 2, oldSRVs);
+		context->CSSetShaderResources(0, 4, oldSRVs);
 		context->CSSetConstantBuffers(0, 1, &oldCB);
 		context->CSSetShader(oldShader.get(), nullptr, 0);
 		for (auto* srv : oldSRVs) {
@@ -908,6 +1003,131 @@ namespace Strands
 		a_instance.skinEye = eye;
 		a_instance.skinPreviousEye = previousEye;
 		return true;
+	}
+
+	bool StrandRenderer::PrepareSimulation(Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb)
+	{
+		const auto& asset = *a_instance.asset;
+		const auto& style = a_instance.style;
+		// Short hair (area seeding) barely moves: it keeps plain skinning.
+		if (!style.simulate || asset.guideCount == 0 || asset.pointsPerStrand < 2 || asset.seedingUsed == SeedMode::Area || a_instance.simWeight <= 0.0f)
+			return false;
+
+		const uint32_t guidePoints = asset.guideCount * asset.pointsPerStrand;
+		if (!a_instance.guideState || a_instance.guideCapacity != guidePoints) {
+			a_instance.guideState.reset();
+			a_instance.guideCapacity = 0;
+			a_instance.lastSimFrame = UINT32_MAX;
+			try {
+				a_instance.guideState = std::make_unique<Buffer>(StructuredDesc(sizeof(GuidePoint), guidePoints, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, 0), nullptr, "HairStrands::GuideState");
+				a_instance.guideState->CreateSRV(BufferSRVDesc(guidePoints));
+				a_instance.guideState->CreateUAV(BufferUAVDesc(guidePoints));
+				a_instance.guideCapacity = guidePoints;
+			} catch (const std::exception& e) {
+				a_instance.guideState.reset();
+				logger::error("[HairStrands] Could not create the guide strand buffer: {}", e.what());
+				return false;
+			}
+		}
+
+		const bool haveHead = asset.headBone >= 0 && static_cast<uint32_t>(asset.headBone) < o_cb.boneCount;
+		const uint32_t frameBone = haveHead ? static_cast<uint32_t>(asset.headBone) : 0;
+		const bool reset = a_instance.lastSimFrame == UINT32_MAX || a_instance.simAssetSerial != asset.serial || RenderFrame() - a_instance.lastSimFrame > kMaxSimGapFrames;
+
+		// Steps of at most 1/60 s, which stiffness and damping are authored for (the shader
+		// rescales stiffness for shorter steps).
+		const uint32_t steps = frameDeltaTime > 0.0f ? static_cast<uint32_t>(std::ceil(frameDeltaTime / kSimStep - 1e-3f)) : 0u;
+		const float stepTime = steps ? frameDeltaTime / steps : 0.0f;
+
+		// The styled shape already hangs under gravity with the head upright: only the change as
+		// the head tilts acts on it. Skin space is Z-up, so the styled shape's down is the head's -Z.
+		float3 restDown = -float3(a_palette[frameBone * 3].z, a_palette[frameBone * 3 + 1].z, a_palette[frameBone * 3 + 2].z);
+		if (restDown.LengthSquared() < 1e-8f)
+			restDown = { 0.0f, 0.0f, -1.0f };
+		restDown.Normalize();
+
+		o_cb.headBone = frameBone;
+		o_cb.flags = SkinCB::kFollow | (reset ? SkinCB::kReset : 0u) | (settings.collision ? SkinCB::kCollide : 0u);
+		o_cb.simWeight = a_instance.simWeight;
+		// Without a head bone, the full skinning is the only target there is.
+		o_cb.guidance = haveHead ? settings.smpGuidance : 1.0f;
+		o_cb.gravity = (float3(0.0f, 0.0f, -1.0f) - restDown) * (kGravity * style.gravity);
+		o_cb.stepTime = stepTime;
+		o_cb.steps = steps;
+		o_cb.eyeShift = reset ? float3() : a_instance.simEye - a_eye;
+		o_cb.previousEyeShift = reset ? float3() : a_instance.simEye - a_previousEye;
+		o_cb.rootStiffness = style.rootStiffness;
+		o_cb.tipStiffness = style.tipStiffness;
+		o_cb.bendStiffness = style.bendStiffness;
+		o_cb.wind = frameWind * style.windResponse;
+		o_cb.velocityKeep = std::pow(1.0f - style.damping, stepTime * 60.0f);
+		o_cb.carry = 1.0f - style.inertia;
+		o_cb.time = simulationTime;
+		o_cb.teleportDistance = kTeleportDistance;
+		o_cb.iterations = kSimIterations;
+		o_cb.colliderCount = settings.collision ? GatherColliders(a_instance, a_skin, a_palette, frameBone, a_eye, o_cb.colliders) : 0;
+
+		a_instance.simEye = a_eye;
+		a_instance.lastSimFrame = RenderFrame();
+		a_instance.simAssetSerial = asset.serial;
+		++simulatedThisFrame;
+		guidesThisFrame += asset.guideCount;
+		return true;
+	}
+
+	uint32_t StrandRenderer::GatherColliders(const Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, float4* o_colliders) const
+	{
+		uint32_t count = 0;
+		const auto add = [&](const float3& a_a, const float3& a_b, float a_radius) {
+			if (count >= kMaxColliders || !(a_radius > 0.0f))
+				return;
+			const float3 a = a_a - a_eye;
+			const float3 b = a_b - a_eye;
+			o_colliders[count * 2] = { a.x, a.y, a.z, a_radius };
+			o_colliders[count * 2 + 1] = { b.x, b.y, b.z, 0.0f };
+			++count;
+		};
+
+		// The head: a sphere round the skull centre, fitted just inside the strands when they
+		// were generated.
+		const auto& asset = *a_instance.asset;
+		const float4* rows = &a_palette[a_frameBone * 3];
+		const float4 centre(asset.headCentre.x, asset.headCentre.y, asset.headCentre.z, 1.0f);
+		const float3 headCentre(rows[0].Dot(centre), rows[1].Dot(centre), rows[2].Dot(centre));
+		add(headCentre, headCentre, asset.headRadius * float3(rows[0].x, rows[1].x, rows[2].x).Length());
+
+		// The body, from the head bone down its humanoid skeleton. The radii are well inside a
+		// body, and the shader never pushes a point further out than its own target lies.
+		if (asset.headBone < 0 || static_cast<uint32_t>(asset.headBone) >= a_skin->skinData->GetBoneCount() || !a_skin->bones)
+			return count;
+		RE::NiAVObject* head = a_skin->bones[asset.headBone];
+		if (!head)
+			return count;
+		RE::NiAVObject* neck = IfNamed(head->parent, "NPC Neck [Neck]");
+		RE::NiAVObject* spine2 = neck ? IfNamed(neck->parent, "NPC Spine2 [Spn2]") : nullptr;
+		RE::NiAVObject* spine1 = spine2 ? IfNamed(spine2->parent, "NPC Spine1 [Spn1]") : nullptr;
+		const float scale = head->world.scale;
+		const auto at = [](const RE::NiAVObject* a_node) { return ToFloat3(a_node->world.translate); };
+		if (neck)
+			add(at(neck), at(head), kNeckRadius * scale);
+		if (spine2) {
+			add(at(spine2), at(neck), kChestRadius * scale);
+			if (spine1)
+				add(at(spine1), at(spine2), kBackRadius * scale);
+			static const RE::BSFixedString clavicles[2] = { "NPC L Clavicle [LClv]", "NPC R Clavicle [RClv]" };
+			static const RE::BSFixedString upperArms[2] = { "NPC L UpperArm [LUar]", "NPC R UpperArm [RUar]" };
+			static const RE::BSFixedString forearms[2] = { "NPC L Forearm [LLar]", "NPC R Forearm [RLar]" };
+			for (int side = 0; side < 2; ++side) {
+				auto* clavicle = spine2->GetObjectByName(clavicles[side]);
+				auto* upperArm = spine2->GetObjectByName(upperArms[side]);
+				auto* forearm = upperArm ? upperArm->GetObjectByName(forearms[side]) : nullptr;
+				if (clavicle && upperArm)
+					add(at(clavicle), at(upperArm), kShoulderRadius * scale);
+				if (upperArm && forearm)
+					add(at(upperArm), at(forearm), kArmRadius * scale);
+			}
+		}
+		return count;
 	}
 
 	ID3D11RasterizerState* StrandRenderer::GetNoCullState(ID3D11RasterizerState* a_current)

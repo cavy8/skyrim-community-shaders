@@ -19,7 +19,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MinPixelWidth,
 	MaxWidthScale,
 	MaxSubdivisions,
-	MaxStrandsPerFrame);
+	MaxStrandsPerFrame,
+	Physics,
+	PhysicsDistance,
+	SmpGuidance,
+	WindStrength,
+	BodyCollision);
 
 namespace
 {
@@ -32,6 +37,8 @@ namespace
 	constexpr float kMinPixelWidthLimit = 0.25f;
 	constexpr float kMaxPixelWidthLimit = 4.0f;
 	constexpr float kMaxWidthScaleLimit = 10.0f;
+	constexpr float kMaxPhysicsDistance = 2000.0f;
+	constexpr float kMaxWindStrength = 3.0f;
 
 	struct QualityPreset
 	{
@@ -129,6 +136,11 @@ Strands::RenderSettings HairStrands::MakeRenderSettings() const
 	result.maxWidthScale = settings.MaxWidthScale;
 	result.maxSubdivisions = settings.MaxSubdivisions;
 	result.maxStrandsPerFrame = settings.MaxStrandsPerFrame;
+	result.physics = settings.Physics;
+	result.physicsDistance = settings.PhysicsDistance;
+	result.smpGuidance = settings.SmpGuidance;
+	result.windStrength = settings.WindStrength;
+	result.collision = settings.BodyCollision;
 	return result;
 }
 
@@ -165,6 +177,9 @@ void HairStrands::DrawSettings()
 
 	ImGui::SeparatorText(T(TKEY("performance"), "Performance"));
 	DrawPerformanceSettings();
+
+	ImGui::SeparatorText(T(TKEY("physics"), "Physics"));
+	DrawPhysicsSettings();
 
 	ImGui::SeparatorText(T(TKEY("statistics"), "Statistics"));
 	DrawStatistics();
@@ -250,6 +265,31 @@ void HairStrands::DrawPerformanceSettings()
 	}
 }
 
+void HairStrands::DrawPhysicsSettings()
+{
+	ImGui::Checkbox(T(TKEY("physics_enable"), "Simulate Strands"), &settings.Physics);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("physics_enable_tooltip"), "Strands swing, sway and settle on their own: gravity, inertia, wind and collision\nwith the head and body. Off, they follow the hair's bones (and SMP physics) only.\nEach hairstyle's motion is tuned in the hairstyle editor below."));
+	}
+	auto _ = Util::DisableGuard(!settings.Physics);
+	ImGui::SliderFloat(T(TKEY("physics_distance"), "Physics Distance"), &settings.PhysicsDistance, 0.0f, kMaxPhysicsDistance, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("physics_distance_tooltip"), "Distance (in units, about 1.4 cm each) past which strands are no longer simulated.\nThe motion fades out over the last quarter."));
+	}
+	ImGui::SliderFloat(T(TKEY("smp_guidance"), "SMP Guidance"), &settings.SmpGuidance, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("smp_guidance_tooltip"), "For hair with its own physics bones (SMP): how much the bones' motion steers the\nstrands. 0: the strands move on their own; 1: they follow the SMP motion and add\ntheir own on top. Hair without such bones is not affected."));
+	}
+	ImGui::SliderFloat(T(TKEY("wind_strength"), "Wind Strength"), &settings.WindStrength, 0.0f, kMaxWindStrength, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("wind_strength_tooltip"), "How much the weather's wind moves hair outdoors."));
+	}
+	ImGui::Checkbox(T(TKEY("body_collision"), "Collision"), &settings.BodyCollision);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("body_collision_tooltip"), "Keeps strands out of the head, neck, torso, shoulders and upper arms."));
+	}
+}
+
 void HairStrands::DrawStatistics()
 {
 	if (!renderer)
@@ -258,6 +298,7 @@ void HairStrands::DrawStatistics()
 	ImGui::Text(T(TKEY("stats_hair"), "Hair in view: %u, converted: %u, drawn as strands: %u"), stats.trackedHair, stats.convertedHair, stats.drawnHair);
 	ImGui::Text(T(TKEY("stats_strands"), "Strands drawn: %llu"), static_cast<unsigned long long>(stats.strandsDrawn));
 	ImGui::Text(T(TKEY("stats_assets"), "Generated hairstyles: %u (%u generating), GPU memory: %.1f MB"), stats.assets, stats.pendingJobs, stats.gpuBytes / (1024.0 * 1024.0));
+	ImGui::Text(T(TKEY("stats_physics"), "Simulated hair: %u, guide strands: %llu"), stats.simulatedHair, static_cast<unsigned long long>(stats.guidesSimulated));
 }
 
 bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regenerate)
@@ -291,11 +332,12 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		preset.flowAxis = a_style.flowAxis;
 		preset.coverageThreshold = a_style.coverageThreshold;
 		preset.excludeUV = a_style.excludeUV;
+		preset.simulate = a_style.simulate;
 		a_style = preset;
 		changed = true;
 		o_regenerate = true;
 	}
-	tooltip(T(TKEY("style_preset_tooltip"), "Resets every strand shape field below to the hair type's defaults."));
+	tooltip(T(TKEY("style_preset_tooltip"), "Resets every strand shape and motion field below to the hair type's defaults."));
 
 	if (ImGui::TreeNodeEx(T(TKEY("style_shape"), "Strand Shape"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		changed |= ImGui::SliderFloat(T(TKEY("style_root_width"), "Root Width"), &a_style.rootWidth, L::kMinWidth, L::kMaxWidth, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
@@ -316,6 +358,26 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		tooltip(T(TKEY("style_frizz_tooltip"), "Random wandering of strands, strongest at the tips, in units."));
 		changed |= ImGui::SliderFloat(T(TKEY("style_flyaways"), "Flyaways"), &a_style.flyaways, 0.0f, 0.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("style_flyaways_tooltip"), "Fraction of strands that stray from the style."));
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(TKEY("style_motion"), "Motion"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		changed |= ImGui::Checkbox(T(TKEY("style_simulate"), "Simulate"), &a_style.simulate);
+		tooltip(T(TKEY("style_simulate_tooltip"), "Off, this hairstyle's strands follow its bones only. Very short hair is never simulated."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_root_stiffness"), "Root Stiffness"), &a_style.rootStiffness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_root_stiffness_tooltip"), "How firmly strands hold their styled shape near the roots. 1 is rigid."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_tip_stiffness"), "Tip Stiffness"), &a_style.tipStiffness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+		tooltip(T(TKEY("style_tip_stiffness_tooltip"), "How firmly strands hold their styled shape at the tips. Low values let the ends\nswing freely."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_bend_stiffness"), "Bend Stiffness"), &a_style.bendStiffness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_bend_stiffness_tooltip"), "How firmly each strand keeps its own curve as it moves. High values keep curls\nand waves springy; low values let strands fold."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_damping"), "Damping"), &a_style.damping, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+		tooltip(T(TKEY("style_damping_tooltip"), "Air drag: how quickly motion dies down. Low values swing and bounce longer."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_gravity"), "Gravity"), &a_style.gravity, 0.0f, L::kMaxGravity, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_gravity_tooltip"), "How strongly hair falls when the head tilts or bows. The styled shape is how the\nhair hangs with the head upright, so it does not sag further."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_inertia"), "Inertia"), &a_style.inertia, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_inertia_tooltip"), "How much the hair lags behind when the head (or its SMP bones) moves. 0 moves\nrigidly with them; 1 is full inertia: it swings out on turns and streams back at speed."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_wind"), "Wind Response"), &a_style.windResponse, 0.0f, L::kMaxWindResponse, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_wind_tooltip"), "How much the weather's wind moves this hairstyle."));
 		ImGui::TreePop();
 	}
 
@@ -538,6 +600,9 @@ void HairStrands::LoadSettings(json& o_json)
 	settings.MaxWidthScale = std::clamp(settings.MaxWidthScale, 1.0f, kMaxWidthScaleLimit);
 	settings.MaxSubdivisions = std::clamp(settings.MaxSubdivisions, 1u, kMaxSubdivisionsLimit);
 	settings.MaxStrandsPerFrame = std::clamp(settings.MaxStrandsPerFrame, kMinStrandBudget, kMaxStrandBudget);
+	settings.PhysicsDistance = std::clamp(settings.PhysicsDistance, 0.0f, kMaxPhysicsDistance);
+	settings.SmpGuidance = std::clamp(settings.SmpGuidance, 0.0f, 1.0f);
+	settings.WindStrength = std::clamp(settings.WindStrength, 0.0f, kMaxWindStrength);
 	if (renderer) {
 		renderer->ForgetInstances();
 		if (!settings.Enable)

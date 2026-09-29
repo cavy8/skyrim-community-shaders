@@ -93,6 +93,17 @@ namespace Strands
 		float frizz = 0.02f;
 		float flyaways = 0.02f;  // fraction of strands that stray from the style
 
+		// Motion: the simulation reads these every frame. Stiffnesses and damping are per
+		// 1/60 s and converted to the frame's actual length.
+		bool simulate = true;
+		float rootStiffness = 0.5f;   // pull back to the styled shape per 1/60 s, at the root
+		float tipStiffness = 0.03f;   // the same at the tip (low: tips swing freely)
+		float bendStiffness = 0.35f;  // how firmly each strand keeps its own curve as it moves
+		float damping = 0.06f;        // velocity lost per 1/60 s (air drag)
+		float gravity = 1.0f;         // pull of gravity as the head tilts (1: real gravity)
+		float inertia = 0.85f;        // 0: moves rigidly with the head and bones, 1: lags behind with full inertia
+		float windResponse = 1.0f;    // how much the weather's wind moves the hair
+
 		bool operator==(const StrandStyle&) const = default;
 
 		/** @brief True if a change from this style to another requires regenerating the asset. */
@@ -118,6 +129,8 @@ namespace Strands
 		inline constexpr float kMinPeriod = 0.2f;
 		inline constexpr float kMaxPeriod = 20.0f;
 		inline constexpr float kMaxCurlRadius = 1.5f;
+		inline constexpr float kMaxGravity = 3.0f;
+		inline constexpr float kMaxWindResponse = 3.0f;
 		inline constexpr size_t kMaxExcludeRects = 32;
 	}
 

@@ -30,6 +30,11 @@ struct HairStrands : Feature
 		float MaxWidthScale = 4.0f;
 		uint MaxSubdivisions = 4;
 		uint MaxStrandsPerFrame = 200000;
+		bool Physics = true;
+		float PhysicsDistance = 400.0f;
+		float SmpGuidance = 0.35f;
+		float WindStrength = 1.0f;
+		bool BodyCollision = true;
 	};
 
 	virtual inline std::string GetName() override { return "Hair Strands"; }
@@ -45,6 +50,7 @@ struct HairStrands : Feature
 				T("feature.hair_strands.key_feature_2", "Straight, wavy, curly, coily and locs presets, tuned per hairstyle"),
 				T("feature.hair_strands.key_feature_3", "In-game hairstyle editor; authored styles can replace automatic conversion"),
 				T("feature.hair_strands.key_feature_4", "Follows the hair's bones and physics, and uses every hair lighting feature"),
+				T("feature.hair_strands.key_feature_6", "Strand physics with gravity, inertia, wind and body collision, guided by SMP hair physics where present"),
 				T("feature.hair_strands.key_feature_5", "Distance LOD, actor and strand budgets keep the cost bounded") } };
 	}
 
@@ -96,6 +102,7 @@ private:
 
 	Strands::RenderSettings MakeRenderSettings() const;
 	void DrawPerformanceSettings();
+	void DrawPhysicsSettings();
 	void DrawStatistics();
 	void DrawEditor();
 	/** @brief Draws the style fields; returns true if a field changed, and whether it needs regeneration. */

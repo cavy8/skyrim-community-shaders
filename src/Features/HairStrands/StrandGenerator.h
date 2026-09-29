@@ -26,8 +26,8 @@ namespace Strands
 	struct StrandInfo
 	{
 		float length;
-		float random;  // uniform [0, 1), stable per strand
-		uint32_t clump;
+		float random;    // uniform [0, 1), stable per strand
+		uint32_t guide;  // the simulated strand this one follows (itself for a guide)
 		float clumpRandom;
 	};
 	static_assert(sizeof(StrandInfo) == 16);
@@ -38,6 +38,14 @@ namespace Strands
 		uint32_t pointsPerStrand = 0;
 		std::vector<RestPoint> points;
 		std::vector<StrandInfo> strands;  // shuffled, so any prefix is an even thinning
+
+		// The first guideCount strands are the simulated guides (an even thinning, like any
+		// prefix); every strand names the guide it follows.
+		uint32_t guideCount = 0;
+		// Head collider, in skin space: a sphere round the skull centre, just inside the hair.
+		int32_t headBone = -1;  // skin-instance bone of the head, -1 if the mesh has none
+		float3 headCentre;
+		float headRadius = 0.0f;
 
 		float averageLength = 0.0f;
 		SeedMode seedingUsed = SeedMode::Roots;
@@ -54,6 +62,9 @@ namespace Strands
 		inline constexpr uint32_t kMaxPointsPerStrand = 32;
 		inline constexpr float kMaxStrandLength = 200.0f;
 		inline constexpr float kMinStrandLength = 0.25f;
+		inline constexpr uint32_t kStrandsPerGuide = 8;
+		inline constexpr uint32_t kMinGuides = 64;
+		inline constexpr uint32_t kMaxGuides = 4096;
 	}
 
 	/**
@@ -65,8 +76,9 @@ namespace Strands
 	 * head. Double-sided cards keep one side. Strands are streamlines of that flow traced
 	 * across the welded mesh, seeded
 	 * along upstream boundary edges (roots), plus fill streamlines through any triangles
-	 * the roots missed, or scattered over the surface for very short hair. Pure CPU; safe
-	 * to run on a worker thread.
+	 * the roots missed, or scattered over the surface for very short hair. Each strand is
+	 * then given the guide strand it follows when simulated. Pure CPU; safe to run on a
+	 * worker thread.
 	 *
 	 * @return false with o_error set if the mesh has no usable flow.
 	 */

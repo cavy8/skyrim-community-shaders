@@ -76,6 +76,11 @@ Blending draws terrain from the prepass depth, so the terrain disappeared. The l
 pass had escaped until then only because the hair's `EQUAL` test reads the same either
 way. The states are now read with the passthrough on, as bound.
 
+`0-2-0` (2026-09-28) adds strand physics: guide strands simulated on the GPU, which every
+other strand follows. It works on SMP and non-SMP hair alike, and SMP bone motion only
+guides it. See [Physics](#physics-strandsimcshlsl). The solver was checked against a Python
+port, not yet in game.
+
 This is build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -89,9 +94,9 @@ This is build-verified, and the generator fixes are checked on real meshes (see
 | Copy mesh (bind pose, weights, UVs) | `MeshExtract.cpp` | render | once per hair and style |
 | Copy one mip of the diffuse texture to a staging texture, map it once the GPU is done | `BeginCoverageReadback`, `PollCoverageReadback` | render | once per hair and style, a frame or two before generation |
 | Decode the texture's alpha (any format, BC included, via DirectXTex) | `DecodeCoverage` | worker | start of the generation job |
-| Generate strands | `StrandGenerator.cpp` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
+| Generate strands, pick guide strands, fit the head collider | `StrandGenerator.cpp` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
 | Upload asset | `StrandRenderer::BeginFrame` | render | when the job finishes |
-| LOD, bone palette, skinning compute | `PrepareStrands` (`UpdateLod`, `Skin`) | render, in `SetupGeometry` | first pass of the hair each rendered frame (depth prepass or lighting) |
+| LOD, bone palette, colliders, simulation and skinning compute | `PrepareStrands` (`UpdateLod`, `Skin`, `PrepareSimulation`) | render, in `SetupGeometry` | first pass of the hair each rendered frame (depth prepass or lighting) |
 | Draw strand depth | `StrandRenderer::Draw` (depth only) | render, in the Utility `RestoreGeometry` | every Utility draw of the hair that writes depth (the depth prepass) |
 | Draw ribbons | `StrandRenderer::Draw` | render, in `RestoreGeometry` | every main-view lighting draw of the hair |
 
@@ -113,9 +118,10 @@ Everything lives in `src/Features/HairStrands.{h,cpp}` (feature, settings, UI) a
     back exactly.
 -   **Skin from the bone palette, not the card vertices.** Each strand point gets the
     barycentric blend of its triangle's bone weights (top four, unorm8). A compute shader
-    applies `boneWorld × skinToBone`, the same transform the game skins the cards with. SMP
-    and other physics move bones, so strands follow them for free. Positions are camera
-    relative (`posAdjust`); previous positions use last frame's palette and `previousPosAdjust`.
+    applies `boneWorld × skinToBone`, the same transform the game skins the cards with.
+    Positions are camera relative (`posAdjust`); previous positions use last frame's palette
+    and `previousPosAdjust`. With physics on, the same pass makes each strand follow its
+    simulated guide (see [Physics](#physics-strandsimcshlsl)).
 -   **Game objects are only read inside the two hooks.** At that point the geometry, skin
     instance and bone nodes are guaranteed alive. Instances are keyed by `BSGeometry*` but
     never dereferenced elsewhere, and re-validated by skin instance and vertex count because
@@ -227,6 +233,15 @@ hidden.
    cell more than 60° away from that strand (a parting, a crown whorl) are not pulled.
    Because of the shuffle, any prefix of the strand list is an even thinning, which is
    what LOD draws.
+7. **Guides.** The first strands of the shuffled list are the simulated guides: one per 8
+   strands, 64 to 4,096. Each other strand follows the guide nearest its root that runs
+   most like it: the smallest sum of squared distances at its root, middle and tip, each
+   compared with the guide's point at the same distance from the root. A shorter guide
+   loses on the tip, and a guide from another lock that only shares the root area loses on
+   the middle and tip. `StrandInfo.guide` holds the choice; a guide names itself.
+8. **Head collider.** A sphere round the skull centre (the `NPC Head` bone + 5 units up)
+   with the radius at which only 2% of strand points lie inside (× 0.95, clamped to 2–10
+   units).
 
 ## LOD and budget
 
@@ -243,6 +258,71 @@ hidden.
 -   Curve detail (render points per control segment) comes from the curl or wave period
     up close and falls to 1 at `LodEnd`, capped by `MaxSubdivisions`.
 -   The compute pass skins only the drawn prefix. Cost scales with drawn strands × points.
+-   Physics fades out over the last quarter of `PhysicsDistance` (default 400). Every guide
+    is simulated while a hair is: guides are cheap next to the drawn strands.
+
+## Physics (`StrandSim.cs.hlsl`)
+
+Only guide strands are simulated, one thread each. `StrandSkin.cs.hlsl` then moves every
+strand point with its guide at the same distance from the root: its offset from the guide's
+target is turned by the guide's rotation there (shortest arc from the target's tangent to
+the simulated one) and added to the guide's position. The previous position is built the
+same way from the guide's previous state, so motion vectors carry the simulated motion. A
+strand longer than its guide continues past the guide's tip along the tip's rotation.
+
+-   **Targets, and how SMP guides.** A guide point chases its target: the point skinned by
+    the head bone alone (the styled shape, rigid on the head), blended towards its full
+    skinning by the global **SMP Guidance** (default 0.35). Non-SMP hair is skinned to the
+    head, so both are the same. SMP hair adds its physics bones: at 0 the strands ignore
+    them, at 1 they chase the SMP pose. Hair without a head bone always uses its full
+    skinning.
+-   **Inertia.** Each frame, last frame's state first moves with `1 − inertia` of what the
+    point's target skinning did since (the rigid motion of that skinning, so it rotates
+    too). At 0 hair moves rigidly with the head, or with the SMP bones at full guidance;
+    at 1 it keeps all its world-space inertia.
+-   **Steps.** The frame runs in steps of at most 1/60 s (frames are capped at 1/30 s, so 1
+    or 2 steps). Targets move from last frame's pose to this frame's across the steps. A
+    step integrates (Verlet: velocity, gravity, wind), pins the root to its target, then
+    runs 3 iterations of: a global shape constraint (towards the target,
+    `rootStiffness` → `tipStiffness` along the strand), a local shape constraint (each
+    segment keeps its rest direction relative to its parent segment, turned by the
+    parent's shortest-arc rotation; the first segment keeps its rest direction), and
+    follow-the-leader length constraints with collision. Velocities come from the move
+    minus 0.9 of each length correction handed down from the next point (dynamic FTL,
+    Müller et al. 2012), clamped at 3,000 units/s.
+-   **Same motion at any frame rate.** Stiffness and damping are authored per 1/60 s. A
+    shorter step scales stiffness as a compliance (XPBD: `h² / (h² + α)`, with α fitted so
+    the authored value holds at 1/60 s). Position projections also damp the motion relative
+    to the target by `1 − s` per step, which shorter steps lose; that is given back on the
+    velocity relative to the target. Air drag (`damping`) applies to world velocity. In the
+    NumPy port (`tools/hair_strands_sim_check.py`), a 20-unit lock 0.3 s into a sprint
+    start lagged 8.5, 5.0 and 3.5 units at 30, 60 and 144 fps with plain per-frame scaling;
+    with this scheme it lags 5.4, 5.4, 5.6 and 5.4 at 30, 60, 144 and 240 fps, and settles
+    within 3–4 s at every rate. Shorter steps with the plain scaling kept oscillating.
+-   **Gravity is preloaded.** The styled shape is how hair hangs with the head upright, so
+    only the change as the head tilts acts: `g × (down − R_head × down)`, with `g` = 687
+    units/s² × `gravity`. Without that, hair would sag below its style at rest. The
+    restoring force after a swing comes from the shape constraints.
+-   **Wind** is the weather's (`Sky::windSpeed`, `windAngle`; none indoors), up to 600
+    units/s² at full wind speed × **Wind Strength** × `windResponse`. It pushes across the
+    strand, stronger towards the tip, with slow gusts out of phase per strand.
+-   **Collision.** The head sphere, and capsules found up the head bone's own skeleton:
+    neck (neck → head, radius 3), chest (spine 2 → neck, 5.5), back (spine 1 → spine 2,
+    6.5), shoulders (clavicle → upper arm, 3.5) and upper arms (upper arm → forearm, 3).
+    Radii scale with the head bone's world scale. A point is pushed out to at most its own
+    target's distance from the collider, and never left deeper than half the radius, so the
+    styled shape itself never collides.
+-   **Restarts.** A guide restarts from its targets when it is first simulated, after more
+    than 2 frames unsimulated, when its asset changes, and (per strand, on the GPU) when
+    its root moves more than 40 units in a frame (teleports, loads). Non-finite state falls
+    back to the target.
+-   **Paused:** no steps; the state is only carried with the bones.
+-   **Not simulated:** style `simulate` off, area-seeded (short) hair, or past the physics
+    distance. Such hair is plain skinning, as before `0-2-0`.
+
+State per instance: `HairStrands::GuideState`, 112 bytes per guide point (a 2,500-guide,
+20-point hair is 5.6 MB). Positions are camera relative, stored against the camera of the
+simulation that wrote them and shifted by the camera's move each frame.
 
 ## Authoring styles
 
@@ -277,9 +357,11 @@ with no `match` applies to all hair.
     `curl`/`ringlet` → curly, `wave`/`wavy` → wavy, anything else → straight.
 -   Fields: generation (`seeding`, `flowAxis`, `density`, `segmentLength`, `lengthScale`,
     `volume`, `layerJitter`, `clumpStrength`, `clumpSize`, `clumpTwist`, `shortLength`,
-    `coverageThreshold`, `seed`, `excludeUV`) and render (`rootWidth`, `tipWidth`, `waveAmplitude`, `waveLength`,
-    `curlRadius`, `curlLength`, `curlStart`, `frizz`, `flyaways`). Tooltips in the editor
-    explain each field. Units are Skyrim units, about 1.4 cm.
+    `coverageThreshold`, `seed`, `excludeUV`), render (`rootWidth`, `tipWidth`, `waveAmplitude`, `waveLength`,
+    `curlRadius`, `curlLength`, `curlStart`, `frizz`, `flyaways`) and motion (`simulate`,
+    `rootStiffness`, `tipStiffness`, `bendStiffness`, `damping`, `gravity`, `inertia`,
+    `windResponse`; stiffness and damping per 1/60 s). Tooltips in the editor explain each
+    field. Units are Skyrim units, about 1.4 cm. Motion fields apply live.
 -   In-game editor: select a hair in view, edit it, and the change applies to every actor
     wearing it. Render fields apply live; generation fields apply when the slider is
     released. **Save** writes the fully resolved style, matched on that exact head part,
@@ -289,11 +371,11 @@ with no `match` applies to all hair.
 
 | Preset | What it changes |
 | --- | --- |
-| Straight | defaults: light clumping, little frizz |
-| Wavy | per-lock sine waves (period 4) |
-| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets |
-| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show |
-| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists) |
+| Straight | defaults: light clumping, little frizz; free-swinging tips (stiffness 0.5 → 0.03, bend 0.35, damping 0.06, inertia 0.85) |
+| Wavy | per-lock sine waves (period 4); a little stiffer (tip 0.04, bend 0.45) |
+| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets; springy (tip 0.08, bend 0.7, damping 0.1) |
+| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show; holds its shape (tip 0.35, bend 0.85, gravity 0.5, inertia 0.5) |
+| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists); heavy (tip 0.02, damping 0.04, gravity 1.2, inertia 0.9) |
 
 Short hair (buzz cuts, fades, fuzz) is covered by area seeding, not a preset. Long hair just
 gets more control points, up to 32. Dark hair over a light background shows gaps between
@@ -320,7 +402,16 @@ permutation bit.
 -   Shaders: `StrandLighting.hlsl` is not in `.github/configs/shader-validation.yaml`, so
     compile it by hand with fxc as VS and PS. Use `-D HAIR -D DO_ALPHA_TEST` plus the
     Lighting feature defines, with and without `DEFERRED`/`SKINNED`. The strand VS output
-    signature must match the strand PS input signature.
+    signature must match the strand PS input signature. Compile `StrandSkin.cs.hlsl` and
+    `StrandSim.cs.hlsl` as `cs_5_0` with `-I package/Shaders -I "features/Hair Strands/Shaders"`.
+    fxc rejects partial writes to `Guides[]` fields inside the sim's reset branch (`X4532`),
+    so those writes stay unconditional. HLSL `for (uint i ...)` leaks `i` into the function
+    scope, so the sim declares its index once.
+-   Solver: `python tools/hair_strands_sim_check.py` (`--verbose` for the time series) runs
+    a NumPy port of `StrandSim.cs.hlsl` on a hanging lock: still head, sprint start and
+    stop, fast 70° turn, 60° bow and a shoulder capsule, at 30 to 240 fps. It fails if the
+    lock leaves its target while still, stretches, lags differently across frame rates or
+    does not settle. Port solver changes to it first (a few minutes to run), then tune.
 -   Converter: `StrandGenerator.cpp` only needs `float3` and friends plus `logger`. It
     builds on its own with a small shim (SimpleMath, a `logger` stub, `RE::BSGeometry`
     declared) and synthetic cards. That is how the 2026-09-28 checks ran: root/tip
@@ -373,12 +464,24 @@ Check these first in game:
     overlays). A hair not listed there keeps its cards.
 -   The previous-frame convention (relative to `previousPosAdjust`) matches the game's
     skinned motion vectors. A mismatch would show as ghosting on moving hair with TAA or DLSS.
+-   Physics (`0-2-0`): the tuning is from the NumPy port, not seen in game. Check first that
+    still hair sits exactly where it did without physics (a visible offset means the
+    follow pass's offset/rotation is off), then tune the presets.
+-   The hair's skin instance lists `NPC Head [Head]` (non-SMP and most SMP hair) and that
+    bone's parents are `NPC Neck [Neck]`, `NPC Spine2 [Spn2]` and `NPC Spine1 [Spn1]`, with
+    the clavicles and arms under spine 2. Without them there is only the head sphere.
+-   The body collider radii (neck 3 to back 6.5) are guesses meant to sit inside any body.
+    Hair floating off the shoulders means they are too large; hair through them, too small.
+-   `RE::GetSecondsSinceLastFrame()` is real frame time, and `UI::GameIsPaused()` covers
+    menus. Slow-motion kill cameras may play hair at full speed.
 
 ## Not done (candidates)
 
 -   Strand shadow maps and self-shadowing beyond Hair Specular's, and deep opacity maps.
     Cards cast the shadows.
--   Strand simulation of its own. Strands inherit bone and SMP motion only.
+-   Hair-hair collision, and colliders fitted to the actual body mesh (breasts, armour,
+    weapons on the back). Colliders come from bones with fixed radii.
+-   Wind from anything but the weather (spells, dragons, player speed beyond air drag).
 -   Wigs have no model path in their key (no head part), so they match on shape name and
     vertex/triangle count.
 -   Actor fade-out keeps the cards: strands have no alpha to fade with.
