@@ -1065,10 +1065,10 @@ such field, in either the D3D12 or the Vulkan form - so it cannot answer the HDR
 its own. The A/B/C probe is what answers it.
 
 The hash matters because output channel order is known to differ between builds carrying the
-same 310.8 version (Open found a `.bgr` swap producing a full-frame blue cast). **Swap Output
-R/B** in the Debug group swaps red and blue in the answer before the resolve reads it, so an
-obviously miscoloured frame can be identified as such. Unknown builds are not refused the way
-Open refuses them: that locks users out of DLLs that work.
+same 310.8 version (Open found a `.bgr` swap producing a full-frame blue cast). The builds
+tested here return RGBA, so the answer is read as-is; the former Swap Output R/B debug toggle
+was removed once that was confirmed. Unknown builds are not refused the way Open refuses them:
+that locks users out of DLLs that work.
 
 ## Debug views and readback
 
@@ -1168,8 +1168,7 @@ With Linear Lighting off, After Upscaling, Display-matched: capture the proxy te
 RenderDoc next to the finished frame - their brightness and contrast should now roughly match,
 where before the fix the proxy is visibly washed out. The proxy's shadows should match the
 finished frame at the default in-game gamma and at one non-default value. The DLL SHA-256
-should appear in the log, and Swap Output R/B should produce a full-frame colour swap,
-confirming the current build is already RGBA.
+should appear in the log.
 
 ### Ratio guard A/B
 

@@ -117,7 +117,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		answerOnScreen = all(answerUV >= 0.0) && all(answerUV <= 1.0);
 	}
 	float4 model = ModelColor.SampleLevel(LinearClampSampler, answerUV, 0);
-	model.rgb = NeuralTransferModelChannels(model.rgb);
 	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, answerUV, 0);
 
 	float4 original = OriginalColor[dispatchThreadID.xy];

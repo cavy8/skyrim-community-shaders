@@ -211,7 +211,6 @@ namespace
 		inputs.debugGuardClamp = options.debugGuardClamp;
 		inputs.debugBroadBand = options.debugBroadBand;
 		inputs.debugDetailBand = options.debugDetailBand;
-		inputs.swapModelOutputRB = options.swapModelOutputRB;
 		inputs.measureModelPeak = options.measureModelPeak;
 		inputs.reset = options.reset;
 		// Reverse Z is latched at boot, so the private DLSS SR's create-time flag stays valid.
@@ -870,14 +869,6 @@ void NeuralRendering::DrawSettings()
 			ImGui::TextUnformatted(T(TKEY("debug_guard_clamp_tooltip"),
 				"Tints every pixel the ratio guard actually caught: red where it stopped the model brightening a "
 				"pixel, blue where it stopped it darkening one. With the guard off nothing is marked. Not saved."));
-		}
-
-		ImGui::Checkbox(T(TKEY("debug_swap_rb"), "Swap Output R/B"), &debugState.swapModelOutputRB);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("debug_swap_rb_tooltip"),
-				"Swaps red and blue in the model's answer before it is resolved. Some DLSS Neural Rendering DLL "
-				"builds return the frame in the opposite channel order; if the image has a full-frame blue or red "
-				"cast, this tells you which one you have. Not saved."));
 		}
 
 		// Session-only: the creation contract Feature 18 is built under. Changing it goes
@@ -1588,7 +1579,6 @@ NeuralRendering::Options NeuralRendering::MakeOptions() const
 	options.debugBroadBand = bandsSeparated && debugState.broadBandView;
 	options.debugDetailBand = bandsSeparated && debugState.detailBandView && !options.debugBroadBand;
 	options.debugGuardClamp = debugState.guardClampView;
-	options.swapModelOutputRB = debugState.swapModelOutputRB;
 	options.measureModelPeak = debugState.measurePeak;
 	options.wipePosition = compareView.wipe ? std::clamp(compareView.wipePosition, 0.0f, 1.0f) : -1.0f;
 	options.reset = resetThisFrame;

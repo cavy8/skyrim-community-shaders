@@ -67,7 +67,6 @@ namespace
 	constexpr std::uint32_t kDebugFlagGuardClamp = 1u << 0;
 	constexpr std::uint32_t kDebugFlagBroadBand = 1u << 1;
 	constexpr std::uint32_t kDebugFlagDetailBand = 1u << 2;
-	constexpr std::uint32_t kDebugFlagSwapOutputRB = 1u << 3;
 	constexpr std::uint32_t kDebugFlagStats = 1u << 4;
 
 	/// DebugStats slots, matching DecodeColorCS's RWStructuredBuffer<uint>.
@@ -1185,8 +1184,6 @@ struct NeuralRenderingBackend::State
 			debugFlags |= kDebugFlagBroadBand;
 		else if (transferParams.bandParams[2] > 0.5f && inputs.debugDetailBand)
 			debugFlags |= kDebugFlagDetailBand;
-		if (inputs.swapModelOutputRB)
-			debugFlags |= kDebugFlagSwapOutputRB;
 		const bool collectStats = inputs.measureModelPeak || inputs.debugGuardClamp;
 		ServiceDebugReadback(context, collectStats);
 		if (collectStats && debugStatsUAV)

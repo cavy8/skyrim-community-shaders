@@ -159,7 +159,6 @@ public:
 		bool debugGuardClamp = false;
 		bool debugBroadBand = false;
 		bool debugDetailBand = false;
-		bool swapModelOutputRB = false;
 		bool measureModelPeak = false;
 		bool reset = false;          ///< Force a history reset on this frame.
 		bool depthInverted = false;  ///< Depth guide is Reverse Z (near = 1, far = 0).

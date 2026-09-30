@@ -55,15 +55,4 @@ bool NeuralTransferHasToneData()
 	return BandParams.z > 0.5;
 }
 
-/**
- * The model's answer with the channel order the DLL actually returned.
- *
- * Output channel order differs between nvngx_dlssnr.dll builds; the "Swap Output R/B" debug
- * toggle undoes it so an obviously miscoloured frame can be identified as such.
- */
-float3 NeuralTransferModelChannels(float3 answer)
-{
-	return (DebugFlags & kNeuralDebugSwapOutputRB) != 0 ? answer.bgr : answer;
-}
-
 #endif

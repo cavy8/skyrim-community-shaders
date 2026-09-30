@@ -115,11 +115,10 @@ static const uint kNeuralModelSpaceGamma22 = 1;  // Plain 2.2, what the displaye
 static const uint kNeuralModelSpaceLinear = 2;   // No encode and no clamp (HDR Linear).
 
 // TransferParams.DebugFlags bits.
-static const uint kNeuralDebugGuardClamp = 1u << 0;    // Mark the pixels the ratio guard caught.
-static const uint kNeuralDebugBroadBand = 1u << 1;     // Show the smooth half of the luminance edit.
-static const uint kNeuralDebugDetailBand = 1u << 2;    // Show the remainder.
-static const uint kNeuralDebugSwapOutputRB = 1u << 3;  // The model answer arrives as BGRA.
-static const uint kNeuralDebugStats = 1u << 4;         // Accumulate the peak/clamp readback.
+static const uint kNeuralDebugGuardClamp = 1u << 0;  // Mark the pixels the ratio guard caught.
+static const uint kNeuralDebugBroadBand = 1u << 1;   // Show the smooth half of the luminance edit.
+static const uint kNeuralDebugDetailBand = 1u << 2;  // Show the remainder.
+static const uint kNeuralDebugStats = 1u << 4;       // Accumulate the peak/clamp readback.
 
 /**
  * Model-space encoding for a given colour domain and proxy curve.

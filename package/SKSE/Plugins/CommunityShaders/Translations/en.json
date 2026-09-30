@@ -1462,8 +1462,6 @@
     "feature.neural_rendering.debug_measure_peak_tooltip": "Reads the brightest luminance the model returned back from the GPU each frame. Above 1.0 means it is answering with values outside the 0-1 range it was trained on. Costs a small readback. Not saved.",
     "feature.neural_rendering.debug_peak_label": "Model peak",
     "feature.neural_rendering.debug_readback_pending": "Measuring...",
-    "feature.neural_rendering.debug_swap_rb": "Swap Output R/B",
-    "feature.neural_rendering.debug_swap_rb_tooltip": "Swaps red and blue in the model's answer before it is resolved. Some DLSS Neural Rendering DLL builds return the frame in the opposite channel order; if the image has a full-frame blue or red cast, this tells you which one you have. Not saved.",
     "feature.neural_rendering.depth_aware_resolve": "Depth-Aware Silhouette Preservation (Experimental)",
     "feature.neural_rendering.depth_aware_resolve_tooltip": "When the model runs below full resolution, fades its edit across depth edges so background changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0.",
     "feature.neural_rendering.description": "DLSS 5 Neural Rendering (NGX Feature 18) with a user-supplied nvngx_dlssnr.dll",

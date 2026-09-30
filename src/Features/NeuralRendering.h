@@ -245,9 +245,6 @@ struct NeuralRendering : Feature
 		/// to +-2 stops. Only meaningful while the bands are actually separated.
 		bool debugBroadBand = false;
 		bool debugDetailBand = false;
-		/// Diagnostic for DLSS-NR builds that return the model answer as BGRA: swap the
-		/// answer's red and blue channels before the resolve reads it.
-		bool swapModelOutputRB = false;
 		/// Read back the model answer's peak luminance each frame (an extra reduction
 		/// pass plus a staged copy); surfaced in the settings UI.
 		bool measureModelPeak = false;
@@ -454,11 +451,10 @@ struct NeuralRendering : Feature
 		/// answer as linear in the same units. Only offered under contract C with HDR Display
 		/// redirecting the framebuffer; this is Step 0's C2/C3 input variant.
 		bool hdrLinearProxy = false;
-		bool guardClampView = false;     ///< Mark the pixels the ratio guard actually clamped.
-		bool broadBandView = false;      ///< Show the smooth half of the model's luminance edit.
-		bool detailBandView = false;     ///< Show the remainder.
-		bool swapModelOutputRB = false;  ///< Diagnostic for builds that return the answer as BGRA.
-		bool measurePeak = false;        ///< Read the model answer's peak luminance back each frame.
+		bool guardClampView = false;  ///< Mark the pixels the ratio guard actually clamped.
+		bool broadBandView = false;   ///< Show the smooth half of the model's luminance edit.
+		bool detailBandView = false;  ///< Show the remainder.
+		bool measurePeak = false;     ///< Read the model answer's peak luminance back each frame.
 	};
 	DebugState debugState;
 

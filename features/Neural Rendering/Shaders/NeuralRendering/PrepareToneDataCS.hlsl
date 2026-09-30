@@ -28,7 +28,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 	const uint space = NeuralTransferModelSpace();
 	float3 proxy = NeuralModelToLinear(ProxyColor[dispatchThreadID.xy].rgb, space);
-	float3 model = NeuralModelToLinear(NeuralTransferModelChannels(ModelColor[dispatchThreadID.xy].rgb), space);
+	float3 model = NeuralModelToLinear(ModelColor[dispatchThreadID.xy].rgb, space);
 
 	float proxyLuma = dot(proxy, kNeuralLuma);
 	float modelLuma = dot(model, kNeuralLuma);
