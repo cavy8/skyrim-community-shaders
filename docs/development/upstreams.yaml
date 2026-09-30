@@ -15,9 +15,10 @@ upstreams:
     branch: Bottle-Compendium
     # Last Bottle commit Personal is synchronized to (2026-09-26 simplification: Personal reset
     # to Bottle-Compendium's tip plus Neural Rendering, the Screenshot SDR fix and the
-    # background compile overlay toggle; later synced forward to a6c04a8ff7, then ed4152e525).
+    # background compile overlay toggle; later synced forward to a6c04a8ff7, ed4152e525, then 978eb4d9f2, which carries Hair Backlighting and
+    # the background compile overlay toggle, both handed over to Bottle).
     # Newer Bottle commits are reported as upstream drift by bottle_sync.py until deliberately synced.
-    sha: ed4152e525
+    sha: 978eb4d9f2
     role: primary-maintenance-baseline
   mainline:
     repository: community-shaders/skyrim-community-shaders

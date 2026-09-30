@@ -1,7 +1,8 @@
 # Removed Features
 
 On 2026-09-26 the Personal branch was reset to Bottle-Compendium `db5f4dd7e4`. Only Neural
-Rendering, the Screenshot SDR fix and the "Show Background Compile Overlay" toggle were kept. This
+Rendering, the Screenshot SDR fix and the "Show Background Compile Overlay" toggle were kept
+(the toggle has since been merged into Bottle). This
 file lists what was taken out, so any of it can be added back later.
 
 Everything below still exists at commit **`84783ba220`** (local branch `Personal-pre-simplify`).

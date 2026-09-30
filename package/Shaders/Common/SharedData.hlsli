@@ -591,7 +591,6 @@ namespace SharedData
 		float3 pad;
 	};
 
-	// Local (non-Bottle) FeatureData structs follow; mirror FeatureBuffer.cpp.
 	struct HairBacklightingSettings
 	{
 		uint Enable;
@@ -634,7 +633,6 @@ namespace SharedData
 		PostProcessingSettings postProcessingSettings;
 		VolumetricLightingSettings volumetricLightingSettings;
 		HorizonFixSettings horizonFixSettings;
-		// Local (non-Bottle) features follow.
 		HairBacklightingSettings hairBacklightingSettings;
 	};
 

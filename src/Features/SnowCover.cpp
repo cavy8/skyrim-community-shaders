@@ -715,7 +715,7 @@ bool SnowCover::ScanFireSources()
 		return combined;
 	};
 
-	const auto eye = Util::GetEyePosition();
+	const auto eye = player->GetPosition();
 	uint32_t classified = 0;
 	fireClusters.clear();
 
@@ -769,11 +769,13 @@ bool SnowCover::ScanFireSources()
 			return a_fire.refID == cluster.refID && a_fire.cluster == cluster.cluster;
 		});
 		if (fire == trackedFires.end()) {
-			trackedFires.push_back({ cluster.refID, cluster.cluster, cluster.bound.center, radius, cluster.bound.center, radius, fireMeltSnap ? 1.0f : 0.0f, 0 });
+			trackedFires.push_back({ cluster.refID, cluster.cluster, cluster.bound.center, radius, cluster.bound.center, radius, fireMeltSnap ? 1.0f : 0.0f, 0, 1 });
 			continue;
 		}
-		fire->sampleCenter = cluster.bound.center;
-		fire->sampleRadius = radius;
+		fire->samples = std::min(fire->samples + 1, FIRE_MELT_FOOTPRINT_SAMPLES);
+		const float sampleBlend = 1.0f / static_cast<float>(fire->samples);
+		fire->sampleCenter += (cluster.bound.center - fire->sampleCenter) * sampleBlend;
+		fire->sampleRadius += (radius - fire->sampleRadius) * sampleBlend;
 		fire->missedScans = 0;
 	}
 	return classified < MAX_FIRE_BASE_CLASSIFICATIONS_PER_SCAN;
@@ -797,13 +799,11 @@ void SnowCover::UpdateFireMelt()
 			fireMeltSnap = false;
 	}
 
-	const float centerBlend = 1.0f - std::exp(-dt / FIRE_MELT_CENTER_SMOOTHING);
-	const float growBlend = 1.0f - std::exp(-dt / FIRE_MELT_GROW_SMOOTHING);
-	const float shrinkBlend = 1.0f - std::exp(-dt / FIRE_MELT_SHRINK_SMOOTHING);
+	const float footprintBlend = 1.0f - std::exp(-dt / FIRE_MELT_FOOTPRINT_SMOOTHING);
 	const float fadeStep = dt / FIRE_MELT_FADE_TIME;
 	for (auto& fire : trackedFires) {
-		fire.center += (fire.sampleCenter - fire.center) * centerBlend;
-		fire.radius += (fire.sampleRadius - fire.radius) * (fire.sampleRadius > fire.radius ? growBlend : shrinkBlend);
+		fire.center += (fire.sampleCenter - fire.center) * footprintBlend;
+		fire.radius += (fire.sampleRadius - fire.radius) * footprintBlend;
 		fire.strength = std::clamp(fire.strength + (fire.missedScans < FIRE_MELT_GRACE_SCANS ? fadeStep : -fadeStep), 0.0f, 1.0f);
 	}
 	std::erase_if(trackedFires, [](const TrackedFire& a_fire) { return a_fire.missedScans >= FIRE_MELT_GRACE_SCANS && a_fire.strength <= 0.0f; });
@@ -817,10 +817,11 @@ void SnowCover::UploadFireMelt()
 	fireMelt.Count = 0;
 	fireMelt.Strength = fireMeltSettings.Strength;
 	fireMelt.RadiusScale = fireMeltSettings.RadiusScale;
-	if (trackedFires.empty())
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	if (trackedFires.empty() || !player)
 		return;
 
-	const auto eye = Util::GetEyePosition();
+	const auto eye = player->GetPosition();
 	fireOrder.clear();
 	for (uint32_t i = 0; i < trackedFires.size(); ++i) {
 		if (trackedFires[i].strength > 0.0f)

@@ -23,7 +23,9 @@
 # Never infer provenance from a path, a commit author or a generic "feat:" subject.
 #
 # Since the 2026-09-26 simplification Personal is Bottle-Compendium plus the entries below; every
-# other feature is Bottle's, unmodified. Provenance of removed features is kept in this file at
+# other feature is Bottle's, unmodified. Hair Backlighting and the background compile overlay
+# toggle started here and were handed over to Bottle (978eb4d9f2); their entries say Bottle
+# is now the source and the maintainer of record. Provenance of removed features is kept in this file at
 # commit 84783ba220 (see removed-features.md).
 
 features:
@@ -45,13 +47,14 @@ features:
 
   HairBacklighting:
     status: present
-    personal_original: true
+    personal_original: false          # handed over: Bottle owns and maintains it since 978eb4d9f2
     provenance:
-      - source: personal
-        role: implementation       # backlit-hair transmission (owner request 2026-09-26)
-        confidence: confirmed
       - source: bottle
-        role: design-reference     # lobe shape follows Foliage Lighting's GetFoliageTransmission(); no code copied
+        role: implementation          # merged into Bottle-Compendium as PR #3; authored on Personal (cavy8, 2026-09-26)
+        confidence: confirmed
+        evidence: [7849b92fa6, 30804f25f6, 0068892624, 9c214a87c5, 6eddd23129]
+      - source: bottle
+        role: design-reference        # lobe shape follows Foliage Lighting's GetFoliageTransmission(); no code copied
         confidence: confirmed
 
   Screenshot:
@@ -113,12 +116,12 @@ core:
         evidence: [5947cf63af]
   background_compile_overlay:
     status: present
-    personal_original: true
+    personal_original: false          # handed over: Bottle owns and maintains it since 978eb4d9f2
     provenance:
-      - source: personal
-        role: implementation       # "Show Background Compile Overlay" setting (the background compile flag it reads is Bottle's)
+      - source: bottle
+        role: implementation       # "Show Background Compile Overlay" setting; merged into Bottle-Compendium as PR #4, authored on Personal (cavy8)
         confidence: confirmed
-        evidence: [a192a5a527]
+        evidence: [11190a9b8b, a192a5a527]
   neural_rendering_hotkeys:
     status: present
     personal_original: true

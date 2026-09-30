@@ -52,9 +52,8 @@ private:
 	static constexpr float FIRE_MELT_SCAN_INTERVAL = 0.25f;
 	static constexpr uint32_t FIRE_MELT_GRACE_SCANS = 3;
 	static constexpr float FIRE_MELT_FADE_TIME = 1.0f;
-	static constexpr float FIRE_MELT_CENTER_SMOOTHING = 1.0f;
-	static constexpr float FIRE_MELT_GROW_SMOOTHING = 0.5f;
-	static constexpr float FIRE_MELT_SHRINK_SMOOTHING = 4.0f;
+	static constexpr uint32_t FIRE_MELT_FOOTPRINT_SAMPLES = 32;
+	static constexpr float FIRE_MELT_FOOTPRINT_SMOOTHING = 0.5f;
 
 public:
 	virtual inline std::string GetName() { return "Snow Cover"; }
@@ -161,6 +160,7 @@ public:
 		float radius = 0.0f;
 		float strength = 0.0f;
 		uint32_t missedScans = 0;
+		uint32_t samples = 0;
 	};
 
 	struct FireCluster

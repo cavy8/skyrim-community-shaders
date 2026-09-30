@@ -7,15 +7,15 @@
 # a shared-integration file must carry one of that file's documented `match` strings.
 #
 # Rule of the branch (owner ruling 2026-09-26, simplification): Personal is Bottle-Compendium plus
-# exactly three things - the Neural Rendering feature, the Screenshot SDR fix and the "Show
-# Background Compile Overlay" toggle - and its own docs/tooling. Everything else that used to
-# differ was removed; see removed-features.md. Any file not claimed below must match Bottle exactly.
+# exactly two things - the Neural Rendering feature and the Screenshot SDR fix - and its own
+# docs/tooling. Everything else that used to differ was removed; see removed-features.md. Any file not claimed below must match Bottle exactly.
 # Owner-approved exceptions (2026-09-26), each documented in its feature's entry: Upscaling fix F1
 # (Streamline motionVectorsDilated), a DLSS correctness fix Bottle lacks; Post Processing P1
 # (feature on by default, every pipeline effect off) and P2 (DoF target focus only while actively
 # targeting).
-# Owner-requested local feature (2026-09-26): Hair Backlighting, a new personal feature (not a change
-# to a Bottle one); its shared-file hunks are append-only and listed under shared_integrations.
+# Hair Backlighting and the "Show Background Compile Overlay" toggle were also Personal's until
+# Bottle merged them (978eb4d9f2, PRs #3 and #4). They are Bottle's now and have no entry here;
+# the files match Bottle exactly.
 #
 # Policies:
 #   bottle-plus-components  Bottle base + named retained components (from another upstream or personal)
@@ -130,22 +130,6 @@ features:
       - package/Shaders/Common/NeuralRenderingCategories.hlsli
       - docs/development/neural-rendering.md
 
-  HairBacklighting:
-    policy: personal
-    paths:
-      - src/Features/HairBacklighting.cpp
-      - src/Features/HairBacklighting.h
-      - features/Hair Backlighting/
-    note: >-
-      Owner request 2026-09-26: backlit-hair transmission, the hair counterpart of Foliage
-      Lighting's tree transmission. Shader side is a feature-owned include called from
-      LightingEval.hlsli under HAIR && HAIR_BACKLIGHTING (TruePBR, Hair Specular and vanilla hair
-      paths); settings are the first local FeatureData struct. The dark-surroundings boost reads
-      Lighting.hlsl's DirectionalAmbient constant directly, so a Bottle change to that cbuffer
-      member breaks the include. Not in
-      .github/configs/shader-validation.yaml (generated from game logs), so CI does not compile
-      the HAIR_BACKLIGHTING path: compile it by hand with fxc after shader edits.
-
   Screenshot:
     policy: bottle-plus-components
     paths:
@@ -175,21 +159,6 @@ shared_integrations:
       source: personal
       anchor: "Masks2 Foliage category pack in both PS branches"
       match: ['#include "Common/NeuralRenderingCategories.hlsli"', "NeuralRenderingCategories::Pack("]
-  package/Shaders/Common/LightingEval.hlsli:
-    hair_backlighting:
-      source: personal
-      anchor: "HairBacklighting.hlsli include after PBR.hlsli; AddDirectLight() in EvaluateLighting's TruePBR, Hair Specular (before its return) and vanilla (after the TREE_ANIM transmission) paths"
-      match: ["HairBacklighting/HairBacklighting.hlsli", "HairBacklighting::AddDirectLight("]
-  package/Shaders/Common/SharedData.hlsli:
-    local_feature_data:
-      source: personal
-      anchor: "HairBacklightingSettings struct after VolumetricLightingSettings; member appended to the end of the FeatureData cbuffer"
-      match: ["HairBacklightingSettings", "Local (non-Bottle) FeatureData structs follow", "Local (non-Bottle) features follow."]
-  src/FeatureBuffer.cpp:
-    local_feature_data:
-      source: personal
-      anchor: "HairBacklighting include; settings appended to GetFeatureBufferData() after Bottle's, mirroring SharedData.hlsli"
-      match: ['#include "Features/HairBacklighting.h"', "volumetricLighting.GetCommonBufferData(),", "hairBacklighting.settings);"]
   package/Shaders/Common/Permutation.hlsli:
     local_extra_flags:
       source: personal
@@ -205,10 +174,6 @@ shared_integrations:
       source: personal
       anchor: "State::LoadFromJson, before any feature loads"
       match: ['#include "Features/NeuralRendering.h"', "NeuralRendering::MigrateLegacyUpscalingSettings(settings)"]
-    background_compile_overlay:
-      source: personal
-      anchor: "General settings: Show Background Compile Overlay save/load (a192a5a527)"
-      match: ["Show Background Compile Overlay"]
   src/Hooks.cpp:
     nr_finished_image:
       source: personal
@@ -222,18 +187,18 @@ shared_integrations:
   src/Feature.cpp:
     local_features:
       source: personal
-      anchor: "GetFeatureList(): Neural Rendering, then Hair Backlighting, appended after Bottle's list"
-      match: ['#include "Features/NeuralRendering.h"', "&globals::features::neuralRendering", '#include "Features/HairBacklighting.h"', "&globals::features::hairBacklighting"]
+      anchor: "GetFeatureList(): Neural Rendering appended after Bottle's list"
+      match: ['#include "Features/NeuralRendering.h"', "&globals::features::neuralRendering"]
   src/Globals.cpp:
     local_features:
       source: personal
-      anchor: "globals::features: Neural Rendering and Hair Backlighting instances appended"
-      match: ['#include "Features/NeuralRendering.h"', "NeuralRendering neuralRendering{};", '#include "Features/HairBacklighting.h"', "HairBacklighting hairBacklighting{};"]
+      anchor: "globals::features: Neural Rendering instance appended"
+      match: ['#include "Features/NeuralRendering.h"', "NeuralRendering neuralRendering{};"]
   src/Globals.h:
     local_features:
       source: personal
       anchor: "forward declaration and extern appended"
-      match: ["struct NeuralRendering;", "extern NeuralRendering neuralRendering;", "struct HairBacklighting;", "extern HairBacklighting hairBacklighting;"]
+      match: ["struct NeuralRendering;", "extern NeuralRendering neuralRendering;"]
   src/Menu.cpp:
     nr_hotkeys:
       source: personal
@@ -249,35 +214,11 @@ shared_integrations:
       source: personal
       anchor: "hotkey widgets after Effects 11 Editor's"
       match: ["NeuralRendering"]
-    background_compile_overlay:
-      source: personal
-      anchor: "Shaders tab checkbox after Enable Async (a192a5a527)"
-      match: ["ShowBackgroundOverlay"]
   src/Menu/SettingsTabRenderer.h:
     nr_hotkeys:
       source: personal
       anchor: "SettingsState capture flags"
       match: ["settingNeuralRendering"]
-  src/Menu/OverlayRenderer.cpp:
-    background_compile_overlay:
-      source: personal
-      anchor: "RenderShaderCompilationStatus: showProgress gate (a192a5a527)"
-      match: ["showProgress"]
-  src/ShaderCache.cpp:
-    background_compile_overlay:
-      source: personal
-      anchor: "Is/SetShowBackgroundOverlay (a192a5a527)"
-      match: ["ShowBackgroundOverlay"]
-  src/ShaderCache.h:
-    background_compile_overlay:
-      source: personal
-      anchor: "Is/SetShowBackgroundOverlay declarations and showBackgroundOverlay member (a192a5a527)"
-      match: ["ShowBackgroundOverlay", "showBackgroundOverlay"]
-  src/XSEPlugin.cpp:
-    background_compile_overlay:
-      source: personal
-      anchor: "kDataLoaded: backgroundCompilation = true after the boot compile wait (a192a5a527)"
-      match: ["backgroundCompilation = true"]
 
 repository:
   # Whole files outside the features that differ from Bottle.
@@ -303,5 +244,5 @@ repository:
     paths: [.claude/CLAUDE.md]
   generated_translations:
     source: generated
-    reason: "en.json is regenerated from source by tools/extract-i18n.py; it differs by Neural Rendering's, Hair Backlighting's and the overlay toggle's strings"
+    reason: "en.json is regenerated from source by tools/extract-i18n.py; it differs by Neural Rendering's strings"
     paths: [package/SKSE/Plugins/CommunityShaders/Translations/en.json]

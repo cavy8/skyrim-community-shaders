@@ -8,14 +8,16 @@ that is recorded. Read this before changing a feature that also exists upstream.
 -   **Bottle-Compendium (`InTheBottle/Bottled-Shaders`) is the primary maintenance baseline.**
     The exact commit is pinned as `bottle.sha` in [`upstreams.yaml`](./upstreams.yaml). Everything
     is compared against that commit, not against whatever Bottle's branch head is.
--   **Bottle plus three things.** Since the 2026-09-26 simplification Personal differs from the
-    pin only by: the Neural Rendering feature and its seams, the Screenshot SDR fix, the "Show
-    Background Compile Overlay" toggle, and Personal's own docs, tooling and `BuildPersonal.bat`.
+-   **Bottle plus two things.** Since the 2026-09-26 simplification Personal differs from the
+    pin only by: the Neural Rendering feature and its seams, the Screenshot SDR fix, and
+    Personal's own docs, tooling and `BuildPersonal.bat`.
     Owner-approved changes to Bottle features sit on top: Upscaling fix F1 (Streamline is told
     DLSS motion vectors are pre-dilated, which Bottle's `EncodeTexturesCS` already does) and
     Post Processing P1 (the feature is on by default with every pipeline effect off) and P2
     (Depth of Field's Target Focus blurs only while something is actively targeted).
-    Hair Backlighting (added 2026-09-26 at the owner's request) is a new Personal feature on top.
+    Hair Backlighting and the "Show Background Compile Overlay" toggle started here and were merged
+    into Bottle-Compendium (PRs #3 and #4, pinned at `978eb4d9f2`); Bottle owns them now, so they
+    have no policy entry and their files must match Bottle exactly.
     Everything else that used to differ (Wind, Cloud Relight, Pseudo Sun Bounce, Advanced Skin,
     Effects11 preset hot-swap, default states, branding, ...) was removed and is listed in
     [`removed-features.md`](./removed-features.md) for later re-adding.
@@ -23,8 +25,9 @@ that is recorded. Read this before changing a feature that also exists upstream.
     still have started in Open Shaders, Jiayev's fork, or mainline. Pinning a baseline says
     nothing about who wrote the code.
 -   **Personal-original work is small and recorded.** Neural Rendering (with its hotkeys and the
-    Screenshot comparison capture), Hair Backlighting, the Screenshot sRGB fix, and the "Show
-    Background Compile Overlay" setting. Each is marked `personal_original: true` in `feature-provenance.yaml`.
+    Screenshot comparison capture) and the Screenshot sRGB fix. Each is marked `personal_original: true`
+    in `feature-provenance.yaml`. Work that Bottle has merged is recorded there as
+    `personal_original: false` with `source: bottle`, keeping the original commits as evidence.
 -   **Source comparison is authoritative.** When a record here disagrees with the code, the code
     wins and the record is fixed. Never infer provenance from a path, a commit author, a feature
     name, or a generic `feat:` subject.
@@ -45,8 +48,8 @@ The two feature files never carry each other's fields: provenance is "where from
 
 Each feature has one or more `provenance` entries (`source`, `role`, `confidence`, optional
 `evidence`, and a `note` when unresolved). A composite simply has several entries; `components`
-is used only when parts genuinely have different sources. Non-feature code (the overlay setting,
-the Neural Rendering hotkeys) is listed under `core` with the same shape. Unclear origins are
+is used only when parts genuinely have different sources. Non-feature code (the background compile overlay
+setting, now Bottle's; the Neural Rendering hotkeys) is listed under `core` with the same shape. Unclear origins are
 written as `confidence: unresolved` with a one-line note, never guessed.
 
 ### Policies
@@ -55,7 +58,7 @@ written as `confidence: unresolved` with a one-line note, never guessed.
 | --- | --- |
 | `bottle-plus-components` | Bottle base plus named retained components (Screenshot: the sRGB fix and NR's comparison capture). |
 | `bottle-plus-seam` | Bottle base plus a minimal documented hook seam for a feature owned elsewhere. Upscaling carries the Neural Rendering seam and fix F1; Post Processing carries its Personal default states (P1) and the DoF targeting fix (P2). |
-| `personal` | Personal-original implementation (Neural Rendering, Hair Backlighting). |
+| `personal` | Personal-original implementation (Neural Rendering). |
 
 A feature with no entry must match Bottle exactly: `bottle_sync.py` reports any differing file that
 no entry claims. `bottle_sync.py` also still understands `bottle-exact`, `external-maintained`
@@ -73,7 +76,7 @@ Append-style shared layouts follow one rule: **Bottle's entries first and verbat
 kept apart.** `State::ExtraShaderDescriptors` / `Permutation::ExtraFlags` take Bottle's
 sequential low bits unchanged and allocate local bits downward from bit 31. A local feature that
 needs `FeatureData` (`SharedData.hlsli` ↔ `FeatureBuffer.cpp`) or `PermutationCB` fields appends
-them after Bottle's, each struct a 16-byte multiple (Hair Backlighting's settings are the first). Feature registration (`Feature.cpp`, `Globals`)
+them after Bottle's, each struct a 16-byte multiple (Bottle's Hair Backlighting is the first such struct). Feature registration (`Feature.cpp`, `Globals`)
 lists Bottle's features in Bottle's order and appends the local ones.
 
 ## Workflow

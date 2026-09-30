@@ -78,6 +78,5 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::postProcessing.GetCommonBufferData(),
 		globals::features::volumetricLighting.GetCommonBufferData(),
 		globals::features::horizonFix.GetCommonBufferData(),
-		// Local (non-Bottle) features follow; mirror SharedData.hlsli FeatureData.
 		globals::features::hairBacklighting.settings);
 }

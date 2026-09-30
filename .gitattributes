@@ -3,3 +3,7 @@
 
 # Ensure patch files always use LF line endings
 *.patch text eol=lf
+
+# cmd.exe mis-seeks after goto/call :label in LF-only batch files
+*.bat text eol=crlf
+*.cmd text eol=crlf

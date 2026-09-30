@@ -38,17 +38,17 @@ void HairBacklighting::DrawSettings()
 		settings.Enable = enable;
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("enable_tooltip"), "Lets light shine through hair that is between the camera and a light."));
+		ImGui::Text("%s", T(TKEY("enable_tooltip"), "Allows bright light to shine through strands of hair."));
 	}
 
 	ImGui::SliderFloat(T(TKEY("strength"), "Strength"), &settings.Strength, 0.0f, kMaxStrength, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("strength_tooltip"), "Brightness of the glow when the light is directly behind the hair,\nas a multiple of the light's color."));
+		ImGui::Text("%s", T(TKEY("strength_tooltip"), "Sets the glow brightness when the light is directly behind the hair."));
 	}
 
 	ImGui::SliderFloat(T(TKEY("scatter_width"), "Scatter Width"), &settings.ScatterWidth, kMinScatterWidth, kMaxScatterWidth, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("scatter_width_tooltip"), "How far the camera can move off the line to the light before the glow fades.\nLow values glow only when looking almost straight into the light."));
+		ImGui::Text("%s", T(TKEY("scatter_width_tooltip"), "Controls how far the view can move from the light before the glow fades.\nLower values limit the glow to views almost directly toward the light."));
 	}
 
 	ImGui::SliderFloat(T(TKEY("edge_falloff"), "Edge Falloff"), &settings.EdgeFalloff, kMinEdgeFalloff, kMaxEdgeFalloff, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -58,29 +58,29 @@ void HairBacklighting::DrawSettings()
 
 	ImGui::SliderFloat(T(TKEY("interior_glow"), "Interior Glow"), &settings.InteriorGlow, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("interior_glow_tooltip"), "Glow through the body of the hair, away from its edges, relative to the edges."));
+		ImGui::Text("%s", T(TKEY("interior_glow_tooltip"), "Controls how much glow appears through the body of the hair compared with its edges."));
 	}
 
 	ImGui::SliderFloat(T(TKEY("absorption"), "Color Depth"), &settings.Absorption, kMinAbsorption, kMaxAbsorption, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("absorption_tooltip"), "How strongly the hair color tints the glow. Higher values give a deeper,\nmore saturated glow (blonde turns golden) that is also dimmer on dark hair."));
+		ImGui::Text("%s", T(TKEY("absorption_tooltip"), "How strongly the hair color tints the glow. Higher values create a deeper,\nmore saturated glow."));
 	}
 
 	ImGui::SliderFloat(T(TKEY("head_occlusion"), "Head Occlusion"), &settings.HeadOcclusion, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("head_occlusion_tooltip"), "Removes the glow where the head is between the hair and the light, such as the\ntop of the scalp when a fire is in front of and below the character.\nMost fires and torches cast no shadows, so they need this. 0 turns it off."));
+		ImGui::Text("%s", T(TKEY("head_occlusion_tooltip"), "Reduces glow where the head blocks the light, such as on the scalp when a light\nis in front of and below the character. Set to 0 to turn this off."));
 	}
 
 	ImGui::SeparatorText(T(TKEY("dark_surroundings"), "Dark Surroundings"));
 
 	ImGui::SliderFloat(T(TKEY("dark_boost"), "Dark Boost"), &settings.DarkBoost, kMinDarkBoost, kMaxDarkBoost, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("dark_boost_tooltip"), "The most the glow is amplified when the surroundings are dark, so a fire or\ntorch at night stands out like the sun does by day. 1 turns the boost off."));
+		ImGui::Text("%s", T(TKEY("dark_boost_tooltip"), "Sets how much brighter the glow can become in dark areas. Set to 1 to turn off\nthe boost."));
 	}
 
 	ImGui::SliderFloat(T(TKEY("dark_threshold"), "Dark Threshold"), &settings.DarkThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("dark_threshold_tooltip"), "Ambient brightness (as in the weather's directional ambient colors) below which\nthe boost starts. The glow is amplified by how much darker the hair's ambient light\nis than this, up to Dark Boost. Keep it below daylight ambient so the sun is unchanged."));
+		ImGui::Text("%s", T(TKEY("dark_threshold_tooltip"), "Sets the ambient brightness below which the glow boost begins. Keep it below\ndaylight levels so sunlight is unaffected."));
 	}
 }
 

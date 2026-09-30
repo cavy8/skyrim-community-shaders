@@ -363,8 +363,7 @@ void SettingsTabRenderer::RenderShadersTab()
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T("menu.settings.show_background_compile_overlay_tooltip",
 								  "Shows a progress popup when a shader not seen during the initial loading-screen "
-								  "compile is compiled during gameplay. Disabling this only hides that popup; "
-								  "compilation itself is unaffected, and failures are still reported."));
+								  "compile is compiled during gameplay."));
 		}
 
 		// Skip confirmation when clearing shader cache

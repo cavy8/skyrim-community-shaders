@@ -3,7 +3,7 @@
 #include "Feature.h"
 #include "FeatureCategories.h"
 
-/** @brief Glowing halo on hair lit from behind, the hair counterpart of Foliage Lighting's tree transmission. */
+/** @brief Adds light transmission through hair strands. */
 struct HairBacklighting : Feature
 {
 	struct alignas(16) Settings
@@ -28,18 +28,18 @@ struct HairBacklighting : Feature
 	virtual inline std::string_view GetShaderDefineName() override { return "HAIR_BACKLIGHTING"; }
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kCharacters; }
 
-	/** @brief Returns true only for the Lighting shader, the only one that shades hair. */
+	/** @brief Returns true for the shader that renders hair. */
 	virtual bool HasShaderDefine(RE::BSShader::Type shaderType) override { return shaderType == RE::BSShader::Type::Lighting; }
 
-	/** @brief Returns a description and list of key features for the UI summary. */
+	/** @brief Returns the feature description and highlights shown in the UI. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
-		return { T("feature.hair_backlighting.description", "Makes hair glow when it is lit from behind, like foliage against the sun."),
-			{ T("feature.hair_backlighting.key_feature_1", "Light transmission through hair facing away from a light"),
-				T("feature.hair_backlighting.key_feature_2", "Brightest on thin edges and loose strands"),
-				T("feature.hair_backlighting.key_feature_3", "Tinted by the hair color; works with any light, with or without Hair Specular"),
-				T("feature.hair_backlighting.key_feature_4", "Boosted in dark surroundings so firelight at night glows like the sun by day"),
-				T("feature.hair_backlighting.key_feature_5", "Held back where the head blocks the light, so the scalp does not glow through it") } };
+		return { T("feature.hair_backlighting.description", "Allows bright light to shine through strands of hair"),
+			{ T("feature.hair_backlighting.key_feature_1", "Bright light shines through hair strands"),
+				T("feature.hair_backlighting.key_feature_2", "Glow is strongest along fine edges and loose strands"),
+				T("feature.hair_backlighting.key_feature_3", "Glow takes on the hair color and works with any light source"),
+				T("feature.hair_backlighting.key_feature_4", "Glow is brighter in dark surroundings"),
+				T("feature.hair_backlighting.key_feature_5", "Glow is reduced where the head blocks the light") } };
 	}
 
 	/** @brief Draws the hair backlighting controls. */
