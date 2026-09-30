@@ -41,7 +41,8 @@ namespace
 		std::uint32_t colorDomain = 0;        ///< NeuralRendering::ColorDomain: how the colour input is encoded.
 		float categoryColorStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		float categoryTransferStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
-		float categoryLuminosityStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+		float categoryBroadLuminosity[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+		float categoryDetailLuminosity[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		// Display transform of the scene-linear proxy (ColorTransfer.hlsli, MakeNeuralDisplayTransform).
 		float displayParam[4]{};                              ///< x vanilla grading on/off, y ISHDR Param.y, z ISHDR Param.z.
 		float displayCinematic[4]{ 1.0f, 0.0f, 1.0f, 1.0f };  ///< ISHDR Cinematic.
@@ -61,7 +62,7 @@ namespace
 		/// x Detail Luminosity, y band radius in model texels, z band data present, w spare.
 		float bandParams[4]{ 1.0f, 8.0f, 0.0f, 0.0f };
 	};
-	static_assert(sizeof(TransferParams) == 272);
+	static_assert(sizeof(TransferParams) == 304);
 
 	/// kNeuralDebug* in ColorTransfer.hlsli; keep the two in sync.
 	constexpr std::uint32_t kDebugFlagGuardClamp = 1u << 0;
@@ -894,7 +895,8 @@ struct NeuralRenderingBackend::State
 		                    std::isfinite(inputs.localStructureStrength) && std::isfinite(inputs.skinStructureStrength) &&
 		                    std::ranges::all_of(inputs.categoryColorStrengths, [](float value) { return std::isfinite(value); }) &&
 		                    std::ranges::all_of(inputs.categoryTransferStrengths, [](float value) { return std::isfinite(value); }) &&
-		                    std::ranges::all_of(inputs.categoryLuminosityStrengths, [](float value) { return std::isfinite(value); }) &&
+		                    std::ranges::all_of(inputs.categoryBroadLuminosity, [](float value) { return std::isfinite(value); }) &&
+		                    std::ranges::all_of(inputs.categoryDetailLuminosity, [](float value) { return std::isfinite(value); }) &&
 		                    std::ranges::all_of(inputs.display.param, [](float value) { return std::isfinite(value); }) &&
 		                    std::ranges::all_of(inputs.display.cinematic, [](float value) { return std::isfinite(value); }) &&
 		                    std::ranges::all_of(inputs.display.tint, [](float value) { return std::isfinite(value); }) &&
@@ -1157,12 +1159,19 @@ struct NeuralRenderingBackend::State
 		transferParams.displayExposure[1] = display.postProcessExposureScale;
 		transferParams.displayExposure[2] = display.postProcessAdaptationRange[0];
 		transferParams.displayExposure[3] = display.postProcessAdaptationRange[1];
-		// The band split only exists while the two strengths differ; equal values take the
-		// single-exponent path in the resolve, so the extra passes and textures are skipped.
+		// The band split only exists while some category's effective Broad (global x category)
+		// differs from its effective Detail; otherwise every pixel takes the single-exponent
+		// path in the resolve, so the extra passes and textures are skipped.
 		transferParams.broadLuminosity = std::clamp(inputs.broadLuminosity, 0.0f, 2.0f);
 		transferParams.bandParams[0] = std::clamp(inputs.detailLuminosity, 0.0f, 2.0f);
 		transferParams.bandParams[1] = std::clamp(inputs.bandRadius, 2.0f, 32.0f);
-		const bool bandsSeparated = std::abs(transferParams.broadLuminosity - transferParams.bandParams[0]) > 1e-4f;
+		bool bandsSeparated = false;
+		for (std::size_t index = 0; index < inputs.categoryBroadLuminosity.size(); ++index) {
+			transferParams.categoryBroadLuminosity[index] = std::clamp(inputs.categoryBroadLuminosity[index], 0.0f, 2.0f);
+			transferParams.categoryDetailLuminosity[index] = std::clamp(inputs.categoryDetailLuminosity[index], 0.0f, 2.0f);
+			bandsSeparated |= std::abs(transferParams.broadLuminosity * transferParams.categoryBroadLuminosity[index] -
+									   transferParams.bandParams[0] * transferParams.categoryDetailLuminosity[index]) > 1e-4f;
+		}
 		const bool toneReady = bandsSeparated && EnsureToneResources(modelWidth, modelHeight) &&
 		                       GetShader(prepareToneDataCS, prepareToneDataAttempted, kPrepareToneDataPath, "PrepareToneDataCS") &&
 		                       GetShader(filterToneDataHorizontalCS, filterToneDataHorizontalAttempted,
@@ -1199,7 +1208,6 @@ struct NeuralRenderingBackend::State
 		for (std::size_t index = 0; index < inputs.categoryColorStrengths.size(); ++index) {
 			transferParams.categoryColorStrengths[index] = std::clamp(inputs.categoryColorStrengths[index], 0.0f, 2.0f);
 			transferParams.categoryTransferStrengths[index] = std::clamp(inputs.categoryTransferStrengths[index], 0.0f, 2.0f);
-			transferParams.categoryLuminosityStrengths[index] = std::clamp(inputs.categoryLuminosityStrengths[index], 0.0f, 2.0f);
 			if (inputs.categoryHueGuard[index])
 				hueGuardMask |= (1u << index);
 		}

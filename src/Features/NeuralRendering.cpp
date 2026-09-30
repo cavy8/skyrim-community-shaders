@@ -18,12 +18,14 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <optional>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	NeuralRendering::CategoryStrengths,
 	colorStrength,
 	transferStrength,
-	luminosityStrength,
+	broadLuminosity,
+	detailLuminosity,
 	hueGuard);
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -69,7 +71,7 @@ namespace
 	using PresetValues = NeuralRendering::PresetValues;
 
 	/// Neutral per-category block: no override of the global strengths, no hue guard.
-	constexpr NeuralRendering::CategoryStrengths kNeutralCategory{ 1.0f, 1.0f, 1.0f, false };
+	constexpr NeuralRendering::CategoryStrengths kNeutralCategory{ 1.0f, 1.0f, 1.0f, 1.0f, false };
 
 	/**
 	 * The preset table (see NeuralRendering::Preset), in Preset order.
@@ -101,13 +103,13 @@ namespace
 			2.0f,   // maxRatio
 			false,  // depthAwareResolve
 			{ {
-				kNeutralCategory,             // Everything Else
-				{ 0.6f, 1.0f, 1.0f, false },  // Skin: damp the model's skin tint
-				{ 1.0f, 1.0f, 1.0f, true },   // Hair: hue-guarded
-				kNeutralCategory,             // Eyes
-				kNeutralCategory,             // Foliage
-				kNeutralCategory,             // Landscape
-				kNeutralCategory,             // Equipment
+				kNeutralCategory,                   // Everything Else
+				{ 0.6f, 1.0f, 1.0f, 1.0f, false },  // Skin: damp the model's skin tint
+				{ 1.0f, 1.0f, 1.0f, 1.0f, true },   // Hair: hue-guarded
+				kNeutralCategory,                   // Eyes
+				kNeutralCategory,                   // Foliage
+				kNeutralCategory,                   // Landscape
+				kNeutralCategory,                   // Equipment
 			} },
 		},
 		// Vanilla-Plus
@@ -193,7 +195,8 @@ namespace
 		for (std::size_t index = 0; index < options.categoryStrengths.size(); ++index) {
 			inputs.categoryColorStrengths[index] = options.categoryStrengths[index].colorStrength;
 			inputs.categoryTransferStrengths[index] = options.categoryStrengths[index].transferStrength;
-			inputs.categoryLuminosityStrengths[index] = options.categoryStrengths[index].luminosityStrength;
+			inputs.categoryBroadLuminosity[index] = options.categoryStrengths[index].broadLuminosity;
+			inputs.categoryDetailLuminosity[index] = options.categoryStrengths[index].detailLuminosity;
 			inputs.categoryHueGuard[index] = options.categoryStrengths[index].hueGuard;
 		}
 		inputs.depthAwareResolve = options.depthAwareResolve;
@@ -385,6 +388,18 @@ std::array<const NeuralRendering::CategoryStrengths*, NeuralRendering::kMaterial
 		&settings.equipmentStrengths };
 }
 
+bool NeuralRendering::BandsSeparated() const
+{
+	// The resolve scales the smooth band by global x category Broad and the remainder by
+	// global x category Detail; splitting only changes anything where those differ.
+	for (const auto* category : CategorySettings()) {
+		if (!NearlyEqual(settings.broadLuminosity * category->broadLuminosity,
+				settings.detailLuminosity * category->detailLuminosity))
+			return true;
+	}
+	return false;
+}
+
 const NeuralRendering::PresetValues& NeuralRendering::GetPreset(Preset a_preset)
 {
 	const auto index = std::min(static_cast<std::size_t>(a_preset), kPresetCount - 1);
@@ -432,13 +447,12 @@ bool NeuralRendering::MatchesPreset(Preset a_preset) const
 		!NearlyEqual(settings.broadLuminosity, preset.broadLuminosity) ||
 		!NearlyEqual(settings.detailLuminosity, preset.detailLuminosity))
 		return false;
-	// Max Ratio only exists while the guard is on, and Band Radius only while Broad and
-	// Detail differ, so an unused (and hidden) stored value cannot leave a preset looking
+	// Max Ratio only exists while the guard is on, and Band Radius only while the bands are
+	// separated, so an unused (and hidden) stored value cannot leave a preset looking
 	// modified.
 	if (settings.ratioGuardEnabled && !NearlyEqual(settings.maxRatio, preset.maxRatio))
 		return false;
-	if (!NearlyEqual(settings.broadLuminosity, settings.detailLuminosity) &&
-		!NearlyEqual(settings.bandRadius, preset.bandRadius))
+	if (BandsSeparated() && !NearlyEqual(settings.bandRadius, preset.bandRadius))
 		return false;
 	const auto categories = CategorySettings();
 	for (std::size_t index = 0; index < kMaterialCategoryCount; ++index) {
@@ -447,7 +461,8 @@ bool NeuralRendering::MatchesPreset(Preset a_preset) const
 		if (current.hueGuard != expected.hueGuard ||
 			!NearlyEqual(current.colorStrength, expected.colorStrength) ||
 			!NearlyEqual(current.transferStrength, expected.transferStrength) ||
-			!NearlyEqual(current.luminosityStrength, expected.luminosityStrength))
+			!NearlyEqual(current.broadLuminosity, expected.broadLuminosity) ||
+			!NearlyEqual(current.detailLuminosity, expected.detailLuminosity))
 			return false;
 	}
 	return true;
@@ -732,15 +747,16 @@ void NeuralRendering::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("detail_luminosity_tooltip"),
 				"Scales the remainder: the model's own local contrast and micro-detail. Equal to Broad Luminosity "
-				"this is exactly the single Luminosity Strength these two replace, and the extra passes are skipped."));
+				"this is exactly the single Luminosity Strength these two replace, and the extra passes are skipped "
+				"unless a category below splits them."));
 		}
-		if (!NearlyEqual(settings.broadLuminosity, settings.detailLuminosity)) {
+		if (BandsSeparated()) {
 			ImGui::SliderFloat(T(TKEY("band_radius"), "Band Radius"), &settings.bandRadius, 2.0f, 32.0f, "%.0f");
 			if (auto _tt = Util::HoverTooltipWrapper()) {
 				ImGui::TextUnformatted(T(TKEY("band_radius_tooltip"),
 					"Where the split between the two falls, in model pixels. Larger keeps more of the model's work in "
 					"Detail; smaller moves it into Broad. Scaled with the model resolution, so it covers the same part "
-					"of the screen at every scale. Only used while the two strengths differ."));
+					"of the screen at every scale. Only used while Broad and Detail differ, here or for any category."));
 			}
 		}
 		ImGui::Checkbox(T(TKEY("ratio_guard_enabled"), "Enable Ratio Guard"), &settings.ratioGuardEnabled);
@@ -829,8 +845,7 @@ void NeuralRendering::DrawSettings()
 				"an over-conservative resolve - not meant to be left on."));
 		}
 
-		const bool bandsSeparated = !NearlyEqual(settings.broadLuminosity, settings.detailLuminosity);
-		ImGui::BeginDisabled(!bandsSeparated);
+		ImGui::BeginDisabled(!BandsSeparated());
 		ImGui::Checkbox(T(TKEY("debug_broad_band"), "Show Broad Band"), &debugState.broadBandView);
 		ImGui::Checkbox(T(TKEY("debug_detail_band"), "Show Detail Band"), &debugState.detailBandView);
 		ImGui::EndDisabled();
@@ -838,7 +853,7 @@ void NeuralRendering::DrawSettings()
 			ImGui::TextUnformatted(T(TKEY("debug_band_tooltip"),
 				"Renders one half of the model's light/dark edit on its own: mid-grey where it asks for no change, "
 				"black and white at two stops down and up. Use it to see what Band Radius is actually separating. "
-				"Only available while Broad and Detail Luminosity differ. Not saved."));
+				"Only available while Broad and Detail Luminosity differ, globally or for any category. Not saved."));
 		}
 
 		ImGui::Checkbox(T(TKEY("debug_guard_clamp"), "Show Guard Clamping"), &debugState.guardClampView);
@@ -885,8 +900,10 @@ void NeuralRendering::DrawCategoryStrengths(const char* a_id, const char* a_labe
 		&a_strengths.colorStrength, 0.0f, 2.0f, "%.2f");
 	ImGui::SliderFloat(T(TKEY("transfer_strength"), "Transfer Strength"),
 		&a_strengths.transferStrength, 0.0f, 2.0f, "%.2f");
-	ImGui::SliderFloat(T(TKEY("luminosity_strength"), "Luminosity Strength"),
-		&a_strengths.luminosityStrength, 0.0f, 2.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("broad_luminosity"), "Broad Luminosity"),
+		&a_strengths.broadLuminosity, 0.0f, 2.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("detail_luminosity"), "Detail Luminosity"),
+		&a_strengths.detailLuminosity, 0.0f, 2.0f, "%.2f");
 	ImGui::Checkbox(T(TKEY("hue_guard"), "Neutral Colour Guard"), &a_strengths.hueGuard);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("hue_guard_tooltip"),
@@ -921,8 +938,35 @@ void NeuralRendering::LoadSettings(json& o_json)
 			hasLegacyLuminosity = true;
 		}
 	}
+	// The same split per category, keyed by each block's JSON name in CategorySettings() order.
+	constexpr std::array<const char*, kMaterialCategoryCount> kCategoryKeys{ "everythingElseStrengths",
+		"skinStrengths", "hairStrengths", "eyesStrengths", "foliageStrengths", "landscapeStrengths",
+		"equipmentStrengths" };
+	std::array<std::optional<float>, kMaterialCategoryCount> legacyCategoryLuminosity{};
+	if (o_json.is_object()) {
+		for (std::size_t index = 0; index < kMaterialCategoryCount; ++index) {
+			const auto block = o_json.find(kCategoryKeys[index]);
+			if (block == o_json.end() || !block->is_object() || block->contains("broadLuminosity") ||
+				block->contains("detailLuminosity"))
+				continue;
+			if (const auto entry = block->find("luminosityStrength"); entry != block->end() && entry->is_number())
+				legacyCategoryLuminosity[index] = entry->get<float>();
+		}
+	}
 
 	settings = o_json;
+
+	// A category block written before the split carried one luminosityStrength; Broad = Detail
+	// = that value is the same edit, exactly as for the global pair below.
+	{
+		const auto categories = CategorySettings();
+		for (std::size_t index = 0; index < kMaterialCategoryCount; ++index) {
+			if (legacyCategoryLuminosity[index]) {
+				categories[index]->broadLuminosity = *legacyCategoryLuminosity[index];
+				categories[index]->detailLuminosity = *legacyCategoryLuminosity[index];
+			}
+		}
+	}
 
 	// A config written before the split carried one Luminosity Strength. Broad = Detail = that
 	// value is exactly the same edit, so the look does not change across the upgrade. The old
@@ -972,7 +1016,8 @@ void NeuralRendering::LoadSettings(json& o_json)
 	const auto sanitizeCategoryStrengths = [&](CategoryStrengths& strengths) {
 		sanitizeFloat(strengths.colorStrength, 1.0f, 0.0f, 1.0f);
 		sanitizeFloat(strengths.transferStrength, 1.0f, 0.0f, 2.0f);
-		sanitizeFloat(strengths.luminosityStrength, 1.0f, 0.0f, 2.0f);
+		sanitizeFloat(strengths.broadLuminosity, 1.0f, 0.0f, 2.0f);
+		sanitizeFloat(strengths.detailLuminosity, 1.0f, 0.0f, 2.0f);
 	};
 	sanitizeCategoryStrengths(settings.everythingElseStrengths);
 	sanitizeCategoryStrengths(settings.skinStrengths);
@@ -1521,7 +1566,7 @@ NeuralRendering::Options NeuralRendering::MakeOptions() const
 	options.proxyCurve = ResolveProxyCurve();
 	// The band views are only meaningful once the two strengths actually separate the bands,
 	// and they are mutually exclusive; Broad wins if both are ticked.
-	const bool bandsSeparated = !NearlyEqual(settings.broadLuminosity, settings.detailLuminosity);
+	const bool bandsSeparated = BandsSeparated();
 	options.debugBroadBand = bandsSeparated && debugState.broadBandView;
 	options.debugDetailBand = bandsSeparated && debugState.detailBandView && !options.debugBroadBand;
 	options.debugGuardClamp = debugState.guardClampView;

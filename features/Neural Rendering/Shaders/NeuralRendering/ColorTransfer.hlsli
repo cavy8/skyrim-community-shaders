@@ -806,7 +806,7 @@ struct NeuralResolveInputs
 	float4 originalColor;  // The untouched frame pixel, stored in `domain`.
 	float colorStrength;
 	float editWeight;
-	float categoryLuminosity;  // This pixel's per-category multiplier on the luminance edit.
+	// Global x this pixel's per-category value, for each half of the luminance edit.
 	float broadLuminosity;
 	float detailLuminosity;
 	float toneLow;     // Edge-aware blur of the log2 luminance edit, in stops.
@@ -876,12 +876,13 @@ struct NeuralResolveDebug
  * The luminance edit is measured in stops and split in two before it is scaled.
  * @p toneLow is an edge-aware blur of it (FilterToneDataCS), so it carries the
  * smooth, region-level relighting; the remainder carries the model's own local
- * contrast and micro-detail. @p broadLuminosity and @p detailLuminosity scale
- * the two independently, on top of @p editWeight and @p categoryLuminosity.
- * Equal values are exactly the single luminosity multiplier they replace,
- * whatever the split is, so @p hasToneData can be false and the whole band
- * machinery skipped whenever they agree. Zero on both freezes luminance at the
- * original regardless of @p editWeight.
+ * contrast and micro-detail. @p broadLuminosity and @p detailLuminosity (each
+ * already the global value times this pixel's category value) scale the two
+ * independently, on top of @p editWeight. Equal values are exactly the single
+ * luminosity multiplier they replace, whatever the split is, so @p hasToneData
+ * can be false and the whole band machinery skipped whenever they agree for
+ * every category. Zero on both freezes luminance at the original regardless of
+ * @p editWeight.
  *
  * @p hueGuardAmount blends the hue guard above in (1) or out (0); a fractional
  * value - as produced by blending several categories' toggles across a material
@@ -891,7 +892,7 @@ struct NeuralResolveDebug
  * always applied in linear light, decoded with that domain's curve.
  *
  * @p maxRatio is the two-sided guard (1/maxRatio..maxRatio) on the model/proxy
- * luminance ratio after @p editWeight and @p luminosityStrength have scaled it;
+ * luminance ratio after @p editWeight and the luminosity strengths have scaled it;
  * one disables any luminance change, and the previous hardcoded behaviour is
  * exactly two. Values below one are treated as one - a guard cannot be tighter
  * than the floor it exists to raise. The guard is opt-in (see
@@ -925,15 +926,14 @@ float4 ResolveNeuralColor(NeuralResolveInputs inputs, out NeuralResolveDebug o_d
 	float editWeight = max(inputs.editWeight, 0.0);
 	// The edit in stops, split into the smooth part the band filter found and the
 	// remainder, each scaled on its own. With the two strengths equal this collapses to
-	// exp2(editWeight * categoryLuminosity * strength * delta) - exactly the single
-	// luminosity exponent it replaces - whether or not the band data exists.
+	// exp2(editWeight * strength * delta) - exactly the single luminosity exponent it
+	// replaces - whether or not the band data exists.
 	float delta = log2((modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor));
 	float lowBand = inputs.hasToneData ? inputs.toneLow : delta;
 	float highBand = delta - lowBand;
 	o_debug.lowBand = lowBand;
 	o_debug.highBand = highBand;
-	float bandScale = editWeight * max(inputs.categoryLuminosity, 0.0);
-	float tone = bandScale * (lowBand * max(inputs.broadLuminosity, 0.0) + highBand * max(inputs.detailLuminosity, 0.0));
+	float tone = editWeight * (lowBand * max(inputs.broadLuminosity, 0.0) + highBand * max(inputs.detailLuminosity, 0.0));
 	float unclampedRatio = exp2(tone);
 	float ratio = clamp(unclampedRatio, 1.0 / maxRatio, maxRatio);
 	o_debug.clamped = unclampedRatio > maxRatio ? 1 : (unclampedRatio < 1.0 / maxRatio ? -1 : 0);

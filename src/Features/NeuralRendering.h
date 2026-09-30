@@ -50,10 +50,13 @@ struct NeuralRendering : Feature
 	{
 		float colorStrength = 1.0f;
 		float transferStrength = 1.0f;
-		/// Independent multiplier on the model's light/dark (luminance) change for this
-		/// category; lower values keep the category's own colour and detail transfer
-		/// while damping contrast swings. See Options::luminosityStrength.
-		float luminosityStrength = 1.0f;
+		/// This category's multipliers on the two halves of the model's light/dark
+		/// (luminance) change, on top of the global ones: Broad on the smooth,
+		/// region-level relighting, Detail on the local contrast and micro-detail. Equal
+		/// values scale the whole luminance edit as the single Luminosity Strength they
+		/// replace did. See Options::broadLuminosity.
+		float broadLuminosity = 1.0f;
+		float detailLuminosity = 1.0f;
 		/// Restrict this category's chroma change to a saturation change on
 		/// renderer-neutral pixels (see ColorTransfer.hlsli, ResolveNeuralColor).
 		/// Off by default; Hair defaults this on (see Settings).
@@ -165,11 +168,13 @@ struct NeuralRendering : Feature
 		float broadLuminosity = 1.0f;
 		/// The same, for the remainder of that edit: the model's own local contrast
 		/// and sharpening. Equal to @ref broadLuminosity this is exactly the single
-		/// Luminosity Strength it replaces, and the band passes are skipped entirely.
+		/// Luminosity Strength it replaces. Each category's own Broad/Detail multiply
+		/// these; the band passes are skipped entirely unless some category's
+		/// products differ (see NeuralRendering::BandsSeparated()).
 		float detailLuminosity = 1.0f;
 		/// Radius of the edge-aware blur that separates the two bands, in model texels
 		/// (2..32). Scaled with the model resolution so it covers the same screen area
-		/// at every scale. Only consulted while the two strengths differ.
+		/// at every scale. Only consulted while the bands are separated.
 		float bandRadius = 8.0f;
 		/// Two-sided guard (1/maxRatio..maxRatio) on the model/proxy luminance
 		/// ratio the resolve applies (see ColorTransfer.hlsli, ResolveNeuralColor),
@@ -336,9 +341,9 @@ struct NeuralRendering : Feature
 		bool ratioGuardEnabled = false;
 		CategoryStrengths everythingElseStrengths;
 		// Full damps skin colour: the model's own skin tint is its most visible overreach.
-		CategoryStrengths skinStrengths{ 0.6f, 1.0f, 1.0f, false };
+		CategoryStrengths skinStrengths{ 0.6f, 1.0f, 1.0f, 1.0f, false };
 		// Hair is the only category that hue-guards its chroma change by default.
-		CategoryStrengths hairStrengths{ 1.0f, 1.0f, 1.0f, true };
+		CategoryStrengths hairStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, true };
 		CategoryStrengths eyesStrengths;
 		CategoryStrengths foliageStrengths;
 		CategoryStrengths landscapeStrengths;
@@ -788,6 +793,15 @@ private:
 	/** @brief Every per-category block of @ref settings in MaterialCategory order. */
 	std::array<CategoryStrengths*, kMaterialCategoryCount> CategorySettings();
 	std::array<const CategoryStrengths*, kMaterialCategoryCount> CategorySettings() const;
+
+	/**
+	 * @brief Whether the luminance edit is actually split into Broad and Detail bands.
+	 *
+	 * True when, for any category, global Broad x category Broad differs from global Detail x
+	 * category Detail - the only case in which the band passes change the result. The backend
+	 * applies the same test to the values it sends the resolve.
+	 */
+	bool BandsSeparated() const;
 
 	/** @brief The stored proxy curve, or Display-matched when it is out of range. */
 	ProxyCurve ResolveProxyCurve() const;

@@ -113,7 +113,8 @@ public:
 		/// Overall weight of the model's edit (0..2); one applies it exactly.
 		float transferStrength = 1.0f;
 		/// The two halves of the model's luminance change; see
-		/// NeuralRendering::Options::broadLuminosity. Equal values skip the band passes.
+		/// NeuralRendering::Options::broadLuminosity. The band passes are skipped unless
+		/// some category's global x category products differ.
 		float broadLuminosity = 1.0f;
 		float detailLuminosity = 1.0f;
 		/// Radius of the edge-aware blur that separates them, in model texels.
@@ -125,7 +126,10 @@ public:
 		bool ratioGuardEnabled = false;
 		std::array<float, 7> categoryColorStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		std::array<float, 7> categoryTransferStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
-		std::array<float, 7> categoryLuminosityStrengths{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+		/// Per-category multipliers on Broad and Detail Luminosity (see
+		/// NeuralRendering::CategoryStrengths::broadLuminosity).
+		std::array<float, 7> categoryBroadLuminosity{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+		std::array<float, 7> categoryDetailLuminosity{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		/// Per-category hue guard (see ColorTransfer.hlsli, ResolveNeuralColor). Indexed by
 		/// NeuralRendering::MaterialCategory; only Hair (index 2) defaults on.
 		std::array<bool, 7> categoryHueGuard{ false, false, true, false, false, false, false };

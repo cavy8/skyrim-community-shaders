@@ -641,23 +641,27 @@ different halves of it.
 ```
 low   = toneLow            // edge-aware blur of delta, or delta itself when absent
 high  = delta - low
-tone  = editWeight * categoryLuminosity * (low * Broad + high * Detail)
-ratio = clamp(exp2(tone), 1 / maxRatio, maxRatio)
+Broad  = global Broad  * category Broad
+Detail = global Detail * category Detail
+tone   = editWeight * (low * Broad + high * Detail)
+ratio  = clamp(exp2(tone), 1 / maxRatio, maxRatio)
 ```
 
 `low` is the region-level relighting - a whole wall or hillside the model wants
 brighter - and `high` is its own local contrast and micro-detail. Everything
-after `targetLuma` is unchanged, and the per-category luminosity multiplier
-scales both bands equally, so whether the split is active depends only on the
-two global values. **With `Broad == Detail == x` this is exactly
-`ratio^(editWeight * categoryLuminosity * x)`** - the old single exponent - so an
-upgraded config produces an identical frame, and the shader takes that path
-whether or not the band data exists.
+after `targetLuma` is unchanged. Each category carries its own Broad and Detail
+multipliers (blended across material boundaries by `DecodeColorCS`'s tent filter
+like its other strengths), so the split is active whenever, for any category,
+the two products differ (`NeuralRendering::BandsSeparated()`, mirrored in the
+backend). **With the products equal at `x` this is exactly
+`ratio^(editWeight * x)`** - the old single exponent - so an upgraded config
+produces an identical frame, and the shader takes that path whether or not the
+band data exists.
 
 ### The band passes
 
 They run once per model evaluation, right after the answer is copied back, at the
-model raster, and only while the two strengths differ. Two `R16G16_FLOAT`
+model raster, and only while the bands are separated. Two `R16G16_FLOAT`
 textures at the model raster (`toneData`, `toneScratch`) are all they need; they
 are ordinary D3D11 textures, never shared with D3D12. Half precision resolves
 about 0.01 stops, far finer than the edit carries.
@@ -691,20 +695,20 @@ Rendering look, which is the thing worth controlling separately.
 the detail band shows halos.
 
 `TransferParams.BandParams.z` tells the resolve whether the band textures hold
-data for this evaluation; when they do not - equal strengths, a failed
+data for this evaluation; when they do not - no category splits the edit, a failed
 allocation, a shader that would not compile, or the first frame after a raster
 change - `hasToneData` is false, `low` falls back to `delta`, `high` is zero, and
 only `Broad` applies. That is the same maths as the unsplit edit, so the fallback
 is silent rather than a visible change.
 
-## Per-category colour, transfer, luminosity strengths and hue guard
+## Per-category colour, transfer, Broad/Detail luminosity and hue guard
 
 Skin, Hair, Eyes, Foliage, Landscape, Equipment, and Everything Else each carry
-their own colour, transfer, and luminosity multipliers plus their own hue guard
-toggle (`NeuralRendering::CategoryStrengths`). The category controls shape the
-local resolve first; the global `Color Strength`, `Transfer Strength`, and
-`Luminosity Strength` values multiply those results afterwards as the final
-layer of adjustment. Unlike the old opt-in `Per-Category Strengths` checkbox,
+their own colour, transfer, Broad Luminosity and Detail Luminosity multipliers
+plus their own hue guard toggle (`NeuralRendering::CategoryStrengths`). The
+category controls shape the local resolve first; the global `Color Strength`,
+`Transfer Strength`, `Broad Luminosity` and `Detail Luminosity` values multiply
+those results afterwards as the final layer of adjustment. Unlike the old opt-in `Per-Category Strengths` checkbox,
 category lookup is unconditional now: each category's hue guard needs to know
 which material a pixel is on every pixel, so `materialCategoriesSRV` is a hard
 requirement of `ValidateInputs` rather than only when per-category strengths
@@ -957,14 +961,16 @@ actually carries *before* assigning it over the defaults, and:
   kept, so nobody's look changes silently and the combo shows "Full (modified)" wherever it
   differs - including the old Skin Color Strength of 1.0.
 - **`luminosityStrength` present, the new keys absent**: copied into both `broadLuminosity` and
-  `detailLuminosity`, which is the same edit; the old key is simply not written again.
+  `detailLuminosity`, which is the same edit; the old key is simply not written again. The
+  same applies inside each `*Strengths` category block, whose `luminosityStrength` became
+  `broadLuminosity` / `detailLuminosity` in `1-2-0`.
 - **no `showAdvanced` key**: defaulted to **true** when the loaded values differ from Full, so
   someone who tuned things before Advanced existed still sees their sliders, and false
   otherwise.
 - `proxyCurve` out of range - including 3, the retired HDR Linear - falls back to
   Display-matched.
 
-The feature ini is `1-1-0`.
+The feature ini is `1-2-0` (per-category Broad/Detail Luminosity; `1-1-0` added presets).
 
 ## Proxy curve
 
@@ -1089,7 +1095,9 @@ contrast with no region-level relighting; Broad 1 / Detail 0 the reverse - check
 band views. Detail 2 at high-contrast edges (branches against sky, torches in interiors) should
 show no halos at the default edge sharpness. Band Radius should cover the same screen area at
 0.5x and 1x model scale. Alternating Frames, Frame Hold and Split Screen all still work with
-the split active.
+the split active. With the globals equal, one category at Broad 0 / Detail 1 enables the band
+passes and flattens relighting on that category only; a config whose category blocks carry the
+old `luminosityStrength` loads as Broad = Detail = that value.
 
 ### Proxy curve and the Linear Lighting fix
 

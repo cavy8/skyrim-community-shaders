@@ -25,7 +25,8 @@ cbuffer TransferParams : register(b0)
 	uint ColorDomain;          // kNeuralColorDomain* - how the colour input and output are encoded.
 	float4 CategoryColorStrengths[2];
 	float4 CategoryTransferStrengths[2];
-	float4 CategoryLuminosityStrengths[2];
+	float4 CategoryBroadLuminosity[2];
+	float4 CategoryDetailLuminosity[2];
 	float4 DisplayParam;      // x: replicate the vanilla tonemap, y: ISHDR Param.y (white point), z: ISHDR Param.z (Hejl-Burgess-Dawson).
 	float4 DisplayCinematic;  // ISHDR Cinematic: x saturation, z contrast, w brightness.
 	float4 DisplayTint;       // ISHDR Tint: xyz colour, w amount.

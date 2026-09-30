@@ -136,7 +136,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 	float categoryColorStrength = 1.0;
 	float categoryTransferStrength = 1.0;
-	float categoryLuminosityStrength = 1.0;
+	float categoryBroadLuminosity = 1.0;
+	float categoryDetailLuminosity = 1.0;
 	// Conservative fallback when no guide is available to classify this pixel:
 	// guard everywhere rather than silently going unguarded.
 	float categoryHueGuardAmount = 1.0;
@@ -164,7 +165,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 		categoryColorStrength = 0.0;
 		categoryTransferStrength = 0.0;
-		categoryLuminosityStrength = 0.0;
+		categoryBroadLuminosity = 0.0;
+		categoryDetailLuminosity = 0.0;
 		categoryHueGuardAmount = 0.0;
 		float totalTapWeight = 0.0;
 		[unroll]
@@ -180,14 +182,16 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 				tapCategory = tapCategory < 7 ? tapCategory : NeuralRenderingCategories::EverythingElse;
 				categoryColorStrength += tapWeight * CategoryColorStrengths[tapCategory >> 2][tapCategory & 3];
 				categoryTransferStrength += tapWeight * CategoryTransferStrengths[tapCategory >> 2][tapCategory & 3];
-				categoryLuminosityStrength += tapWeight * CategoryLuminosityStrengths[tapCategory >> 2][tapCategory & 3];
+				categoryBroadLuminosity += tapWeight * CategoryBroadLuminosity[tapCategory >> 2][tapCategory & 3];
+				categoryDetailLuminosity += tapWeight * CategoryDetailLuminosity[tapCategory >> 2][tapCategory & 3];
 				categoryHueGuardAmount += tapWeight * float((HueGuardMask >> tapCategory) & 1u);
 				totalTapWeight += tapWeight;
 			}
 		}
 		categoryColorStrength /= max(totalTapWeight, 1e-5);
 		categoryTransferStrength /= max(totalTapWeight, 1e-5);
-		categoryLuminosityStrength /= max(totalTapWeight, 1e-5);
+		categoryBroadLuminosity /= max(totalTapWeight, 1e-5);
+		categoryDetailLuminosity /= max(totalTapWeight, 1e-5);
 		categoryHueGuardAmount /= max(totalTapWeight, 1e-5);
 	}
 
@@ -227,9 +231,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	resolveInputs.originalColor = original;
 	resolveInputs.colorStrength = categoryColorStrength * ColorStrength;
 	resolveInputs.editWeight = editWeight;
-	resolveInputs.categoryLuminosity = categoryLuminosityStrength;
-	resolveInputs.broadLuminosity = BroadLuminosity;
-	resolveInputs.detailLuminosity = BandParams.x;
+	resolveInputs.broadLuminosity = categoryBroadLuminosity * BroadLuminosity;
+	resolveInputs.detailLuminosity = categoryDetailLuminosity * BandParams.x;
 	resolveInputs.hasToneData = NeuralTransferHasToneData();
 	resolveInputs.toneLow = resolveInputs.hasToneData ? ToneLow.SampleLevel(LinearClampSampler, answerUV, 0).y : 0.0;
 	resolveInputs.domain = ColorDomain;
