@@ -1,43 +1,70 @@
-// Hair Strands: simulates the guide strands, one thread per guide. Every other strand follows
-// its guide in StrandSkin.cs.hlsl.
+// Hair Strands: simulates the guide strands, one thread per guide, as TressFX 4.1 does. Every
+// other strand follows its guide in StrandSkin.cs.hlsl, as TressFX's follow hairs follow theirs.
+// Based on https://github.com/GPUOpen-Effects/TressFX/blob/master/src/Shaders/TressFXSimulation.hlsl
 //
-// Each guide point chases a target: the point skinned by the head alone, blended towards its
-// full skinning (SMP and other bones) by Guidance. Per frame, last frame's state is carried
-// along with (1 - inertia) of what the bones did since. Then, in steps of at most 1/60 s with
-// the targets moving from last frame's pose to this frame's, the points are integrated (Verlet
-// with damping, gravity and wind) and pulled back into shape over a few iterations of a global
-// shape constraint (towards the target, strongest at the root), a local shape constraint (each
-// segment keeps its bend relative to the one before it), follow-the-leader length constraints
-// and collision: with the head field (the actor's own head mesh, see Skinning.hlsli) and with
-// capsules down the body. The root stays on its target.
+// Copyright (c) 2019 Advanced Micro Devices, Inc. All rights reserved.
 //
-// The global shape stiffness falls from the root's to the tip's over FreeLength units of strand,
-// or over the whole strand if it is longer. Loads (air drag, gravity as the head tilts, wind,
-// the head's own acceleration) move points by about the same distance on any strand, so with the
-// fall-off spread over each strand's own length a short lock swung through a far larger angle
-// than a long one, and its tip hooked over. A short lock now has the stiffness of the same
-// length of long hair near its root.
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
 //
-// Stiffness is authored per 1/60 s. Steps shorter than that (high frame rates) scale it as a
-// compliance (XPBD), and give back the damping the 60 Hz projections carry on the motion
-// relative to the target, so the hair moves the same at any frame rate.
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
 //
-// Velocity is the step's change in position, with bending motion damped. Dynamic
-// follow-the-leader (Mueller et al. 2012) also takes each length correction back out of the
-// velocity of the point before it; under a steady load (tilted head, wind) those corrections
-// never stop, and with the shape and bend constraints that velocity kept the tips shaking at
-// 5-8 Hz. Swings are damped instead by SwingDamping (the style's damping), which only ever
-// takes energy out. Air drag (VelocityKeep) acts on world velocity: it is what makes hair trail
-// while running, so it stays small.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
 //
-// The length and local shape constraints only move each segment's far point, so a swing's
-// corrections run on down the strand: after the head stopped, a wave ran to the tip and back
-// for about a second. Moving both ends instead stops that wave, but under a heavy load (a head on
-// its side, a lock with short segments) the strand then never settles, and jitters.
-// Instead, BendDamping takes out bending motion: relative to its target, each point loses that
-// share of the difference from the velocity it would have if its segment turned with the one
-// before it. A swing of the whole strand keeps its speed, and velocity alone is touched, so a
-// strand at rest under any load stays at rest.
+// A step is TressFX's simulation pass for one strand, in TressFX's order and with its maths:
+//  1. IntegrationAndGlobalShapeConstraints: Verlet integration with gravity and exponential
+//     damping, the first two points pinned to their targets (the skinned rest positions), then the
+//     points within the global range of the root pulled towards their targets.
+//  2. CalculateStrandLevelData and VelocityShockPropagation: the rotation and translation that
+//     took the root segment from the last step to this one moves the rest of the strand, current
+//     and previous positions alike, by the VSP coefficient (1 when the second point's
+//     pseudo-acceleration passes the threshold, as on teleports).
+//  3. LocalShapeConstraints: each segment is pulled towards its rest direction relative to the
+//     segment before it, turned by the shortest arc from that segment's rest direction to its
+//     current one.
+//  4. LengthConstriantsWindAndCollision: wind across each segment, distance constraints in even
+//     then odd pairs, capsule collision (which stops the point), and the position delta clamp.
+//  5. TressFX's collision with the body's signed distance field (CollideHairVerticesWithSdf),
+//     here the head field: the actor's own head mesh (see Skinning.hlsli). A point inside is put
+//     back on the surface and stops. TressFX runs it after the simulation on every point but
+//     the first two, followers included; StrandSkin.cs.hlsl does the followers.
+// TressFX runs these as separate dispatches over every vertex or strand; one thread runs a whole
+// strand here, and each pass is a loop with the same result.
+//
+// Where this differs from TressFX:
+//  - TressFX runs one pass per frame of whatever length, so its motion changes with frame rate.
+//    Here steps are a fixed 1/60 s from a clock shared by all hair (TressFX's own samples ran
+//    at 60 Hz). The targets move from last frame's pose to this frame's across the frame, and
+//    each step takes them at the time it ends. The strands are drawn with their offset from the
+//    target interpolated between the last two steps, so the hair moves smoothly at any frame rate
+//    while its roots stay on this frame's skinning.
+//  - Targets are the hair's own skinning (the head, blended towards SMP bones by Guidance), per
+//    point rather than TressFX's one skinning per strand; the local shape constraints and rest
+//    lengths are taken from them. With Guidance 0 that is TressFX's rigid per-strand skinning.
+//  - TressFX's constraints act per point whatever a strand's length, so a load moves points about
+//    the same distance on any strand, and a converted hairstyle mixes 1-unit scalp strands with
+//    40-unit locks. On a strand shorter than ShortStrandLength the global range reaches as far as
+//    on one that long (GlobalRange x ShortStrandLength units from the root), and VSP is scaled by
+//    its length over ShortStrandLength. VSP moves the strand by the root's motion over the step
+//    after the global pull has put the held part on its targets, so it carries that part past
+//    them; that bent a short strand's short segments into kinks. Longer strands are TressFX's.
+//  - Wind acts on each segment at its rest length, not its current one, and no segment ends a
+//    step longer than MaxStretch of its rest length. Without these, a strand stretched by a hard
+//    stop caught more wind the longer it got, and settings far from the defaults blew it apart.
+//  - Collision keeps a styled shape that already lies inside a collider or the head from being
+//    pushed out (see Collide and HairStrandsSkin::CollideHead), and the position delta clamp
+//    leaves the two pinned points alone.
 
 #include "HairStrands/Skinning.hlsli"
 
@@ -48,29 +75,103 @@ RWStructuredBuffer<HairStrands::GuidePoint> Guides : register(u0);
 
 namespace HairStrandsSim
 {
-	// Bending motion (each segment turning against the one before it) lost per 1/60 s: waves
-	// down the strand die at once, and swings of whole locks are left alone.
-	static const float BendDamping = 0.8;
-	static const float MaxSpeed = 3000.0;  // units/s
-	// Strand length over which the shape stiffness falls from the root's to the tip's (about
-	// 28 cm, shoulder length): only hair further than this from the scalp swings fully free.
-	static const float FreeLength = 20.0;  // units
-	static const float SixtiethOfASecond = 1.0 / 60.0;
+	// TressFX ResolveCapsuleCollisions: the share of a colliding point's move along the capsule kept.
+	static const float CapsuleFriction = 0.4;
+	// Longest a segment may end a step, relative to its rest length.
+	static const float MaxStretch = 1.2;
+	// Units. A shorter strand has the global range of one this long, and VSP by its length over it.
+	static const float ShortStrandLength = 10.0;
 
-	// Stiffness authored for a 1/60 s step, for a step of a_step seconds (compliance form).
-	float StepStiffness(float a_perSixtieth, float a_step)
+	float4 NormalizeQuaternion(float4 q)
 	{
-		if (a_perSixtieth >= 1.0)
-			return 1.0;
-		if (a_perSixtieth <= 0.0)
-			return 0.0;
-		const float compliance = SixtiethOfASecond * SixtiethOfASecond * (1.0 - a_perSixtieth) / a_perSixtieth;
-		return a_step * a_step / (a_step * a_step + compliance);
+		const float n = dot(q, q);
+		if (n < 1e-10) {
+			q.w = 1.0;
+			return q;
+		}
+		return q * rsqrt(n);
 	}
 
-	float PerIteration(float a_perStep)
+	// TressFX QuatFromTwoUnitVectors: the rotation taking unit vector u to unit vector v.
+	float4 QuatFromTwoUnitVectors(float3 u, float3 v)
 	{
-		return 1.0 - pow(saturate(1.0 - a_perStep), 1.0 / max((float)Iterations, 1.0));
+		float r = 1.0 + dot(u, v);
+		float3 n;
+		if (r < 1e-7) {
+			// u and v are opposite
+			r = 0.0;
+			n = abs(u.x) > abs(u.z) ? float3(-u.y, u.x, 0.0) : float3(0.0, -u.z, u.y);
+		} else {
+			n = cross(u, v);
+		}
+		return NormalizeQuaternion(float4(n, r));
+	}
+
+	float3 MultQuaternionAndVector(float4 q, float3 v)
+	{
+		const float3 uv = cross(q.xyz, v);
+		const float3 uuv = cross(q.xyz, uv);
+		return v + uv * (2.0 * q.w) + uuv * 2.0;
+	}
+
+	// TressFX ApplyDistanceConstraint. The first two points of a strand are immovable
+	// (inverse mass 0 in TressFX's assets), so a pair with one of them moves the other alone.
+	void ApplyDistanceConstraint(inout float3 a_pos0, inout float3 a_pos1, uint a_index0, float a_targetDistance)
+	{
+		float3 delta = a_pos1 - a_pos0;
+		const float distance = max(length(delta), 1e-7);
+		delta *= 1.0 - a_targetDistance / distance;
+		const bool movable0 = a_index0 >= 2;
+		const bool movable1 = a_index0 + 1 >= 2;
+		const float2 multiplier = movable0 ? (movable1 ? float2(0.5, 0.5) : float2(1.0, 0.0)) : (movable1 ? float2(0.0, 1.0) : float2(0.0, 0.0));
+		a_pos0 += multiplier.x * delta;
+		a_pos1 -= multiplier.y * delta;
+	}
+
+	// TressFX CapsuleCollision with one radius at both ends (a_p0 == a_p1 is a sphere). A point
+	// inside is put on the surface; on the cylinder, only CapsuleFriction of its move since the
+	// last step along the axis is kept.
+	bool CapsuleCollision(float3 a_position, float3 a_oldPosition, float3 a_p0, float3 a_p1, float a_radius, out float3 o_position)
+	{
+		o_position = a_position;
+		const float3 segment = a_p1 - a_p0;
+		const float3 delta0 = a_position - a_p0;
+		const float3 delta1 = a_p1 - a_position;
+		const float dist0 = dot(delta0, segment);
+		const float dist1 = dot(delta1, segment);
+		const float radiusSquared = a_radius * a_radius;
+
+		// colliding with sphere 0 (or the whole sphere)
+		if (dist0 < 0.0 || dot(segment, segment) < 1e-8) {
+			if (dot(delta0, delta0) < radiusSquared) {
+				o_position = a_p0 + a_radius * HairStrandsSkin::SafeNormalize(delta0, float3(0, 0, 1));
+				return true;
+			}
+			return false;
+		}
+
+		// colliding with sphere 1
+		if (dist1 < 0.0) {
+			if (dot(delta1, delta1) < radiusSquared) {
+				o_position = a_p1 + a_radius * HairStrandsSkin::SafeNormalize(-delta1, float3(0, 0, 1));
+				return true;
+			}
+			return false;
+		}
+
+		// colliding with the middle cylinder
+		const float3 x = (dist0 * a_p1 + dist1 * a_p0) / (dist0 + dist1);
+		const float3 delta = a_position - x;
+		if (dot(delta, delta) < radiusSquared) {
+			const float3 n = HairStrandsSkin::SafeNormalize(delta, float3(0, 0, 1));
+			const float3 vec = a_position - a_oldPosition;
+			const float3 segN = normalize(segment);
+			const float3 vecTangent = dot(vec, segN) * segN;
+			const float3 vecNormal = vec - vecTangent;
+			o_position = a_oldPosition + CapsuleFriction * vecTangent + (vecNormal + a_radius * n - delta);
+			return true;
+		}
+		return false;
 	}
 
 	float3 ClosestOnSegment(float3 a_p, float3 a_a, float3 a_b)
@@ -81,29 +182,49 @@ namespace HairStrandsSim
 		return a_a + ab * t;
 	}
 
-	float3 Collide(float3 a_p, float3 a_target)
+	// TressFX ResolveCapsuleCollisions over the colliders. Each collider shrinks, for this point,
+	// to the depth its target already lies at (not below HairStrandsSkin::MinColliderDepth of its
+	// radius), so a styled shape resting on or in a collider stays as it is.
+	bool Collide(inout float3 io_position, float3 a_oldPosition, float3 a_target)
 	{
+		bool collided = false;
 		[loop] for (uint c = 0; c < ColliderCount; ++c)
 		{
 			const float3 a = Colliders[c * 2].xyz;
 			const float radius = Colliders[c * 2].w;
 			const float3 b = Colliders[c * 2 + 1].xyz;
-			const float3 closest = ClosestOnSegment(a_p, a, b);
-			const float3 away = a_p - closest;
-			const float distance = length(away);
 			const float targetDistance = length(a_target - ClosestOnSegment(a_target, a, b));
 			const float allowed = max(min(radius, targetDistance), radius * HairStrandsSkin::MinColliderDepth);
-			if (distance < allowed)
-				a_p = closest + HairStrandsSkin::SafeNormalize(away, HairStrandsSkin::SafeNormalize(a_target - closest, float3(0, 0, 1))) * allowed;
+			float3 pushed;
+			if (CapsuleCollision(io_position, a_oldPosition, a, b, allowed, pushed)) {
+				io_position = pushed;
+				collided = true;
+			}
 		}
-		return a_p;
+		return collided;
 	}
 
-	// Slow, uneven gusts, out of step from strand to strand; in [0.1, 1].
-	float Gust(float a_random)
+	// The head bone's frame at a_f of the way from last frame's pose to this frame's, as the
+	// targets are taken at each step: the head field rides it.
+	HairStrandsSkin::HeadFrame StepHeadFrame(float a_f)
 	{
-		const float phase = a_random * 6.2831853;
-		return 0.55 + 0.3 * sin(Time * 1.7 + phase) + 0.15 * sin(Time * 4.3 + phase * 3.0);
+		float3x4 previous = HairStrandsSkin::LoadBone(HeadBone, BoneCount * 3);
+		previous[0].w += PreviousToCurrent.x;
+		previous[1].w += PreviousToCurrent.y;
+		previous[2].w += PreviousToCurrent.z;
+		const float3x4 head = lerp(previous, HairStrandsSkin::LoadBone(HeadBone, 0), a_f);
+		HairStrandsSkin::HeadFrame frame;
+		frame.fromSkin = (float3x3)head;
+		frame.toSkin = HairStrandsSkin::Inverse(frame.fromSkin);
+		frame.origin = float3(head[0].w, head[1].w, head[2].w);
+		return frame;
+	}
+
+	// TressFX mixes its four wind vectors per strand, so neighbouring strands blow apart.
+	float3 GuideWind(uint a_guide)
+	{
+		const float a = (float)(a_guide % 20) / 20.0;
+		return a * Wind[0].xyz + (1.0 - a) * Wind[1].xyz + a * Wind[2].xyz + (1.0 - a) * Wind[3].xyz;
 	}
 }
 
@@ -113,188 +234,225 @@ namespace HairStrandsSim
 		return;
 	const uint n = min(PointsPerStrand, MAX_POINTS);
 	const uint base = guide * PointsPerStrand;
-	const float lastIndex = max((float)n - 1.0, 1.0);
-	// How far along the stiffness fall-off the tip gets: all the way on strands of FreeLength or longer.
-	const float reach = saturate(Strands[guide].Length / HairStrandsSim::FreeLength);
-	const float3 previousToCurrent = EyeShift - PreviousEyeShift;  // previous frame's camera to this frame's
 
-	float3 x[MAX_POINTS];
-	float3 velocity[MAX_POINTS];
-	float3 target[MAX_POINTS];
-	float3 startTarget[MAX_POINTS];  // where the targets start this frame's steps
-	float3 start[MAX_POINTS];        // position before a step's integration
-	float stiffness[MAX_POINTS];     // shape stiffness per iteration
-	float relativeKeep[MAX_POINTS];  // velocity relative to the target kept per step
-	uint i;
+	float3 targetStart[MAX_POINTS];         // skinned rest positions last frame, relative to this frame's camera
+	float3 targetEnd[MAX_POINTS];           // and this frame
+	float3 position[MAX_POINTS];            // TressFX's g_HairVertexPositions
+	float3 previous[MAX_POINTS];            // g_HairVertexPositionsPrev
+	float3 stepOffset[MAX_POINTS];          // position - target, at the last step
+	float3 previousStepOffset[MAX_POINTS];  // and at the step before
+	uint i, step, iteration;
 
-	// The head field rides the head bone: this frame's pose for every step.
-	const bool collideHead = (Flags & HAIR_STRANDS_FLAG_HEAD_FIELD) != 0;
-	const HairStrandsSkin::HeadFrame head = HairStrandsSkin::LoadHeadFrame(0);
-
-	// A root that jumped (teleport, load, animation snap) restarts the whole strand.
-	bool reset = (Flags & HAIR_STRANDS_FLAG_RESET) != 0;
-	if (!reset) {
-		float3x4 current, previous, targetCurrent, targetPrevious;
-		const HairStrands::RestPoint root = RestPoints[base];
-		HairStrandsSkin::Skin(root, current, previous);
-		HairStrandsSkin::TargetSkin(current, previous, targetCurrent, targetPrevious);
-		reset = !(distance(mul(targetCurrent, float4(root.Position, 1.0)), Guides[base].Position + EyeShift) <= TeleportDistance);
-	}
-
-	// Targets, and last frame's state carried along with (1 - inertia) of the bones' motion.
 	[loop] for (i = 0; i < n; ++i)
 	{
 		const HairStrands::RestPoint rest = RestPoints[base + i];
-		float3x4 current, previous, targetCurrent, targetPrevious;
-		HairStrandsSkin::Skin(rest, current, previous);
-		HairStrandsSkin::TargetSkin(current, previous, targetCurrent, targetPrevious);
+		float3x4 current, previousFrame, targetCurrent, targetPrevious;
+		HairStrandsSkin::Skin(rest, current, previousFrame);
+		HairStrandsSkin::TargetSkin(current, previousFrame, targetCurrent, targetPrevious);
 		const float4 restPosition = float4(rest.Position, 1.0);
-		target[i] = mul(targetCurrent, restPosition);
-		const float3 previousTarget = mul(targetPrevious, restPosition);  // relative to the previous frame's camera
-
-		const HairStrands::GuidePoint old = Guides[base + i];
-		float3 previousPosition = previousTarget;
-		if (reset) {
-			x[i] = target[i];
-			velocity[i] = 0;
-			startTarget[i] = target[i];
-		} else {
-			const float3x3 motion = mul((float3x3)targetCurrent, HairStrandsSkin::Inverse((float3x3)targetPrevious));
-			const float3 position = old.Position + EyeShift;
-			const float3 lastTarget = previousTarget + previousToCurrent;
-			const float3 carried = target[i] + mul(motion, position - lastTarget);
-			x[i] = lerp(position, carried, Carry);
-			velocity[i] = lerp(old.Velocity, mul(motion, old.Velocity), Carry);
-			// The carry already moved the state that much of the way: the targets cover the rest.
-			startTarget[i] = lerp(lastTarget, target[i], Carry);
-			previousPosition = old.Position + PreviousEyeShift;
-		}
-		// Unconditional writes: fxc cannot map partial UAV writes in this branch (X4532).
-		Guides[base + i].PreviousTarget = previousTarget;
-		Guides[base + i].PreviousPosition = previousPosition;
-
-		const float shape = lerp(RootStiffness, TipStiffness, i / lastIndex * reach);
-		const float shapeStep = HairStrandsSim::StepStiffness(shape, StepTime);
-		stiffness[i] = HairStrandsSim::PerIteration(shapeStep);
-		const float total = 1.0 - (1.0 - shape) * (1.0 - BendStiffness);
-		const float totalStep = 1.0 - (1.0 - shapeStep) * (1.0 - HairStrandsSim::StepStiffness(BendStiffness, StepTime));
-		relativeKeep[i] = total < 1.0 ? min(pow(saturate(1.0 - total), StepTime * 60.0) / max(1.0 - totalStep, 1e-6), 1.0) : 0.0;
-		relativeKeep[i] *= pow(saturate(1.0 - SwingDamping), StepTime * 60.0);
+		targetEnd[i] = mul(targetCurrent, restPosition);
+		targetStart[i] = mul(targetPrevious, restPosition) + PreviousToCurrent;
 	}
 
-	const bool dynamics = Steps > 0 && StepTime > 0.0 && !reset;
-	if (dynamics) {
-		const float h = StepTime;
-		const float bend = HairStrandsSim::PerIteration(HairStrandsSim::StepStiffness(BendStiffness, h));
-		const float bendKeep = pow(1.0 - HairStrandsSim::BendDamping, h * 60.0);  // bending motion kept per step
-		const float gust = HairStrandsSim::Gust(Strands[guide].Random);
-		const bool collide = (Flags & HAIR_STRANDS_FLAG_COLLIDE) != 0 && ColliderCount > 0;
+	// A root that jumped (teleport, load, animation snap) restarts the whole strand.
+	const bool reset = (Flags & HAIR_STRANDS_FLAG_RESET) != 0 || !(distance(targetEnd[0], Guides[base].Position + EyeShift) <= TeleportDistance);
 
-		[loop] for (uint step = 0; step < Steps; ++step)
+	float3 previousPrevious1 = targetEnd[1];  // g_HairVertexPositionsPrevPrev of the second point
+	[loop] for (i = 0; i < n; ++i)
+	{
+		const HairStrands::GuidePoint old = Guides[base + i];
+		position[i] = reset ? targetEnd[i] : old.Position + EyeShift;
+		previous[i] = reset ? targetEnd[i] : old.PreviousPosition + EyeShift;
+		stepOffset[i] = reset ? (float3)0 : old.StepOffset;
+		previousStepOffset[i] = reset ? (float3)0 : old.PreviousStepOffset;
+		if (i == 1 && !reset)
+			previousPrevious1 = old.PreviousPreviousPosition + EyeShift;
+	}
+
+	const uint steps = reset ? 0 : Steps;
+	const float h = StepTime;
+	const float decay = exp(-Damping * h * 60.0);
+	const float3 gravity = float3(0.0, 0.0, -Gravity) * (h * h);
+	// TressFX: 1.0 for stiffness makes things unstable sometimes.
+	const float localStiffness = 0.5 * min(LocalStiffness, 0.95);
+	const float lengthScale = saturate(Strands[guide].Length / HairStrandsSim::ShortStrandLength);
+	const float globalCount = GlobalRange * (float)n / max(lengthScale, 1e-4);
+	const float3 wind = HairStrandsSim::GuideWind(guide);
+	const bool haveWind = any(wind != 0.0);
+	const bool collide = (Flags & HAIR_STRANDS_FLAG_COLLIDE) != 0 && ColliderCount > 0;
+	const bool collideHead = (Flags & HAIR_STRANDS_FLAG_HEAD_FIELD) != 0;
+
+	[loop] for (step = 0; step < steps; ++step)
+	{
+		const float f = saturate(FirstStep + (float)step * StepFraction);
+
+		// IntegrationAndGlobalShapeConstraints.
+		[loop] for (i = 0; i < n; ++i)
 		{
-			const float fromFraction = (float)step / Steps;
-			const float toFraction = (float)(step + 1) / Steps;
-
-			// Integrate. Motion relative to the target is damped by what the 60 Hz projections
-			// would take out and by the swing damping; all motion loses the air drag.
-			[loop] for (i = 1; i < n; ++i)
-			{
-				const float3 stepTarget = lerp(startTarget[i], target[i], toFraction);
-				const float3 targetVelocity = (stepTarget - lerp(startTarget[i], target[i], fromFraction)) / h;
-				float3 v = (targetVelocity + (velocity[i] - targetVelocity) * relativeKeep[i]) * VelocityKeep;
-				// Wind pushes across the strand, harder towards the tip.
-				const float3 along = HairStrandsSkin::SafeNormalize(x[i] - x[i - 1], 0);
-				float3 wind = Wind * (gust * i / lastIndex);
-				wind -= along * dot(wind, along);
-				start[i] = x[i];
-				x[i] += v * h + (Gravity + wind) * (h * h);
+			const float3 target = lerp(targetStart[i], targetEnd[i], f);
+			float3 next = target;
+			if (i >= 2) {
+				next = position[i] + decay * (position[i] - previous[i]) + gravity;
+				if (GlobalStiffness > 0.0 && (float)i < globalCount)
+					next += GlobalStiffness * (target - next);
 			}
-			x[0] = lerp(startTarget[0], target[0], toFraction);
+			if (i == 1)
+				previousPrevious1 = previous[1];
+			previous[i] = position[i];
+			position[i] = next;
+		}
 
-			[loop] for (uint iteration = 0; iteration < Iterations; ++iteration)
+		// CalculateStrandLevelData, then VelocityShockPropagation.
+		{
+			const float3 u = HairStrandsSkin::SafeNormalize(previous[1] - previous[0], float3(0, 0, -1));
+			const float3 v = HairStrandsSkin::SafeNormalize(position[1] - position[0], u);
+			const float4 rotation = HairStrandsSim::QuatFromTwoUnitVectors(u, v);
+			const float3 translation = position[0] - HairStrandsSim::MultQuaternionAndVector(rotation, previous[0]);
+			const float accel = length(position[1] - 2.0 * previous[1] + previousPrevious1);
+			const float vsp = accel > VspAccelThreshold ? 1.0 : VspCoeff * lengthScale;
+			[loop] for (i = 2; i < n; ++i)
 			{
-				[loop] for (i = 1; i < n; ++i)
-					x[i] = lerp(x[i], lerp(startTarget[i], target[i], toFraction), stiffness[i]);
-
-				[loop] for (i = 0; i + 1 < n; ++i)
-				{
-					const float3 restA = lerp(startTarget[i], target[i], toFraction);
-					const float3 restB = lerp(startTarget[i + 1], target[i + 1], toFraction);
-					float3 desired = restB - restA;
-					if (i > 0) {
-						const float3 restParent = HairStrandsSkin::SafeNormalize(restA - lerp(startTarget[i - 1], target[i - 1], toFraction), 0);
-						const float3 parent = HairStrandsSkin::SafeNormalize(x[i] - x[i - 1], restParent);
-						if (dot(restParent, restParent) > 0.5)
-							desired = HairStrandsSkin::Rotate(HairStrandsSkin::ShortestArc(restParent, parent), desired);
-					}
-					x[i + 1] = lerp(x[i + 1], x[i] + desired, bend);
-				}
-
-				[loop] for (i = 1; i < n; ++i)
-				{
-					const float3 stepTarget = lerp(startTarget[i], target[i], toFraction);
-					const float3 restSegment = stepTarget - lerp(startTarget[i - 1], target[i - 1], toFraction);
-					const float3 direction = HairStrandsSkin::SafeNormalize(x[i] - x[i - 1], HairStrandsSkin::SafeNormalize(restSegment, float3(0, 0, -1)));
-					float3 fixedPoint = x[i - 1] + direction * length(restSegment);
-					if (collide)
-						fixedPoint = HairStrandsSim::Collide(fixedPoint, stepTarget);
-					if (collideHead)
-						fixedPoint = HairStrandsSkin::CollideHead(fixedPoint, HairStrandsSkin::HeadDepth(stepTarget, head), head);
-					x[i] = fixedPoint;
-				}
+				position[i] = lerp(position[i], HairStrandsSim::MultQuaternionAndVector(rotation, position[i]) + translation, vsp);
+				previous[i] = lerp(previous[i], HairStrandsSim::MultQuaternionAndVector(rotation, previous[i]) + translation, vsp);
 			}
+		}
 
-			[loop] for (i = 1; i < n; ++i)
-				velocity[i] = (x[i] - start[i]) / h;
-			velocity[0] = 0;
-
-			// Bending motion: relative to the targets (whose velocity is constant over the frame),
-			// pull each point towards the velocity it would have if its segment turned with the
-			// one before it. Root to tip, so each point sees its parent's damped velocity.
-			const float frameTime = h * Steps;
-			float3 before = 0;  // the root follows its target
-			float3 relative = velocity[1] - (target[1] - startTarget[1]) / frameTime;
+		// LocalShapeConstraints.
+		[loop] for (iteration = 0; iteration < LocalIterations; ++iteration)
+		{
 			[loop] for (i = 1; i + 1 < n; ++i)
 			{
-				const float3 parent = x[i] - x[i - 1];
-				const float3 targetVelocity = (target[i + 1] - startTarget[i + 1]) / frameTime;
-				float3 after = velocity[i + 1] - targetVelocity;
-				const float parentSquared = dot(parent, parent);
-				if (parentSquared > 1e-12) {
-					const float3 turn = cross(parent, relative - before) / parentSquared;
-					const float3 rigid = relative + cross(turn, x[i + 1] - x[i]);
-					after = lerp(rigid, after, bendKeep);
-					velocity[i + 1] = targetVelocity + after;
-				}
-				before = relative;
-				relative = after;
+				const float3 bindPos = lerp(targetStart[i], targetEnd[i], f);
+				const float3 bindPosMinusOne = lerp(targetStart[i - 1], targetEnd[i - 1], f);
+				const float3 bindPosPlusOne = lerp(targetStart[i + 1], targetEnd[i + 1], f);
+				const float3 lastVecBindPose = HairStrandsSkin::SafeNormalize(bindPos - bindPosMinusOne, float3(0, 0, -1));
+				const float3 lastVec = HairStrandsSkin::SafeNormalize(position[i] - position[i - 1], lastVecBindPose);
+				const float4 rotGlobal = HairStrandsSim::QuatFromTwoUnitVectors(lastVecBindPose, lastVec);
+				const float3 orgPos = HairStrandsSim::MultQuaternionAndVector(rotGlobal, bindPosPlusOne - bindPos) + position[i];
+				const float3 del = localStiffness * (orgPos - position[i + 1]);
+				if (i >= 2)
+					position[i] -= del;
+				position[i + 1] += del;
 			}
+		}
 
-			[loop] for (i = 1; i < n; ++i)
+		// LengthConstriantsWindAndCollision: wind across each segment, from the third point to
+		// the one before the tip. Each point's segment reaches the next point, not yet moved.
+		// TressFX's force grows with the segment's length squared; at its rest length here, so a
+		// stretched strand does not catch more wind and stretch further.
+		if (haveWind) {
+			[loop] for (i = 2; i + 1 < n; ++i)
 			{
-				const float speed = length(velocity[i]);
-				if (speed > HairStrandsSim::MaxSpeed)
-					velocity[i] *= HairStrandsSim::MaxSpeed / speed;
+				const float restLength = distance(lerp(targetStart[i], targetEnd[i], f), lerp(targetStart[i + 1], targetEnd[i + 1], f));
+				const float3 segment = HairStrandsSkin::SafeNormalize(position[i] - position[i + 1], 0) * restLength;
+				position[i] += -cross(cross(segment, wind), segment) * (h * h);
 			}
+		}
+
+		// Length constraints: even pairs, then odd pairs, as TressFX's threads do them.
+		[loop] for (iteration = 0; iteration < LengthIterations; ++iteration)
+		{
+			[loop] for (i = 0; i + 1 < n; i += 2)
+			{
+				const float restLength = distance(lerp(targetStart[i], targetEnd[i], f), lerp(targetStart[i + 1], targetEnd[i + 1], f));
+				HairStrandsSim::ApplyDistanceConstraint(position[i], position[i + 1], i, restLength);
+			}
+			[loop] for (i = 1; i + 1 < n; i += 2)
+			{
+				const float restLength = distance(lerp(targetStart[i], targetEnd[i], f), lerp(targetStart[i + 1], targetEnd[i + 1], f));
+				HairStrandsSim::ApplyDistanceConstraint(position[i], position[i + 1], i, restLength);
+			}
+		}
+
+		// Not TressFX: a few Jacobi passes cannot stop a long strand that is still moving when
+		// the head stops (a landing, the end of a sprint), and it stretched to twice its length.
+		// No segment is left longer than MaxStretch of its rest length, measured from the root.
+		[loop] for (i = 2; i < n; ++i)
+		{
+			const float maxLength = HairStrandsSim::MaxStretch * distance(lerp(targetStart[i - 1], targetEnd[i - 1], f), lerp(targetStart[i], targetEnd[i], f));
+			const float3 segment = position[i] - position[i - 1];
+			const float segmentLength = length(segment);
+			if (segmentLength > maxLength)
+				position[i] = position[i - 1] + segment * (maxLength / segmentLength);
+		}
+
+		// Collision, then TressFX's clamp of the move since the last step (its formula, and only on
+		// the movable points: rewriting the pinned points' history would skew the next step's VSP).
+		[loop] for (i = 2; i < n; ++i)
+		{
+			bool collided = false;
+			if (collide)
+				collided = HairStrandsSim::Collide(position[i], previous[i], lerp(targetStart[i], targetEnd[i], f));
+			float3 positionDelta = position[i] - previous[i];
+			const float speedSquared = dot(positionDelta, positionDelta);
+			if (speedSquared > ClampPositionDelta * ClampPositionDelta) {
+				positionDelta *= ClampPositionDelta * ClampPositionDelta / speedSquared;
+				previous[i] = position[i] - positionDelta;
+			}
+			if (collided)
+				previous[i] = position[i];
+		}
+
+		// The head field, as TressFX's signed distance field collision.
+		if (collideHead) {
+			const HairStrandsSkin::HeadFrame head = HairStrandsSim::StepHeadFrame(f);
+			[loop] for (i = 2; i < n; ++i)
+			{
+				const float3 pushed = HairStrandsSkin::CollideHead(position[i], HairStrandsSkin::HeadDepth(lerp(targetStart[i], targetEnd[i], f), head), head);
+				if (any(pushed != position[i])) {
+					position[i] = pushed;
+					previous[i] = pushed;
+				}
+			}
+		}
+
+		[loop] for (i = 0; i < n; ++i)
+		{
+			previousStepOffset[i] = stepOffset[i];
+			stepOffset[i] = position[i] - lerp(targetStart[i], targetEnd[i], f);
 		}
 	}
 
 	[loop] for (i = 0; i < n; ++i)
 	{
-		if (any(!isfinite(x[i])) || any(!isfinite(velocity[i]))) {
-			x[i] = target[i];
-			velocity[i] = 0;
+		if (any(!isfinite(position[i])) || any(!isfinite(previous[i])) || any(!isfinite(stepOffset[i])) || any(!isfinite(previousStepOffset[i]))) {
+			position[i] = targetEnd[i];
+			previous[i] = targetEnd[i];
+			stepOffset[i] = 0;
+			previousStepOffset[i] = 0;
 		}
 	}
+	if (any(!isfinite(previousPrevious1)))
+		previousPrevious1 = targetEnd[1];
+
+	// Drawn: the offsets interpolated from the step before the last to the last, at the time this
+	// frame is past the last step, and added to this frame's targets.
 	[loop] for (i = 0; i < n; ++i)
 	{
 		const uint a = i > 0 ? i - 1 : 0;
 		const uint b = min(i + 1, n - 1);
-		const float3 restTangent = HairStrandsSkin::SafeNormalize(target[b] - target[a], float3(0, 0, -1));
-		const float3 tangent = HairStrandsSkin::SafeNormalize(x[b] - x[a], restTangent);
-		Guides[base + i].Rotation = HairStrandsSkin::ShortestArc(restTangent, tangent);
-		Guides[base + i].Position = x[i];
-		Guides[base + i].Velocity = velocity[i];
-		Guides[base + i].Target = target[i];
+		const float3 offsetA = lerp(previousStepOffset[a], stepOffset[a], DisplayAlpha);
+		const float3 offsetB = lerp(previousStepOffset[b], stepOffset[b], DisplayAlpha);
+		const float3 restTangent = HairStrandsSkin::SafeNormalize(targetEnd[b] - targetEnd[a], float3(0, 0, -1));
+		const float3 tangent = HairStrandsSkin::SafeNormalize(targetEnd[b] + offsetB - targetEnd[a] - offsetA, restTangent);
+
+		// One whole-element write per point: fxc cannot map partial UAV writes under a branch (X4532).
+		HairStrands::GuidePoint result;
+		result.Rotation = HairStrandsSkin::ShortestArc(restTangent, tangent);
+		result.Position = position[i];
+		result.PreviousPosition = previous[i];
+		result.PreviousPreviousPosition = i == 1 ? previousPrevious1 : previous[i];
+		result.StepOffset = stepOffset[i];
+		result.PreviousStepOffset = previousStepOffset[i];
+		result.Offset = lerp(previousStepOffset[i], stepOffset[i], DisplayAlpha);
+		result.PreviousOffset = reset ? result.Offset : Guides[base + i].Offset;
+		result.Pad0 = 0;
+		result.Pad1 = 0;
+		result.Pad2 = 0;
+		result.Pad3 = 0;
+		result.Pad4 = 0;
+		result.Pad5 = 0;
+		result.Pad6 = 0;
+		Guides[base + i] = result;
 	}
 }

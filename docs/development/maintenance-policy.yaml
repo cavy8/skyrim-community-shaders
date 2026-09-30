@@ -147,9 +147,10 @@ features:
       hair's Lighting permutation (HairStrands/StrandLighting.hlsl includes Lighting.hlsl). Depends
       on Lighting.hlsl's VS_OUTPUT layout, its non-landscape base-colour/normal sampling and the
       double-sided TBN flip: re-check the hair_strands hunks after a Bottle sync that touches them.
-      Not in .github/configs/shader-validation.yaml: compile StrandLighting.hlsl (VS and PS),
-      StrandSkin.cs.hlsl and StrandSim.cs.hlsl by hand with fxc after shader edits. See
-      docs/development/hair-strands.md.
+      StrandSim.cs.hlsl ports TressFX 4.1's simulation (GPUOpen-Effects/TressFX ba0bdac, MIT: keep
+      AMD's notice in the file). Not in .github/configs/shader-validation.yaml: compile
+      StrandLighting.hlsl (VS and PS), StrandSkin.cs.hlsl and StrandSim.cs.hlsl by hand with fxc
+      after shader edits. See docs/development/hair-strands.md.
 
   Screenshot:
     policy: bottle-plus-components

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -59,16 +60,20 @@ namespace Strands
 		float4 rotation;
 		float3 position;
 		float pad0;
-		float3 velocity;
-		float pad1;
-		float3 target;
-		float pad2;
 		float3 previousPosition;
+		float pad1;
+		float3 previousPreviousPosition;
+		float pad2;
+		float3 stepOffset;
 		float pad3;
-		float3 previousTarget;
+		float3 previousStepOffset;
 		float pad4;
+		float3 offset;
+		float pad5;
+		float3 previousOffset;
+		float pad6;
 	};
-	static_assert(sizeof(GuidePoint) == 96);
+	static_assert(sizeof(GuidePoint) == 128);
 
 	inline constexpr uint32_t kMaxColliders = 8;
 
@@ -93,34 +98,41 @@ namespace Strands
 		float simWeight;
 		float guidance;
 
-		float3 gravity;
-		float stepTime;
-
 		float3 eyeShift;
-		float rootStiffness;
-		float3 previousEyeShift;
-		float tipStiffness;
+		uint32_t steps;
 
-		float3 wind;
-		float bendStiffness;
+		float3 previousToCurrent;
+		float firstStep;
 
-		float velocityKeep;
-		float carry;
-		float time;
+		float stepFraction;
+		float displayAlpha;
+		float stepTime;
 		float teleportDistance;
 
-		uint32_t iterations;
+		// TressFX's simulation settings, in units and per step.
+		float damping;
+		float localStiffness;
+		float globalStiffness;
+		float globalRange;
+
+		float gravity;
+		float vspCoeff;
+		float vspAccelThreshold;
+		float clampPositionDelta;
+
+		uint32_t localIterations;
+		uint32_t lengthIterations;
+		float tipSeparation;
 		uint32_t colliderCount;
-		uint32_t steps;
-		float swingDamping;
 
 		float3 headFieldCentre;  // skin space
 		float headFieldPad;
 
+		float4 wind[4];
 		float4 colliders[kMaxColliders * 2];
 	};
 	STATIC_ASSERT_ALIGNAS_16(SkinCB);
-	static_assert(sizeof(SkinCB) == 144 + kMaxColliders * 32);
+	static_assert(sizeof(SkinCB) == 208 + kMaxColliders * 32);
 
 	/** @brief Global options the renderer reads every frame (owned by the HairStrands feature). */
 	struct RenderSettings
@@ -319,10 +331,16 @@ namespace Strands
 		ComputeShader skinShader;
 		ComputeShader simShader;
 
-		// Simulation clock: frame time (0 while paused) and the weather's wind, read once per frame.
+		// Simulation clock, advanced once per frame: fixed steps shared by all hair (none while
+		// paused), where in the frame they end, and how far the frame is past the last one.
 		float frameDeltaTime = 0.0f;
-		float simulationTime = 0.0f;
-		float3 frameWind;
+		float simAccumulator = 0.0f;  // time since the last step
+		uint32_t frameSteps = 0;
+		float firstStepFraction = 0.0f;
+		float stepFraction = 0.0f;
+		float displayAlpha = 0.0f;
+		uint64_t simulationStep = 0;          // steps so far, TressFX's frame count for the wind's swell
+		std::array<float4, 4> windCorners{};  // the weather's wind as TressFX's four vectors, before a style's response
 		uint32_t nextAssetSerial = 0;
 
 		std::unique_ptr<ConstantBuffer> drawCB;

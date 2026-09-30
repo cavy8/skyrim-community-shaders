@@ -59,11 +59,22 @@ features:
 
   HairStrands:
     status: present
-    personal_original: true
+    personal_original: false
     provenance:
       - source: personal
         role: implementation       # mesh-to-strand hair conversion and rendering (owner request 2026-09-28)
         confidence: confirmed
+    components:
+      simulation:
+        personal_original: false
+        provenance:
+          - source: tressfx
+            role: implementation   # StrandSim.cs.hlsl ports TressFXSimulation.hlsl's kernels (MIT, AMD's notice kept); owner request 2026-09-30
+            confidence: confirmed
+            evidence: [ba0bdac]
+          - source: personal
+            role: integration      # fixed 60 Hz steps, per-point skinned targets, SMP guidance, weather wind, stretch cap
+            confidence: confirmed
 
   Screenshot:
     status: present
