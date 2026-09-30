@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "BodyField.h"
 #include "StrandGenerator.h"
 #include "StrandStyle.h"
 
@@ -82,10 +83,11 @@ namespace Strands
 	{
 		enum Flags : uint32_t
 		{
-			kFollow = 1,     // strands follow their simulated guides
-			kReset = 2,      // guides restart from their targets
-			kCollide = 4,    // guides keep out of the colliders
-			kHeadField = 8,  // every strand keeps out of the head field (t4)
+			kFollow = 1,      // strands follow their simulated guides
+			kReset = 2,       // guides restart from their targets
+			kCollide = 4,     // guides keep out of the colliders
+			kHeadField = 8,   // every strand keeps out of the head field (t4)
+			kBodyField = 16,  // every strand keeps out of the body colliders (t5)
 		};
 
 		uint32_t pointCount;
@@ -126,13 +128,16 @@ namespace Strands
 		uint32_t colliderCount;
 
 		float3 headFieldCentre;  // skin space
-		float headFieldPad;
+		uint32_t bodyColliderCount;
 
 		float4 wind[4];
 		float4 colliders[kMaxColliders * 2];
+		// Per body collider: field-to-world rows this frame, then last frame's, each relative to its frame's camera.
+		float4 bodyFrames[kBodySlots * 6];
+		float4 bodyShapes[kBodySlots];  // segment length, bounding radius, its map (uint bits), unused
 	};
 	STATIC_ASSERT_ALIGNAS_16(SkinCB);
-	static_assert(sizeof(SkinCB) == 208 + kMaxColliders * 32);
+	static_assert(sizeof(SkinCB) == 208 + kMaxColliders * 32 + kBodySlots * 112);
 
 	/** @brief Global options the renderer reads every frame (owned by the HairStrands feature). */
 	struct RenderSettings
@@ -305,8 +310,19 @@ namespace Strands
 		 * @param a_skin The skin instance of the hair being drawn (its head bone's bind pose).
 		 */
 		void BuildHeadField(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin);
-		/** @brief The head sphere (without a head field) and, when the hair hangs from a humanoid head, neck, torso and arm capsules. */
-		uint32_t GatherColliders(const Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, float4* o_colliders) const;
+		/**
+		 * @brief Keeps a_instance's body colliders in step with what its actor wears: looks at the worn
+		 * meshes now and then, builds the colliders on a worker when they change, and takes a finished
+		 * build. Until one is ready the last colliders (or the bone capsules) stay.
+		 */
+		void UpdateBodyField(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin);
+		/**
+		 * @brief The head sphere (without a head field) and, when the hair hangs from a humanoid head and
+		 * no body colliders were built from its actor's worn meshes, neck, torso and arm capsules.
+		 */
+		uint32_t GatherColliders(const Instance& a_instance, const BodySkeleton& a_skeleton, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, float4* o_colliders) const;
+		/** @brief This frame's body colliders (from UpdateBodyField) into a_cb, on their bones' poses this frame and last. */
+		uint32_t GatherBodyColliders(Instance& a_instance, const BodySkeleton& a_skeleton, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb);
 		/** @brief Draws the strands with the bound pass state; a_depthOnly draws depth alone, and only if the pass writes depth. */
 		void Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport, bool a_depthOnly);
 		ID3D11RasterizerState* GetNoCullState(ID3D11RasterizerState* a_current);

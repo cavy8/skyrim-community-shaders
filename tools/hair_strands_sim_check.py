@@ -39,6 +39,19 @@ MIN_COLLIDER_DEPTH = 0.5
 MAX_STRETCH = 1.2  # StrandSim's MaxStretch
 SHORT_STRAND_LENGTH = 10.0  # StrandSim's ShortStrandLength
 SKYRIM_GRAVITY = 686.7  # a falling character, units/s^2
+# Body colliders (BodyField.h, HairStrandsSkin::CollideBody).
+BODY_COLUMNS = 32  # kBodyFieldColumns
+BODY_CAP_ROWS = 6  # kBodyFieldCapRows
+BODY_SIDE_ROWS = 12  # kBodyFieldSideRows
+BODY_ROWS = 2 * BODY_CAP_ROWS + BODY_SIDE_ROWS
+BODY_SAMPLE_SPACING = 0.5  # kBodyFieldSampleSpacing
+BODY_LAYER_GAP = 0.6  # kBodyFieldLayerGap
+BODY_MIN_WEIGHT = 0.05  # kBodyFieldMinWeight
+BODY_FILL_PASSES = 3  # kBodyFieldFillPasses
+BODY_MARGIN = 0.35  # kBodyFieldMargin
+BODY_MAX_RADIUS = 40.0  # kBodyFieldMaxRadius
+BODY_REST_DEPTH = 0.25  # HairStrandsSkin::BodyRestDepth
+BODY_SLIDE = 0.4  # HairStrandsSim::BodySlide, TressFX's capsule friction share
 
 # Strands::StrandStyle motion defaults and MakePresetStyle's changes to them.
 DEFAULT = dict(vsp=0.4, vsp_threshold=1.208, local=0.908, local_iterations=3, global_stiffness=0.408, global_range=0.4,
@@ -152,6 +165,288 @@ class HeadField:
         return head[:, 3] + head[:, :3] @ (self.centre + direction * allowed)
 
 
+def body_field_axes(direction):
+    """BodyField's field axes (columns): Z along the segment, X and Y a perpendicular pair."""
+    z = direction / np.linalg.norm(direction)
+    x = np.cross(z, [0.0, 0.0, 1.0] if abs(z[2]) < 0.9 else [1.0, 0.0, 0.0])
+    x /= np.linalg.norm(x)
+    return np.c_[x, np.cross(z, x), z]
+
+
+def body_field_texel(q, length):
+    """BodyFieldTexel / HairStrandsSkin::BodyFieldTexel: continuous (column, row) of field-space
+    point q round the segment (0, 0, 0)-(0, 0, length). Rows run from the pole of the cap at the
+    start, along the segment, to the pole of the cap at the end; columns round the segment."""
+    rho = math.hypot(q[0], q[1])
+    if q[2] < 0.0:
+        row = math.atan2(rho, -q[2]) * (BODY_CAP_ROWS / (math.pi / 2))
+    elif q[2] > length:
+        row = BODY_ROWS - math.atan2(rho, q[2] - length) * (BODY_CAP_ROWS / (math.pi / 2))
+    else:
+        row = BODY_CAP_ROWS + BODY_SIDE_ROWS * q[2] / max(length, 1e-4)
+    return (math.atan2(q[1], q[0]) / (2.0 * math.pi) + 1.0) * BODY_COLUMNS, row
+
+
+class BodyCollider:
+    """One body collider (StrandRenderer's body field, HairStrandsSkin::CollideBody): a capsule whose
+    radius varies with direction, rigid on its bone, built from the body's own triangles."""
+
+    def __init__(self, start, end):
+        self.origin = np.asarray(start, float)
+        self.axes = body_field_axes(np.asarray(end, float) - self.origin)
+        self.length = float(np.linalg.norm(np.asarray(end, float) - self.origin))
+        self.map = np.zeros((BODY_ROWS, BODY_COLUMNS))
+        self.bound = 0.0
+        self.samples = []
+
+    def splat(self, vertices, triangles):
+        """BuildBodyField's sampling: points no further apart than BODY_SAMPLE_SPACING over every triangle."""
+        for tri in triangles:
+            a, b, c = (self.axes.T @ (vertices[i] - self.origin) for i in tri)
+            ab, ac = b - a, c - a
+            longest = max(np.linalg.norm(ab), np.linalg.norm(ac), np.linalg.norm(c - b))
+            steps = min(max(int(math.ceil(longest / BODY_SAMPLE_SPACING)), 1), 64)
+            i, j = np.meshgrid(np.arange(steps + 1), np.arange(steps + 1), indexing="ij")
+            keep = i + j <= steps
+            for q in a + np.outer(i[keep] / steps, ab) + np.outer(j[keep] / steps, ac):
+                r = math.hypot(q[0], q[1]) if 0.0 <= q[2] <= self.length else np.linalg.norm(q - [0.0, 0.0, min(max(q[2], 0.0), self.length)])
+                if 1e-3 < r <= BODY_MAX_RADIUS:
+                    self.samples.append((*body_field_texel(q, self.length), r))
+
+    def finish(self):
+        """BuildBodyField's map: per texel the outermost layer of samples, averaged towards the texel
+        centres with bilinear weights, then small holes filled from their neighbours."""
+        per = {}
+        for column, row, r in self.samples:
+            per.setdefault((min(max(int(row), 0), BODY_ROWS - 1), int(column) % BODY_COLUMNS), []).append(r)
+        floor = np.full((BODY_ROWS, BODY_COLUMNS), np.inf)
+        for (y, x), radii in per.items():
+            radii.sort(reverse=True)
+            lowest = radii[0]
+            for k in range(1, len(radii)):
+                if radii[k - 1] - radii[k] > BODY_LAYER_GAP:
+                    break
+                lowest = radii[k]
+            floor[y, x] = lowest
+        # A plane fitted per texel to the outer-layer samples round its centre (bilinear weights), read
+        # at the centre: a plain weighted mean leans towards wherever samples crowd, low on steep
+        # slopes. Clamped to the samples' own range.
+        sums = np.zeros((BODY_ROWS, BODY_COLUMNS, 9))  # w, w dx, w dy, w dx2, w dx dy, w dy2, w r, w r dx, w r dy
+        low = np.full((BODY_ROWS, BODY_COLUMNS), np.inf)
+        high = np.zeros((BODY_ROWS, BODY_COLUMNS))
+        for column, row, r in self.samples:
+            if r < floor[min(max(int(row), 0), BODY_ROWS - 1), int(column) % BODY_COLUMNS]:
+                continue
+            x, y = column - 0.5, row - 0.5
+            bx, by = int(math.floor(x)), int(math.floor(y))
+            fx, fy = x - bx, y - by
+            for ty, wy, dy in ((by, 1.0 - fy, fy), (by + 1, fy, fy - 1.0)):
+                if 0 <= ty < BODY_ROWS:
+                    for tx, wx, dx in ((bx % BODY_COLUMNS, 1.0 - fx, fx), ((bx + 1) % BODY_COLUMNS, fx, fx - 1.0)):
+                        w = wx * wy
+                        sums[ty, tx] += w * np.array([1.0, dx, dy, dx * dx, dx * dy, dy * dy, r, r * dx, r * dy])
+                        low[ty, tx], high[ty, tx] = min(low[ty, tx], r), max(high[ty, tx], r)
+        field = np.zeros((BODY_ROWS, BODY_COLUMNS))
+        for y in range(BODY_ROWS):
+            for x in range(BODY_COLUMNS):
+                w, wx, wy, wxx, wxy, wyy, wr, wrx, wry = sums[y, x]
+                if w <= BODY_MIN_WEIGHT:
+                    continue
+                value = wr / w
+                a = np.array([[w, wx, wy], [wx, wxx, wxy], [wy, wxy, wyy]])
+                if abs(np.linalg.det(a)) > 1e-6 * w * w * w:
+                    value = np.linalg.solve(a, [wr, wrx, wry])[0]
+                field[y, x] = min(max(value, low[y, x]), high[y, x])
+        for _ in range(BODY_FILL_PASSES):
+            filled = field.copy()
+            for y in range(BODY_ROWS):
+                for x in range(BODY_COLUMNS):
+                    if field[y, x] > 0.0:
+                        continue
+                    values = [field[ny, (x + dx) % BODY_COLUMNS] for ny in range(max(y - 1, 0), min(y + 1, BODY_ROWS - 1) + 1)
+                              for dx in (-1, 0, 1) if field[ny, (x + dx) % BODY_COLUMNS] > 0.0]
+                    if len(values) >= 4:
+                        filled[y, x] = sum(values) / len(values)
+            field = filled
+        field[field > 0.0] += BODY_MARGIN
+        # Slopes per texel (central differences over filled neighbours), interpolated like the radius
+        # so the surface normal turns smoothly: the bilinear patch's own slopes jump at every texel
+        # edge, and a point resting across one was pushed back and forth.
+        slopes = np.zeros((BODY_ROWS, BODY_COLUMNS, 2))
+        for y in range(BODY_ROWS):
+            for x in range(BODY_COLUMNS):
+                if field[y, x] <= 0.0:
+                    continue
+                for axis, (before, after) in enumerate((((y, (x - 1) % BODY_COLUMNS), (y, (x + 1) % BODY_COLUMNS)), ((y - 1, x), (y + 1, x)))):
+                    have = [0 <= t[0] < BODY_ROWS and field[t] > 0.0 for t in (before, after)]
+                    if have[0] and have[1]:
+                        slopes[y, x, axis] = 0.5 * (field[after] - field[before])
+                    elif have[0]:
+                        slopes[y, x, axis] = field[y, x] - field[before]
+                    elif have[1]:
+                        slopes[y, x, axis] = field[after] - field[y, x]
+        self.map, self.slopes, self.bound, self.samples = field, slopes, field.max(), []
+
+    def surface(self, q):
+        """HairStrandsSkin::BodySurface: the radius and its slopes along the column and the row, each
+        bilinear, wrapping round the segment."""
+        column, row = body_field_texel(q, self.length)
+        x, y = column - 0.5, row - 0.5
+        bx, by = int(math.floor(x)), int(math.floor(y))
+        fx, fy = x - bx, y - by
+        c0, c1 = bx % BODY_COLUMNS, (bx + 1) % BODY_COLUMNS
+        r0, r1 = min(max(by, 0), BODY_ROWS - 1), min(max(by + 1, 0), BODY_ROWS - 1)
+        weights = ((r0, c0, (1.0 - fx) * (1.0 - fy)), (r0, c1, fx * (1.0 - fy)), (r1, c0, (1.0 - fx) * fy), (r1, c1, fx * fy))
+        radius = sum(self.map[r, c] * w for r, c, w in weights)
+        slope = sum(self.slopes[r, c] * w for r, c, w in weights)
+        return radius, slope[0], slope[1]
+
+    def frame(self, body):
+        """Field to world (linear part, translation) on a body pose, and world to field as the shaders
+        invert it: the transpose over the squared scale."""
+        m = body[:, :3] @ self.axes
+        t = body[:, :3] @ self.origin + body[:, 3]
+        return m, t, m.T / (m[0] @ m[0])
+
+    def depth_and_normal(self, q, allowed_of=None):
+        """HairStrandsSkin::BodyDepth: how far field-space point q lies inside (the surface less
+        allowed_of(surface), first order: over the gradient's length) and the outward normal there.
+        The surface is a radius per direction from the segment (round its side, from its ends over
+        the caps); its normal comes from the bilinear patch's slopes."""
+        closest = np.array([0.0, 0.0, min(max(q[2], 0.0), self.length)])
+        d = q - closest
+        radius = np.linalg.norm(d)
+        if radius >= self.bound:
+            return 0.0, None, 0.0
+        surface, ds_column, ds_row = self.surface(q)
+        if not surface > 0.0:
+            return 0.0, None, 0.0
+        theta = math.atan2(q[1], q[0])
+        around = np.array([-math.sin(theta), math.cos(theta), 0.0])
+        ds_theta = ds_column * BODY_COLUMNS / (2.0 * math.pi)
+        if 0.0 <= q[2] <= self.length:
+            outward = np.array([math.cos(theta), math.sin(theta), 0.0])
+            gradient = outward - around * (ds_theta / surface) - np.array([0.0, 0.0, 1.0]) * (ds_row * BODY_SIDE_ROWS / max(self.length, 1e-4))
+        else:
+            start = q[2] < 0.0
+            rho = math.hypot(q[0], q[1])
+            phi = math.atan2(rho, -q[2] if start else q[2] - self.length)  # from the cap's pole
+            ds_phi = ds_row * BODY_CAP_ROWS / (math.pi / 2) * (1.0 if start else -1.0)
+            sin_phi, cos_phi = math.sin(phi), math.cos(phi)
+            pole = -1.0 if start else 1.0
+            outward = np.array([sin_phi * math.cos(theta), sin_phi * math.sin(theta), pole * cos_phi])
+            down = np.array([cos_phi * math.cos(theta), cos_phi * math.sin(theta), -pole * sin_phi])  # increasing phi
+            gradient = outward - down * (ds_phi / surface) - around * (ds_theta / (surface * max(sin_phi, 0.25)))
+        allowed = surface - (allowed_of(surface) if allowed_of else 0.0)
+        length = max(np.linalg.norm(gradient), 1e-6)
+        return (allowed - radius) / length, gradient / length, surface - radius
+
+    def collide(self, p, target, body):
+        """HairStrandsSkin::CollideBody, as TressFX's signed distance field collision: a point inside
+        is put back on the surface along its normal. A styled shape up to BODY_REST_DEPTH inside
+        rests as styled; deeper, it rests at that depth. Returns (hit, position, world normal,
+        field-space position)."""
+        m, t, inverse = self.frame(body)
+        q = inverse @ (p - t)
+        target_depth = max(self.depth_and_normal(inverse @ (target - t))[2], 0.0)
+        rest = min(target_depth, BODY_REST_DEPTH)
+        depth, normal, _ = self.depth_and_normal(q, lambda _: rest)
+        if normal is None or depth <= 0.0:
+            return False, p, None, None
+        q = q + normal * depth
+        world_normal = m @ normal
+        return True, m @ q + t, world_normal / np.linalg.norm(world_normal), q
+
+
+def collide_body(points, targets, body, first=2):
+    """StrandSkin.cs.hlsl's body collision of drawn points, from the third point of the strand."""
+    out = points.copy()
+    for i in range(first, len(out)):
+        for collider in body_colliders():
+            out[i] = collider.collide(out[i], targets[i], body)[1]
+    return out
+
+
+
+def ellipsoid_mesh(centre, radii, spacing=0.8):
+    rmax = max(radii)
+    n_lat, n_lon = max(int(math.pi * rmax / spacing), 8), max(int(2.0 * math.pi * rmax / spacing), 12)
+    vertices = [np.asarray(centre) + np.asarray(radii) * [math.sin(math.pi * i / n_lat) * math.cos(2 * math.pi * j / n_lon),
+                                                          math.sin(math.pi * i / n_lat) * math.sin(2 * math.pi * j / n_lon), math.cos(math.pi * i / n_lat)]
+                for i in range(n_lat + 1) for j in range(n_lon)]
+    triangles = []
+    for i in range(n_lat):
+        for j in range(n_lon):
+            a, b = i * n_lon + j, i * n_lon + (j + 1) % n_lon
+            triangles += [(a, a + n_lon, b), (b, a + n_lon, b + n_lon)]
+    return np.array(vertices), triangles
+
+
+def capsule_mesh(a, b, radius, spacing=0.8):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    axes, length = body_field_axes(b - a), np.linalg.norm(b - a)
+    n_lon, n_cap, n_side = max(int(2.0 * math.pi * radius / spacing), 12), max(int(math.pi / 2 * radius / spacing), 3), max(int(length / spacing), 1)
+    rings = [(-radius * math.cos(math.pi / 2 * i / n_cap), radius * math.sin(math.pi / 2 * i / n_cap)) for i in range(1, n_cap + 1)]
+    rings += [(length * i / n_side, radius) for i in range(n_side + 1)]
+    rings += [(length + radius * math.cos(math.pi / 2 * (n_cap - i) / n_cap), radius * math.sin(math.pi / 2 * (n_cap - i) / n_cap)) for i in range(1, n_cap)]
+    vertices = [a + axes @ [0.0, 0.0, -radius]]
+    vertices += [a + axes @ [r * math.cos(2 * math.pi * j / n_lon), r * math.sin(2 * math.pi * j / n_lon), z] for z, r in rings for j in range(n_lon)]
+    vertices.append(a + axes @ [0.0, 0.0, length + radius])
+    triangles = [(0, 1 + (j + 1) % n_lon, 1 + j) for j in range(n_lon)]
+    for i in range(len(rings) - 1):
+        for j in range(n_lon):
+            p, q = 1 + i * n_lon + j, 1 + i * n_lon + (j + 1) % n_lon
+            triangles += [(p, q, p + n_lon), (q, q + n_lon, p + n_lon)]
+    last = 1 + (len(rings) - 1) * n_lon
+    triangles += [(last + j, last + (j + 1) % n_lon, len(vertices) - 1) for j in range(n_lon)]
+    return np.array(vertices), triangles
+
+
+# A body under the head (+Y forward, +Z up): each collider's bone segment, and the closed part
+# skinned to that bone alone. Parts overlap, as a body's bone regions do.
+BODY_PARTS = {
+    "neck": (((0, -1.5, 96.0), (0, -1.0, 104.0)), ("capsule", ((0, -1.5, 88.0), (0, -1.0, 103.0), 4.0))),
+    "chest": (((0, -2.0, 82.0), (0, -1.5, 96.0)), ("ellipsoid", ((0, -1.0, 81.0), (15.0, 8.5, 11.0)))),
+    "back": (((0, -2.0, 70.0), (0, -2.0, 82.0)), ("ellipsoid", ((0, -1.0, 70.0), (13.5, 8.0, 9.0)))),
+    "waist": (((0, -2.0, 58.0), (0, -2.0, 70.0)), ("ellipsoid", ((0, -1.0, 58.0), (12.0, 7.5, 8.0)))),
+    "left shoulder": (((2.0, -1.5, 91.0), (15.5, -2.0, 88.0)), ("capsule", ((6.0, -1.5, 90.0), (15.5, -2.0, 88.0), 4.0))),
+    "right shoulder": (((-2.0, -1.5, 91.0), (-15.5, -2.0, 88.0)), ("capsule", ((-6.0, -1.5, 90.0), (-15.5, -2.0, 88.0), 4.0))),
+    "left arm": (((15.5, -2.0, 88.0), (17.5, -2.0, 70.0)), ("capsule", ((15.5, -2.0, 88.0), (17.5, -2.0, 70.0), 3.8))),
+    "right arm": (((-15.5, -2.0, 88.0), (-17.5, -2.0, 70.0)), ("capsule", ((-15.5, -2.0, 88.0), (-17.5, -2.0, 70.0), 3.8))),
+}
+
+
+def part_distance(p, kind, params):
+    """Signed distance to a body part (+ outside; the ellipsoid's is the usual approximation)."""
+    if kind == "ellipsoid":
+        centre, radii = np.asarray(params[0]), np.asarray(params[1])
+        k0, k1 = np.linalg.norm((p - centre) / radii), np.linalg.norm((p - centre) / (radii * radii))
+        return k0 * (k0 - 1.0) / k1 if k1 > 1e-9 else -min(radii)
+    return np.linalg.norm(p - closest_on_segment(p, np.asarray(params[0]), np.asarray(params[1]))) - params[2]
+
+
+def body_depth(p, body):
+    """How far world point p lies inside the true body on pose body (0 outside)."""
+    local = np.linalg.solve(body[:, :3], p - body[:, 3])
+    return max(0.0, max(-part_distance(local, *part) for _, part in BODY_PARTS.values()))
+
+
+_BODY = None
+
+
+def body_colliders():
+    """The body's colliders, built as BuildBodyField builds them (once per process: a few seconds)."""
+    global _BODY
+    if _BODY is None:
+        _BODY = []
+        for segment, (kind, params) in BODY_PARTS.values():
+            collider = BodyCollider(*segment)
+            collider.splat(*(ellipsoid_mesh(*params) if kind == "ellipsoid" else capsule_mesh(*params)))
+            collider.finish()
+            _BODY.append(collider)
+    return _BODY
+
+
 class Clock:
     """StrandRenderer::BeginFrame's simulation clock and weather wind."""
 
@@ -187,7 +482,8 @@ class Guide:
         self.position = None
         self.length = np.linalg.norm(np.diff(rest, axis=0), axis=1).sum()  # StrandInfo.Length
 
-    def frame(self, head, head_previous, clock, style, colliders=(), reset=False, head_field=None):
+    def frame(self, head, head_previous, clock, style, colliders=(), reset=False, head_field=None, body=None, body_previous=None):
+        """body, body_previous: the body's pose this frame and last, for the body colliders (none without)."""
         n = len(self.rest)
         target_end = self.rest @ head.T
         target_start = self.rest @ head_previous.T
@@ -274,7 +570,10 @@ class Guide:
                 if length > MAX_STRETCH * rest[i - 1]:
                     position[i] = position[i - 1] + segment * (MAX_STRETCH * rest[i - 1] / length)
 
-            # Collision, then the position delta clamp, on the movable points.
+            # Collision, then the position delta clamp, on the movable points. The body colliders ride
+            # the body's pose at the step, as the targets do; body_before is its pose a step earlier.
+            body_at = None if body is None else body_previous + (body - body_previous) * f
+            body_before = None if body is None else body_previous + (body - body_previous) * (f - clock["fraction"])
             for i in range(2, n):
                 collided = False
                 for ca, cb, radius in colliders:
@@ -283,12 +582,27 @@ class Guide:
                     hit, pushed = capsule_collision(position[i], previous[i], ca, cb, allowed)
                     if hit:
                         position[i], collided = pushed, True
+                contact = None
+                if body_at is not None:
+                    for collider in body_colliders():
+                        hit, pushed, normal, q = collider.collide(position[i], t[i], body_at)
+                        if hit:
+                            position[i] = pushed
+                            m, tt, _ = collider.frame(body_before)
+                            contact = (normal, pushed - (m @ q + tt))  # the surface's move over the step
                 delta = position[i] - previous[i]
                 speed_squared = delta @ delta
                 if speed_squared > clamp * clamp:
                     previous[i] = position[i] - delta * (clamp * clamp / speed_squared)
                 if collided:
                     previous[i] = position[i].copy()
+                elif contact is not None:
+                    # Resting on the body: the point moves on with the surface, keeping BODY_SLIDE of
+                    # its slide along it and none of its motion into or off it.
+                    normal, surface_move = contact
+                    relative = position[i] - previous[i] - surface_move
+                    relative -= normal * (relative @ normal)
+                    previous[i] = position[i] - surface_move - BODY_SLIDE * relative
 
             # The head field, as TressFX's signed distance field collision, on the head's pose at the step.
             if head_field is not None:
@@ -411,21 +725,24 @@ def lock(length, offset, points=14):
     return np.c_[np.full(points, offset[0]), offset[1] - 3.0 - 1.5 * np.sin(t * math.pi * 0.5), 112.0 + offset[2] - length * t]
 
 
-def run(rest, style, fps, motion, seconds, colliders=(), wind_speed=0.0, jitter=0.0, head_field=None):
-    """Frames of (time, drawn points, targets, simulated points). jitter varies frame times by up to that fraction."""
+def run(rest, style, fps, motion, seconds, colliders=(), wind_speed=0.0, jitter=0.0, head_field=None, body_motion=None):
+    """Frames of (time, drawn points, targets, simulated points, body pose). jitter varies frame times
+    by up to that fraction. body_motion gives the body's pose (body colliders on), else no body."""
     guide = Guide(rest)
     clock = Clock()
     rng = np.random.default_rng(1)
     previous = motion(0.0)
+    body_previous = body_motion(0.0) if body_motion else None
     guide.frame(previous, previous, clock.frame(0.0), style)
     log, s = [], 0.0
     while s < seconds - 1e-9:
         dt = (1.0 / fps) * (1.0 + jitter * (rng.random() * 2.0 - 1.0))
         s += dt
         current = motion(s)
-        guide.frame(current, previous, clock.frame(dt, wind_speed), style, colliders, head_field=head_field)
-        previous = current
-        log.append((s, guide.shown.copy(), guide.target.copy(), guide.position.copy()))
+        body = body_motion(s) if body_motion else None
+        guide.frame(current, previous, clock.frame(dt, wind_speed), style, colliders, head_field=head_field, body=body, body_previous=body_previous)
+        previous, body_previous = current, body
+        log.append((s, guide.shown.copy(), guide.target.copy(), guide.position.copy(), body))
     return log
 
 
@@ -574,6 +891,136 @@ def check_head_field():
     return results
 
 
+def body_still(_):
+    return head_transform()
+
+
+def body_idle(s):
+    """Breathing: the body rises and falls 0.6 units with the head's idle bob."""
+    return head_transform((0, 0, 0.6 * math.sin(2 * math.pi * 0.4 * s)))
+
+
+def body_walk(s):
+    """walk's body: the same path, bob and surge, without the head's nod."""
+    y = 130.0 * s - 19.5 if s > 0.3 else 216.7 * s * s
+    return head_transform((0, y + math.sin(4 * math.pi * s), 1.2 * math.sin(4 * math.pi * s)))
+
+
+def body_turn(s):
+    """The whole character turning 90 degrees in 0.25 s."""
+    return head_transform(yaw=90.0 * min(s / 0.25, 1.0))
+
+
+def head_tilt(s):
+    """The head tipping 35 degrees towards the right shoulder in 0.4 s, about the neck."""
+    return head_transform(roll=-35.0 * min(s / 0.4, 1.0), pivot=(0, 0, 97.0))
+
+
+def through_shoulder(points=20, length=30.0):
+    """A lock from the side of the head styled straight down through the shoulder and chest: what a
+    hairstyle made on a bare head, or for a slimmer body, does on this one."""
+    t = np.linspace(0.0, 1.0, points)
+    return np.c_[np.full(points, 6.5), np.full(points, -4.0), 108.0 - length * t]
+
+
+def down_the_back(points=20, length=30.0):
+    """A lock from the back of the head styled lying on the neck and back, 0.05 units off them."""
+    lock = np.c_[np.zeros(points), np.full(points, -6.0), 106.0 - length * np.linspace(0.0, 1.0, points)]
+    for p in lock:
+        while body_depth(p, body_still(0.0)) > 0.0:
+            p[1] -= 0.02
+        p[1] -= 0.05
+    return lock
+
+
+def drawn_on_body(log):
+    """What StrandSkin.cs.hlsl draws: each frame's drawn points kept out of the body once more."""
+    return [collide_body(r[1], r[2], r[4]) for r in log]
+
+
+def vibration(frames, start):
+    """The worst move in a run of three or more frames whose accelerations each reverse the last
+    (a point shaking), from frame start; 0 if there is none."""
+    x = np.array(frames[start:])
+    a = x[2:] - 2.0 * x[1:-1] + x[:-2]
+    size = np.linalg.norm(a, axis=2)
+    flip = (np.einsum("fpk,fpk->fp", a[1:], a[:-1]) < 0.0) & (size[1:] > 0.005) & (size[:-1] > 0.005)
+    worst = 0.0
+    for p in range(flip.shape[1]):
+        run = 0
+        for k in range(flip.shape[0]):
+            run = run + 1 if flip[k, p] else 0
+            if run >= 3:
+                worst = max(worst, size[k - 2:k + 2, p].max())
+    return worst
+
+
+def check_body_field():
+    """The body colliders, built from each part's triangles, lie on the part's surface plus the margin
+    (a radius per direction round each bone, the outermost layer fitted per texel)."""
+    rng = np.random.default_rng(3)
+    results = []
+    for (name, (_, (kind, params))), collider in zip(BODY_PARTS.items(), body_colliders()):
+        errors = []
+        while len(errors) < 200:
+            d = rng.normal(size=3)
+            q = np.array([0.0, 0.0, rng.uniform(-3.0, collider.length + 3.0)]) + d / np.linalg.norm(d) * 2.0
+            closest = np.array([0.0, 0.0, min(max(q[2], 0.0), collider.length)])
+            direction = (q - closest) / np.linalg.norm(q - closest)
+            distance = lambda r: part_distance(collider.origin + collider.axes @ (closest + direction * r), kind, params)  # noqa: E731
+            if distance(0.0) > 0.0:
+                continue  # the segment leaves the part here
+            low, high = 0.0, BODY_MAX_RADIUS
+            for _ in range(40):
+                low, high = ((low + high) / 2, high) if distance((low + high) / 2) < 0.0 else (low, (low + high) / 2)
+            errors.append(distance(collider.surface(closest + direction * low)[0] - BODY_MARGIN))
+        low, high = min(errors), max(errors)
+        results.append((f"body collider {name} lies on the body", -0.35 <= low and high <= 0.3, f"{low:+.2f} to {high:+.2f} units from the surface (margin {BODY_MARGIN} aside)"))
+    return results
+
+
+def check_body_collision():
+    """Hair keeps out of the body's colliders (the body's own shape, not bone capsules), comes to
+    rest on it, and does not shake against it while the body breathes, walks, runs or turns."""
+    results = []
+    style = PRESETS["straight"]
+
+    def deepest(frames, log):
+        return max(max(body_depth(p, r[4]) for p in drawn[2:]) for drawn, r in zip(frames[5:], log[5:]))
+
+    log = run(through_shoulder(), style, 60, still, 5.0, body_motion=body_still)
+    drawn = drawn_on_body(log)
+    depth, moving = deepest(drawn, log), settled_motion(log)
+    results.append(("a lock styled through the shoulder lies over it and comes to rest", depth <= 0.3 and moving < 0.005 and deviation(log[-1]) > 2.0,
+                    f"{depth:.2f} deep at most, pushed {deviation(log[-1]):.1f} off its style, moving {moving:.4f}/frame"))
+
+    rest = down_the_back()
+    free = deviation(run(rest, style, 60, still, 5.0)[-1])
+    log = run(rest, style, 60, still, 5.0, body_motion=body_still)
+    moving = settled_motion(log)
+    results.append(("a lock styled on the back rests as styled", deviation(log[-1]) <= free + 0.1 and moving < 0.005,
+                    f"{deviation(log[-1]):.2f} off target (without the body {free:.2f}), moving {moving:.4f}/frame"))
+
+    for label, rest, motion in (("turning", down_the_back(), turn), ("tilting", through_shoulder(), head_tilt)):
+        log = run(rest, style, 60, motion, 4.0, body_motion=body_still)
+        depth, moving = deepest(drawn_on_body(log), log), settled_motion(log)
+        results.append((f"{label} the head presses hair onto the shoulder: it stays out and comes to rest", depth <= 0.3 and moving < 0.005,
+                        f"{depth:.2f} deep at most, moving {moving:.4f}/frame at the end"))
+
+    for fps in (30, 60, 144):
+        worst_depth, worst_shake, worst_free = 0.0, 0.0, 0.0
+        for rest in (down_the_back(), through_shoulder()):
+            for motion, body in ((idle, body_idle), (walk, body_walk), (sprint, sprint), (body_turn, body_turn)):
+                log = run(rest, style, fps, motion, 4.0, body_motion=body)
+                drawn = drawn_on_body(log)
+                worst_depth = max(worst_depth, deepest(drawn, log))
+                worst_shake = max(worst_shake, vibration(drawn, fps))
+                worst_free = max(worst_free, vibration([r[1] for r in run(rest, style, fps, motion, 4.0)], fps))
+        results.append((f"breathing, walking, running and turning at {fps} fps: hair stays out of the body without shaking", worst_depth <= 0.35 and worst_shake <= 0.35,
+                        f"{worst_depth:.2f} deep at most; shakes up to {worst_shake:.3f} units (without the body {worst_free:.3f})"))
+    return results
+
+
 def check_short_locks():
     """Short scalp locks (vanilla-style cards) keep their shape through one step aside or a small turn."""
     results = []
@@ -591,7 +1038,7 @@ def swings(rest, motion, still_from, fps, jitter, seconds=4.0):
     much the lock still moves over the last half second."""
     log = run(rest, PRESETS["straight"], fps, motion, seconds, jitter=jitter)
     offset, move, last, travel, turns = None, np.zeros(3), None, 0.0, []
-    for s, shown, target, _ in log:
+    for s, shown, target, *_ in log:
         tip = shown[-1] - target[-1]
         if s > still_from and offset is not None:
             move += tip - offset
@@ -706,14 +1153,15 @@ def job(task):
         return check_motion(arg)
     if kind == "held":
         return check_held(arg)
-    return {"collision": check_collision, "head field": check_head_field, "short locks": check_short_locks, "swings": check_swings,
+    return {"collision": check_collision, "head field": check_head_field, "body field": check_body_field, "body collision": check_body_collision,
+            "short locks": check_short_locks, "swings": check_swings,
             "wind": check_wind, "extremes": check_extremes, "followers": check_followers}[kind]()
 
 
 def main():
     tasks = [(kind, name) for name in PRESETS for kind in ("rest", "motion", "held")]
     tasks += [("rates", "straight"), ("rates", "locs")]
-    tasks += [(kind, None) for kind in ("collision", "head field", "short locks", "swings", "wind", "extremes", "followers")]
+    tasks += [(kind, None) for kind in ("body collision", "collision", "head field", "body field", "short locks", "swings", "wind", "extremes", "followers")]
     failures = []
     with Pool() as pool:
         for results in pool.imap(job, tasks):

@@ -196,6 +196,20 @@ the style code, and the NumPy port. Merged with the flow change, it builds with 
 compiles both compute shaders (with the same buffer layouts as `Strands::SkinCB` and
 `GuidePoint`) and the strand Lighting permutations. Neither half has been run in game.
 
+`0-4-0` (2026-09-30) lays hair over the character's own body and what it wears. Below the head,
+hair used to collide with bone capsules of fixed radii, kept well inside any body. Each capsule
+shrank to wherever the styled hair already lay, so hair never collided with its own styled
+shape. Armour was never in the colliders, and hair went through it. Now eight colliders (neck,
+three spine segments, clavicles, upper arms) are fitted to the worn meshes: body, armour, the
+head mesh's neck. They are rebuilt on a worker whenever what the actor wears changes. Hair
+styled into armour (or into a body larger than the one it was made on) lies on it. Hair styled
+on the bare body stays as styled. See [Physics](#physics-strandsimcshlsl). In the NumPy port the
+colliders lie within 0.35 units of the true surface. A lock styled through the shoulder lies
+over it and comes to rest. Hair stays out of the body (0.3 units deep at most, drawn) while
+breathing, walking, running and turning at 30 to 144 fps. TressFX's capsule response stops a
+point dead. Against a moving body, that left hair to be shoved again every step, and it shook.
+The body colliders use their own response (below), and the worst shake is 0.08 units.
+
 Earlier builds are build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -212,13 +226,15 @@ Earlier builds are build-verified, and the generator fixes are checked on real m
 | Generate strands, pick guide strands, fit the head collider | `StrandGenerator.cpp` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
 | Upload asset (strands, colour texture) | `StrandRenderer::BeginFrame` | render | when the job finishes |
 | Read the actor's head mesh into the head field | `BuildHeadField` | render, in `SetupGeometry` | once per actor and hair asset, with physics and collision on |
-| LOD, bone palette, colliders, simulation and skinning compute | `PrepareStrands` (`UpdateLod`, `Skin`, `PrepareSimulation`) | render, in `SetupGeometry` | first pass of the hair each rendered frame (depth prepass or lighting) |
+| Look at what the actor wears; copy the colliding triangles of what changed | `UpdateBodyField`, `FindBodyMeshes`, `PrepareBodyField` | render, in `SetupGeometry` | every 15 frames; a copy when the worn meshes change |
+| Build the body colliders' maps | `BuildBodyField` | worker (`std::async`, one per hair) | when the worn meshes change |
+| LOD, bone palette, colliders (`GatherColliders`, `GatherBodyColliders`), simulation and skinning compute | `PrepareStrands` (`UpdateLod`, `Skin`, `PrepareSimulation`) | render, in `SetupGeometry` | first pass of the hair each rendered frame (depth prepass or lighting) |
 | Draw strand depth | `StrandRenderer::Draw` (depth only) | render, in the Utility `RestoreGeometry` | every Utility draw of the hair that writes depth (the depth prepass) |
 | Draw ribbons | `StrandRenderer::Draw` | render, in `RestoreGeometry` | every main-view lighting draw of the hair |
 
 Everything lives in `src/Features/HairStrands.{h,cpp}` (feature, settings, UI) and
-`src/Features/HairStrands/` (the `Strands` namespace). Shaders are in
-`features/Hair Strands/Shaders/HairStrands/`.
+`src/Features/HairStrands/` (the `Strands` namespace; the body colliders are `BodyField.{h,cpp}`).
+Shaders are in `features/Hair Strands/Shaders/HairStrands/`.
 
 ## Why it is built this way
 
@@ -465,7 +481,8 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
 4. **LengthConstriantsWindAndCollision.** Wind (below), then `lengthConstraintsIterations`
    passes of distance constraints, even pairs then odd pairs as TressFX's threads do them.
    Then TressFX's capsule collision: a point inside is put on the surface, keeps 0.4 of its
-   move along the capsule, and stops. Last, the position delta clamp:
+   move along the capsule, and stops. The body colliders (not TressFX, below) come with the
+   capsules. Last, the position delta clamp:
    `delta x clampPositionDelta^2 / |delta|^2` past `clampPositionDelta`, TressFX's formula.
 5. **Signed distance field collision** (`CollideHairVerticesWithSdf`), which TressFX runs
    after the simulation: here with the head field (below). A point inside is put back on the
@@ -519,14 +536,68 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
     passes still left it at 1.47. After the length constraints no segment is left longer than
     1.2 times its rest length, measured from the root. That holds landings and sprint stops to
     about 1.16 and barely changes the motion.
--   **Collision.** TressFX's capsule response on the capsules found up the head bone's own
-    skeleton: neck (neck → head, radius 3), chest (spine 2 → neck, 5.5), back (spine 1 →
-    spine 2, 6.5), shoulders (clavicle → upper arm, 3.5) and upper arms (upper arm → forearm,
-    3), and on the head sphere when there is no head field. Radii scale with the head bone's
-    world scale. Per point, each collider shrinks to the depth the point's target already lies
-    at (never below half its radius), so the styled shape itself never collides. TressFX 4.1's
-    sample collides with a signed distance field of the body mesh instead; its capsule path is
-    compiled out.
+-   **Collision.** The body colliders (below), fitted to what the actor wears. Until they are
+    built, or when they cannot be, TressFX's capsule response on capsules found up the head
+    bone's own skeleton: neck (neck → head, radius 3), chest (spine 2 → neck, 5.5), back
+    (spine 1 → spine 2, 6.5), shoulders (clavicle → upper arm, 3.5) and upper arms (upper arm
+    → forearm, 3). With no head field, the head is a sphere under the same response. Radii
+    scale with the head bone's world scale. Per point, each capsule shrinks to the depth the
+    point's target already lies at (never below half its radius), so the styled shape itself
+    never collides. TressFX 4.1's sample collides with a signed distance field of the body mesh
+    instead; its capsule path is compiled out.
+-   **The body colliders** (`BodyField.cpp`, `HairStrandsSkin::CollideBody`). Each rides one
+    bone: the neck (neck → head), chest (spine 2 → neck), back (spine 1 → spine 2), waist (spine
+    → spine 1), shoulders (clavicle → upper arm) and upper arms (upper arm → forearm). Each is a
+    capsule round the bone's segment whose radius changes with direction. The radii are a map of
+    32 columns round the segment by 24 rows: 6 over the cap at its start (by the angle from the
+    cap's pole), 12 along its side, 6 over the far cap. Each radius is the distance to the
+    outermost worn surface in that direction.
+    -   *Sources.* Every visible, skinned, lit geometry under the actor's 3D: body, armour, clothes
+        and cloaks. Head parts are left out (the hair among them); the head mesh is added
+        back for its neck. A vertex belongs to the collider of its heaviest bone: the nearest
+        collider bone at or above that bone in the skeleton. So breasts go to the chest and
+        pauldron bones to their shoulder. Nothing goes past the head or a forearm, which move on
+        their own. A triangle goes to every collider one of its vertices belongs to.
+    -   *Pose.* Triangles are taken in the bind pose of the collider's bone (the mesh's own
+        skin-to-bone transform), so the collider is rigid on its bone. A mesh not skinned to that
+        bone (a pauldron on its own bone) is placed through its main bone as it sits at the time
+        of the build.
+    -   *Build.* Points 0.5 units apart over each triangle, and per texel the outermost layer of
+        them: radii from the largest down to the first gap wider than 0.6 units (armour over the
+        body, the body under a cloak). A plane is fitted to that layer round each texel's centre
+        (bilinear weights) and read at the centre. A plain mean leans towards wherever the points
+        crowd: on steep slopes it was off by up to 0.45 units, twice the plane's error. Small
+        holes are filled from at least four neighbours. Every radius gets a margin of 0.35 units,
+        and each texel its slopes (central differences). A collider covering under 5% of its map,
+        or with a median radius over 30, is dropped. If the chest covers under 20%, or its median radius is outside 2.5-25 units,
+        the whole build is dropped for the bone capsules: the bind poses are not what the build
+        reads them as.
+    -   *Collision.* A point is pushed out along the surface's normal, by its depth over the
+        gradient's length, as TressFX's signed distance field collision is. The normal comes
+        from the interpolated slopes. A radial push slid hair lying on the top of the shoulders
+        (a surface along the radius round the spine) sideways. The bilinear patch's own slopes
+        jump at every texel edge, and a point resting across one was pushed back and forth. A
+        styled shape up to 0.25 units inside (`BodyRestDepth`) rests as styled; deeper, it rests
+        at that depth. The margin is that depth plus 0.1: hair styled on the bare body stays put,
+        and hair pushed out lies 0.1 units off the surface. An earlier rule let the allowed depth
+        fall back to 0 as the target went deeper. That moved hair outwards while its target moved
+        in, a kink on every nod.
+    -   *Contact.* A pushed point moves on with the surface. It takes the surface's own move
+        over the step (the collider's pose a step earlier), keeps 0.4 of its slide along the
+        surface (TressFX's capsule friction), and loses its motion into or off it. With
+        TressFX's stop, hair on a moving body was shoved again every step. In the NumPy port it
+        shook about seven times as often, by up to 1.3 units against 0.3. (Shaking: three or more
+        frames running whose accelerations each reverse the last. Counted over breathing,
+        walking and running at 30, 60 and 144 fps.)
+    -   *Timing.* The colliders ride their bones' poses at each step, as the targets do. The
+        capsules sit at this frame's pose for every step, so a hair on a body turning 90° in
+        0.25 s met a collider up to a step ahead of its targets.
+    -   *Followers.* Every drawn point but a strand's first two is kept out of the body colliders
+        once more in `StrandSkin.cs.hlsl`, previous positions on last frame's poses.
+    -   *Rebuilds.* The worn meshes are looked at every 15 frames. A build runs when their
+        signature (geometry and vertex count of each) changes, and the old colliders stay until
+        it is done. A build takes the render thread one copy of each worn mesh with a bone on a
+        collider (not hands, feet or legs), and the worker some tens of milliseconds.
 -   **The head field.** The head is the actor's own head mesh (its Face head part: FaceGen
     and RaceMenu morphs included), read once per actor and hair (`BuildHeadField`). It is
     stored as a radial height field: a 64 × 64 octahedral map of directions from the hair's
@@ -569,7 +640,8 @@ takes the guide's previous drawn offset, so motion vectors carry the simulated m
 guide's tip, a longer strand takes the tip's offset. The guide's rotation there (shortest arc
 from the target's tangent to the drawn one) turns only the normal. Turning the offset from the
 guide too (the `0-2-0` follow) made the offset a lever that amplified every bend of a short
-guide (see the `0-2-1` notes at the top).
+guide (see the `0-2-1` notes at the top). After following, every point is kept out of the head
+field, and all but the first two out of the body colliders.
 
 ### Settings
 
@@ -617,8 +689,9 @@ NumPy port:
     m/s²) and landings, so strands do not stretch on them. 20 units per step is 1,200 units/s.
 
 State per instance: `HairStrands::GuideState`, 128 bytes per guide point (a 2,500-guide,
-20-point hair is 6.4 MB). Positions are relative to the camera of the simulation that wrote
-them and shifted by the camera's move each frame; offsets are camera independent.
+20-point hair is 6.4 MB), and 72 KB of body collider maps. Positions are relative to the
+camera of the simulation that wrote them and shifted by the camera's move each frame; offsets
+are camera independent.
 
 ## Authoring styles
 
@@ -721,7 +794,15 @@ permutation bit.
     cliff, sprints and stops, turns, bows, steps aside, tilts (up to a head on its side) and
     turns into a shoulder capsule and the head sphere, at 30 to 240 fps and with jittered
     frame times. It fails if hair at rest sags or stretches past a limit or does not come to
-    rest (the `0-2-2` solver fluttered on a tilted head). It also fails if motion differs
+    rest (the `0-2-2` solver fluttered on a tilted head). It builds the body colliders from a
+    synthetic body of overlapping parts, each skinned to one bone, as `BuildBodyField` does, and
+    fails if one lies more than 0.35 units inside or 0.3 outside its part (margin aside). It also
+    fails if hair styled through the shoulder does not come to rest over it, or if hair styled on
+    the back does not rest as styled. Turning or tipping the head into the shoulder must leave
+    hair out of it and at rest. Breathing, walking, running and turning the body at 30, 60 and
+    144 fps must leave drawn hair no more than 0.35 units deep, and it must not shake: three or
+    more frames running whose accelerations each reverse the last, by more than 0.35 units. It
+    also fails if motion differs
     across frame rates, if long straight, wavy or locs hair does not stream up in a fall, or
     if any motion does not settle. 1.5- and 3.8-unit scalp locks must stay within 10% of
     their length of target through one step aside and a 15° turn. Once the head stops, a
@@ -815,8 +896,19 @@ Check these first in game:
     the blended one. KS hair still see-through after that would point at strand coverage
     (density × width per layer of cards: at the defaults about 0.7 at the root and 0.2 at the
     tip), not at the pass.
--   The body collider radii (neck 3 to back 6.5) are guesses meant to sit inside any body.
-    Hair floating off the shoulders means they are too large; hair through them, too small.
+-   The body colliders (`0-4-0`): the player's log should say `body colliders from N worn
+    meshes (neck …%, chest …%, …)` a moment after loading and after every change of clothes.
+    `no body colliders: …` names why the bone capsules are used instead. RaceMenu body sliders
+    change a mesh without changing its signature, so the colliders keep the old shape until
+    something is put on or taken off. Assumed: worn meshes
+    keep their CPU vertex data (as the hair's and head's do); armour hangs under `Get3D(false)`;
+    a skin instance's bones are the actor's skeleton nodes. Also assumed: a mesh's skin-to-bone
+    transform for a spine or arm bone places it round that bone as the game skins it. Hair lying
+    off the body by a constant gap, or into it, points at that last one. Cloaks and skirts with
+    their own physics bones collide in their bind pose.
+-   The bone capsules' radii (neck 3 to back 6.5), used only without body colliders, are guesses
+    meant to sit inside any body. Hair floating off the shoulders means they are too large;
+    hair through them, too small.
 -   The head field (`0-2-7`): the player's log should say `head collider from head mesh …
     (N% of directions)`, with N around 85-90. The Face head part hangs under the face node by
     its editor ID, its CPU vertex data is kept (as the hair's), and its skin lists
@@ -848,9 +940,13 @@ Check these first in game:
     strand that feeds them in the simulation.
 -   Strand shadow maps and self-shadowing beyond Hair Specular's, and deep opacity maps.
     Cards cast the shadows.
--   Hair-hair collision, and colliders fitted to the actual body mesh (breasts, armour,
-    weapons on the back). Below the head, colliders come from bones with fixed radii. The
-    body is skinned to many bones, so a rigid field like the head's would not fit it.
+-   Hair-hair collision, and weapons, quivers and shields on the back: they are rigid
+    attachments, not skinned meshes, so the body colliders do not see them.
+-   The body colliders are rigid on their bones, so a joint far from its bind pose (an arm
+    raised or lowered from the T pose) collides where that part of the body is in the bind
+    pose. Only the heaviest bone of a vertex counts. Hair should not float off a shoulder or
+    sink into it by more than the blend near the joint. If it does, the colliders could be
+    skinned per frame instead: a small compute pass over each map's texels.
 -   Wind from anything but the weather (spells, dragons, player speed beyond air drag).
 -   Loading TressFX's own `.tfx` hair files (and `.tfxbone` skinning) as an alternative to
     converting cards. The simulation already is TressFX's. A `.tfx` file holds guide strands of
@@ -859,7 +955,12 @@ Check these first in game:
     TressFX's up axis and scale turned into Skyrim's, bones mapped by name to the skin
     instance's, and follow strands generated (`GenerateFollowHairs`, where `tipSeparation`
     matters).
--   TressFX's signed distance field collision with the body mesh, in place of bone capsules.
+-   TressFX's signed distance field collision with the body mesh, rebuilt every frame. The body
+    colliders cover the same ground rigid per bone, built only when what is worn changes. A
+    per-frame grid would cost skinning and splatting every frame, and its surface would shift
+    by a cell as the body moves through it.
+-   The bone capsules (the fallback) still use TressFX's stop response and this frame's pose
+    for every step. Both made hair shake against the body colliders before they were changed.
 -   Wigs have no model path in their key (no head part), so they match on shape name and
     vertex/triangle count.
 -   Actor fade-out keeps the cards: strands have no alpha to fade with.

@@ -305,7 +305,7 @@ void HairStrands::DrawPhysicsSettings()
 	}
 	ImGui::Checkbox(T(TKEY("body_collision"), "Collision"), &settings.BodyCollision);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("body_collision_tooltip"), "Keeps strands out of the head (the character's own head mesh), neck, torso, shoulders\nand upper arms."));
+		ImGui::Text("%s", T(TKEY("body_collision_tooltip"), "Keeps strands out of the head (the character's own head mesh) and lays them over the\nneck, torso, shoulders and upper arms: the character's own body and what it wears,\nread from their meshes whenever that changes."));
 	}
 }
 

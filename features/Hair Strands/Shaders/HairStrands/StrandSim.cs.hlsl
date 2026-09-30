@@ -34,7 +34,8 @@
 //     segment before it, turned by the shortest arc from that segment's rest direction to its
 //     current one.
 //  4. LengthConstriantsWindAndCollision: wind across each segment, distance constraints in even
-//     then odd pairs, capsule collision (which stops the point), and the position delta clamp.
+//     then odd pairs, capsule collision (which stops the point), and the position delta clamp. The
+//     body colliders (not TressFX) come with the capsules.
 //  5. TressFX's collision with the body's signed distance field (CollideHairVerticesWithSdf),
 //     here the head field: the actor's own head mesh (see Skinning.hlsli). A point inside is put
 //     back on the surface and stops. TressFX runs it after the simulation on every point but
@@ -62,9 +63,14 @@
 //  - Wind acts on each segment at its rest length, not its current one, and no segment ends a
 //    step longer than MaxStretch of its rest length. Without these, a strand stretched by a hard
 //    stop caught more wind the longer it got, and settings far from the defaults blew it apart.
-//  - Collision keeps a styled shape that already lies inside a collider or the head from being
+//  - Collision keeps a styled shape that already lies inside a capsule or the head from being
 //    pushed out (see Collide and HairStrandsSkin::CollideHead), and the position delta clamp
 //    leaves the two pinned points alone.
+//  - The body colliders are the actor's own body and what it wears (HairStrandsSkin::CollideBody),
+//    on their bones' poses at each step, as the targets are. A point pushed out of one moves on
+//    with the surface: it keeps the surface's move over the step and BodySlide of its own slide
+//    along it, none of its motion into or off it. Stopping it dead, as TressFX's capsules do, left
+//    hair on a moving body to be caught up and shoved every step, and it shook.
 
 #include "HairStrands/Skinning.hlsli"
 
@@ -77,6 +83,8 @@ namespace HairStrandsSim
 {
 	// TressFX ResolveCapsuleCollisions: the share of a colliding point's move along the capsule kept.
 	static const float CapsuleFriction = 0.4;
+	// The share of a point's slide along a body collider (relative to it) kept: TressFX's capsule friction.
+	static const float BodySlide = CapsuleFriction;
 	// Longest a segment may end a step, relative to its rest length.
 	static const float MaxStretch = 1.2;
 	// Units. A shorter strand has the global range of one this long, and VSP by its length over it.
@@ -220,6 +228,17 @@ namespace HairStrandsSim
 		return frame;
 	}
 
+	// Body collider a_collider's frame at a_f of the way from last frame's pose to this frame's, as the
+	// targets are taken at each step (a_f below 0 carries last frame's motion on backwards).
+	HairStrandsSkin::BodyFrame StepBodyFrame(uint a_collider, float a_f)
+	{
+		float3x4 previous = HairStrandsSkin::LoadBodyRows(a_collider, 1);
+		previous[0].w += PreviousToCurrent.x;
+		previous[1].w += PreviousToCurrent.y;
+		previous[2].w += PreviousToCurrent.z;
+		return HairStrandsSkin::MakeBodyFrame(lerp(previous, HairStrandsSkin::LoadBodyRows(a_collider, 0), a_f));
+	}
+
 	// TressFX mixes its four wind vectors per strand, so neighbouring strands blow apart.
 	float3 GuideWind(uint a_guide)
 	{
@@ -241,7 +260,7 @@ namespace HairStrandsSim
 	float3 previous[MAX_POINTS];            // g_HairVertexPositionsPrev
 	float3 stepOffset[MAX_POINTS];          // position - target, at the last step
 	float3 previousStepOffset[MAX_POINTS];  // and at the step before
-	uint i, step, iteration;
+	uint i, step, iteration, collider;
 
 	[loop] for (i = 0; i < n; ++i)
 	{
@@ -281,6 +300,7 @@ namespace HairStrandsSim
 	const bool haveWind = any(wind != 0.0);
 	const bool collide = (Flags & HAIR_STRANDS_FLAG_COLLIDE) != 0 && ColliderCount > 0;
 	const bool collideHead = (Flags & HAIR_STRANDS_FLAG_HEAD_FIELD) != 0;
+	const bool collideBody = (Flags & HAIR_STRANDS_FLAG_BODY_FIELD) != 0 && BodyColliderCount > 0;
 
 	[loop] for (step = 0; step < steps; ++step)
 	{
@@ -380,17 +400,40 @@ namespace HairStrandsSim
 		// the movable points: rewriting the pinned points' history would skew the next step's VSP).
 		[loop] for (i = 2; i < n; ++i)
 		{
+			const float3 target = lerp(targetStart[i], targetEnd[i], f);
 			bool collided = false;
 			if (collide)
-				collided = HairStrandsSim::Collide(position[i], previous[i], lerp(targetStart[i], targetEnd[i], f));
+				collided = HairStrandsSim::Collide(position[i], previous[i], target);
+			bool contact = false;
+			float3 contactNormal = 0;
+			float3 surfaceMove = 0;
+			if (collideBody) {
+				[loop] for (collider = 0; collider < BodyColliderCount; ++collider)
+				{
+					float3 q, normal;
+					if (HairStrandsSkin::CollideBody(collider, HairStrandsSim::StepBodyFrame(collider, f), position[i], target, q, normal)) {
+						// Where that point of the surface was a step ago.
+						const HairStrandsSkin::BodyFrame before = HairStrandsSim::StepBodyFrame(collider, f - StepFraction);
+						surfaceMove = position[i] - (before.origin + mul(before.toCamera, q));
+						contactNormal = normal;
+						contact = true;
+					}
+				}
+			}
 			float3 positionDelta = position[i] - previous[i];
 			const float speedSquared = dot(positionDelta, positionDelta);
 			if (speedSquared > ClampPositionDelta * ClampPositionDelta) {
 				positionDelta *= ClampPositionDelta * ClampPositionDelta / speedSquared;
 				previous[i] = position[i] - positionDelta;
 			}
-			if (collided)
+			if (collided) {
 				previous[i] = position[i];
+			} else if (contact) {
+				// On the body: the point moves on with the surface, keeping BodySlide of its slide along it.
+				float3 slide = position[i] - previous[i] - surfaceMove;
+				slide -= contactNormal * dot(slide, contactNormal);
+				previous[i] = position[i] - surfaceMove - HairStrandsSim::BodySlide * slide;
+			}
 		}
 
 		// The head field, as TressFX's signed distance field collision.
