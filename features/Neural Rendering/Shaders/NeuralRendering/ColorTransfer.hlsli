@@ -107,12 +107,10 @@ static const float kNeuralSceneGamma = 2.2;
 static const uint kNeuralProxyDisplayMatched = 0;  // The ISHDR replica, or the ACES fallback.
 static const uint kNeuralProxyNeutwo = 1;          // Exposed scene linear through Open Shaders' Neutwo curve.
 static const uint kNeuralProxyLegacy = 2;          // 5947cf63: per-channel Reinhard, unexposed.
-static const uint kNeuralProxyHdrLinear = 3;       // Exposed scene linear, no curve, no clamp.
 
 // How the proxy is encoded for the model, and therefore how its answer is read back.
 static const uint kNeuralModelSpaceSrgb = 0;     // Piecewise sRGB, as Open Shaders and 5947cf63 used.
 static const uint kNeuralModelSpaceGamma22 = 1;  // Plain 2.2, what the displayed frame actually carries.
-static const uint kNeuralModelSpaceLinear = 2;   // No encode and no clamp (HDR Linear).
 
 // TransferParams.DebugFlags bits.
 static const uint kNeuralDebugGuardClamp = 1u << 0;  // Mark the pixels the ratio guard caught.
@@ -133,8 +131,6 @@ static const uint kNeuralDebugStats = 1u << 4;       // Accumulate the peak/clam
  */
 uint NeuralModelSpace(uint domain, uint proxyCurve, bool vanillaGrading)
 {
-	if (proxyCurve == kNeuralProxyHdrLinear)
-		return kNeuralModelSpaceLinear;
 	if (domain == kNeuralColorDomainDisplayGamma)
 		return kNeuralModelSpaceGamma22;
 	return (proxyCurve == kNeuralProxyDisplayMatched && vanillaGrading) ? kNeuralModelSpaceGamma22 : kNeuralModelSpaceSrgb;
@@ -261,22 +257,17 @@ float3 NeuralLinearToDomain(float3 color, uint domain)
 /**
  * Model-space value to linear light, using @p space's curve (see NeuralModelSpace).
  *
- * The 0-1 spaces clamp, because the model was handed a 0-1 proxy and anything outside that
- * range is not a value it can have meant. kNeuralModelSpaceLinear does not: there the model
- * was handed open-ended linear light and its answer is read back in the same units.
+ * Clamped, because the model was handed a 0-1 proxy and anything outside that range is not a
+ * value it can have meant.
  */
 float3 NeuralModelToLinear(float3 v, uint space)
 {
-	if (space == kNeuralModelSpaceLinear)
-		return max(v, 0.0);
 	return space == kNeuralModelSpaceGamma22 ? pow(saturate(v), kNeuralDisplayGamma) : NeuralSrgbToLinear(v);
 }
 
 /** Linear light to the model-space encoding for @p space. */
 float3 NeuralLinearToModel(float3 v, uint space)
 {
-	if (space == kNeuralModelSpaceLinear)
-		return max(v, 0.0);
 	return space == kNeuralModelSpaceGamma22 ? pow(saturate(v), 1.0 / kNeuralDisplayGamma) : NeuralLinearToSrgb(v);
 }
 
@@ -412,9 +403,6 @@ float3 EncodeNeuralSceneCurve(float3 linearColor, float exposure, NeuralDisplayT
 	// Open Shaders' NeutwoEncode: one hue-preserving scale driven by the peak channel.
 	if (display.proxyCurve == kNeuralProxyNeutwo)
 		return NeuralNeutwo(linearColor * exposure);
-	// No curve at all: the model is handed exposed linear light with 1.0 at paper white.
-	if (display.proxyCurve == kNeuralProxyHdrLinear)
-		return linearColor * exposure;
 	return ApplyNeuralDisplayTransformExposed(max(linearColor, 0.0) * exposure, display);
 }
 
@@ -423,14 +411,11 @@ float3 EncodeNeuralSceneCurve(float3 linearColor, float exposure, NeuralDisplayT
  *
  * SDR passes through unchanged. An over-range HDR pixel is brought back inside 0-1 by one
  * hue-preserving factor: NeuralHighlightRolloff's soft shoulder where the display's peak is
- * known, a plain scale-down otherwise. HDR Linear wants the frame in its own units and takes
- * neither.
+ * known, a plain scale-down otherwise.
  */
 float3 EncodeNeuralDisplayProxy(float3 color, NeuralDisplayTransform display)
 {
 	float3 linearColor = pow(color, kNeuralDisplayGamma);
-	if (display.proxyCurve == kNeuralProxyHdrLinear)
-		return linearColor;
 	float peak = max(linearColor.r, max(linearColor.g, linearColor.b));
 	float scale = display.highlightWhite > 1.0 ?
 	                  NeuralHighlightRolloff(peak, display.highlightWhite) / max(peak, 1e-5) :
@@ -439,7 +424,7 @@ float3 EncodeNeuralDisplayProxy(float3 color, NeuralDisplayTransform display)
 }
 
 /**
- * Linear-light proxy of @p color, with every channel at or below one except under HDR Linear.
+ * Linear-light proxy of @p color, with every channel at or below one.
  *
  * Display gamma: the finished frame (EncodeNeuralDisplayProxy). Scene linear: the curve
  * @p display selects (EncodeNeuralSceneCurve); Display-matched with the identity transform

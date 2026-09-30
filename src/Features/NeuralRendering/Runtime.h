@@ -27,9 +27,6 @@ namespace NeuralRenderingNGX
 		std::uint32_t style = 3;
 		bool useAutoMask = true;
 		bool uiCorrection = false;
-		/// Creation flags and selectors Feature 18 is built with
-		/// (NeuralRendering::ModelContract). Latched at creation like everything else here.
-		std::uint32_t modelContract = 0;
 
 		/// Every field here is latched at feature-create time (see Execute()), so
 		/// this is how Execute() notices a slider changed and rebuilds the feature.
@@ -209,8 +206,7 @@ namespace NeuralRenderingNGX
 		 *
 		 * The D3D12 form reports support, minimum GPU architecture and minimum OS version. It
 		 * does not report which creation flags the feature would accept - the NGX API has no
-		 * field for that - so this is a capability note, not an answer to whether the HDR
-		 * contract works; the Model Contract probe measures that directly.
+		 * field for that - so this is a capability note only.
 		 */
 		void LogFeatureRequirements(ID3D12Device* device);
 		void* module_ = nullptr;

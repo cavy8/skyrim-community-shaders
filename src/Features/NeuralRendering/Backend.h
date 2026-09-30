@@ -94,12 +94,8 @@ public:
 		/// gamma-2.2 display-referred frame (NeuralRendering::ColorDomain).
 		std::uint32_t colorDomain = 0;
 		/// How the scene-linear placements build the proxy (NeuralRendering::ProxyCurve);
-		/// ignored in the display-gamma domain except that HDR Linear suppresses the
-		/// highlight shoulder.
+		/// ignored in the display-gamma domain.
 		std::uint32_t proxyCurve = 0;
-		/// Creation-time contract for Feature 18 (NeuralRendering::ModelContract). Latched
-		/// with the rest of the tuning, so a change goes through the debounced recreate.
-		std::uint32_t modelContract = 0;
 		/// Display transform the scene-linear proxy replicates (identity by default).
 		DisplayTransform display{};
 		/// Display-gamma domain only: the linear peak the display can show, in the frame's

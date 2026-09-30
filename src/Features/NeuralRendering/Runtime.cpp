@@ -62,61 +62,6 @@ namespace NeuralRenderingNGX
 			const NVSDK_NGX_FeatureDiscoveryInfo*, NVSDK_NGX_FeatureRequirement*);
 		using GetModuleFileNameWFunction = DWORD(WINAPI*)(HMODULE, LPWSTR, DWORD);
 
-		/**
-		 * @brief Feature 18 creation flags and selectors, by NeuralRendering::ModelContract.
-		 *
-		 * Contract A is what every shipped build has used: no creation flags and no selectors
-		 * at all. B adds the auto-exposure and (zero-strength) sharpening flags the other
-		 * DLSS Neural Rendering projects set, C adds the HDR flag on top. B and C deliberately
-		 * do *not* add MVLowRes, so each step differs from the one before it in exactly the
-		 * thing being measured. See docs/development/neural-rendering.md.
-		 */
-		// The SDK marks DoSharpening deprecated; the value is what matters here, and naming
-		// the enumerator would raise a deprecation diagnostic on a build that treats them as
-		// errors. The three together are the 0x61 Open Shaders creates Feature 18 with.
-		constexpr unsigned int kCreateFlagIsHDR = 1u << 0;
-		constexpr unsigned int kCreateFlagDoSharpening = 1u << 5;
-		constexpr unsigned int kCreateFlagAutoExposure = 1u << 6;
-
-		constexpr std::uint32_t kModelContractCurrent = 0;
-		constexpr std::uint32_t kModelContractSdrAutoExposure = 1;
-		constexpr std::uint32_t kModelContractHdr = 2;
-
-		unsigned int ModelContractCreateFlags(std::uint32_t contract)
-		{
-			if (contract == kModelContractSdrAutoExposure)
-				return kCreateFlagDoSharpening | kCreateFlagAutoExposure;
-			if (contract == kModelContractHdr)
-				return kCreateFlagIsHDR | kCreateFlagDoSharpening | kCreateFlagAutoExposure;
-			return 0;
-		}
-
-		/**
-		 * @brief Writes the selectors that go with @p contract into @p parameters.
-		 *
-		 * Called at creation and again at every evaluation: the plan's B and C contracts state
-		 * Sharpness explicitly every frame so it cannot become a hidden variable, and the
-		 * exposure values are unit so the DLL's own adaptation is the only thing acting.
-		 * Contract A writes nothing, leaving the parameter block exactly as it has always been.
-		 */
-		void ApplyModelContractSelectors(NVSDK_NGX_Parameter* parameters, std::uint32_t contract)
-		{
-			if (contract == kModelContractCurrent)
-				return;
-			const bool hdr = contract == kModelContractHdr;
-			parameters->Set("DLSSNR.Hdr", hdr ? 1u : 0u);
-			parameters->Set("DLSSNR.SDR", hdr ? 0u : 1u);
-			parameters->Set("DLSSNR.AutoExposure", 1u);
-			parameters->Set("DLSSNR.InPreExposure", 1.0f);
-			parameters->Set("DLSSNR.InExposureScale", 1.0f);
-			parameters->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
-			parameters->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
-			// DoSharpening with a sharpness of zero should be a no-op; stating it every frame
-			// is what makes that true rather than assumed.
-			parameters->Set("DLSSNR.Sharpness", 0.0f);
-			parameters->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
-		}
-
 		/** @brief SHA-256 of a file, lower-case hex, or an empty string when it cannot be read. */
 		std::string FileSha256(const std::filesystem::path& path)
 		{
@@ -420,8 +365,7 @@ namespace NeuralRenderingNGX
 		LogRuntimeHashAsync(path_);
 		// Whether this build exposes the capability query at all. The D3D12 form returns
 		// support, minimum architecture and minimum OS - not the creation flags it would
-		// accept, which the NGX API has no way to report. The Model Contract probe in the
-		// settings UI is what actually answers the HDR question.
+		// accept, which the NGX API has no way to report.
 		hasFeatureRequirements_ = GetProcAddress(static_cast<HMODULE>(module_),
 									  "NVSDK_NGX_D3D12_GetFeatureRequirements") != nullptr;
 		logger::info("[DLSSNR] GetFeatureRequirements export {}",
@@ -614,15 +558,9 @@ namespace NeuralRenderingNGX
 			parameters->Set("DLSSNR.SkinStructureStrength", tuning.skinStructureStrength);
 			parameters->Set("DLSSNR.UseAutoMask", tuning.useAutoMask ? 1u : 0u);
 			parameters->Set("DLSSNR.UICorrection", tuning.uiCorrection ? 1u : 0u);
-			// Creation flags are latched here and nowhere else. Contract A sets none, which
-			// is what every shipped build has done; the parameter is written under both the
-			// documented DLSS name and the snippet's own prefix because Feature 18's is
-			// undocumented and setting an unread key costs nothing.
-			if (const auto createFlags = ModelContractCreateFlags(tuning.modelContract)) {
-				parameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, createFlags);
-				parameters->Set("DLSSNR.Feature.Create.Flags", createFlags);
-			}
-			ApplyModelContractSelectors(parameters, tuning.modelContract);
+			// No creation flags and no HDR/SDR/auto-exposure selectors: setting the ones the
+			// other DLSS-NR projects use made no difference to the answer (see
+			// docs/development/neural-rendering.md, "Creation contract").
 			NVSDK_NGX_Handle* handle = nullptr;
 			ngxResult_ = static_cast<std::uint32_t>(create(commandList, kFeatureDlssNr, parameters, &handle));
 			if (ngxResult_ != NVSDK_NGX_Result_Success || !handle) {
@@ -677,9 +615,6 @@ namespace NeuralRenderingNGX
 		parameters->Set("DLSSNR.UseAutoMask", tuning.useAutoMask ? 1u : 0u);
 		parameters->Set("DLSSNR.Style", tuning.style);
 		parameters->Set("DLSSNR.UICorrection", tuning.uiCorrection ? 1u : 0u);
-		// Reset() cleared the block, so the contract's selectors are restated here too;
-		// Sharpness in particular is meant to be set every frame (see the function).
-		ApplyModelContractSelectors(parameters, tuning.modelContract);
 		ngxResult_ = static_cast<std::uint32_t>(evaluate(commandList,
 			static_cast<NVSDK_NGX_Handle*>(featureHandle_), parameters, nullptr));
 		if (ngxResult_ != NVSDK_NGX_Result_Success) {

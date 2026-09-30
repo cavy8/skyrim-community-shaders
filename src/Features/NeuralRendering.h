@@ -123,26 +123,6 @@ struct NeuralRendering : Feature
 		kDisplayMatched = 0,  ///< The ISHDR replica, or the ACES fallback when grading cannot be captured.
 		kNeutwo = 1,          ///< Exposed scene linear through Open Shaders' Neutwo curve, then the domain encode.
 		kLegacy = 2,          ///< The 2026-09-09 proxy: per-channel Reinhard, no exposure, no Linear Lighting decode.
-		/// Exposed scene linear, float16, no curve. Never selected by hand: it overrides the
-		/// stored curve at runtime while HDR Display redirects the framebuffer, and only once
-		/// the Model Contract probe has shown Feature 18 accepts it (see Settings::hdrLinearProxy).
-		kHdrLinear = 3,
-		kCount
-	};
-
-	/**
-	 * @brief Creation-time contract Feature 18 is built under (Settings::modelContract, session only).
-	 *
-	 * Feature 18 latches its creation flags and selectors, so changing this goes through the
-	 * same debounced recreate a tuning change does. Contract A is what every shipped build has
-	 * used. B and C exist to measure whether the flags the other DLSS-NR projects set change
-	 * the answer; see docs/development/neural-rendering.md, "Model contract probe".
-	 */
-	enum class ModelContract : uint32_t
-	{
-		kCurrent = 0,          ///< A: no creation flags and no selectors, as shipped.
-		kSdrAutoExposure = 1,  ///< B: DoSharpening | AutoExposure, SDR=1, unit pre-exposure/exposure scale, Sharpness 0.
-		kHdr = 2,              ///< C: B plus IsHDR and Hdr=1/SDR=0.
 		kCount
 	};
 
@@ -297,9 +277,6 @@ struct NeuralRendering : Feature
 		/// How the scene-linear placements build the proxy; ignored by Finished Image.
 		ProxyCurve proxyCurve = ProxyCurve::kDisplayMatched;
 
-		/// Creation-time contract for Feature 18 (session only; see ModelContract).
-		ModelContract modelContract = ModelContract::kCurrent;
-
 		/// Display transform the scene-linear proxy replicates so the model sees the frame
 		/// the way the user will. Set by the pre-tonemap placements (built from the captured
 		/// ISHDR pass and Post Processing's auto exposure); left at the identity by Finished
@@ -336,8 +313,7 @@ struct NeuralRendering : Feature
 		uint style = 0;  // 0=Default, 1=Natural, 2=Cinematic
 		float intensity = 1.0f;
 		float colorStrength = 1.0f;
-		/// How the scene-linear placements build the proxy (see ProxyCurve). Never stored as
-		/// HDR Linear: that one is chosen at runtime by the HDR path, not by the user.
+		/// How the scene-linear placements build the proxy (see ProxyCurve).
 		uint proxyCurve = static_cast<uint>(ProxyCurve::kDisplayMatched);
 		float localToneStrength = 1.0f;
 		float localStructureStrength = 1.0f;
@@ -441,16 +417,11 @@ struct NeuralRendering : Feature
 	CompareView compareView;
 
 	/**
-	 * Runtime-only diagnostics, never saved: the creation contract probe and the debug views
-	 * that measure it. See docs/development/neural-rendering.md, "Model contract probe".
+	 * Runtime-only debug views and readbacks, never saved. See
+	 * docs/development/neural-rendering.md, "Debug views and readback".
 	 */
 	struct DebugState
 	{
-		uint modelContract = static_cast<uint>(ModelContract::kCurrent);
-		/// Hand the model exposed scene-linear light instead of a 0-1 proxy, and treat its
-		/// answer as linear in the same units. Only offered under contract C with HDR Display
-		/// redirecting the framebuffer; this is Step 0's C2/C3 input variant.
-		bool hdrLinearProxy = false;
 		bool guardClampView = false;  ///< Mark the pixels the ratio guard actually clamped.
 		bool broadBandView = false;   ///< Show the smooth half of the model's luminance edit.
 		bool detailBandView = false;  ///< Show the remainder.
@@ -500,7 +471,7 @@ struct NeuralRendering : Feature
 	bool IsFeatureAvailable() const;
 
 	/**
-	 * @brief Last read-back diagnostics from the resolve (Debug: Model Contract probe).
+	 * @brief Last read-back diagnostics from the resolve (Debug: Measure Model Output Peak).
 	 *
 	 * Both are collected by DecodeColorCS into one small buffer and staged back a few frames
 	 * later, so they lag the screen slightly and are only updated while their toggle is on.
@@ -818,16 +789,7 @@ private:
 	std::array<CategoryStrengths*, kMaterialCategoryCount> CategorySettings();
 	std::array<const CategoryStrengths*, kMaterialCategoryCount> CategorySettings() const;
 
-	/**
-	 * @brief Whether HDR Display is loaded and actually redirecting the framebuffer.
-	 *
-	 * The single test that decides whether the HDR model contract and the HDR Linear proxy
-	 * are in play, for both presets; the same one Finished Image already uses to pick its
-	 * colour domain.
-	 */
-	bool IsHDRDisplayActive() const;
-
-	/** @brief The proxy curve to use this frame, after the HDR path's runtime override. */
+	/** @brief The stored proxy curve, or Display-matched when it is out of range. */
 	ProxyCurve ResolveProxyCurve() const;
 
 	/**

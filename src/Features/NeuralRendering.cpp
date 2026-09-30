@@ -170,7 +170,6 @@ namespace
 		inputs.resolutionScaleY = options.resolutionScaleY;
 		inputs.colorDomain = static_cast<std::uint32_t>(options.colorDomain);
 		inputs.proxyCurve = static_cast<std::uint32_t>(options.proxyCurve);
-		inputs.modelContract = static_cast<std::uint32_t>(options.modelContract);
 		inputs.display.vanillaGrading = options.display.vanillaGrading;
 		std::copy_n(options.display.param, 4, inputs.display.param);
 		std::copy_n(options.display.cinematic, 4, inputs.display.cinematic);
@@ -454,24 +453,10 @@ bool NeuralRendering::MatchesPreset(Preset a_preset) const
 	return true;
 }
 
-bool NeuralRendering::IsHDRDisplayActive() const
-{
-	const auto& hdrDisplay = globals::features::hdrDisplay;
-	return hdrDisplay.loaded && hdrDisplay.framebufferRedirected;
-}
-
 NeuralRendering::ProxyCurve NeuralRendering::ResolveProxyCurve() const
 {
-	// HDR Linear is never a stored choice: it is the HDR path's own input, used for both
-	// presets while HDR Display redirects the framebuffer and only once the Model Contract
-	// probe has confirmed Feature 18 accepts unbounded linear light (Step 0's C2).
-	if (debugState.hdrLinearProxy && IsHDRDisplayActive() &&
-		debugState.modelContract == static_cast<uint>(ModelContract::kHdr))
-		return ProxyCurve::kHdrLinear;
 	const auto stored = settings.proxyCurve;
-	return stored < static_cast<uint>(ProxyCurve::kCount) && stored != static_cast<uint>(ProxyCurve::kHdrLinear) ?
-	           static_cast<ProxyCurve>(stored) :
-	           ProxyCurve::kDisplayMatched;
+	return stored < static_cast<uint>(ProxyCurve::kCount) ? static_cast<ProxyCurve>(stored) : ProxyCurve::kDisplayMatched;
 }
 
 bool NeuralRendering::IsLinearLightingActive()
@@ -696,29 +681,21 @@ void NeuralRendering::DrawSettings()
 
 		// --- Proxy: the image the scene-linear placements build for the model ---
 		const bool finishedImage = IsPlacement(Placement::kFinishedImage);
-		const bool hdrOverride = ResolveProxyCurve() == ProxyCurve::kHdrLinear;
 		const char* proxyCurveLabels[] = {
 			T(TKEY("proxy_display_matched"), "Display-matched"),
 			T(TKEY("proxy_neutwo"), "Neutwo"),
 			T(TKEY("proxy_legacy"), "Legacy")
 		};
-		ImGui::BeginDisabled(finishedImage || hdrOverride);
-		if (hdrOverride) {
-			int shown = 0;
-			const char* hdrLabel = T(TKEY("proxy_hdr_linear"), "HDR Linear (HDR Display)");
-			ImGui::Combo(T(TKEY("proxy_curve"), "Proxy Curve"), &shown, &hdrLabel, 1);
-		} else {
-			int proxyCurve = static_cast<int>(std::min<uint>(settings.proxyCurve, static_cast<uint>(ProxyCurve::kLegacy)));
-			if (ImGui::Combo(T(TKEY("proxy_curve"), "Proxy Curve"), &proxyCurve, proxyCurveLabels, IM_ARRAYSIZE(proxyCurveLabels)))
-				settings.proxyCurve = static_cast<uint>(std::clamp(proxyCurve, 0, 2));
-		}
+		ImGui::BeginDisabled(finishedImage);
+		int proxyCurve = static_cast<int>(std::min<uint>(settings.proxyCurve, static_cast<uint>(ProxyCurve::kLegacy)));
+		if (ImGui::Combo(T(TKEY("proxy_curve"), "Proxy Curve"), &proxyCurve, proxyCurveLabels, IM_ARRAYSIZE(proxyCurveLabels)))
+			settings.proxyCurve = static_cast<uint>(std::clamp(proxyCurve, 0, 2));
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("proxy_curve_tooltip"),
 				"Changes the image the model sees on Before, After and Separate Upscaling. Finished Image "
 				"always shows the model the finished frame, so this has no effect there. On Finished Image, "
-				"Vanilla-Plus is luminance-only with its ratio guard. With HDR Display active, the HDR path "
-				"replaces this setting.\n"
+				"Vanilla-Plus is luminance-only with its ratio guard.\n"
 				"Display-matched replicates the tonemap and grading the frame is about to receive. Neutwo is "
 				"a neutral exposed curve. Legacy is the September 2026 proxy: per-channel Reinhard, no exposure."));
 		}
@@ -829,7 +806,7 @@ void NeuralRendering::DrawSettings()
 				"the held frame. Not saved."));
 		}
 
-		// --- Debug: inspect the classification, the bands, and the model contract ---
+		// --- Debug: inspect the classification, the bands, and the resolve ---
 		ImGui::Separator();
 		ImGui::TextUnformatted(T(TKEY("debug"), "Debug"));
 
@@ -869,35 +846,6 @@ void NeuralRendering::DrawSettings()
 			ImGui::TextUnformatted(T(TKEY("debug_guard_clamp_tooltip"),
 				"Tints every pixel the ratio guard actually caught: red where it stopped the model brightening a "
 				"pixel, blue where it stopped it darkening one. With the guard off nothing is marked. Not saved."));
-		}
-
-		// Session-only: the creation contract Feature 18 is built under. Changing it goes
-		// through the backend's ordinary debounced recreate, the same as a style change.
-		const char* contractLabels[] = {
-			T(TKEY("model_contract_current"), "A - Current"),
-			T(TKEY("model_contract_sdr"), "B - SDR + Auto Exposure"),
-			T(TKEY("model_contract_hdr"), "C - HDR")
-		};
-		int modelContract = static_cast<int>(std::min<uint>(debugState.modelContract, static_cast<uint>(ModelContract::kHdr)));
-		if (ImGui::Combo(T(TKEY("model_contract"), "Model Contract"), &modelContract, contractLabels, IM_ARRAYSIZE(contractLabels)))
-			debugState.modelContract = static_cast<uint>(std::clamp(modelContract, 0, 2));
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("model_contract_tooltip"),
-				"Which creation flags and selectors Feature 18 is built with. A is what every released build uses. "
-				"B adds the auto-exposure and sharpening flags the other DLSS Neural Rendering projects set, with "
-				"sharpening at zero. C adds the HDR flag on top. Rebuilds the model when it settles, which costs a "
-				"brief hitch. Not saved - every session starts on A."));
-		}
-
-		const bool hdrContract = debugState.modelContract == static_cast<uint>(ModelContract::kHdr);
-		ImGui::BeginDisabled(!hdrContract || !IsHDRDisplayActive());
-		ImGui::Checkbox(T(TKEY("debug_hdr_linear"), "Hand the Model Linear Light"), &debugState.hdrLinearProxy);
-		ImGui::EndDisabled();
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("debug_hdr_linear_tooltip"),
-				"Contract C with HDR Display active only. Sends exposed scene-linear light, with 1.0 at paper white "
-				"and no curve, instead of a 0-1 proxy, and reads the answer back in the same units. This is the "
-				"probe that decides whether the display-matched proxy is needed at all. Not saved."));
 		}
 
 		ImGui::Checkbox(T(TKEY("debug_measure_peak"), "Measure Model Output Peak"), &debugState.measurePeak);
@@ -1017,9 +965,9 @@ void NeuralRendering::LoadSettings(json& o_json)
 	sanitizeFloat(settings.bandRadius, 8.0f, 2.0f, 32.0f);
 	if (settings.preset >= static_cast<uint>(Preset::kCount))
 		settings.preset = static_cast<uint>(Preset::kFull);
-	// HDR Linear is chosen by the HDR path, never stored; anything else out of range
-	// falls back to the proxy the default preset uses.
-	if (settings.proxyCurve >= static_cast<uint>(ProxyCurve::kHdrLinear))
+	// Out of range (including the retired HDR Linear, 3) falls back to the proxy the default
+	// preset uses.
+	if (settings.proxyCurve >= static_cast<uint>(ProxyCurve::kCount))
 		settings.proxyCurve = static_cast<uint>(ProxyCurve::kDisplayMatched);
 	const auto sanitizeCategoryStrengths = [&](CategoryStrengths& strengths) {
 		sanitizeFloat(strengths.colorStrength, 1.0f, 0.0f, 1.0f);
@@ -1571,8 +1519,6 @@ NeuralRendering::Options NeuralRendering::MakeOptions() const
 	options.debugCategoryView = settings.debugCategoryView;
 	options.rawModelOutput = settings.rawModelOutput;
 	options.proxyCurve = ResolveProxyCurve();
-	options.modelContract = static_cast<ModelContract>(
-		std::min<uint>(debugState.modelContract, static_cast<uint>(ModelContract::kHdr)));
 	// The band views are only meaningful once the two strengths actually separate the bands,
 	// and they are mutually exclusive; Broad wins if both are ticked.
 	const bool bandsSeparated = !NearlyEqual(settings.broadLuminosity, settings.detailLuminosity);
@@ -1778,10 +1724,8 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	options.colorDomain = sceneLinear ? ColorDomain::kSceneLinear : ColorDomain::kDisplayGamma;
 	// Proxy Curve belongs to the pre-tonemap placements. Even when the HDR frame arrives here
 	// scene linear, Finished Image's proxy is that finished frame through the identity
-	// transform, never a stored curve such as Vanilla-Plus's Legacy; only the HDR path's own
-	// HDR Linear override applies.
-	if (options.proxyCurve != ProxyCurve::kHdrLinear)
-		options.proxyCurve = ProxyCurve::kDisplayMatched;
+	// transform, never a stored curve such as Vanilla-Plus's Legacy.
+	options.proxyCurve = ProxyCurve::kDisplayMatched;
 
 	// Frame Hold: evaluate one captured frame every frame instead of the live one. The live
 	// guides were still consumed above, so the one-evaluation-per-frame contract holds.

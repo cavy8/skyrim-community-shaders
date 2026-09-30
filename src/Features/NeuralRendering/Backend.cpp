@@ -219,7 +219,7 @@ struct NeuralRenderingBackend::State
 	bool loggedToneFailure = false;
 
 	/**
-	 * Debug readback (Model Contract probe): DecodeColorCS accumulates a clamp count, a sample
+	 * Debug readback: DecodeColorCS accumulates a clamp count, a sample
 	 * count and a peak into `debugStats`, which is copied into a small ring of staging buffers
 	 * and mapped kDebugReadbackFrames later, so the CPU never waits on the GPU.
 	 */
@@ -1063,7 +1063,6 @@ struct NeuralRenderingBackend::State
 		desiredTuning.style = inputs.style;
 		desiredTuning.useAutoMask = inputs.automaticMask;
 		desiredTuning.uiCorrection = false;  // Cav's Unity Shaders never runs Neural Rendering after the UI composite.
-		desiredTuning.modelContract = inputs.modelContract <= 2u ? inputs.modelContract : 0u;
 		if (SettleTuning(desiredTuning)) {
 			if (!interop.WaitForIdle())
 				return LatchFailure("tuning change", interop.LastError());
@@ -1144,7 +1143,7 @@ struct NeuralRenderingBackend::State
 		// Only 0 (scene linear) and 1 (display gamma) exist; anything else falls back to the
 		// original scene-linear behaviour rather than an undefined shader branch.
 		transferParams.colorDomain = inputs.colorDomain <= 2u ? inputs.colorDomain : 0u;
-		transferParams.proxyCurve = inputs.proxyCurve <= 3u ? inputs.proxyCurve : 0u;
+		transferParams.proxyCurve = inputs.proxyCurve <= 2u ? inputs.proxyCurve : 0u;
 		// Display transform of the scene-linear proxy. A stage whose GPU input is missing is
 		// switched off here rather than left to read an unbound slot.
 		const auto& display = inputs.display;

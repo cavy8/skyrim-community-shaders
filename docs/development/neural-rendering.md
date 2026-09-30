@@ -961,7 +961,8 @@ actually carries *before* assigning it over the defaults, and:
 - **no `showAdvanced` key**: defaulted to **true** when the loaded values differ from Full, so
   someone who tuned things before Advanced existed still sees their sliders, and false
   otherwise.
-- `proxyCurve` is clamped below `kHdrLinear`: that one is never a stored choice.
+- `proxyCurve` out of range - including 3, the retired HDR Linear - falls back to
+  Display-matched.
 
 The feature ini is `1-1-0`.
 
@@ -971,22 +972,13 @@ The feature ini is `1-1-0`.
 `NeuralDisplayTransform::proxyCurve`) chooses how the scene-linear placements build the image
 the model sees. It has no effect on Finished Image, whose proxy is the finished frame itself,
 and the combo is greyed out there. That holds even when HDR Display hands Finished Image a
-scene-linear frame: `EvaluateFinishedImage` forces Display-matched (the identity transform)
-unless the HDR path's HDR Linear override is in force.
+scene-linear frame: `EvaluateFinishedImage` forces Display-matched (the identity transform).
 
 | Value | What the model sees | Used by |
 |---|---|---|
 | Display-matched (0) | The ISHDR replica, or the ACES fallback when grading cannot be captured | Full |
 | Neutwo (1) | Exposed scene linear through Open Shaders' `NeutwoEncode` - `c * rsqrt(peak^2 + 1)`, one hue-preserving scale, identity at black | option |
 | Legacy (2) | The 2026-09-09 proxy: per-channel Reinhard `c / (1 + c)`, no exposure, no Linear Lighting decode | Vanilla-Plus |
-| HDR Linear (3) | Exposed scene linear, float16, no curve and no clamp | never chosen by hand |
-
-HDR Linear is not offered in the combo. It is selected at runtime by `ResolveProxyCurve()`,
-and only while HDR Display is loaded *and* redirecting the framebuffer - the same test
-Finished Image already uses to pick its colour domain - and only once the Model Contract probe
-below has been run and its HDR contract enabled. While it is in force the combo shows
-"HDR Linear (HDR Display)", disabled; the stored curve is not changed, so both presets return
-to their own value as soon as HDR Display is off.
 
 ### Model space
 
@@ -994,9 +986,6 @@ How the proxy is *encoded* for the model is a separate question from which curve
 `NeuralModelSpace(domain, proxyCurve, vanillaGrading)` answers it from constants alone, so the
 encode and the decode always agree without either reading the adaptation textures:
 
-- **HDR Linear** -> linear: no encode, and - unlike the 0-1 spaces - no `saturate` on the way
-  back either, because the model was handed open-ended light and its answer is read in the
-  same units.
 - **display gamma**, or **Display-matched with vanilla grading** -> plain 2.2.
 - everything else -> piecewise sRGB.
 
@@ -1008,47 +997,21 @@ the frame actually on screen. It now uses 2.2, the same treatment Finished Image
 `Transfer Strength` corrects. Neutwo and Legacy keep sRGB: that is what the builds they
 reproduce used.
 
-## Model contract probe
+## Creation contract
 
-Feature 18 has always been created here with **no creation flags and no selectors**. The other
-DLSS Neural Rendering projects do set some: Open Shaders creates with
-`IsHDR | DoSharpening | AutoExposure` (0x61) and writes `Hdr=1`, `SDR=0`, `AutoExposure=1`,
-unit pre-exposure and exposure scale, and `Sharpness=0` every frame; DLSS5VKLayer sets
-`DoSharpening | AutoExposure` always and `IsHDR` only when the DLL advertises it, and on its
-HDR path sends float16 linear light with 1.0 at paper white, unbounded.
+Feature 18 is created with **no creation flags and no selectors**. The other DLSS Neural
+Rendering projects set some: Open Shaders creates with `IsHDR | DoSharpening | AutoExposure`
+(0x61) and writes `Hdr=1`, `SDR=0`, `AutoExposure=1`, unit pre-exposure and exposure scale, and
+`Sharpness=0` every frame; DLSS5VKLayer sets `DoSharpening | AutoExposure` always and `IsHDR`
+only when the DLL advertises it, and on its HDR path sends float16 linear light with 1.0 at
+paper white, unbounded.
 
-If Feature 18 accepts white-point-normalised linear light, the scene-linear placements can hand
-the model exposed linear colour and the ISHDR replica and ACES fallback stop being needed at
-all. Open's documentation asserts the HDR selectors do *not* permit unbounded input but cites
-no test; DLSS5VKLayer sends it anyway. Neither has published an image-quality comparison, so
-this has to be measured, and the machinery to measure it is what shipped here.
-
-**Model Contract** (Advanced -> Debug, session-only, never saved) selects one of:
-
-- **A - Current**: no creation flags, no selectors. What every released build does.
-- **B - SDR + Auto Exposure**: creation flags `DoSharpening | AutoExposure`, with `DLSSNR.SDR=1`,
-  `DLSSNR.Hdr=0`, `DLSSNR.AutoExposure=1`, `DLSSNR.InPreExposure` / `DLSSNR.InExposureScale` /
-  `DLSS.Pre.Exposure` / `DLSS.Exposure.Scale` all 1.0, and `Sharpness=0`.
-- **C - HDR**: B plus `IsHDR`, `DLSSNR.Hdr=1`, `DLSSNR.SDR=0`.
-
-B and C deliberately do **not** add `MVLowRes`, so each step differs from the one before it in
-exactly the thing being measured. (The plan this came from assumed contract A already set
-`MVLowRes`; it does not - that flag is only ever set on Separate Upscaling's *private DLSS-SR*
-feature, never on Feature 18. The 2026-09-09 build set no flags either, so Vanilla-Plus is
-already faithful on this point and there is nothing to test.)
-
-The flags are written under both `DLSS.Feature.Create.Flags` and `DLSSNR.Feature.Create.Flags`,
-because Feature 18's own name for them is undocumented and setting a key nothing reads costs
-nothing. `DoSharpening` with `Sharpness` at zero should be a no-op; stating it every frame is
-what makes that true rather than assumed. The contract is part of `NeuralRenderingNGX::Tuning`,
-so changing it goes through the same debounced recreate a Style change does.
-
-**Hand the Model Linear Light** (the same Debug group) is the input variant: contract C plus
-HDR Display active switches the proxy to HDR Linear. In a scene-linear placement that is
-exposed scene light with no curve; on Finished Image over the HDR redirect it is the float16
-frame passed through without `NeuralHighlightRolloff`. Either way the answer is read back as
-linear in the input's units, and the luminance ratio itself is unchanged, so results stay
-directly comparable across contracts.
+A session-only **Model Contract** debug combo used to rebuild Feature 18 under those flags (B:
+`DoSharpening | AutoExposure` with the SDR selectors; C: B plus `IsHDR` and the HDR selectors),
+and a companion **Hand the Model Linear Light** toggle fed it that unbounded linear input under
+C, as a fourth proxy curve (HDR Linear). Neither made a difference to the model's answer in
+game, so both were removed along with HDR Linear; the scene-linear placements keep their 0-1
+proxies. Do not reintroduce the flags without a measurement showing they change something.
 
 ### DLL identity
 
@@ -1061,8 +1024,7 @@ on a worker thread, once per file per session.
 
 That query reports support, minimum GPU architecture and minimum OS version. It does **not**
 report which creation flags the feature would accept - `NVSDK_NGX_FeatureRequirement` has no
-such field, in either the D3D12 or the Vulkan form - so it cannot answer the HDR question on
-its own. The A/B/C probe is what answers it.
+such field, in either the D3D12 or the Vulkan form - so it says nothing about the HDR flags.
 
 The hash matters because output channel order is known to differ between builds carrying the
 same 310.8 version (Open found a `.bgr` swap producing a full-frame blue cast). The builds
@@ -1095,44 +1057,12 @@ copied into a three-deep ring of staging buffers and mapped three frames later w
 `D3D11_MAP_FLAG_DO_NOT_WAIT`, so nothing stalls, and the counters are cleared before the decode
 that fills them. The whole path is skipped unless one of the two toggles is on.
 
-A peak above 1.0 means the model is answering outside the 0-1 range it was trained on - which
-is the single most useful thing to know about a contract change.
+A peak above 1.0 means the model is answering outside the 0-1 range it was trained on.
 
 ## What still has to be measured
 
 Everything above is implemented and compiles; none of it has been run in game. These are the
 tests the design depends on, in the order they matter.
-
-### Model contract (Step 0)
-
-Run each on a held frame (Frame Hold now works at After Upscaling as well as Finished Image).
-Contract C must be tested with HDR Display enabled and redirecting.
-
-1. **Accepts**: creation and evaluation result codes for A, B and C.
-2. **Output encoding**: with Intensity, Local Tone and Local Structure at 0, does output equal
-   input? Under HDR Linear this shows whether the answer comes back linear in input units.
-3. **Range**: scale the held input's highlights x2 and x4 above paper white. Does the output
-   keep their structure or clip at 1? (Model Output Peak answers this directly.)
-4. **Exposure invariance**: feed the held frame at x0.25, x1 and x4 exposure and compare the
-   mean and spread of the resolved log-ratio map, under B with the 0-1 proxy as well as under C
-   with linear light. If the edit barely moves, the proxy does not need to match the game's
-   exposure at all - this is the direct answer to whether the flags spare the early proxies.
-5. **Temporal stability**: live, static camera, 300 frames; mean frame-to-frame absolute change
-   in log ratio per contract.
-6. **Look**: split screen against contract A at the same placement.
-
-Decision gate:
-
-| Result | Action |
-|---|---|
-| Linear light passes tests 2-5 | Make HDR Linear Full's scene-linear default while HDR Display is active, on contract C. Display-matched and ACES become legacy options. |
-| Only test 4 passes, with the 0-1 proxy | Keep the 0-1 proxy but drop exposure matching; Neutwo without exposure becomes Full's scene-linear default. |
-| Nothing improves | Keep contract A and Display-matched, as shipped. |
-
-Note one precision caveat for linear light in a scene-linear placement: the shared proxy and
-answer textures mirror `kMAIN`'s format, which is usually `R11G11B10_FLOAT`. That holds
-positive values well above one, but with less precision than float16. Finished Image over the
-HDR redirect is float16 and unaffected.
 
 ### Vanilla-Plus fidelity
 
@@ -1197,9 +1127,8 @@ Two items from the same design are deliberately not implemented.
 **Hejl-Burgess-Dawson replica.** When vanilla uses HBD (`Param.z > 0.5`) the replica runs HBD on
 luminance only, while ISHDR's real path is `DisplayMapping::HuePreservingHejlBurgessDawson` - an
 adaptive desaturation in ICtCp, per-channel HBD, then bloom. Porting that means lifting its
-`PSHADER && BLEND` include guard or copying it. Deferred until after the contract probe: if
-linear light or exposure invariance wins, the replica stops being the default and this stops
-mattering.
+`PSHADER && BLEND` include guard or copying it. Deferred until the replica's fidelity is shown
+to matter to the model's answer.
 
 **ACES fallback scaling.** Narkowicz's ACES fit expects input pre-scaled by about 0.6.
 Unscaled it brightens midtones and crushes near-black in the proxy (0.18 -> 0.55 against
