@@ -16,13 +16,23 @@ namespace Strands
 		constexpr float kFoldThreshold = -0.2f;      // neighbour normals this opposed end a strand
 		constexpr float kShortHairLength = 1.0f;     // Auto seeding: median below this is short hair
 		constexpr uint32_t kMaxStepsPerStrand = 4096;
-		constexpr uint32_t kMaxCrossingsPerStep = 64;   // triangles one step may cross (slivers)
-		constexpr float kRootBudgetShare = 0.85f;       // of kMaxStrands, the rest left for fill strands
-		constexpr float kCoverageGap = 0.5f;            // a transparent stretch longer than this ends a strand
-		constexpr uint32_t kCoverageProbeGrid = 4;      // barycentric grid probing a triangle for any hair
-		constexpr float kClumpAlignment = 0.5f;         // a strand joins its clump if its root runs within 60 degrees of the guide's
-		constexpr float kIslandAxisRatio = 1.5f;        // Auto: a UV island flows along U only when this much longer that way
-		constexpr float kIslandUVScale = 4096.0f;       // UVs closer than 1/4096 join one island
+		constexpr uint32_t kMaxCrossingsPerStep = 64;  // triangles one step may cross (slivers)
+		constexpr float kRootBudgetShare = 0.85f;      // of kMaxStrands, the rest left for fill strands
+		constexpr float kCoverageGap = 0.5f;           // a transparent stretch longer than this ends a strand
+		constexpr uint32_t kCoverageProbeGrid = 4;     // barycentric grid probing a triangle's texels
+		constexpr uint32_t kProbeCount = (kCoverageProbeGrid + 1) * (kCoverageProbeGrid + 2) / 2;
+		constexpr float kClumpAlignment = 0.5f;        // a strand joins its clump if its root runs within 60 degrees of the guide's
+		constexpr float kIslandAxisRatio = 1.5f;       // Auto: a UV island flows along U only when this much longer that way
+		constexpr float kIslandUVScale = 4096.0f;      // UVs closer than 1/4096 join one island
+		constexpr float kFlowMapMinStrength = 0.3f;    // a shorter mean flow-map vector over a triangle (blank or neutral texels) gives no flow
+		constexpr float kPaintedAxisCoherence = 0.2f;  // streaks less aligned than this leave a strip's axis to its shape
+		constexpr uint32_t kFlowVoteCells = 64;        // texture cells a side, pooling the root-to-tip votes of every card sampling them
+		constexpr float kSeamMinLength = 0.25f;        // welded seam length x agreement below which two islands turn independently
+		constexpr float kSeamMinAgreement = 0.5f;      // and the share of it that must agree in sign
+		constexpr float kConfidentVote = 0.3f;         // a piece's mean away-and-down preference (hanging free) that settles its direction by itself
+		constexpr float kScalpShare = 0.1f;            // the innermost share of the hair's area, whose distance from the skull centre is the scalp's
+		constexpr float kHangingFrom = 1.3f;           // hair hangs free from this many scalp radii out, fully from kHangingFull
+		constexpr float kHangingFull = 1.8f;
 		constexpr float kGuideSearchCell = 2.0f;        // grid cell for finding a strand's guide
 		constexpr int32_t kGuideSearchRings = 4;        // widest grid search before trying every guide
 		constexpr float kHeadRadiusPercentile = 0.02f;  // share of strand points allowed inside the head collider
@@ -36,13 +46,12 @@ namespace Strands
 			std::array<int32_t, 3> neighbor{ -1, -1, -1 };  // across edge i = (v[i], v[i+1])
 			float3 normal;
 			float3 flow;
-			float3 flowU;            // Auto: the U direction, taken where the hair runs along U
-			float unitsPerU = 0.0f;  // surface length of one unit of U, and of V
-			float unitsPerV = 0.0f;
+			float3 dPdu;  // surface change per unit of U, and of V
+			float3 dPdv;
 			float area = 0.0f;
 			uint64_t positionKey = 0;  // the same for a triangle and its back face
 			int32_t component = -1;
-			bool alongU = false;
+			bool fromFlowMap = false;
 			bool valid = false;
 		};
 
@@ -98,6 +107,100 @@ namespace Strands
 			return (a_x >> 8) * (1.0f / 16777216.0f);
 		}
 
+		/**
+		 * The direction the painted strands run across the hair texture: the structure tensor of
+		 * its alpha-weighted luminance, smoothed over a few texels. Strands are streaks, so the
+		 * brightness changes fastest across them.
+		 */
+		class PaintedAxes
+		{
+		public:
+			explicit PaintedAxes(const CoverageMask& a_mask)
+			{
+				if (a_mask.width < 8 || a_mask.height < 8 || a_mask.shade.size() != static_cast<size_t>(a_mask.width) * a_mask.height)
+					return;
+				width = a_mask.width;
+				height = a_mask.height;
+				const size_t count = static_cast<size_t>(width) * height;
+				xx.resize(count);
+				xy.resize(count);
+				yy.resize(count);
+				const auto at = [&](uint32_t a_x, uint32_t a_y) { return a_mask.shade[static_cast<size_t>(a_y) * width + a_x] / 255.0f; };
+				for (uint32_t y = 0; y < height; ++y) {
+					for (uint32_t x = 0; x < width; ++x) {
+						const float gx = at((x + 1) % width, y) - at((x + width - 1) % width, y);
+						const float gy = at(x, (y + 1) % height) - at(x, (y + height - 1) % height);
+						const size_t i = static_cast<size_t>(y) * width + x;
+						xx[i] = gx * gx;
+						xy[i] = gx * gy;
+						yy[i] = gy * gy;
+					}
+				}
+				for (auto* channel : { &xx, &xy, &yy })
+					Smooth(*channel);
+			}
+
+			bool Empty() const { return xx.empty(); }
+
+			/** @brief Adds the tensor (xx, xy, yy) at a texture coordinate, times a_weight, to io_sum. */
+			void Accumulate(const float2& a_uv, float a_weight, float3& io_sum) const
+			{
+				if (!std::isfinite(a_uv.x) || !std::isfinite(a_uv.y))
+					return;
+				const auto x = std::min(static_cast<uint32_t>((a_uv.x - std::floor(a_uv.x)) * width), width - 1);
+				const auto y = std::min(static_cast<uint32_t>((a_uv.y - std::floor(a_uv.y)) * height), height - 1);
+				const size_t i = static_cast<size_t>(y) * width + x;
+				io_sum += float3(xx[i], xy[i], yy[i]) * a_weight;
+			}
+
+			/**
+			 * @brief The strand direction (either sign) in texture coordinates for a summed tensor.
+			 * @param o_coherence How clearly the streaks agree: 0 none, 1 all parallel.
+			 */
+			float2 Axis(const float3& a_tensor, float& o_coherence) const
+			{
+				const float trace = a_tensor.x + a_tensor.z;
+				const float spread = std::sqrt((a_tensor.x - a_tensor.z) * (a_tensor.x - a_tensor.z) + 4.0f * a_tensor.y * a_tensor.y);
+				o_coherence = trace > 1e-12f ? spread / trace : 0.0f;
+				const float across = 0.5f * std::atan2(2.0f * a_tensor.y, a_tensor.x - a_tensor.z);
+				// At right angles to the gradient, from texels to texture units.
+				float2 axis(-std::sin(across) / width, std::cos(across) / height);
+				axis.Normalize();
+				return axis;
+			}
+
+		private:
+			/** Box filter over (2r+1)^2 texels, wrapping like the hair's sampler. */
+			void Smooth(std::vector<float>& io_values) const
+			{
+				const auto radius = static_cast<int32_t>(std::max(1u, std::max(width, height) / 85));
+				std::vector<float> line;
+				const auto pass = [&](uint32_t a_count, uint32_t a_lines, size_t a_step, size_t a_lineStep) {
+					const auto n = static_cast<int32_t>(a_count);
+					const auto wrap = [&](int32_t a_i) { return static_cast<size_t>(((a_i % n) + n) % n) * a_step; };
+					line.resize(a_count);
+					for (uint32_t l = 0; l < a_lines; ++l) {
+						float* values = io_values.data() + l * a_lineStep;
+						float sum = 0.0f;
+						for (int32_t k = -radius; k <= radius; ++k)
+							sum += values[wrap(k)];
+						for (uint32_t i = 0; i < a_count; ++i) {
+							line[i] = sum;
+							sum += values[wrap(static_cast<int32_t>(i) + radius + 1)] - values[wrap(static_cast<int32_t>(i) - radius)];
+						}
+						for (uint32_t i = 0; i < a_count; ++i)
+							values[i * a_step] = line[i];
+					}
+				};
+				pass(width, height, 1, width);
+				pass(height, width, width, 1);
+			}
+
+			uint32_t width = 0;
+			uint32_t height = 0;
+			std::vector<float> xx, xy, yy;
+		};
+
 		class Generator
 		{
 		public:
@@ -116,12 +219,21 @@ namespace Strands
 			void BuildAdjacency();
 			void BuildComponents();
 			void DropBackFaces();
-			void ChooseFlowAxis();
 			int32_t FindHeadBone() const;
 			float3 FindHeadCentre() const;
-			void OrientFlow();
+			/**
+			 * With FlowAxis::Auto, sets each triangle's root-to-tip flow: from the flow map where
+			 * it has a direction, elsewhere from the part of the texture each card samples (see
+			 * the definition). Returns the share of the card area the flow map set.
+			 */
+			float ChooseFlow();
 			void BuildVertexFields();
 
+			/** @brief Calls a_f(uv) at each point of a barycentric grid over a triangle. */
+			template <class F>
+			void ForEachProbe(const Triangle& a_tri, F&& a_f) const;
+			/** @brief The unit surface direction a texture-space direction maps to on a triangle, or zero. */
+			float3 SurfaceDirection(const Triangle& a_tri, const float2& a_uv) const;
 			float3 FlowAt(const Triangle& a_tri, const float3& a_bary) const;
 			float3 Position(uint32_t a_vertex) const { return mesh.positions[a_vertex]; }
 
@@ -287,21 +399,60 @@ namespace Strands
 				if (length < 1e-6f)
 					continue;
 				tri.flow = flow / length;
-				tri.unitsPerU = dPdu.Length();
-				tri.unitsPerV = dPdv.Length();
-				tri.flowU = tri.unitsPerU > 1e-6f ? dPdu / tri.unitsPerU : tri.flow;
+				tri.dPdu = dPdu;
+				tri.dPdv = dPdv;
 				tri.valid = true;
 			}
 		}
 
-		void Generator::ChooseFlowAxis()
+		template <class F>
+		void Generator::ForEachProbe(const Triangle& a_tri, F&& a_f) const
+		{
+			const float2 a = mesh.uvs[a_tri.v[0]], b = mesh.uvs[a_tri.v[1]], c = mesh.uvs[a_tri.v[2]];
+			for (uint32_t i = 0; i <= kCoverageProbeGrid; ++i) {
+				for (uint32_t j = 0; i + j <= kCoverageProbeGrid; ++j) {
+					const float u = static_cast<float>(i) / kCoverageProbeGrid, v = static_cast<float>(j) / kCoverageProbeGrid;
+					a_f(a * (1.0f - u - v) + b * u + c * v);
+				}
+			}
+		}
+
+		float3 Generator::SurfaceDirection(const Triangle& a_tri, const float2& a_uv) const
+		{
+			float3 dir = a_tri.dPdu * a_uv.x + a_tri.dPdv * a_uv.y;
+			dir -= a_tri.normal * dir.Dot(a_tri.normal);
+			const float length = dir.Length();
+			return length > 1e-6f ? dir / length : float3::Zero;
+		}
+
+		float Generator::ChooseFlow()
 		{
 			if (style.flowAxis != FlowAxis::Auto)
-				return;
+				return 0.0f;
 
-			// Atlases lay most strips of hair along V, but not all: vanilla's long strip runs along
-			// U. Each UV island is one strip, and follows whichever axis it is clearly longer along
-			// on the surface. Vertices sharing a position and a UV are one island vertex.
+			// A flow map points from tip to root in texture space (as Hair Specular reads it).
+			// Where its mean over a triangle has a clear direction, that is the flow.
+			float mapArea = 0.0f, totalArea = 0.0f;
+			for (auto& tri : tris) {
+				if (!tri.valid)
+					continue;
+				totalArea += tri.area;
+				if (mesh.flow.Empty())
+					continue;
+				float2 sum = float2::Zero;
+				ForEachProbe(tri, [&](const float2& a_uv) { sum += mesh.flow.Sample(a_uv.x, a_uv.y); });
+				const float2 mean = sum / static_cast<float>(kProbeCount);
+				const float3 dir = SurfaceDirection(tri, -mean);
+				if (mean.Length() < kFlowMapMinStrength || dir == float3::Zero)
+					continue;
+				tri.flow = dir;
+				tri.fromFlowMap = true;
+				mapArea += tri.area;
+			}
+
+			// Everywhere else the flow comes from the part of the texture a card samples. Each UV
+			// island is one card's strip of the atlas; vertices sharing a position and a UV are
+			// one island vertex.
 			const auto count = static_cast<uint32_t>(mesh.positions.size());
 			std::vector<uint32_t> parent(count);
 			std::iota(parent.begin(), parent.end(), 0u);
@@ -329,36 +480,206 @@ namespace Strands
 
 			struct Island
 			{
-				float area = 0.0f;
 				float unitsPerU = 0.0f;  // area weighted sums
 				float unitsPerV = 0.0f;
 				float uMin = FLT_MAX, uMax = -FLT_MAX, vMin = FLT_MAX, vMax = -FLT_MAX;
+				float3 tensor;  // the painted streaks it samples, area weighted
+				float2 axis;    // root to tip in texture space, once chosen
 			};
-			std::unordered_map<uint32_t, Island> islands;
-			for (const auto& tri : tris) {
+			std::unordered_map<uint32_t, uint32_t> islandIds;
+			std::vector<Island> islands;
+			std::vector<uint32_t> islandOf(tris.size(), 0);
+			const PaintedAxes painted(mesh.coverage);
+			for (uint32_t t = 0; t < tris.size(); ++t) {
+				const auto& tri = tris[t];
 				if (!tri.valid)
 					continue;
-				auto& island = islands[find(tri.v[0])];
-				island.area += tri.area;
-				island.unitsPerU += tri.unitsPerU * tri.area;
-				island.unitsPerV += tri.unitsPerV * tri.area;
+				const auto [it, inserted] = islandIds.try_emplace(find(tri.v[0]), static_cast<uint32_t>(islands.size()));
+				if (inserted)
+					islands.emplace_back();
+				islandOf[t] = it->second;
+				auto& island = islands[it->second];
+				island.unitsPerU += tri.dPdu.Length() * tri.area;
+				island.unitsPerV += tri.dPdv.Length() * tri.area;
 				for (uint32_t v : tri.v) {
 					island.uMin = std::min(island.uMin, mesh.uvs[v].x);
 					island.uMax = std::max(island.uMax, mesh.uvs[v].x);
 					island.vMin = std::min(island.vMin, mesh.uvs[v].y);
 					island.vMax = std::max(island.vMax, mesh.uvs[v].y);
 				}
+				if (!painted.Empty())
+					ForEachProbe(tri, [&](const float2& a_uv) { painted.Accumulate(a_uv, tri.area / kProbeCount, island.tensor); });
 			}
-			for (auto& tri : tris) {
+
+			// The axis is the way the painted strands run in the island's part of the texture.
+			// Without clear streaks (or a texture to read), atlases lay most strips along V, but
+			// not all (vanilla's long strip runs along U): the island follows whichever axis it
+			// is clearly longer along on the surface.
+			for (auto& island : islands) {
+				float coherence = 0.0f;
+				const float2 axis = painted.Empty() ? float2::Zero : painted.Axis(island.tensor, coherence);
+				if (coherence >= kPaintedAxisCoherence) {
+					island.axis = axis;
+				} else {
+					const float lengthU = (island.uMax - island.uMin) * island.unitsPerU;
+					const float lengthV = (island.vMax - island.vMin) * island.unitsPerV;
+					island.axis = lengthU > kIslandAxisRatio * lengthV ? float2(1.0f, 0.0f) : float2(0.0f, 1.0f);
+				}
+			}
+
+			// Which way along the axis is root to tip. Across a welded seam hair continues, or
+			// runs beside its neighbour, the same way (or away from a parting), so islands joined
+			// by seams form pieces that turn together. Per pair of islands: seam length x the
+			// agreement of their axes across it, and length x its size.
+			std::unordered_map<uint64_t, float2> seams;
+			for (uint32_t t = 0; t < tris.size(); ++t) {
+				const auto& tri = tris[t];
 				if (!tri.valid)
 					continue;
-				const auto& island = islands[find(tri.v[0])];
-				const float lengthU = (island.uMax - island.uMin) * island.unitsPerU;
-				const float lengthV = (island.vMax - island.vMin) * island.unitsPerV;
-				tri.alongU = lengthU > kIslandAxisRatio * lengthV;
-				if (tri.alongU)
-					tri.flow = tri.flowU;
+				for (int i = 0; i < 3; ++i) {
+					const int32_t n = tri.neighbor[i];
+					if (n <= static_cast<int32_t>(t) || !tris[n].valid || islandOf[n] == islandOf[t])
+						continue;
+					const float agreement = SurfaceDirection(tri, islands[islandOf[t]].axis).Dot(SurfaceDirection(tris[n], islands[islandOf[n]].axis));
+					const float length = (Position(tri.v[i]) - Position(tri.v[(i + 1) % 3])).Length();
+					const uint64_t key = (static_cast<uint64_t>(std::min(islandOf[t], islandOf[n])) << 32) | std::max(islandOf[t], islandOf[n]);
+					seams[key] += float2(length * agreement, length * std::abs(agreement));
+				}
 			}
+			// Strongest seams first, each island with its sign relative to its parent. Seams
+			// where the flow mostly crosses (or the sign keeps changing) join nothing.
+			std::vector<uint32_t> pieceParent(islands.size());
+			std::iota(pieceParent.begin(), pieceParent.end(), 0u);
+			std::vector<float> parity(islands.size(), 1.0f);
+			const auto root = [&](uint32_t a_island) {
+				float sign = 1.0f;
+				while (pieceParent[a_island] != a_island) {
+					sign *= parity[a_island];
+					a_island = pieceParent[a_island];
+				}
+				return std::pair{ a_island, sign };
+			};
+			std::vector<std::pair<float, uint64_t>> joins;
+			for (const auto& [key, seam] : seams) {
+				if (std::abs(seam.x) >= kSeamMinLength && std::abs(seam.x) >= kSeamMinAgreement * seam.y)
+					joins.emplace_back(std::abs(seam.x), key);
+			}
+			std::ranges::sort(joins, std::greater{});
+			for (const auto& [strength, key] : joins) {
+				const auto [a, aSign] = root(static_cast<uint32_t>(key >> 32));
+				const auto [b, bSign] = root(static_cast<uint32_t>(key & 0xFFFFFFFFu));
+				if (a == b)
+					continue;
+				pieceParent[b] = a;
+				parity[b] = (seams[key].x < 0.0f ? -1.0f : 1.0f) * aSign * bSign;
+			}
+			std::vector<uint32_t> pieceOf(islands.size());
+			std::vector<float> islandSign(islands.size());  // relative to its piece
+			for (uint32_t i = 0; i < islands.size(); ++i)
+				std::tie(pieceOf[i], islandSign[i]) = root(i);
+
+			// Hair runs away from the head and, on balance, downwards. That is only sure where it
+			// hangs free, clear of the scalp: on the scalp and the nape it runs either way (combed
+			// down from the crown, or up into a tie). A piece on the flow map follows the map, and
+			// one that clearly hangs free one way keeps that way.
+			std::vector<std::pair<float, float>> distances;  // skull centre to each triangle, and its area
+			for (const auto& tri : tris) {
+				if (tri.valid)
+					distances.emplace_back(((Position(tri.v[0]) + Position(tri.v[1]) + Position(tri.v[2])) / 3.0f - headCentre).Length(), tri.area);
+			}
+			std::ranges::sort(distances);
+			float scalpRadius = 0.0f, innerArea = 0.0f;
+			for (const auto& [distance, area] : distances) {
+				scalpRadius = distance;
+				if ((innerArea += area) >= kScalpShare * totalArea)
+					break;
+			}
+			struct Piece
+			{
+				float mapVote = 0.0f;
+				float ownVote = 0.0f;      // area weighted preference for the piece's sense of its axes
+				float hangingVote = 0.0f;  // the same where it hangs free
+				float area = 0.0f;
+				float cellVote = 0.0f;  // the same from decided pieces sampling its texels, and its scale
+				float cellWeight = 0.0f;
+				float sign = 0.0f;  // +1 or -1 once decided
+			};
+			std::vector<Piece> pieces(islands.size());
+			for (uint32_t t = 0; t < tris.size(); ++t) {
+				const auto& tri = tris[t];
+				if (!tri.valid)
+					continue;
+				auto& piece = pieces[pieceOf[islandOf[t]]];
+				const float3 dir = SurfaceDirection(tri, islands[islandOf[t]].axis * islandSign[islandOf[t]]);
+				piece.area += tri.area;
+				if (tri.fromFlowMap) {
+					piece.mapVote += tri.area * tri.flow.Dot(dir);
+					continue;
+				}
+				const float3 centre = (Position(tri.v[0]) + Position(tri.v[1]) + Position(tri.v[2])) / 3.0f;
+				float3 radial = centre - headCentre;
+				const float distance = radial.Length();
+				radial.Normalize();
+				const float vote = tri.area * (dir.Dot(radial) - 0.5f * dir.z);
+				const float hanging = scalpRadius > 0.0f ? std::clamp((distance / scalpRadius - kHangingFrom) / (kHangingFull - kHangingFrom), 0.0f, 1.0f) : 1.0f;
+				piece.ownVote += vote;
+				piece.hangingVote += vote * hanging;
+			}
+			for (auto& piece : pieces) {
+				if (piece.mapVote != 0.0f)
+					piece.sign = piece.mapVote < 0.0f ? -1.0f : 1.0f;
+				else if (std::abs(piece.hangingVote) >= kConfidentVote * piece.area && piece.area > 0.0f)
+					piece.sign = piece.hangingVote < 0.0f ? -1.0f : 1.0f;
+			}
+
+			// A piece whose shape says little (lying on the crown, rising from the hairline)
+			// follows the decided pieces that sample the same texels, which show the same painted
+			// strands: each votes in the texture cells it samples. Only decided pieces vote: a
+			// dense scalp texture with no visible root or tip gets mapped either way up, and
+			// weak votes from its cards are noise. With nobody to follow, the weak vote stands.
+			std::vector<float2> cells(kFlowVoteCells * kFlowVoteCells, float2::Zero);
+			const auto cellOf = [&](const Triangle& a_tri) {
+				const float2 uv = (mesh.uvs[a_tri.v[0]] + mesh.uvs[a_tri.v[1]] + mesh.uvs[a_tri.v[2]]) / 3.0f;
+				if (!std::isfinite(uv.x) || !std::isfinite(uv.y))
+					return size_t{ 0 };
+				const auto x = std::min(static_cast<uint32_t>((uv.x - std::floor(uv.x)) * kFlowVoteCells), kFlowVoteCells - 1);
+				const auto y = std::min(static_cast<uint32_t>((uv.y - std::floor(uv.y)) * kFlowVoteCells), kFlowVoteCells - 1);
+				return static_cast<size_t>(y) * kFlowVoteCells + x;
+			};
+			for (uint32_t t = 0; t < tris.size(); ++t) {
+				const uint32_t i = islandOf[t];
+				if (tris[t].valid && pieces[pieceOf[i]].sign != 0.0f)
+					cells[cellOf(tris[t])] += islands[i].axis * (islandSign[i] * pieces[pieceOf[i]].sign * tris[t].area);
+			}
+			for (uint32_t t = 0; t < tris.size(); ++t) {
+				const uint32_t i = islandOf[t];
+				auto& piece = pieces[pieceOf[i]];
+				if (!tris[t].valid || piece.sign != 0.0f)
+					continue;
+				const float2& cell = cells[cellOf(tris[t])];
+				piece.cellVote += tris[t].area * islandSign[i] * islands[i].axis.Dot(cell);
+				piece.cellWeight += tris[t].area * cell.Length();
+			}
+			for (auto& piece : pieces) {
+				if (piece.sign != 0.0f || piece.area <= 0.0f)
+					continue;
+				// Own shape: the mean preference, under kConfidentVote here. Texels: -1 to 1.
+				const float vote = piece.ownVote / piece.area + (piece.cellWeight > 0.0f ? piece.cellVote / piece.cellWeight : 0.0f);
+				piece.sign = vote < 0.0f ? -1.0f : 1.0f;
+			}
+			for (uint32_t i = 0; i < islands.size(); ++i) {
+				if (islandSign[i] * pieces[pieceOf[i]].sign < 0.0f)
+					islands[i].axis = -islands[i].axis;
+			}
+
+			for (uint32_t t = 0; t < tris.size(); ++t) {
+				auto& tri = tris[t];
+				if (!tri.valid || tri.fromFlowMap)
+					continue;
+				if (const float3 dir = SurfaceDirection(tri, islands[islandOf[t]].axis); dir != float3::Zero)
+					tri.flow = dir;
+			}
+			return totalArea > 0.0f ? mapArea / totalArea : 0.0f;
 		}
 
 		void Generator::BuildAdjacency()
@@ -468,31 +789,6 @@ namespace Strands
 				hi = float3::Max(hi, p);
 			}
 			return { 0.5f * (lo.x + hi.x), 0.5f * (lo.y + hi.y), hi.z - 8.0f };
-		}
-
-		void Generator::OrientFlow()
-		{
-			headCentre = FindHeadCentre();
-			if (style.flowAxis != FlowAxis::Auto)
-				return;
-
-			// Hair flows away from the head and, on balance, downwards: orient each connected
-			// piece so its flow agrees with both, weighted by area. Strips along U and along V
-			// are laid out independently, so each axis within a piece is oriented on its own.
-			const auto group = [](const Triangle& a_tri) { return static_cast<int64_t>(a_tri.component) * 2 + (a_tri.alongU ? 1 : 0); };
-			std::unordered_map<int64_t, float> score;
-			for (const auto& tri : tris) {
-				if (!tri.valid)
-					continue;
-				const float3 centre = (Position(tri.v[0]) + Position(tri.v[1]) + Position(tri.v[2])) / 3.0f;
-				float3 radial = centre - headCentre;
-				radial.Normalize();
-				score[group(tri)] += tri.area * (tri.flow.Dot(radial) - 0.5f * tri.flow.z);
-			}
-			for (auto& tri : tris) {
-				if (tri.valid && score[group(tri)] < 0.0f)
-					tri.flow = -tri.flow;
-			}
 		}
 
 		void Generator::BuildVertexFields()
@@ -1132,8 +1428,8 @@ namespace Strands
 			BuildAdjacency();
 			BuildComponents();
 			DropBackFaces();
-			ChooseFlowAxis();
-			OrientFlow();
+			headCentre = FindHeadCentre();
+			o_asset.flowMapShare = ChooseFlow();
 			BuildVertexFields();
 
 			o_asset.convertedTriangles = static_cast<uint32_t>(std::ranges::count_if(tris, [](const Triangle& t) { return t.valid; }));

@@ -337,7 +337,7 @@ namespace Strands
 	{
 		enum class State
 		{
-			Readback,  // waiting for the texture's alpha to reach the CPU
+			Readback,  // waiting for the texture's alpha (and the flow map) to reach the CPU
 			Queued,
 			Running,
 			Ready,
@@ -350,6 +350,7 @@ namespace Strands
 		std::string error;
 		HairMeshData mesh;              // released once the job starts
 		CoverageReadback readback;      // decoded into mesh.coverage and colourImage by the job
+		CoverageReadback flowReadback;  // decoded into mesh.flow by the job
 		StrandColourImage colourImage;  // taken when the job finishes
 		StrandStyle style;
 		std::future<std::unique_ptr<StrandAssetData>> job;
@@ -585,15 +586,23 @@ namespace Strands
 			InvalidateStyles();
 		}
 
-		// Texture alpha that reached the CPU: its hair can be generated now.
+		// Textures that reached the CPU: their hair can be generated now.
 		for (auto& [key, asset] : assets) {
 			if (asset->state != Asset::State::Readback)
 				continue;
-			const auto status = PollCoverageReadback(asset->readback);
-			if (status == ReadbackStatus::Pending)
+			// A readback is in flight while it has a staging texture.
+			const auto poll = [&](CoverageReadback& a_readback, std::string_view a_failure) {
+				if (!a_readback.staging)
+					return false;
+				const auto status = PollCoverageReadback(a_readback);
+				if (status == ReadbackStatus::Failed)
+					logger::warn("[HairStrands] {}: {}", asset->key, a_failure);
+				return status == ReadbackStatus::Pending;
+			};
+			const bool texturePending = poll(asset->readback, "could not read the hair texture back; strands fill the whole cards");
+			const bool flowPending = poll(asset->flowReadback, "could not read the flow map back; flow follows the texture");
+			if (texturePending || flowPending)
 				continue;
-			if (status == ReadbackStatus::Failed)
-				logger::warn("[HairStrands] {}: could not read the hair texture back; strands fill the whole cards", asset->key);
 			asset->state = Asset::State::Queued;
 			jobQueue.push_back(asset);
 		}
@@ -632,9 +641,10 @@ namespace Strands
 				if (!colourImage.Empty())
 					asset->colour = CreateColourTexture(colourImage, asset->colourBytes);
 				asset->state = Asset::State::Ready;
-				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}", asset->key, asset->strandCount,
+				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}{}", asset->key, asset->strandCount,
 					asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "root", asset->guideCount, asset->headRadius,
-					asset->colour ? std::format("{}x{} strand colour", colourImage.width, colourImage.height) : std::string("card colour"));
+					asset->colour ? std::format("{}x{} strand colour", colourImage.width, colourImage.height) : std::string("card colour"),
+					data->flowMapShare > 0.0f ? std::format(", flow map on {:.0f}% of the hair", data->flowMapShare * 100.0f) : std::string());
 			} catch (const std::exception& e) {
 				asset->state = Asset::State::Failed;
 				asset->error = "GPU upload failed";
@@ -658,6 +668,12 @@ namespace Strands
 						if (!DecodeCoverage(asset->readback, asset->mesh.coverage, asset->colourImage, coverageError))
 							logger::warn("[HairStrands] {}: {}; strands fill the whole cards", asset->key, coverageError);
 						asset->readback = {};
+					}
+					if (!asset->flowReadback.bytes.empty()) {
+						std::string flowError;
+						if (!DecodeFlow(asset->flowReadback, asset->mesh.flow, flowError))
+							logger::warn("[HairStrands] {}: flow map: {}; flow follows the texture", asset->key, flowError);
+						asset->flowReadback = {};
 					}
 					ok = GenerateStrands(asset->mesh, asset->style, *data, error);
 				} catch (const std::exception& e) {
@@ -866,12 +882,18 @@ namespace Strands
 			asset->state = Asset::State::Failed;
 			asset->error = error;
 			logger::warn("[HairStrands] {}: cannot read the mesh: {}", a_instance.key.ToString(), error);
-		} else if (asset->style.coverageThreshold > 0.0f && BeginCoverageReadback(a_pass, asset->readback, error)) {
-			asset->state = Asset::State::Readback;
 		} else {
-			if (asset->style.coverageThreshold > 0.0f)
+			const bool coverage = asset->style.coverageThreshold > 0.0f && BeginCoverageReadback(a_pass, asset->readback, error);
+			if (asset->style.coverageThreshold > 0.0f && !coverage)
 				logger::info("[HairStrands] {}: {}; strands fill the whole cards", a_instance.key.ToString(), error);
-			jobQueue.push_back(asset);
+			std::string flowError;
+			const bool flow = asset->style.flowAxis == FlowAxis::Auto && BeginFlowReadback(a_pass, asset->flowReadback, flowError);
+			if (!flowError.empty())
+				logger::warn("[HairStrands] {}: flow map: {}; flow follows the texture", a_instance.key.ToString(), flowError);
+			if (coverage || flow)
+				asset->state = Asset::State::Readback;
+			else
+				jobQueue.push_back(asset);
 		}
 		assets.emplace(key, asset);
 		return asset;

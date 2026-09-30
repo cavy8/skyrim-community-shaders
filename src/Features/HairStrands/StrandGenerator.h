@@ -48,6 +48,7 @@ namespace Strands
 		float headRadius = 0.0f;
 
 		float averageLength = 0.0f;
+		float flowMapShare = 0.0f;  // of the converted card area, the part whose flow came from the flow map
 		SeedMode seedingUsed = SeedMode::Roots;
 		uint32_t convertedTriangles = 0;
 		uint32_t totalTriangles = 0;
@@ -71,9 +72,11 @@ namespace Strands
 	 * @brief Converts a hair mesh into strands following its texture flow.
 	 *
 	 * Flow is the direction the chosen texture axis runs across each triangle. With
-	 * FlowAxis::Auto each UV island (one strip of the atlas) takes V, or U where it is
-	 * clearly longer along U, and each connected piece is oriented to point away from the
-	 * head. Double-sided cards keep one side. Strands are streamlines of that flow traced
+	 * FlowAxis::Auto it comes from the flow map where there is one; elsewhere each UV island
+	 * (one card's strip of the atlas) follows the way the strands are painted in that part of
+	 * the texture. Islands welded together turn together, away from the head where they hang
+	 * free, and otherwise like the cards that sample the same texels. Double-sided cards keep
+	 * one side. Strands are streamlines of that flow traced
 	 * across the welded mesh, seeded
 	 * along upstream boundary edges (roots), plus fill streamlines through any triangles
 	 * the roots missed, or scattered over the surface for very short hair. Each strand is

@@ -172,6 +172,17 @@ only for alpha-tested hair. The Hl copy's own passes now draw the strands (see
 [Why it is built this way](#why-it-is-built-this-way)), so KS hair takes the same path as
 vanilla hair.
 
+`0-3-0` (2026-09-29) takes the flow from the hair's flow map where it has one, and elsewhere
+from the part of the texture each card samples. Until then each connected piece of the mesh
+was turned to run away from the head and downwards, which says little for hair lying on the
+scalp. Vanilla hair has flow maps (Vanilla Hair Flowmaps, the ones Hair Specular reads).
+Measured against them, the old flow ran backwards on 14% (female hair 06), 19% (13) and 35%
+(14) of the card area, all on the crown and top of the head. Without the maps it now runs
+backwards on 0%, 1% and 12%; the 12% is hair 14's braids wrapped sideways round the head.
+With the maps installed it follows them. The top of KS TombRaider, combed back into its
+braid, grew from the braid (16% of its area) and now grows from the hairline. See
+[Conversion algorithm](#conversion-algorithm-strandgeneratorcpp).
+
 This is build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -183,8 +194,8 @@ This is build-verified, and the generator fixes are checked on real meshes (see
 | Classify: is this geometry hair? | `StrandRenderer::Classify` | render | first draw of a geometry |
 | Resolve style (file → preset → editor override) | `StrandRenderer::ResolveStyle` | render | first draw, and after style files or settings change |
 | Copy mesh (bind pose, weights, UVs) | `MeshExtract.cpp` | render | once per hair and style |
-| Copy one mip of the diffuse texture to a staging texture, map it once the GPU is done | `BeginCoverageReadback`, `PollCoverageReadback` | render | once per hair and style, a frame or two before generation |
-| Decode the texture's alpha (any format, BC included, via DirectXTex) and fill its colour for strands | `DecodeCoverage` | worker | start of the generation job |
+| Copy one mip of the diffuse texture, and of the flow map if there is one, to staging textures, map them once the GPU is done | `BeginCoverageReadback`, `BeginFlowReadback`, `PollCoverageReadback` | render | once per hair and style, a frame or two before generation |
+| Decode the texture's alpha and luminance (any format, BC included, via DirectXTex) and fill its colour for strands; decode the flow map | `DecodeCoverage`, `DecodeFlow` | worker | start of the generation job |
 | Generate strands, pick guide strands, fit the head collider | `StrandGenerator.cpp` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
 | Upload asset (strands, colour texture) | `StrandRenderer::BeginFrame` | render | when the job finishes |
 | Read the actor's head mesh into the head field | `BuildHeadField` | render, in `SetupGeometry` | once per actor and hair asset, with physics and collision on |
@@ -318,15 +329,42 @@ hidden.
    Dropping copy by copy leaves an interleaved double-sided mesh (vanilla hair lists front
    and back alternately) as two checkerboards of isolated triangles. It also cuts holes
    where a sheet shares a band with another's back. Either way, strands stop at every hole.
-2. **Flow** per triangle = ∂P/∂V from the UVs (or ±U/±V when set), projected into the
-   triangle. With `flowAxis: auto`, each UV island (vertices sharing a position and a UV;
-   one strip of the atlas) flows along U instead when it is more than 1.5× longer that way
-   on the surface. Vanilla's atlas lays one strip sideways (V 0.74–0.88): 24% of the Nord
-   hair's card area and 71% of `0_td18_hair_9`'s. Each connected piece is then flipped so its
-   flow runs away from the skull centre (the `NPC Head` bone + 5 units up) and, on balance,
-   downwards; a piece's U and V strips vote separately. Real hair UV V only loosely tracks
-   root→tip (KS/Apachii: correlation with height about -0.55 to -0.7), hence the vote
-   rather than a fixed sign.
+2. **Flow** per triangle, root to tip, projected into the triangle. With `flowAxis` V, -V, U
+   or -U it is that texture axis (∂P/∂V or ∂P/∂U from the UVs). With `auto`:
+   -   **Flow map.** A material with the back-lighting flag and a back-lighting texture (slot
+       7) over 32×32 has a flow map, as Hair Specular reads it (`Lighting.hlsl`): RG × 2 − 1
+       is the direction from tip to root in texture space, and black texels have none. Where
+       its mean over a triangle (15 probes) is at least 0.3 long, it is mapped through the
+       triangle's ∂P/∂U and ∂P/∂V onto the surface. PGPatcher's "Add Hair Flow Map" puts
+       Vanilla Hair Flowmaps' maps there; they cover 98-100% of vanilla hair. With them,
+       vanilla hair hanging below the head runs down on 90-100% of its area, which confirms
+       the tip-to-root sense.
+   -   **Axis from the texture.** Elsewhere each UV island (vertices sharing a position and a
+       UV; one card's strip of the atlas) runs the way the strands are painted in the texels
+       it samples. That is the structure tensor of the diffuse's alpha-weighted luminance,
+       smoothed over about 1/85 of the texture and summed over the island: painted strands
+       are streaks, so brightness changes fastest across them. On every atlas checked the
+       streaks agree strongly (coherence 0.6-0.9). Below 0.2, or without a readback, the
+       island takes U when it is more than 1.5× longer that way on the surface, else V.
+       Vanilla's atlas lays one strip sideways (V 0.74–0.88): 24% of the Nord hair's card
+       area and 71% of `0_td18_hair_9`'s. The shape rule sent strands across wide, short
+       cards, such as KS Tails' layered tiers (8 units wide, 5 long).
+   -   **Root and tip.** Islands joined by welded seams form pieces that turn together:
+       across a seam hair continues, or runs beside its neighbour, the same way (or away
+       from a parting). A seam where the flow mostly crosses, or keeps changing sign, joins
+       nothing. Hair runs away from the skull centre (the `NPC Head` bone + 5 units up) and,
+       on balance, downwards, but only hair hanging free shows that. Free means 1.3 to 1.8
+       scalp radii from the skull centre, the scalp radius being the distance of the
+       innermost 10% of the hair's area. On the scalp and the nape hair runs either way:
+       down from the crown, back from the hairline, or up into a tie. A piece partly on the
+       flow map follows the map. A piece whose free-hanging part clearly votes one way (a
+       mean of 0.3 over the whole piece) keeps that way. Every other piece follows the
+       decided pieces that sample the same texels, in 64×64 cells of the texture, because
+       the same texels show the same painted strands. With nobody to follow, its own weak
+       vote stands. Only decided pieces vote in the cells: Apachii hair 79 maps its scalp
+       block either way up, and weak votes from such cards are noise. A decided piece keeps
+       its way whatever the texels say, because some cards map their strip upside down
+       (one long card of KS TifaLong).
 3. **Trace** streamlines across welded edge adjacency, following barycentrically
    interpolated vertex flow. A strand stops at a boundary, at a fold (neighbour normals
    more than about 100° apart), where the flow reverses, or where it re-enters a triangle
@@ -606,6 +644,16 @@ permutation bit.
     lengths are 12.6 on vanilla Nord hair (was 1.1), 13.9 on `0_td18_hair_9` (was 3.6) and
     22.4 on Simonne (was 2.9). Unclumped strand points stay within 2.3 units of a mesh
     vertex. To see why strands end, count `Trace`'s stop reasons in a scratch copy.
+-   Flow (`0-3-0`): the same reader also dumps every texture slot and the back-lighting flag;
+    feed the harness the diffuse at its readback size (alpha, and luminance × alpha) and the
+    flow map's RG. Score each triangle's flow two ways. Vanilla hair has flow maps: run it
+    without them and compare. Hair more than 4 units below the skull centre must run down.
+    Then look at the triangles whose flow changed, over a textured render of the mesh: a
+    card's own shape and its texture can disagree, and the arrows are easy to misread, so
+    measure the flow's direction over a region (mean y for front-to-back) before judging.
+    Checked on 2026-09-29 against 11 KS and Apachii long hairs, ponytails and braids and 4
+    vanilla hairs (numbers above); hanging hair runs down on 90-100% of its area on all of them
+    but Apachii hair 79 (71%: its tail curls sideways).
 
 ## Unverified assumptions
 
@@ -664,6 +712,11 @@ Check these first in game:
     its editor ID, its CPU vertex data is kept (as the hair's), and its skin lists
     `NPC Head [Head]`. Hair pushed off the head by a constant gap, or into it, would mean the
     bind-pose chain (hair skin → head bone → head mesh skin) is off.
+-   Flow maps (`0-3-0`): a vanilla hair patched by PGPatcher should log `flow map on N% of
+    the hair` with N near 100 (98-100 in the harness), and a hair without one no such
+    suffix. Strands growing from the tips on such hair would mean the map's sense is not
+    tip to root. The map is decoded as stored, so a map in an sRGB format would read
+    differently from Hair Specular, which samples it linearised.
 -   `RE::GetSecondsSinceLastFrame()` is real frame time, and `UI::GameIsPaused()` covers
     menus. Slow-motion kill cameras may play hair at full speed.
 

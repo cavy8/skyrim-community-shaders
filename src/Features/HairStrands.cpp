@@ -438,7 +438,7 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		tooltip(T(TKEY("style_short_length_tooltip"), "Strand length, in units, when roots cover the whole surface."));
 		if (EnumCombo(T(TKEY("style_flow"), "Flow Direction"), a_style.flowAxis, { T(TKEY("flow_auto"), "Auto"), "V", "-V", "U", "-U" }))
 			changed = o_regenerate = true;
-		tooltip(T(TKEY("style_flow_tooltip"), "Which texture direction runs from root to tip. Auto uses V, turned to run away\nfrom the head. Change it if strands grow across the cards or from the tips."));
+		tooltip(T(TKEY("style_flow_tooltip"), "Which texture direction runs from root to tip. Auto follows the hair's flow map\n(the one Hair Specular uses) where it has one, elsewhere the way the strands are\npainted in each part of the texture, turned to run away from the head.\nChange it if strands grow across the cards or from the tips."));
 
 		int seed = static_cast<int>(a_style.seed);
 		if (ImGui::InputInt(T(TKEY("style_seed"), "Random Seed"), &seed))

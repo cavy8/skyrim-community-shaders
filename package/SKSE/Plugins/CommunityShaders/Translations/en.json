@@ -1197,7 +1197,7 @@
     "feature.hair_strands.style_exclude_remove": "Remove",
     "feature.hair_strands.style_exclude_tooltip": "Triangles whose texture coordinates fall inside a rectangle keep their cards and\nget no strands: scalp caps, hairlines, ribbons, beads. Values: min U, min V, max U, max V.",
     "feature.hair_strands.style_flow": "Flow Direction",
-    "feature.hair_strands.style_flow_tooltip": "Which texture direction runs from root to tip. Auto uses V, turned to run away\nfrom the head. Change it if strands grow across the cards or from the tips.",
+    "feature.hair_strands.style_flow_tooltip": "Which texture direction runs from root to tip. Auto follows the hair's flow map\n(the one Hair Specular uses) where it has one, elsewhere the way the strands are\npainted in each part of the texture, turned to run away from the head.\nChange it if strands grow across the cards or from the tips.",
     "feature.hair_strands.style_flyaways": "Flyaways",
     "feature.hair_strands.style_flyaways_tooltip": "Fraction of strands that stray from the style.",
     "feature.hair_strands.style_frizz": "Frizz",

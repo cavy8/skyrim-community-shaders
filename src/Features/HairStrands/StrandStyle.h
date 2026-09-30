@@ -37,7 +37,7 @@ namespace Strands
 		Count
 	};
 
-	/** @brief Which texture direction runs from root to tip. Auto picks V or U per atlas strip and orients it away from the head. */
+	/** @brief Which texture direction runs from root to tip. Auto follows the flow map, else the way each atlas strip's strands are painted, oriented away from the head. */
 	enum class FlowAxis : uint32_t
 	{
 		Auto,

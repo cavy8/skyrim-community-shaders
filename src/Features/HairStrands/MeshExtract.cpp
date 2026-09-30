@@ -335,24 +335,114 @@ namespace Strands
 		return true;
 	}
 
+	namespace
+	{
+		const RE::BSLightingShaderMaterialBase* LightingMaterial(const RE::BSRenderPass* a_pass)
+		{
+			const auto* property = a_pass->shaderProperty;
+			if (!property || property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
+				return nullptr;
+			return static_cast<const RE::BSLightingShaderMaterialBase*>(static_cast<const RE::BSLightingShaderProperty*>(property)->material);
+		}
+
+		winrt::com_ptr<ID3D11Texture2D> Texture2D(const RE::NiSourceTexture* a_source)
+		{
+			winrt::com_ptr<ID3D11Texture2D> texture2D;
+			const auto* texture = a_source ? a_source->rendererTexture : nullptr;
+			if (texture && texture->texture)
+				texture->texture->QueryInterface(IID_PPV_ARGS(texture2D.put()));
+			return texture2D;
+		}
+
+		/** Copies the first mip no larger than kCoverageSize to a staging texture. */
+		bool CopyToStaging(ID3D11Texture2D* a_texture, const D3D11_TEXTURE2D_DESC& a_desc, const char* a_name, CoverageReadback& o_readback, std::string& o_error)
+		{
+			// Block-compressed copies need whole blocks.
+			const bool compressed = DirectX::IsCompressed(a_desc.Format);
+			const auto mipSize = [&](uint32_t a_mip) { return std::pair{ std::max(a_desc.Width >> a_mip, 1u), std::max(a_desc.Height >> a_mip, 1u) }; };
+			uint32_t mip = 0;
+			while (mip + 1 < a_desc.MipLevels) {
+				const auto [width, height] = mipSize(mip);
+				const auto [nextWidth, nextHeight] = mipSize(mip + 1);
+				if (std::max(width, height) <= kCoverageSize || (compressed && (nextWidth % 4 || nextHeight % 4)))
+					break;
+				++mip;
+			}
+			const auto [width, height] = mipSize(mip);
+			if (compressed && (width % 4 || height % 4)) {
+				o_error = "texture mip is not block aligned";
+				return false;
+			}
+
+			D3D11_TEXTURE2D_DESC stagingDesc{};
+			stagingDesc.Width = width;
+			stagingDesc.Height = height;
+			stagingDesc.MipLevels = 1;
+			stagingDesc.ArraySize = 1;
+			stagingDesc.Format = a_desc.Format;
+			stagingDesc.SampleDesc.Count = 1;
+			stagingDesc.Usage = D3D11_USAGE_STAGING;
+			stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			if (FAILED(globals::d3d::device->CreateTexture2D(&stagingDesc, nullptr, o_readback.staging.put()))) {
+				o_error = "cannot create the staging texture";
+				return false;
+			}
+			Util::SetResourceName(o_readback.staging.get(), a_name);
+			globals::d3d::context->CopySubresourceRegion(o_readback.staging.get(), 0, 0, 0, 0, a_texture, D3D11CalcSubresource(mip, 0, a_desc.MipLevels), nullptr);
+			o_readback.format = a_desc.Format;
+			o_readback.width = width;
+			o_readback.height = height;
+			return true;
+		}
+
+		/** Decodes a readback to RGBA8, as stored (an sRGB format only relabelled). */
+		const DirectX::Image* DecodeRGBA8(const CoverageReadback& a_readback, DirectX::ScratchImage& o_scratch, std::string& o_error)
+		{
+			if (a_readback.bytes.empty()) {
+				o_error = "no texture data";
+				return nullptr;
+			}
+			DirectX::Image image{};
+			image.width = a_readback.width;
+			image.height = a_readback.height;
+			image.format = DirectX::MakeLinear(a_readback.format);
+			image.rowPitch = a_readback.rowPitch;
+			image.slicePitch = a_readback.slicePitch;
+			image.pixels = const_cast<uint8_t*>(a_readback.bytes.data());
+
+			constexpr DXGI_FORMAT kDecoded = DXGI_FORMAT_R8G8B8A8_UNORM;
+			if (image.format == kDecoded) {
+				if (FAILED(o_scratch.InitializeFromImage(image))) {
+					o_error = "cannot copy the texture";
+					return nullptr;
+				}
+			} else {
+				const HRESULT hr = DirectX::IsCompressed(image.format) ? DirectX::Decompress(image, kDecoded, o_scratch) : DirectX::Convert(image, kDecoded, DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, o_scratch);
+				if (FAILED(hr)) {
+					o_error = std::format("cannot decode texture format {}", static_cast<int>(a_readback.format));
+					return nullptr;
+				}
+			}
+			const DirectX::Image* decoded = o_scratch.GetImage(0, 0, 0);
+			if (!decoded || !decoded->pixels) {
+				o_error = "cannot decode the texture";
+				return nullptr;
+			}
+			return decoded;
+		}
+	}
+
 	bool BeginCoverageReadback(const RE::BSRenderPass* a_pass, CoverageReadback& o_readback, std::string& o_error)
 	{
 		o_readback = {};
-		const auto* property = a_pass->shaderProperty;
-		if (!property || property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get()) {
+		const auto* material = LightingMaterial(a_pass);
+		if (!material) {
 			o_error = "not a lighting shader";
 			return false;
 		}
-		const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(static_cast<const RE::BSLightingShaderProperty*>(property)->material);
-		const auto* source = material ? material->diffuseTexture.get() : nullptr;
-		const auto* texture = source ? source->rendererTexture : nullptr;
-		if (!texture || !texture->texture) {
-			o_error = "no diffuse texture";
-			return false;
-		}
-		winrt::com_ptr<ID3D11Texture2D> texture2D;
-		if (FAILED(texture->texture->QueryInterface(IID_PPV_ARGS(texture2D.put())))) {
-			o_error = "diffuse texture is not 2D";
+		const auto texture2D = Texture2D(material->diffuseTexture.get());
+		if (!texture2D) {
+			o_error = "no 2D diffuse texture";
 			return false;
 		}
 		D3D11_TEXTURE2D_DESC desc{};
@@ -361,43 +451,26 @@ namespace Strands
 			o_error = "diffuse texture has no alpha";
 			return false;
 		}
+		return CopyToStaging(texture2D.get(), desc, "HairStrands::CoverageReadback", o_readback, o_error);
+	}
 
-		// The first mip no larger than kCoverageSize. Block-compressed copies need whole blocks.
-		const bool compressed = DirectX::IsCompressed(desc.Format);
-		const auto mipSize = [&](uint32_t a_mip) { return std::pair{ std::max(desc.Width >> a_mip, 1u), std::max(desc.Height >> a_mip, 1u) }; };
-		uint32_t mip = 0;
-		while (mip + 1 < desc.MipLevels) {
-			const auto [width, height] = mipSize(mip);
-			const auto [nextWidth, nextHeight] = mipSize(mip + 1);
-			if (std::max(width, height) <= kCoverageSize || (compressed && (nextWidth % 4 || nextHeight % 4)))
-				break;
-			++mip;
-		}
-		const auto [width, height] = mipSize(mip);
-		if (compressed && (width % 4 || height % 4)) {
-			o_error = "diffuse texture mip is not block aligned";
+	bool BeginFlowReadback(const RE::BSRenderPass* a_pass, CoverageReadback& o_readback, std::string& o_error)
+	{
+		// As Hair Specular reads it (Lighting.hlsl): the back-lighting slot of a material with
+		// the back-lighting flag, larger than the engine's small default textures.
+		o_readback = {};
+		o_error.clear();
+		const auto* material = LightingMaterial(a_pass);
+		if (!material || !a_pass->shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kBackLighting))
 			return false;
-		}
-
-		D3D11_TEXTURE2D_DESC stagingDesc{};
-		stagingDesc.Width = width;
-		stagingDesc.Height = height;
-		stagingDesc.MipLevels = 1;
-		stagingDesc.ArraySize = 1;
-		stagingDesc.Format = desc.Format;
-		stagingDesc.SampleDesc.Count = 1;
-		stagingDesc.Usage = D3D11_USAGE_STAGING;
-		stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-		if (FAILED(globals::d3d::device->CreateTexture2D(&stagingDesc, nullptr, o_readback.staging.put()))) {
-			o_error = "cannot create the staging texture";
+		const auto texture2D = Texture2D(material->specularBackLightingTexture.get());
+		if (!texture2D)
 			return false;
-		}
-		Util::SetResourceName(o_readback.staging.get(), "HairStrands::CoverageReadback");
-		globals::d3d::context->CopySubresourceRegion(o_readback.staging.get(), 0, 0, 0, 0, texture2D.get(), D3D11CalcSubresource(mip, 0, desc.MipLevels), nullptr);
-		o_readback.format = desc.Format;
-		o_readback.width = width;
-		o_readback.height = height;
-		return true;
+		D3D11_TEXTURE2D_DESC desc{};
+		texture2D->GetDesc(&desc);
+		if (desc.Width <= 32 || desc.Height <= 32)
+			return false;
+		return CopyToStaging(texture2D.get(), desc, "HairStrands::FlowReadback", o_readback, o_error);
 	}
 
 	ReadbackStatus PollCoverageReadback(CoverageReadback& io_readback)
@@ -430,41 +503,48 @@ namespace Strands
 	{
 		o_mask = {};
 		o_colour = {};
-		if (a_readback.bytes.empty()) {
-			o_error = "no texture data";
-			return false;
-		}
-		DirectX::Image image{};
-		image.width = a_readback.width;
-		image.height = a_readback.height;
-		image.format = DirectX::MakeLinear(a_readback.format);  // alpha is linear either way
-		image.rowPitch = a_readback.rowPitch;
-		image.slicePitch = a_readback.slicePitch;
-		image.pixels = const_cast<uint8_t*>(a_readback.bytes.data());
-
-		constexpr DXGI_FORMAT kDecoded = DXGI_FORMAT_R8G8B8A8_UNORM;
 		DirectX::ScratchImage scratch;
-		const DirectX::Image* decoded = &image;
-		if (image.format != kDecoded) {
-			const HRESULT hr = DirectX::IsCompressed(image.format) ? DirectX::Decompress(image, kDecoded, scratch) : DirectX::Convert(image, kDecoded, DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, scratch);
-			decoded = SUCCEEDED(hr) ? scratch.GetImage(0, 0, 0) : nullptr;
-		}
-		if (!decoded || !decoded->pixels) {
-			o_error = std::format("cannot decode texture format {}", static_cast<int>(a_readback.format));
+		const DirectX::Image* decoded = DecodeRGBA8(a_readback, scratch, o_error);
+		if (!decoded)
 			return false;
-		}
 
 		o_mask.width = static_cast<uint32_t>(decoded->width);
 		o_mask.height = static_cast<uint32_t>(decoded->height);
 		o_mask.alpha.resize(static_cast<size_t>(o_mask.width) * o_mask.height);
+		o_mask.shade.resize(o_mask.alpha.size());
 		for (uint32_t y = 0; y < o_mask.height; ++y) {
 			const uint8_t* row = decoded->pixels + y * decoded->rowPitch;
-			for (uint32_t x = 0; x < o_mask.width; ++x)
-				o_mask.alpha[static_cast<size_t>(y) * o_mask.width + x] = row[x * 4 + 3];
+			for (uint32_t x = 0; x < o_mask.width; ++x) {
+				const uint8_t* texel = row + x * 4;
+				const size_t i = static_cast<size_t>(y) * o_mask.width + x;
+				o_mask.alpha[i] = texel[3];
+				o_mask.shade[i] = static_cast<uint8_t>((texel[0] * 77u + texel[1] * 150u + texel[2] * 29u) * texel[3] / (256u * 255u));
+			}
 		}
 		// The colour bytes are as stored (the format was only relabelled linear): the strand
 		// texture takes the source's colour space so it samples the same.
 		BuildStrandColour(*decoded, DirectX::IsSRGB(a_readback.format), o_colour);
+		return true;
+	}
+
+	bool DecodeFlow(const CoverageReadback& a_readback, FlowMap& o_flow, std::string& o_error)
+	{
+		o_flow = {};
+		DirectX::ScratchImage scratch;
+		const DirectX::Image* decoded = DecodeRGBA8(a_readback, scratch, o_error);
+		if (!decoded)
+			return false;
+		o_flow.width = static_cast<uint32_t>(decoded->width);
+		o_flow.height = static_cast<uint32_t>(decoded->height);
+		o_flow.rg.resize(static_cast<size_t>(o_flow.width) * o_flow.height * 2);
+		for (uint32_t y = 0; y < o_flow.height; ++y) {
+			const uint8_t* row = decoded->pixels + y * decoded->rowPitch;
+			for (uint32_t x = 0; x < o_flow.width; ++x) {
+				const size_t i = (static_cast<size_t>(y) * o_flow.width + x) * 2;
+				o_flow.rg[i] = row[x * 4];
+				o_flow.rg[i + 1] = row[x * 4 + 1];
+			}
+		}
 		return true;
 	}
 }

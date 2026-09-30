@@ -15,6 +15,7 @@ namespace Strands
 		uint32_t width = 0;
 		uint32_t height = 0;
 		std::vector<uint8_t> alpha;
+		std::vector<uint8_t> shade;  // luminance x alpha: the painted strands' streaks, for the way they run
 
 		bool Empty() const { return alpha.empty(); }
 
@@ -37,6 +38,33 @@ namespace Strands
 			const uint32_t y0 = wrap(static_cast<int32_t>(fy), height), y1 = wrap(static_cast<int32_t>(fy) + 1, height);
 			const auto at = [&](uint32_t a_x, uint32_t a_y) { return alpha[static_cast<size_t>(a_y) * width + a_x] / 255.0f; };
 			return std::lerp(std::lerp(at(x0, y0), at(x1, y0), tx), std::lerp(at(x0, y1), at(x1, y1), tx), ty);
+		}
+	};
+
+	/**
+	 * The hair's flow map, where it has one: the texture in slot 7 that Hair Specular reads when
+	 * the material has the back-lighting flag. RG x 2 - 1 is the direction from tip to root in
+	 * texture space; black texels have none.
+	 */
+	struct FlowMap
+	{
+		uint32_t width = 0;
+		uint32_t height = 0;
+		std::vector<uint8_t> rg;  // two bytes per texel
+
+		bool Empty() const { return rg.empty(); }
+
+		/** @brief The tip-to-root direction at a texture coordinate (nearest texel, wrapping); zero where the map is black. */
+		float2 Sample(float a_u, float a_v) const
+		{
+			if (rg.empty() || !std::isfinite(a_u) || !std::isfinite(a_v))
+				return float2::Zero;
+			const auto x = std::min(static_cast<uint32_t>((a_u - std::floor(a_u)) * width), width - 1);
+			const auto y = std::min(static_cast<uint32_t>((a_v - std::floor(a_v)) * height), height - 1);
+			const uint8_t* texel = &rg[(static_cast<size_t>(y) * width + x) * 2];
+			if (texel[0] <= 2 && texel[1] <= 2)
+				return float2::Zero;
+			return { texel[0] / 127.5f - 1.0f, texel[1] / 127.5f - 1.0f };
 		}
 	};
 
@@ -96,6 +124,7 @@ namespace Strands
 		std::vector<float3> boneBindPositions;  // each bone's origin in skin space
 
 		CoverageMask coverage;  // empty: every part of the cards counts as hair
+		FlowMap flow;           // empty: flow follows the texture
 
 		uint32_t TriangleCount() const { return static_cast<uint32_t>(indices.size() / 3); }
 	};
@@ -115,12 +144,20 @@ namespace Strands
 	 * @return false with o_error set if the pass has no diffuse texture with alpha.
 	 */
 	bool BeginCoverageReadback(const RE::BSRenderPass* a_pass, CoverageReadback& o_readback, std::string& o_error);
+	/**
+	 * @brief Starts copying the pass's flow map (one mip, at most 512 texels across) to the CPU.
+	 * Render thread only. Does not wait for the GPU.
+	 * @return false if the pass has no flow map (o_error empty) or it cannot be copied (o_error set).
+	 */
+	bool BeginFlowReadback(const RE::BSRenderPass* a_pass, CoverageReadback& o_readback, std::string& o_error);
 	/** @brief Maps the staging copy once the GPU has written it. Render thread only. */
 	ReadbackStatus PollCoverageReadback(CoverageReadback& io_readback);
 	/**
 	 * @brief Decodes a finished readback (any format, block-compressed included). Any thread.
-	 * @param o_mask   Receives the alpha.
+	 * @param o_mask   Receives the alpha and the alpha-weighted luminance.
 	 * @param o_colour Receives the colour with transparent texels filled; left empty if nothing is painted.
 	 */
 	bool DecodeCoverage(const CoverageReadback& a_readback, CoverageMask& o_mask, StrandColourImage& o_colour, std::string& o_error);
+	/** @brief Decodes a finished flow map readback. Any thread. */
+	bool DecodeFlow(const CoverageReadback& a_readback, FlowMap& o_flow, std::string& o_error);
 }
