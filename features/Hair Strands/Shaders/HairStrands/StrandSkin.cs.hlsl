@@ -2,16 +2,19 @@
 // follow their simulated guide strands. One thread per control point; only the strands the
 // LOD keeps are dispatched.
 //
-// A strand point follows its guide at the same distance from the root: it moves off its own
-// target by as much as the guide has moved off the guide's target there. Previous positions go
-// the same way with the guide's previous state, so motion vectors carry the simulated motion.
-// The guide's rotation turns only the normal. Turning the offset from the guide with it would
-// make the offset a lever: a strand beside a short guide, or longer than it, would swing and
-// stretch by the offset times every bend of the guide.
+// A strand point follows its guide at the same distance from the root, as TressFX's follow hairs
+// do (UpdateFollowHairVertices): it sits off the guide's drawn position by its own rest offset
+// from the guide, turned with the skinning. That is the point's own target moved by the guide's
+// drawn offset from the guide's target. TressFX's tip separation widens the rest offset towards
+// the tip. Previous positions go the same way with the guide's previous drawn offset, so motion
+// vectors carry the simulated motion. The guide's rotation turns only the normal: turning the
+// offset from the guide with it would make the offset a lever, and a strand beside a short
+// guide, or longer than it, would swing and stretch by the offset times every bend of the guide.
 //
 // Only guides collide in the simulation. A strand nearer the scalp than its guide can be
-// carried into the head by the guide's displacement, so each strand point is also kept out of
-// the head field (never deeper than its own target lies).
+// carried into the head by the guide's offset, so each strand point is also kept out of the
+// head field (never deeper than its own target lies), as TressFX's signed distance field
+// collision treats every point of every strand.
 
 #include "HairStrands/Skinning.hlsli"
 
@@ -53,9 +56,26 @@ RWStructuredBuffer<HairStrands::SkinnedPoint> Skinned : register(u0);
 		const HairStrands::GuidePoint a = Guides[guide * PointsPerStrand + j];
 		const HairStrands::GuidePoint b = Guides[guide * PointsPerStrand + j + 1];
 
-		float3 followed = target + lerp(a.Position - a.Target, b.Position - b.Target, w);
-		float3 followedPrevious = previousTarget + lerp(a.PreviousPosition - a.PreviousTarget, b.PreviousPosition - b.PreviousTarget, w);
-		// The guide's displacement can carry a strand lying closer to the scalp into the head.
+		float3 followed = target + lerp(a.Offset, b.Offset, w);
+		float3 followedPrevious = previousTarget + lerp(a.PreviousOffset, b.PreviousOffset, w);
+		if (TipSeparation > 0.0) {
+			// TressFX's factor, TipSeparation x vertex / vertex count, on the rest offset from the
+			// guide's target at the same distance from the root.
+			float3x4 guideCurrent, guidePrevious, guideTargetCurrent, guideTargetPrevious;
+			const HairStrands::RestPoint restA = RestPoints[guide * PointsPerStrand + j];
+			const HairStrands::RestPoint restB = RestPoints[guide * PointsPerStrand + j + 1];
+			HairStrandsSkin::Skin(restA, guideCurrent, guidePrevious);
+			HairStrandsSkin::TargetSkin(guideCurrent, guidePrevious, guideTargetCurrent, guideTargetPrevious);
+			float3 guideTarget = mul(guideTargetCurrent, float4(restA.Position, 1.0));
+			float3 guidePreviousTarget = mul(guideTargetPrevious, float4(restA.Position, 1.0));
+			HairStrandsSkin::Skin(restB, guideCurrent, guidePrevious);
+			HairStrandsSkin::TargetSkin(guideCurrent, guidePrevious, guideTargetCurrent, guideTargetPrevious);
+			guideTarget = lerp(guideTarget, mul(guideTargetCurrent, float4(restB.Position, 1.0)), w);
+			guidePreviousTarget = lerp(guidePreviousTarget, mul(guideTargetPrevious, float4(restB.Position, 1.0)), w);
+			const float separation = TipSeparation * rest.T * (PointsPerStrand - 1) / PointsPerStrand;
+			followed += separation * (target - guideTarget);
+			followedPrevious += separation * (previousTarget - guidePreviousTarget);
+		}
 		if (Flags & HAIR_STRANDS_FLAG_HEAD_FIELD) {
 			const HairStrandsSkin::HeadFrame head = HairStrandsSkin::LoadHeadFrame(0);
 			const HairStrandsSkin::HeadFrame previousHead = HairStrandsSkin::LoadHeadFrame(BoneCount * 3);

@@ -93,16 +93,22 @@ namespace Strands
 		float frizz = 0.02f;
 		float flyaways = 0.02f;  // fraction of strands that stray from the style
 
-		// Motion: the simulation reads these every frame. Stiffnesses and damping are per
-		// 1/60 s and converted to the frame's actual length.
+		// Motion: TressFX 4.1's simulation settings (TressFXSimulationSettings), which the
+		// simulation reads every frame. As in TressFX they apply per step (1/60 s here), with
+		// lengths in units: TressFX's sample values for the threshold and clamp carry over.
 		bool simulate = true;
-		float rootStiffness = 0.4f;   // pull back to the styled shape per 1/60 s, at the root
-		float tipStiffness = 0.03f;   // the same at the tip (low: tips swing freely)
-		float bendStiffness = 0.35f;  // how firmly each strand keeps its own curve as it moves
-		float damping = 0.4f;         // velocity relative to the head lost per 1/60 s (swings die down)
-		float gravity = 1.0f;         // pull of gravity as the head tilts (1: real gravity)
-		float inertia = 0.85f;        // 0: moves rigidly with the head and bones, 1: lags behind with full inertia
-		float windResponse = 1.0f;    // how much the weather's wind moves the hair
+		float vspCoeff = 0.4f;                    // share of the root segment's motion each step passes rigidly to the strand
+		float vspAccelThreshold = 1.208f;         // root pseudo-acceleration (units per step^2) past which that share is 1
+		float localConstraintStiffness = 0.908f;  // how firmly each segment keeps its rest angle to the one before it
+		uint32_t localConstraintsIterations = 3;
+		float globalConstraintStiffness = 0.408f;  // pull towards the styled shape per step, within the global range
+		float globalConstraintsRange = 0.4f;       // fraction of the strand, from the root, the global constraint holds
+		uint32_t lengthConstraintsIterations = 10;
+		float damping = 0.068f;            // velocity lost per step (air drag)
+		float gravityMagnitude = 100.0f;   // units/s^2 (Earth's is about 687)
+		float tipSeparation = 0.0f;        // how far strands spread from their guide towards the tip
+		float clampPositionDelta = 20.0f;  // largest move of a point in a step, in units
+		float windResponse = 1.0f;         // how much the weather's wind moves the hair
 
 		bool operator==(const StrandStyle&) const = default;
 
@@ -129,7 +135,13 @@ namespace Strands
 		inline constexpr float kMinPeriod = 0.2f;
 		inline constexpr float kMaxPeriod = 20.0f;
 		inline constexpr float kMaxCurlRadius = 1.5f;
-		inline constexpr float kMaxGravity = 3.0f;
+		inline constexpr float kMaxVspAccelThreshold = 100.0f;
+		inline constexpr uint32_t kMaxLocalIterations = 8;
+		inline constexpr uint32_t kMaxLengthIterations = 16;
+		inline constexpr float kMaxGravityMagnitude = 1400.0f;
+		inline constexpr float kMaxTipSeparation = 2.0f;
+		inline constexpr float kMinClampPositionDelta = 0.5f;
+		inline constexpr float kMaxClampPositionDelta = 200.0f;
 		inline constexpr float kMaxWindResponse = 3.0f;
 		inline constexpr size_t kMaxExcludeRects = 32;
 	}

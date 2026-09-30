@@ -288,7 +288,7 @@ void HairStrands::DrawPhysicsSettings()
 {
 	ImGui::Checkbox(T(TKEY("physics_enable"), "Simulate Strands"), &settings.Physics);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("physics_enable_tooltip"), "Strands swing, sway and settle on their own: gravity, inertia, wind and collision\nwith the head and body. Off, they follow the hair's bones (and SMP physics) only.\nEach hairstyle's motion is tuned in the hairstyle editor below."));
+		ImGui::Text("%s", T(TKEY("physics_enable_tooltip"), "Simulates the strands with TressFX 4.1's hair physics: they swing, stream and settle\nwith gravity, inertia, wind and collision with the head and body. Off, they follow the\nhair's bones (and SMP physics) only. Each hairstyle's motion is tuned in the hairstyle\neditor below."));
 	}
 	auto _ = Util::DisableGuard(!settings.Physics);
 	ImGui::SliderFloat(T(TKEY("physics_distance"), "Physics Distance"), &settings.PhysicsDistance, 0.0f, kMaxPhysicsDistance, "%.0f", ImGuiSliderFlags_AlwaysClamp);
@@ -381,20 +381,38 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 	}
 
 	if (ImGui::TreeNodeEx(T(TKEY("style_motion"), "Motion"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		const auto countSlider = [&](const char* a_label, uint32_t& a_value, uint32_t a_min, uint32_t a_max) {
+			int value = static_cast<int>(a_value);
+			if (ImGui::SliderInt(a_label, &value, static_cast<int>(a_min), static_cast<int>(a_max), "%d", ImGuiSliderFlags_AlwaysClamp)) {
+				a_value = static_cast<uint32_t>(value);
+				changed = true;
+			}
+		};
+		ImGui::TextDisabled("%s", T(TKEY("style_motion_note"), "TressFX 4.1's simulation settings. They apply per 1/60 s step, with lengths in units."));
 		changed |= ImGui::Checkbox(T(TKEY("style_simulate"), "Simulate"), &a_style.simulate);
 		tooltip(T(TKEY("style_simulate_tooltip"), "Off, this hairstyle's strands follow its bones only. Very short hair is never simulated."));
-		changed |= ImGui::SliderFloat(T(TKEY("style_root_stiffness"), "Root Stiffness"), &a_style.rootStiffness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("style_root_stiffness_tooltip"), "How firmly strands hold their styled shape near the roots. 1 is rigid."));
-		changed |= ImGui::SliderFloat(T(TKEY("style_tip_stiffness"), "Tip Stiffness"), &a_style.tipStiffness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-		tooltip(T(TKEY("style_tip_stiffness_tooltip"), "How firmly strands hold their styled shape at the tips. Low values let the ends\nswing freely. Reached 20 units (about 28 cm) from the root: shorter strands stay stiffer."));
-		changed |= ImGui::SliderFloat(T(TKEY("style_bend_stiffness"), "Bend Stiffness"), &a_style.bendStiffness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("style_bend_stiffness_tooltip"), "How firmly each strand keeps its own curve as it moves. High values keep curls\nand waves springy; low values let strands fold."));
-		changed |= ImGui::SliderFloat(T(TKEY("style_damping"), "Damping"), &a_style.damping, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("style_damping_tooltip"), "How quickly swings die down: the share of the hair's motion relative to the head\nlost per 1/60 s. Low values swing and bounce longer. It does not slow the hair as\nthe head moves, so it never makes hair trail further when running."));
-		changed |= ImGui::SliderFloat(T(TKEY("style_gravity"), "Gravity"), &a_style.gravity, 0.0f, L::kMaxGravity, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("style_gravity_tooltip"), "How strongly hair falls when the head tilts or bows. The styled shape is how the\nhair hangs with the head upright, so it does not sag further."));
-		changed |= ImGui::SliderFloat(T(TKEY("style_inertia"), "Inertia"), &a_style.inertia, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("style_inertia_tooltip"), "How much the hair lags behind when the head (or its SMP bones) moves. 0 moves\nrigidly with them; 1 is full inertia: it swings out on turns and streams back at speed."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_vsp_coeff"), "VSP Coefficient"), &a_style.vspCoeff, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_vsp_coeff_tooltip"), "Velocity shock propagation: the share of the root's motion each step passes straight\nto the whole strand. High values carry the hair rigidly with the head; low values let\nit lag, swing out on turns, stream back at speed and rise when falling. Strands under\n10 units take less, in proportion to their length, so short hair keeps its shape."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_vsp_threshold"), "VSP Threshold"), &a_style.vspAccelThreshold, 0.0f, L::kMaxVspAccelThreshold, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+		tooltip(T(TKEY("style_vsp_threshold_tooltip"), "Acceleration of the root, in units per step squared, past which all of its motion\npasses to the strand, so hair does not stretch on snaps and hard landings. TressFX's\n1.208 (about 62 m/s^2) passes running and turning, and catches those."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_damping"), "Damping"), &a_style.damping, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+		tooltip(T(TKEY("style_damping_tooltip"), "Velocity lost each step: air drag. Low values swing and bounce longer; high values\nsettle quickly and stream further behind at speed."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_local_stiffness"), "Local Constraint Stiffness"), &a_style.localConstraintStiffness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_local_stiffness_tooltip"), "How firmly each segment keeps its rest angle to the one before it: the strand's curve\nand springiness. As in TressFX, values above 0.95 act as 0.95."));
+		countSlider(T(TKEY("style_local_iterations"), "Local Constraint Iterations"), a_style.localConstraintsIterations, 0, L::kMaxLocalIterations);
+		tooltip(T(TKEY("style_local_iterations_tooltip"), "Passes of the local constraint each step. More keep the curve more firmly."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_global_stiffness"), "Global Constraint Stiffness"), &a_style.globalConstraintStiffness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_global_stiffness_tooltip"), "Pull back towards the styled shape each step, on the part of each strand within the\nglobal range."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_global_range"), "Global Constraint Range"), &a_style.globalConstraintsRange, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_global_range_tooltip"), "Fraction of each strand, from the root, that the global constraint holds; on strands\nunder 10 units, as far as on a 10-unit strand. Past it the strand moves freely, held in\nshape by the local constraint alone."));
+		countSlider(T(TKEY("style_length_iterations"), "Length Constraint Iterations"), a_style.lengthConstraintsIterations, 1, L::kMaxLengthIterations);
+		tooltip(T(TKEY("style_length_iterations_tooltip"), "Passes each step that keep segments at their length. Too few let long strands stretch\nunder gravity and fast motion."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_gravity_magnitude"), "Gravity Magnitude"), &a_style.gravityMagnitude, 0.0f, L::kMaxGravityMagnitude, "%.0f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+		tooltip(T(TKEY("style_gravity_magnitude_tooltip"), "Gravity in units/s^2 (Earth's is about 687). The styled shape is how the hair hangs\nwith the head upright, and TressFX's constraints hold it against light gravity only:\nmore lets the hair fall as the head tilts, but strands sag and stretch."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_tip_separation"), "Tip Separation"), &a_style.tipSeparation, 0.0f, L::kMaxTipSeparation, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_tip_separation_tooltip"), "How far strands fan out from the guide strand they follow towards the tip, as a\nmultiple of their offset from it. 0 keeps each strand's own shape."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_clamp_position_delta"), "Clamp Position Delta"), &a_style.clampPositionDelta, L::kMinClampPositionDelta, L::kMaxClampPositionDelta, "%.2f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+		tooltip(T(TKEY("style_clamp_position_delta_tooltip"), "Largest move of a strand point in a step, in units: a safety limit. TressFX uses 20."));
 		changed |= ImGui::SliderFloat(T(TKEY("style_wind"), "Wind Response"), &a_style.windResponse, 0.0f, L::kMaxWindResponse, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("style_wind_tooltip"), "How much the weather's wind moves this hairstyle."));
 		ImGui::TreePop();

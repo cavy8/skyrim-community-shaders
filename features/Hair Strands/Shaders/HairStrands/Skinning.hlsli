@@ -28,29 +28,38 @@ cbuffer SkinCB : register(b0)
 	float SimWeight;  // 0: skinning only, 1: fully simulated
 	float Guidance;   // 0: targets ride the head rigidly, 1: every bone (SMP) moves them
 
-	float3 Gravity;  // units/s^2: the part of gravity the styled shape does not already hang under
-	float StepTime;  // seconds per step; Steps steps make up the frame
+	float3 EyeShift;  // camera of the stored simulation state - this frame's camera
+	uint Steps;       // simulation steps ending in this frame (0 while paused)
 
-	float3 EyeShift;          // camera of the stored simulation state - this frame's camera
-	float RootStiffness;      // pull towards the target per 1/60 s, at the root
-	float3 PreviousEyeShift;  // camera of the stored simulation state - the previous frame's camera
-	float TipStiffness;
+	float3 PreviousToCurrent;  // the previous frame's camera - this frame's camera
+	float FirstStep;           // fraction of the frame at which the first step ends
 
-	float3 Wind;          // units/s^2 at the tip, before gusts
-	float BendStiffness;  // per 1/60 s
-
-	float VelocityKeep;  // fraction of velocity left after a step's air drag
-	float Carry;         // fraction of the bones' motion the state moves with directly (1 - inertia)
-	float Time;
+	float StepFraction;      // fraction of the frame one step lasts
+	float DisplayAlpha;      // time since the last step, in steps: how far to draw towards it
+	float StepTime;          // seconds per step
 	float TeleportDistance;  // a root jumping further than this in a frame restarts its strand
 
-	uint Iterations;  // constraint iterations per step
+	// TressFX's simulation settings (TressFXSimulationSettings), in units and per step.
+	float Damping;
+	float LocalStiffness;
+	float GlobalStiffness;
+	float GlobalRange;
+
+	float Gravity;  // units/s^2, down
+	float VspCoeff;
+	float VspAccelThreshold;   // units per step^2
+	float ClampPositionDelta;  // units per step
+
+	uint LocalIterations;
+	uint LengthIterations;
+	float TipSeparation;
 	uint ColliderCount;
-	uint Steps;          // 0 while paused
-	float SwingDamping;  // velocity relative to the target lost per 1/60 s
 
 	float3 HeadFieldCentre;  // skin space: where the head field's directions start
 	float HeadFieldPad;
+
+	// TressFX's four wind vectors (g_Wind .. g_Wind3), units/s^2 per unit^2 of segment.
+	float4 Wind[4];
 
 	// Capsules, camera-relative: (end A, radius), (end B, unused). A sphere has A = B.
 	float4 Colliders[HAIR_STRANDS_MAX_COLLIDERS * 2];

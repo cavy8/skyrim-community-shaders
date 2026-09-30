@@ -50,7 +50,7 @@ struct HairStrands : Feature
 				T("feature.hair_strands.key_feature_2", "Straight, wavy, curly, coily and locs presets, tuned per hairstyle"),
 				T("feature.hair_strands.key_feature_3", "In-game hairstyle editor; authored styles can replace automatic conversion"),
 				T("feature.hair_strands.key_feature_4", "Follows the hair's bones and physics, and uses every hair lighting feature"),
-				T("feature.hair_strands.key_feature_6", "Strand physics with gravity, inertia, wind and body collision, guided by SMP hair physics where present"),
+				T("feature.hair_strands.key_feature_6", "TressFX 4.1 strand physics with gravity, inertia, wind and body collision, guided by SMP hair physics where present"),
 				T("feature.hair_strands.key_feature_5", "Distance LOD, actor and strand budgets keep the cost bounded") } };
 	}
 

@@ -50,3 +50,8 @@ upstreams:
     remote: dlssnr-cost-scaler
     branch: main
     role: nr-design-reference
+  tressfx:
+    repository: GPUOpen-Effects/TressFX
+    remote: tressfx                # not added; Hair Strands' simulation ports TressFX 4.1 at ba0bdac
+    branch: master
+    role: feature-source

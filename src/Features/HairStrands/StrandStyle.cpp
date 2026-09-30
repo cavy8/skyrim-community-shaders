@@ -58,6 +58,14 @@ namespace Strands
 				io_value = it->get<float>();
 		}
 
+		// A count; Sanitize clamps it to its range afterwards.
+		void ReadCount(const json& a_json, const char* a_key, uint32_t& io_value)
+		{
+			auto it = a_json.find(a_key);
+			if (it != a_json.end() && it->is_number())
+				io_value = static_cast<uint32_t>(std::clamp(it->get<double>(), 0.0, 1024.0));
+		}
+
 		void HashBytes(uint64_t& io_hash, const void* a_data, size_t a_size)
 		{
 			const auto* bytes = static_cast<const uint8_t*>(a_data);
@@ -127,12 +135,17 @@ namespace Strands
 		a_style.frizz = std::clamp(a_style.frizz, 0.0f, 1.0f);
 		a_style.flyaways = std::clamp(a_style.flyaways, 0.0f, 0.5f);
 
-		a_style.rootStiffness = std::clamp(a_style.rootStiffness, 0.0f, 1.0f);
-		a_style.tipStiffness = std::clamp(a_style.tipStiffness, 0.0f, 1.0f);
-		a_style.bendStiffness = std::clamp(a_style.bendStiffness, 0.0f, 1.0f);
+		a_style.vspCoeff = std::clamp(a_style.vspCoeff, 0.0f, 1.0f);
+		a_style.vspAccelThreshold = std::clamp(a_style.vspAccelThreshold, 0.0f, StyleLimits::kMaxVspAccelThreshold);
+		a_style.localConstraintStiffness = std::clamp(a_style.localConstraintStiffness, 0.0f, 1.0f);
+		a_style.localConstraintsIterations = std::clamp(a_style.localConstraintsIterations, 0u, StyleLimits::kMaxLocalIterations);
+		a_style.globalConstraintStiffness = std::clamp(a_style.globalConstraintStiffness, 0.0f, 1.0f);
+		a_style.globalConstraintsRange = std::clamp(a_style.globalConstraintsRange, 0.0f, 1.0f);
+		a_style.lengthConstraintsIterations = std::clamp(a_style.lengthConstraintsIterations, 1u, StyleLimits::kMaxLengthIterations);
 		a_style.damping = std::clamp(a_style.damping, 0.0f, 1.0f);
-		a_style.gravity = std::clamp(a_style.gravity, 0.0f, StyleLimits::kMaxGravity);
-		a_style.inertia = std::clamp(a_style.inertia, 0.0f, 1.0f);
+		a_style.gravityMagnitude = std::clamp(a_style.gravityMagnitude, 0.0f, StyleLimits::kMaxGravityMagnitude);
+		a_style.tipSeparation = std::clamp(a_style.tipSeparation, 0.0f, StyleLimits::kMaxTipSeparation);
+		a_style.clampPositionDelta = std::clamp(a_style.clampPositionDelta, StyleLimits::kMinClampPositionDelta, StyleLimits::kMaxClampPositionDelta);
 		a_style.windResponse = std::clamp(a_style.windResponse, 0.0f, StyleLimits::kMaxWindResponse);
 
 		// Malformed or absurd rectangles would only waste time; keep a bounded, ordered list.
@@ -158,8 +171,9 @@ namespace Strands
 			style.volume = 0.25f;
 			style.frizz = 0.04f;
 			style.flyaways = 0.03f;
-			style.tipStiffness = 0.04f;
-			style.bendStiffness = 0.45f;
+			// Waves keep their shape a little more firmly than straight hair.
+			style.localConstraintStiffness = 0.93f;
+			style.damping = 0.075f;
 			break;
 		case HairPreset::Curly:
 			style.density = 14.0f;
@@ -173,11 +187,13 @@ namespace Strands
 			style.frizz = 0.08f;
 			style.flyaways = 0.04f;
 			// Curls are springy: they keep their shape and bounce rather than swing.
-			style.rootStiffness = 0.45f;
-			style.tipStiffness = 0.08f;
-			style.bendStiffness = 0.7f;
-			style.damping = 0.3f;
-			style.inertia = 0.75f;
+			style.vspCoeff = 0.5f;
+			style.localConstraintStiffness = 0.95f;
+			style.localConstraintsIterations = 4;
+			style.globalConstraintStiffness = 0.45f;
+			style.globalConstraintsRange = 0.5f;
+			style.damping = 0.08f;
+			style.gravityMagnitude = 75.0f;
 			break;
 		case HairPreset::Coily:
 			// Afro-textured hair: tight coils that start at the root, almost no clumping
@@ -197,12 +213,13 @@ namespace Strands
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.03f;
 			// A coily cloud holds its shape and barely sways.
-			style.rootStiffness = 0.55f;
-			style.tipStiffness = 0.35f;
-			style.bendStiffness = 0.85f;
-			style.damping = 0.5f;
-			style.gravity = 0.5f;
-			style.inertia = 0.5f;
+			style.vspCoeff = 0.7f;
+			style.localConstraintStiffness = 0.95f;
+			style.localConstraintsIterations = 4;
+			style.globalConstraintStiffness = 0.6f;
+			style.globalConstraintsRange = 0.8f;
+			style.damping = 0.15f;
+			style.gravityMagnitude = 50.0f;
 			style.windResponse = 0.4f;
 			break;
 		case HairPreset::Locs:
@@ -216,13 +233,12 @@ namespace Strands
 			style.flyaways = 0.05f;
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.05f;
-			// Heavy ropes: they swing wide and settle slowly.
-			style.rootStiffness = 0.35f;
-			style.tipStiffness = 0.02f;
-			style.bendStiffness = 0.3f;
-			style.damping = 0.25f;
-			style.gravity = 1.2f;
-			style.inertia = 0.9f;
+			// Heavy ropes: they hang lower and swing wide.
+			style.vspCoeff = 0.3f;
+			style.localConstraintStiffness = 0.85f;
+			style.globalConstraintsRange = 0.3f;
+			style.lengthConstraintsIterations = 12;
+			style.gravityMagnitude = 150.0f;
 			style.windResponse = 0.6f;
 			break;
 		case HairPreset::Auto:
@@ -282,12 +298,19 @@ namespace Strands
 		o_json["frizz"] = a_style.frizz;
 		o_json["flyaways"] = a_style.flyaways;
 		o_json["simulate"] = a_style.simulate;
-		o_json["rootStiffness"] = a_style.rootStiffness;
-		o_json["tipStiffness"] = a_style.tipStiffness;
-		o_json["bendStiffness"] = a_style.bendStiffness;
-		o_json["damping"] = a_style.damping;
-		o_json["gravity"] = a_style.gravity;
-		o_json["inertia"] = a_style.inertia;
+		o_json["vspCoeff"] = a_style.vspCoeff;
+		o_json["vspAccelThreshold"] = a_style.vspAccelThreshold;
+		o_json["localConstraintStiffness"] = a_style.localConstraintStiffness;
+		o_json["localConstraintsIterations"] = a_style.localConstraintsIterations;
+		o_json["globalConstraintStiffness"] = a_style.globalConstraintStiffness;
+		o_json["globalConstraintsRange"] = a_style.globalConstraintsRange;
+		o_json["lengthConstraintsIterations"] = a_style.lengthConstraintsIterations;
+		// Not "damping": the solver before TressFX's saved its own damping (of velocity relative to the
+		// head, 0.4 by default) under that name, which would load here as heavy air drag.
+		o_json["dampingCoeff"] = a_style.damping;
+		o_json["gravityMagnitude"] = a_style.gravityMagnitude;
+		o_json["tipSeparation"] = a_style.tipSeparation;
+		o_json["clampPositionDelta"] = a_style.clampPositionDelta;
 		o_json["windResponse"] = a_style.windResponse;
 		json rects = json::array();
 		for (const auto& rect : a_style.excludeUV)
@@ -335,12 +358,17 @@ namespace Strands
 
 		if (auto it = a_json.find("simulate"); it != a_json.end() && it->is_boolean())
 			style.simulate = it->get<bool>();
-		ReadFloat(a_json, "rootStiffness", style.rootStiffness);
-		ReadFloat(a_json, "tipStiffness", style.tipStiffness);
-		ReadFloat(a_json, "bendStiffness", style.bendStiffness);
-		ReadFloat(a_json, "damping", style.damping);
-		ReadFloat(a_json, "gravity", style.gravity);
-		ReadFloat(a_json, "inertia", style.inertia);
+		ReadFloat(a_json, "vspCoeff", style.vspCoeff);
+		ReadFloat(a_json, "vspAccelThreshold", style.vspAccelThreshold);
+		ReadFloat(a_json, "localConstraintStiffness", style.localConstraintStiffness);
+		ReadCount(a_json, "localConstraintsIterations", style.localConstraintsIterations);
+		ReadFloat(a_json, "globalConstraintStiffness", style.globalConstraintStiffness);
+		ReadFloat(a_json, "globalConstraintsRange", style.globalConstraintsRange);
+		ReadCount(a_json, "lengthConstraintsIterations", style.lengthConstraintsIterations);
+		ReadFloat(a_json, "dampingCoeff", style.damping);
+		ReadFloat(a_json, "gravityMagnitude", style.gravityMagnitude);
+		ReadFloat(a_json, "tipSeparation", style.tipSeparation);
+		ReadFloat(a_json, "clampPositionDelta", style.clampPositionDelta);
 		ReadFloat(a_json, "windResponse", style.windResponse);
 
 		if (auto it = a_json.find("excludeUV"); it != a_json.end() && it->is_array()) {

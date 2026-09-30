@@ -183,7 +183,20 @@ With the maps installed it follows them. The top of KS TombRaider, combed back i
 braid, grew from the braid (16% of its area) and now grows from the hairline. See
 [Conversion algorithm](#conversion-algorithm-strandgeneratorcpp).
 
-This is build-verified, and the generator fixes are checked on real meshes (see
+The owner then found hair highly resistant to leaving its styled shape, even at SMP Guidance
+0: jumping off a cliff, long hair lifted only at the ends, and motion settings pushed far
+enough to free it made it fly everywhere. `0-3-0` replaces the solver with a port of TressFX
+4.1's simulation, as a known-working baseline to tune from. Real-time conversion, SMP
+guidance, weather wind, the head field, the body colliders and the follow scheme stay. The
+`0-2-5` requirements still hold: short scalp locks keep their shape through a step aside, and
+a swing dies down once the head stops, as a pendulum's does, instead of running up and down
+the strand. See [Physics](#physics-strandsimcshlsl). `0-3-0` was checked with DXC (both
+compute shaders), the constant buffer layout against DXC's reflection, a clang syntax check of
+the style code, and the NumPy port. Merged with the flow change, it builds with MSVC, and fxc
+compiles both compute shaders (with the same buffer layouts as `Strands::SkinCB` and
+`GuidePoint`) and the strand Lighting permutations. Neither half has been run in game.
+
+Earlier builds are build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
 
@@ -421,79 +434,99 @@ hidden.
 
 ## Physics (`StrandSim.cs.hlsl`)
 
-Only guide strands are simulated, one thread each. `StrandSkin.cs.hlsl` then moves every
-strand point with its guide at the same distance from the root: the point moves off its own
-target by as much as the guide has moved off the guide's target there. The previous position
-is built the same way from the guide's previous state, so motion vectors carry the simulated
-motion. Past its guide's tip, a longer strand takes the tip's displacement. The guide's
-rotation there (shortest arc from the target's tangent to the simulated one) turns only the
-normal. Turning the offset from the guide too (the `0-2-0` follow) made the offset a lever
-that amplified every bend of a short guide (see the `0-2-1` notes at the top).
+Since `0-3-0` the guide solver is a port of TressFX 4.1's simulation
+([GPUOpen-Effects/TressFX](https://github.com/GPUOpen-Effects/TressFX) at `ba0bdac`,
+`src/Shaders/TressFXSimulation.hlsl`, MIT; AMD's notice is kept in the shader). Only guide
+strands are simulated, one thread each. TressFX dispatches each kernel over every vertex or
+strand of the asset; here one thread runs a whole strand, and each kernel is a loop with the
+same result.
 
--   **Targets, and how SMP guides.** A guide point chases its target: the point skinned by
-    the head bone alone (the styled shape, rigid on the head), blended towards its full
-    skinning by the global **SMP Guidance** (default 0.35). Non-SMP hair is skinned to the
-    head, so both are the same. SMP hair adds its physics bones: at 0 the strands ignore
-    them, at 1 they chase the SMP pose. Hair without a head bone always uses its full
-    skinning.
--   **Inertia.** Each frame, last frame's state first moves with `1 − inertia` of what the
-    point's target skinning did since (the rigid motion of that skinning, so it rotates
-    too). At 0 hair moves rigidly with the head, or with the SMP bones at full guidance;
-    at 1 it keeps all its world-space inertia.
--   **Steps.** The frame runs in steps of at most 1/60 s (frames are capped at 1/30 s, so 1
-    or 2 steps). Targets move from last frame's pose to this frame's across the steps. A
-    step integrates (Verlet: velocity, gravity, wind), pins the root to its target, then
-    runs 3 iterations of: a global shape constraint (towards the target, see below), a local
-    shape constraint (each segment keeps its rest direction relative to its parent segment,
-    turned by the parent's shortest-arc rotation; the first segment keeps its rest
-    direction), and follow-the-leader length constraints with collision. Velocities are the
-    step's move with bending motion damped (below), clamped at 3,000 units/s. Dynamic FTL
-    damping (Müller et al. 2012) is left out: under a steady load it made strands flutter (see
-    the `0-2-3` notes at the top).
--   **Bending motion is damped.** The length and local shape constraints move only each
-    segment's far point, so corrections run on down the strand, and a swing sent a wave to
-    the tip and back (see the `0-2-5` notes at the top). After each step, relative to its
-    target, each point is pulled `BendDamping` (0.8) of the way per 1/60 s towards the
-    velocity it would have if its segment turned with the one before it, root to tip. A
-    lock swinging as a whole keeps its speed, and only velocity changes, so hair at rest
-    under any load stays at rest. Making the local shape constraint move both ends stopped
-    the wave as well, but under a heavy steady load the strand then never settled.
--   **Stiffness by distance from the root.** A load (air drag, the head's acceleration, wind,
-    gravity as the head tilts) moves a point about the same distance on any strand, so how
-    far a point may swing has to depend on how far it is from the root, not on how far along
-    its own strand. The global shape stiffness falls from `rootStiffness` to `tipStiffness`
-    over the first 20 units (`FreeLength`, about 28 cm), or over the whole strand if it is
-    longer, as before `0-2-5`. With the Straight preset (0.4 → 0.03) a 4-unit lock ends at
-    0.33 and a 10-unit lock at 0.22.
--   **Same motion at any frame rate.** Stiffness and damping are authored per 1/60 s. A
-    shorter step scales stiffness as a compliance (XPBD: `h² / (h² + α)`, with α fitted so
-    the authored value holds at 1/60 s). Position projections also damp the motion relative
-    to the target by `1 − s` per step, which shorter steps lose; that is given back on the
-    velocity relative to the target.
--   **Damping and air drag.** A style's `damping` (default 0.4) is the share of velocity
-    relative to the target lost per 1/60 s (`SwingDamping`): it settles swings, only ever
-    takes energy out, and does not slow hair that moves with the head. Air drag (`kAirDrag`,
-    0.06 per 1/60 s) applies to world velocity, and is what makes hair trail while running,
-    so it stays small and is not a style field. Until `0-2-6` `damping` was the air drag and
-    swings lost a fixed 0.2. In the NumPy port (`tools/hair_strands_sim_check.py`), a
-    20-unit lock 0.3 s into a sprint start lagged 8.5, 5.0 and 3.5 units at 30, 60 and 144 fps
-    with plain per-frame scaling. With this scheme and the `0-2-6` defaults it lags 3.8 units
-    once running at 30, 60, 144 and 240 fps alike, and settles within 3 s at every rate. A
-    fast 70° turn peaks 0.5 units off target as it starts. Shorter steps with the plain
-    scaling kept oscillating.
--   **Gravity is preloaded.** The styled shape is how hair hangs with the head upright, so
-    only the change as the head tilts acts: `g × (down − R_head × down)`, with `g` = 687
-    units/s² × `gravity`. Without that, hair would sag below its style at rest. The
-    restoring force after a swing comes from the shape constraints.
--   **Wind** is the weather's (`Sky::windSpeed`, `windAngle`; none indoors), up to 600
-    units/s² at full wind speed × **Wind Strength** × `windResponse`. It pushes across the
-    strand, stronger towards the tip, with slow gusts out of phase per strand.
--   **Collision.** The head, and capsules found up the head bone's own skeleton:
-    neck (neck → head, radius 3), chest (spine 2 → neck, 5.5), back (spine 1 → spine 2,
-    6.5), shoulders (clavicle → upper arm, 3.5) and upper arms (upper arm → forearm, 3).
-    Radii scale with the head bone's world scale. A point is pushed out to at most its own
-    target's depth inside the collider, and never left deeper than half the radius, so the
-    styled shape itself never collides.
+### A step, as in TressFX
+
+Every step runs TressFX's simulation pass on a strand, in TressFX's order and with its maths:
+
+1. **IntegrationAndGlobalShapeConstraints.** Verlet integration:
+   `x + exp(-damping x 60 h) (x - x_prev) + g h^2`, with gravity straight down. The first two
+   points of a strand are pinned to their targets (TressFX's assets give them inverse mass 0).
+   Points whose index is below `globalConstraintsRange x points` are then pulled towards their
+   targets by `globalConstraintStiffness` (further on short strands, below). The rest of the
+   strand is not.
+2. **CalculateStrandLevelData, VelocityShockPropagation.** The rotation (shortest arc between
+   the root segment's old and new directions) and translation that took the root segment from
+   the last step to this one move every other point, current and previous positions alike, by
+   `vspCoeff` (less on short strands, below). That carries that share of the head's motion
+   rigidly without adding velocity. When the second point's pseudo-acceleration
+   `|p - 2 p' + p''|` passes `vspAccelThreshold` (a snap or a landing), the share is 1.
+3. **LocalShapeConstraints**, `localConstraintsIterations` times. From the root, each segment's
+   rest vector is turned by the shortest arc from its parent segment's rest direction to its
+   current one. The next point moves towards the end of that vector by
+   `0.5 x min(localConstraintStiffness, 0.95)`, and the point before moves back by as much.
+   Pinned points stay put.
+4. **LengthConstriantsWindAndCollision.** Wind (below), then `lengthConstraintsIterations`
+   passes of distance constraints, even pairs then odd pairs as TressFX's threads do them.
+   Then TressFX's capsule collision: a point inside is put on the surface, keeps 0.4 of its
+   move along the capsule, and stops. Last, the position delta clamp:
+   `delta x clampPositionDelta^2 / |delta|^2` past `clampPositionDelta`, TressFX's formula.
+5. **Signed distance field collision** (`CollideHairVerticesWithSdf`), which TressFX runs
+   after the simulation: here with the head field (below). A point inside is put back on the
+   surface and stops. TressFX does every point but the first two, followers included; the
+   followers are done in `StrandSkin.cs.hlsl`.
+
+### Around the step (not TressFX)
+
+-   **Fixed steps.** TressFX runs one pass per frame of whatever length (its sample clamps
+    frames at 0.05 s), so its motion changes with frame rate. Here `StrandRenderer::BeginFrame`
+    keeps a clock shared by all hair: 1/60 s steps (TressFX's samples ran at 60 Hz), frames
+    clamped at 0.05 s, at most 4 steps a frame, none while paused. The targets move from last
+    frame's pose to this frame's across the frame, and each step takes them at the time it
+    ends. Strands are drawn at this frame's targets plus their offset from the target,
+    interpolated between the last two steps. The dynamics show one step late (16.7 ms), the
+    roots never. In the NumPy port the sprint and turn agree within 5% at 30, 60, 144 and 240
+    fps and the fall within 9% (at 30 fps), and the sprint within 0.02 units with frame times
+    jittering by 30%.
+-   **Targets, and how SMP guides.** A target is the point skinned by the head bone alone (the
+    styled shape, rigid on the head), blended towards its full skinning by the global **SMP
+    Guidance** (default 0.35). The local shape constraints and rest lengths come from these
+    targets. TressFX skins each strand rigidly by its root's bones, which is Guidance 0. Non-SMP
+    hair is skinned to the head, so both are the same; hair without a head bone always uses its
+    full skinning.
+-   **Short strands.** TressFX's constraints act per point, whatever a strand's length, so a
+    load moves points about the same distance on any strand. A converted hairstyle mixes
+    1-unit scalp strands with 40-unit locks. Without what follows, at the defaults, a 3.8-unit
+    scalp lock swung 60% of its length off target on one step aside (15 units in 0.5 s), and
+    a 1.5-unit one 114%, with its root segments folded into kinks. On a strand shorter than
+    10 units (`ShortStrandLength`), the global range reaches as far as on a 10-unit strand
+    (`globalConstraintsRange` x 10 units from the root, so a strand shorter than that is held
+    all along), and VSP is scaled by its length over 10 units (below the acceleration
+    threshold; above it VSP is 1 on any strand). VSP moves the strand by the root's motion
+    over the step after the global pull has put the held part on its targets, so it carries
+    that part past them: on a moving head, TressFX's held points run ahead of their targets
+    by about a third of each step's motion (at the default `vspCoeff`), which a short
+    strand's short segments cannot absorb. Now the 3.8-unit lock stays within 4% of its
+    length of target and the 1.5-unit lock within 10%. Strands of 10 units or more are
+    TressFX's.
+-   **Wind** is the weather's (`Sky::windSpeed`, `windAngle`; none indoors), made as TressFX's
+    `SetWind` makes it. The magnitude, 125 x wind speed x **Wind Strength** x `windResponse`,
+    swells and fades with `sin^2(step x 0.01) + 0.5`. Four vectors 40 degrees off the wind's
+    direction form a cone, and each strand mixes them by `(guide % 20) / 20`. The force on a
+    point is `-((v x w) x v)` for its segment `v`, from the third point to the one before the
+    tip. TressFX takes `v` at its current length. Here it is at its rest length: a stretched
+    strand caught more wind the longer it got, and in the NumPy port loose settings blew up.
+    TressFX's `asin` turn from its X axis to the wind is only right within 90 degrees of X.
+    Weather wind is level, so the turn is a plain turn about Z.
+-   **Stretch cap.** A few Jacobi passes cannot stop a long strand that is still moving when
+    the head stops. On a hard landing a 40-unit lock stretched to 1.69 times its length; 20
+    passes still left it at 1.47. After the length constraints no segment is left longer than
+    1.2 times its rest length, measured from the root. That holds landings and sprint stops to
+    about 1.16 and barely changes the motion.
+-   **Collision.** TressFX's capsule response on the capsules found up the head bone's own
+    skeleton: neck (neck → head, radius 3), chest (spine 2 → neck, 5.5), back (spine 1 →
+    spine 2, 6.5), shoulders (clavicle → upper arm, 3.5) and upper arms (upper arm → forearm,
+    3), and on the head sphere when there is no head field. Radii scale with the head bone's
+    world scale. Per point, each collider shrinks to the depth the point's target already lies
+    at (never below half its radius), so the styled shape itself never collides. TressFX 4.1's
+    sample collides with a signed distance field of the body mesh instead; its capsule path is
+    compiled out.
 -   **The head field.** The head is the actor's own head mesh (its Face head part: FaceGen
     and RaceMenu morphs included), read once per actor and hair (`BuildHeadField`). It is
     stored as a radial height field: a 64 × 64 octahedral map of directions from the hair's
@@ -506,25 +539,86 @@ that amplified every bend of a short guide (see the `0-2-1` notes at the top).
     and the neck opening stays empty (no collision). Radii are capped at 1.5× the median, so
     ears, muzzles and horns cannot throw passing hair out to their tips. A point is pushed out
     along its direction from the centre, never deeper than its target lies below the surface
-    at the target's own direction. Guides collide in the simulation, and every strand point is
-    kept out once more after following its guide (`StrandSkin.cs.hlsl`, previous positions
-    against last frame's head). On a synthetic head with eye holes (a mirror of the build and
-    lookup), the field is within +0.13 units of the true surface everywhere (median +0.04).
-    Without a head mesh skinned to the head bone, when it covers under half the directions,
-    or when its median radius is not within 0.7-2× the head sphere's (the meshes do not share
-    that centre), the head sphere is used as before; the reason is logged (info for the player,
+    at the target's own direction. Guides collide with it after each step, on the head's pose
+    at that step, as TressFX's signed distance field collision; every strand point is kept out
+    once more after following its guide (`StrandSkin.cs.hlsl`, previous positions against last
+    frame's head). On a synthetic head with eye holes (a mirror of the build and lookup), the
+    field is within +0.13 units of the true surface everywhere (median +0.04). Without a head
+    mesh skinned to the head bone, when it covers under half the directions, or when its
+    median radius is not within 0.7-2× the head sphere's (the meshes do not share that
+    centre), the head sphere is used as before; the reason is logged (info for the player,
     debug for others).
--   **Restarts.** A guide restarts from its targets when it is first simulated, after more
-    than 2 frames unsimulated, when its asset changes, and (per strand, on the GPU) when
-    its root moves more than 40 units in a frame (teleports, loads). Non-finite state falls
-    back to the target.
--   **Paused:** no steps; the state is only carried with the bones.
+-   **Clamp.** Only the movable points: rewriting a pinned point's history would skew the next
+    step's VSP.
+-   **Restarts.** A guide restarts from its targets when it is first simulated, after more than
+    2 frames unsimulated, when its asset changes, and (per strand, on the GPU) when its root
+    moves further in a frame than 40 units or 4,000 units/s x frame time (teleports, loads).
+    Non-finite state falls back to the target.
 -   **Not simulated:** style `simulate` off, area-seeded (short) hair, or past the physics
-    distance. Such hair is plain skinning, as before `0-2-0`.
+    distance (the motion fades out over its last quarter). Such hair is plain skinning.
 
-State per instance: `HairStrands::GuideState`, 96 bytes per guide point (a 2,500-guide,
-20-point hair is 4.8 MB). Positions are camera relative, stored against the camera of the
-simulation that wrote them and shifted by the camera's move each frame.
+### Followers (`StrandSkin.cs.hlsl`)
+
+TressFX's follow hairs sit at their guide's position plus their root offset from it
+(`UpdateFollowHairVertices`), scaled by `1 + tipSeparation x vertex / vertices`. Here every
+strand is a converted strand of its own. A point sits at its own target plus its guide's drawn
+offset from the guide's target, at the same distance from the root. That is the guide's
+position plus the strand's rest offset from it, turned with the skinning. `tipSeparation`
+scales that offset as TressFX does; 0 keeps each strand's own shape. The previous position
+takes the guide's previous drawn offset, so motion vectors carry the simulated motion. Past its
+guide's tip, a longer strand takes the tip's offset. The guide's rotation there (shortest arc
+from the target's tangent to the drawn one) turns only the normal. Turning the offset from the
+guide too (the `0-2-0` follow) made the offset a lever that amplified every bend of a short
+guide (see the `0-2-1` notes at the top).
+
+### Settings
+
+The per-style motion settings are TressFX's `TressFXSimulationSettings`, under its names, per
+1/60 s step, with lengths in units:
+
+| Setting | Straight | TressFX 4.1 sample (Ratboy mohawk, metres) |
+| --- | --- | --- |
+| `vspCoeff` | 0.4 | 0.758 |
+| `vspAccelThreshold` | 1.208 units/step² | 1.208 |
+| `localConstraintStiffness` | 0.908 | 0.908 |
+| `localConstraintsIterations` | 3 | 3 |
+| `globalConstraintStiffness` | 0.408 | 0.408 |
+| `globalConstraintsRange` | 0.4 | 0.308 |
+| `lengthConstraintsIterations` | 10 | 3 |
+| `damping` (`dampingCoeff` in style files) | 0.068 | 0.068 |
+| `gravityMagnitude` | 100 units/s² | 0.09 |
+| `tipSeparation` | 0 | 0 |
+| `clampPositionDelta` | 20 units/step | 20 (set in code) |
+
+Plus `simulate` and `windResponse`, as before. The differences from the sample, all from the
+NumPy port:
+
+-   **`vspCoeff`.** 0.758 carries three quarters of every move of the head rigidly. A 40-unit
+    lock then lifted only 4, 9 and 17 degrees 0.5, 1 and 1.5 s into a fall, as rigid as the
+    hair the owner reported. At 0.4 it streams up (11, 111 and 150 degrees) and trails when
+    running.
+-   **Gravity and length passes.** TressFX's sample assets are in metres, so its gravity is
+    about 1% of Earth's. Its constraints hold a shape against light gravity only: at Earth's
+    gravity a 40-unit, 32-point lock rests 13% long with 3 length passes (22% without the
+    stretch cap) and still 7% with 20. The stretch grows with gravity per step against segment
+    length, which the even/odd passes leave on the even segments. At 100 units/s² (about
+    1.4 m/s²; Earth's is about 687) with 10 passes, hair falls a little as the head tilts and
+    rests about 1.6% long (a 3.8-unit, 14-point lock 0.7%: the global pull holds it all
+    along). Passes are cheap: only guides take them.
+-   **`globalConstraintsRange`.** With 0.308 a 40-unit lock streamed nearly level behind a
+    300 units/s run, its tip 29 units off target. 0.4 keeps it at 22.
+-   **`damping`** is the sample's 0.068. At 0.05 hair trails less when running (16 units for
+    that lock) but swings longer: after a step aside a 20-unit lock's swings shrink to 0.42 of
+    the one before, against about a third at 0.068, and it rises later in a fall (49 degrees
+    1 s in, against 111).
+-   **`vspAccelThreshold` and `clampPositionDelta`** keep TressFX's numbers, in units. In the
+    metre-scale sample both are effectively off. In units, 1.208 per step² (about 62 m/s²)
+    passes running (about 14 m/s² at the roots) and turning, and catches snap turns (82 to 216
+    m/s²) and landings, so strands do not stretch on them. 20 units per step is 1,200 units/s.
+
+State per instance: `HairStrands::GuideState`, 128 bytes per guide point (a 2,500-guide,
+20-point hair is 6.4 MB). Positions are relative to the camera of the simulation that wrote
+them and shifted by the camera's move each frame; offsets are camera independent.
 
 ## Authoring styles
 
@@ -561,11 +655,16 @@ with no `match` applies to all hair.
     `volume`, `layerJitter`, `clumpStrength`, `clumpSize`, `clumpTwist`, `shortLength`,
     `coverageThreshold`, `seed`, `excludeUV`), render (`rootWidth`, `tipWidth`, `waveAmplitude`, `waveLength`,
     `curlRadius`, `curlLength`, `curlStart`, `frizz`, `flyaways`) and motion (`simulate`,
-    `rootStiffness`, `tipStiffness`, `bendStiffness`, `damping`, `gravity`, `inertia`,
-    `windResponse`; stiffness and damping per 1/60 s; `damping` takes out motion relative to
-    the head, not air drag; `tipStiffness` is reached 20 units from the root, so shorter
-    strands stay stiffer). Tooltips in the editor explain each field.
-    Units are Skyrim units, about 1.4 cm. Motion fields apply live.
+    TressFX's `vspCoeff`, `vspAccelThreshold`, `localConstraintStiffness`,
+    `localConstraintsIterations`, `globalConstraintStiffness`, `globalConstraintsRange`,
+    `lengthConstraintsIterations`, `dampingCoeff` (TressFX's `damping`), `gravityMagnitude`,
+    `tipSeparation` and `clampPositionDelta`, per 1/60 s step, and `windResponse`; see
+    [Settings](#settings)). Tooltips in the editor explain each field. Units are Skyrim units,
+    about 1.4 cm. Motion fields apply live. The motion fields before `0-3-0` (`rootStiffness`,
+    `tipStiffness`, `bendStiffness`, `damping`, `gravity`, `inertia`) are no longer read: saved
+    styles take their hair type's TressFX settings. TressFX's damping is saved as
+    `dampingCoeff` because the old `damping` (0.4: of the velocity relative to the head, per
+    1/60 s) would read as very heavy air drag.
 -   In-game editor: select a hair in view, edit it, and the change applies to every actor
     wearing it. Render fields apply live; generation fields apply when the slider is
     released. **Save** writes the fully resolved style, matched on that exact head part,
@@ -575,11 +674,11 @@ with no `match` applies to all hair.
 
 | Preset | What it changes |
 | --- | --- |
-| Straight | defaults: light clumping, little frizz; free-swinging tips (stiffness 0.4 → 0.03, bend 0.35, damping 0.4, inertia 0.85) |
-| Wavy | per-lock sine waves (period 4); a little stiffer (tip 0.04, bend 0.45) |
-| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets; springy (stiffness 0.45 → 0.08, bend 0.7, damping 0.3) |
-| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show; holds its shape (stiffness 0.55 → 0.35, bend 0.85, damping 0.5, gravity 0.5, inertia 0.5) |
-| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists); heavy (stiffness 0.35 → 0.02, damping 0.25, gravity 1.2, inertia 0.9) |
+| Straight | defaults: light clumping, little frizz; TressFX settings as in [Settings](#settings) (VSP 0.4, local 0.908 x 3, global 0.408 over 0.4, length x 10, damping 0.068, gravity 100) |
+| Wavy | per-lock sine waves (period 4); keeps its shape a little more firmly (local 0.93, damping 0.075) |
+| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets; springy (VSP 0.5, local 0.95 x 4, global 0.45 over 0.5, damping 0.08, gravity 75) |
+| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show; holds its shape (VSP 0.7, local 0.95 x 4, global 0.6 over 0.8, damping 0.15, gravity 50, wind 0.4) |
+| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists); heavy (VSP 0.3, local 0.85, global over 0.3, length x 12, gravity 150, wind 0.6) |
 
 Short hair (buzz cuts, fades, fuzz) is covered by area seeding, not a preset. Long hair just
 gets more control points, up to 32. Dark hair over a light background shows gaps between
@@ -609,22 +708,30 @@ permutation bit.
     Lighting feature defines, with and without `DEFERRED`/`SKINNED`. The strand VS output
     signature must match the strand PS input signature. Compile `StrandSkin.cs.hlsl` and
     `StrandSim.cs.hlsl` as `cs_5_0` with `-I package/Shaders -I "features/Hair Strands/Shaders"`.
-    fxc rejects partial writes to `Guides[]` fields inside the sim's reset branch (`X4532`),
-    so those writes stay unconditional. HLSL `for (uint i ...)` leaks `i` into the function
-    scope, so the sim declares its index once.
--   Solver: `python tools/hair_strands_sim_check.py` (`--verbose` for the time series) runs
-    a NumPy port of `StrandSim.cs.hlsl` on a hanging lock: still head, sprint start and
-    stop, fast 70° turn, 60° bow and a shoulder capsule, at 30 to 240 fps. It fails if the
-    lock leaves its target while still, stretches, lags differently across frame rates or
-    does not settle. 1.5- and 3.8-unit scalp locks and the hanging lock, held still on a
-    tilted head (up to a head on its side), must come to rest (under 0.005 units a frame
-    after 4 s). The two scalp locks must stay within 10% of their length of target through
-    one step aside and a 15° turn. Once the head stops, no lock's tip may turn back more
-    than twice (60 and 144 fps, frame times jittered by 10%). It also runs followers beside
-    and longer than a 3.8-unit guide through idle sway and snap turns, and fails if one
-    strays further than its guide or changes length by more than 10%. The single lock missed
-    the `0-2-4` faults, so also run changes on a whole head of short locks before tuning.
-    Port solver and follow changes to it first (a few minutes to run), then tune.
+    fxc rejects partial writes to `Guides[]` fields inside a branch (`X4532`), so the sim
+    writes each guide point whole, once. HLSL `for (uint i ...)` leaks `i` into the function
+    scope, so the sim declares its indices once. `point` is a reserved word. fxc does not
+    short-circuit `&&`: guard a call with side effects with `if`. Off Windows, DXC for Linux
+    checks the compute shaders' syntax (`dxc -T cs_6_0 -HV 2018 -E main` with the same
+    includes), and `-Fc` lists the `SkinCB` offsets to compare with `Strands::SkinCB`. It
+    does not replace fxc.
+-   Solver: `python tools/hair_strands_sim_check.py` (a few minutes on 4 cores) runs a NumPy
+    port of `StrandSim.cs.hlsl` and `StrandSkin.cs.hlsl` on the clock `BeginFrame` keeps, for
+    every preset. Locks of 1.5 to 40 units hang from a head that stays still, falls off a
+    cliff, sprints and stops, turns, bows, steps aside, tilts (up to a head on its side) and
+    turns into a shoulder capsule and the head sphere, at 30 to 240 fps and with jittered
+    frame times. It fails if hair at rest sags or stretches past a limit or does not come to
+    rest (the `0-2-2` solver fluttered on a tilted head). It also fails if motion differs
+    across frame rates, if long straight, wavy or locs hair does not stream up in a fall, or
+    if any motion does not settle. 1.5- and 3.8-unit scalp locks must stay within 10% of
+    their length of target through one step aside and a 15° turn. Once the head stops, a
+    lock's swing must die down as a pendulum's does: the tip turns back no sooner than 0.25 s
+    after it last did (the `0-2-4` wave turned it back 12 times in 1.5 s), each swing of 0.05
+    units or more is at most 0.6 of the one before, and the lock is still after 3.5 s. A fringe
+    must stay out of an ellipsoid head field walking and sprinting. Wind, extreme settings
+    (every slider at either end) and followers beside and longer than a 3.8-unit guide are
+    checked too. A follower may not stray further than its guide, nor change length by more
+    than 10% (15% in snap turns). Port solver and follow changes to it first, then tune.
 -   Converter: `StrandGenerator.cpp` only needs `float3` and friends plus `logger`. It
     builds on its own with a small shim (SimpleMath, a `logger` stub, `RE::BSGeometry`
     declared) and synthetic cards. That is how the 2026-09-28 checks ran: root/tip
@@ -687,14 +794,17 @@ Check these first in game:
     overlays). A hair not listed there keeps its cards.
 -   The previous-frame convention (relative to `previousPosAdjust`) matches the game's
     skinned motion vectors. A mismatch would show as ghosting on moving hair with TAA or DLSS.
--   Physics (`0-2-0`): the tuning is from the NumPy port, not seen in game. Check first that
-    still hair sits exactly where it did without physics (a visible offset means the
-    follow pass is off), then tune the presets. Since `0-2-5` hair under 20 units keeps its
-    shape far better, and a 20-unit lock no longer swings back after a fast turn: it peaks
-    as the turn starts (0.5 units with the `0-2-6` defaults; 1.55 in `0-2-3`, 2.58 in
-    `0-2-0`). Under a load a 20-unit lock rests 3.1 units off target (a 60° bow; 2.84
-    before `0-2-6` lowered `rootStiffness`). More inertia, less stiffness or less damping
-    gives more swing; short hair needs a lower `rootStiffness` as well.
+-   Physics (`0-3-0`): the TressFX port and its defaults are from the NumPy port, not seen
+    in game. With `gravityMagnitude` 0 still hair sits exactly where it did without physics
+    (a visible offset means the follow pass is off); with gravity, it sags slightly. Then jump
+    off something high: long hair should stream up by the end of a long fall. Lower
+    `vspCoeff` gives more swing and lag; higher is more rigid (TressFX's sample: 0.758).
+    Raising gravity beyond a few hundred stretches strands unless `lengthConstraintsIterations`
+    rises with it. Short scalp strands should keep their shape while long hair swings: short
+    hair that flops or kinks would point at `ShortStrandLength` (10 units) in the shader.
+-   Wind: TressFX's force grows with a segment's length squared, so the 125 at full weather
+    wind is tuned for segments of about 1 unit. Hair converted with long segments feels
+    more wind.
 -   The strand colour texture binds at PS `t0`, which is `TexColorSampler` in every Lighting
     permutation hair uses. Strands in a flat colour or another texture would point here.
 -   The hair's skin instance lists `NPC Head [Head]` (non-SMP and most SMP hair) and that
@@ -742,6 +852,14 @@ Check these first in game:
     weapons on the back). Below the head, colliders come from bones with fixed radii. The
     body is skinned to many bones, so a rigid field like the head's would not fit it.
 -   Wind from anything but the weather (spells, dragons, player speed beyond air drag).
+-   Loading TressFX's own `.tfx` hair files (and `.tfxbone` skinning) as an alternative to
+    converting cards. The simulation already is TressFX's. A `.tfx` file holds guide strands of
+    a fixed point count (float4 positions, `w` the inverse mass, the first two points 0), and
+    a `.tfxbone` file holds bone names and four bone weights per strand. Positions would need
+    TressFX's up axis and scale turned into Skyrim's, bones mapped by name to the skin
+    instance's, and follow strands generated (`GenerateFollowHairs`, where `tipSeparation`
+    matters).
+-   TressFX's signed distance field collision with the body mesh, in place of bone capsules.
 -   Wigs have no model path in their key (no head part), so they match on shape name and
     vertex/triangle count.
 -   Actor fade-out keeps the cards: strands have no alpha to fade with.

@@ -36,21 +36,26 @@ namespace HairStrands
 		float Pad2;
 	};
 
-	// One simulated guide point. Positions are camera-relative: current ones to the camera of
-	// the simulation that wrote them, previous ones to the previous frame's camera.
+	// One simulated guide point. Positions are relative to the camera of the simulation that
+	// wrote them; offsets are from the point's target (its skinned rest position) and so hold
+	// for any camera.
 	struct GuidePoint
 	{
-		float4 Rotation;  // shortest arc from the target's tangent to the simulated tangent
-		float3 Position;
+		float4 Rotation;  // shortest arc from the target's tangent to the drawn tangent
+		float3 Position;  // TressFX's g_HairVertexPositions: at the last step
 		float Pad0;
-		float3 Velocity;  // units per second
+		float3 PreviousPosition;  // g_HairVertexPositionsPrev: at the step before (Verlet history)
 		float Pad1;
-		float3 Target;  // where skinning alone puts the point
+		float3 PreviousPreviousPosition;  // g_HairVertexPositionsPrevPrev (read for the second point)
 		float Pad2;
-		float3 PreviousPosition;
+		float3 StepOffset;  // Position - target at the last step
 		float Pad3;
-		float3 PreviousTarget;
+		float3 PreviousStepOffset;  // the same at the step before
 		float Pad4;
+		float3 Offset;  // drawn this frame: the step offsets interpolated to the frame
+		float Pad5;
+		float3 PreviousOffset;  // drawn last frame (motion vectors)
+		float Pad6;
 	};
 }
 

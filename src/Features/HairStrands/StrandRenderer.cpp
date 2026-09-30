@@ -24,18 +24,15 @@ namespace Strands
 		constexpr float kHiddenViewportSize = 1024.0f;     // big enough to read the dynamic resolution scale back from
 
 		// Simulation.
-		constexpr uint32_t kSimIterations = 3;
-		constexpr uint32_t kMaxSimGapFrames = 2;       // unsimulated longer than this: restart from the targets
-		constexpr float kMaxFrameTime = 1.0f / 30.0f;  // longer frames slow the hair rather than destabilise it
-		constexpr float kSimStep = 1.0f / 60.0f;       // longest step; stiffness and damping are authored for it
-		constexpr float kSimFadeStart = 0.75f;         // of the physics distance
-		constexpr float kSimTimeWrap = 3600.0f;        // keeps the gust clock precise
-		constexpr float kTeleportDistance = 40.0f;     // a root moving further in one frame restarts its strand
-		constexpr float kGravity = 687.0f;             // 9.81 m/s^2 in units (1.428 cm)
-		constexpr float kWindAcceleration = 600.0f;    // at the weather's full wind speed
-		// World velocity lost per 1/60 s. Hair trails while running by about this much of its
-		// speed per frame, so it stays small: a style's damping takes out swings instead.
-		constexpr float kAirDrag = 0.06f;
+		constexpr uint32_t kMaxSimGapFrames = 2;    // unsimulated longer than this: restart from the targets
+		constexpr float kMaxFrameTime = 0.05f;      // TressFX's clamp: longer frames slow the hair rather than destabilise it
+		constexpr float kSimStep = 1.0f / 60.0f;    // TressFX's settings are per step, and its samples ran at 60 Hz
+		constexpr uint32_t kMaxSimSteps = 4;        // kMaxFrameTime and the remainder of a step
+		constexpr float kSimFadeStart = 0.75f;      // of the physics distance
+		constexpr float kTeleportDistance = 40.0f;  // a root moving further in one frame restarts its strand,
+		constexpr float kTeleportSpeed = 4000.0f;   // or, in a long frame, moving faster than this (units/s)
+		constexpr float kWindMagnitude = 125.0f;    // TressFX's wind magnitude at the weather's full wind speed
+		constexpr float kWindConeAngle = 40.0f;     // degrees between TressFX's four wind vectors and the wind
 		// Body colliders, radii at scale 1: well inside a body, so hair resting on it stays put.
 		constexpr float kNeckRadius = 3.0f;
 		constexpr float kChestRadius = 5.5f;
@@ -571,14 +568,36 @@ namespace Strands
 		currentVariant = nullptr;
 		currentDepthOnly = false;
 
-		// Simulation clock and the weather's wind, once per frame. Paused, the hair holds still.
+		// Simulation clock, once per frame: fixed steps shared by all hair, so every hair's steps end
+		// at the same times. Paused, no step runs and the hair holds still.
 		const bool paused = globals::game::ui && globals::game::ui->GameIsPaused();
 		frameDeltaTime = paused ? 0.0f : std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, kMaxFrameTime);
-		simulationTime = std::fmod(simulationTime + frameDeltaTime, kSimTimeWrap);
-		frameWind = {};
+		const float elapsed = simAccumulator + frameDeltaTime;
+		frameSteps = std::min(static_cast<uint32_t>(elapsed / kSimStep + 1e-4f), kMaxSimSteps);
+		firstStepFraction = frameDeltaTime > 0.0f ? (kSimStep - simAccumulator) / frameDeltaTime : 0.0f;
+		stepFraction = frameDeltaTime > 0.0f ? kSimStep / frameDeltaTime : 0.0f;
+		simAccumulator = std::clamp(elapsed - frameSteps * kSimStep, 0.0f, kSimStep * 0.999f);
+		displayAlpha = simAccumulator / kSimStep;
+		simulationStep += frameSteps;
+
+		// The weather's wind, as TressFX's SetWind makes it: the magnitude swells and fades with
+		// sin^2(frame x 0.01) + 0.5, and four vectors 40 degrees off the wind's direction form a cone
+		// that each strand mixes its own wind from. Weather wind is level, so the turn from TressFX's
+		// X axis to it is a turn about Z.
+		windCorners = {};
 		if (auto* sky = globals::game::sky; sky && settings.physics && !Util::IsInterior()) {
-			const float strength = std::clamp(sky->windSpeed, 0.0f, 1.0f) * kWindAcceleration * settings.windStrength;
-			frameWind = { std::sin(sky->windAngle) * strength, std::cos(sky->windAngle) * strength, 0.0f };
+			const double swell = std::sin(static_cast<double>(simulationStep) * 0.01);
+			const float magnitude = std::clamp(sky->windSpeed, 0.0f, 1.0f) * kWindMagnitude * settings.windStrength * static_cast<float>(swell * swell + 0.5);
+			const float cone = DirectX::XMConvertToRadians(kWindConeAngle);
+			const float c = std::cos(cone), s = std::sin(cone);
+			// TressFX's corners: X turned about +Y, -Y, +Z and -Z.
+			const float3 corners[4] = { { c, 0.0f, -s }, { c, 0.0f, s }, { c, s, 0.0f }, { c, -s, 0.0f } };
+			const float heading = DirectX::XM_PIDIV2 - sky->windAngle;  // the wind blows along (sin angle, cos angle)
+			const float ch = std::cos(heading), sh = std::sin(heading);
+			for (size_t k = 0; k < std::size(corners); ++k) {
+				const float3& v = corners[k];
+				windCorners[k] = { (v.x * ch - v.y * sh) * magnitude, (v.x * sh + v.y * ch) * magnitude, v.z * magnitude, 0.0f };
+			}
 		}
 
 		if (library.GetGeneration() != libraryGeneration) {
@@ -1191,8 +1210,9 @@ namespace Strands
 	{
 		const auto& asset = *a_instance.asset;
 		const auto& style = a_instance.style;
-		// Short hair (area seeding) barely moves: it keeps plain skinning.
-		if (!style.simulate || asset.guideCount == 0 || asset.pointsPerStrand < 2 || asset.seedingUsed == SeedMode::Area || a_instance.simWeight <= 0.0f)
+		// Short hair (area seeding) barely moves: it keeps plain skinning. TressFX pins the first two
+		// points of a strand, so it needs a third to move.
+		if (!style.simulate || asset.guideCount == 0 || asset.pointsPerStrand < 3 || asset.seedingUsed == SeedMode::Area || a_instance.simWeight <= 0.0f)
 			return false;
 
 		const uint32_t guidePoints = asset.guideCount * asset.pointsPerStrand;
@@ -1216,18 +1236,6 @@ namespace Strands
 		const uint32_t frameBone = haveHead ? static_cast<uint32_t>(asset.headBone) : 0;
 		const bool reset = a_instance.lastSimFrame == UINT32_MAX || a_instance.simAssetSerial != asset.serial || RenderFrame() - a_instance.lastSimFrame > kMaxSimGapFrames;
 
-		// Steps of at most 1/60 s, which stiffness and damping are authored for (the shader
-		// rescales stiffness for shorter steps).
-		const uint32_t steps = frameDeltaTime > 0.0f ? static_cast<uint32_t>(std::ceil(frameDeltaTime / kSimStep - 1e-3f)) : 0u;
-		const float stepTime = steps ? frameDeltaTime / steps : 0.0f;
-
-		// The styled shape already hangs under gravity with the head upright: only the change as
-		// the head tilts acts on it. Skin space is Z-up, so the styled shape's down is the head's -Z.
-		float3 restDown = -float3(a_palette[frameBone * 3].z, a_palette[frameBone * 3 + 1].z, a_palette[frameBone * 3 + 2].z);
-		if (restDown.LengthSquared() < 1e-8f)
-			restDown = { 0.0f, 0.0f, -1.0f };
-		restDown.Normalize();
-
 		o_cb.headBone = frameBone;
 		const bool headField = settings.collision && haveHead && a_instance.headField;
 		o_cb.flags = SkinCB::kFollow | (reset ? SkinCB::kReset : 0u) | (settings.collision ? SkinCB::kCollide : 0u) | (headField ? SkinCB::kHeadField : 0u);
@@ -1235,21 +1243,31 @@ namespace Strands
 		o_cb.simWeight = a_instance.simWeight;
 		// Without a head bone, the full skinning is the only target there is.
 		o_cb.guidance = haveHead ? settings.smpGuidance : 1.0f;
-		o_cb.gravity = (float3(0.0f, 0.0f, -1.0f) - restDown) * (kGravity * style.gravity);
-		o_cb.stepTime = stepTime;
-		o_cb.steps = steps;
+
+		// This frame's steps on the shared clock.
 		o_cb.eyeShift = reset ? float3() : a_instance.simEye - a_eye;
-		o_cb.previousEyeShift = reset ? float3() : a_instance.simEye - a_previousEye;
-		o_cb.rootStiffness = style.rootStiffness;
-		o_cb.tipStiffness = style.tipStiffness;
-		o_cb.bendStiffness = style.bendStiffness;
-		o_cb.wind = frameWind * style.windResponse;
-		o_cb.velocityKeep = std::pow(1.0f - kAirDrag, stepTime * 60.0f);
-		o_cb.swingDamping = style.damping;
-		o_cb.carry = 1.0f - style.inertia;
-		o_cb.time = simulationTime;
-		o_cb.teleportDistance = kTeleportDistance;
-		o_cb.iterations = kSimIterations;
+		o_cb.previousToCurrent = a_previousEye - a_eye;
+		o_cb.steps = frameSteps;
+		o_cb.firstStep = firstStepFraction;
+		o_cb.stepFraction = stepFraction;
+		o_cb.displayAlpha = displayAlpha;
+		o_cb.stepTime = kSimStep;
+		o_cb.teleportDistance = std::max(kTeleportDistance, kTeleportSpeed * frameDeltaTime);
+
+		// TressFX's simulation settings.
+		o_cb.damping = style.damping;
+		o_cb.localStiffness = style.localConstraintStiffness;
+		o_cb.globalStiffness = style.globalConstraintStiffness;
+		o_cb.globalRange = style.globalConstraintsRange;
+		o_cb.gravity = style.gravityMagnitude;
+		o_cb.vspCoeff = style.vspCoeff;
+		o_cb.vspAccelThreshold = style.vspAccelThreshold;
+		o_cb.clampPositionDelta = style.clampPositionDelta;
+		o_cb.localIterations = style.localConstraintsIterations;
+		o_cb.lengthIterations = style.lengthConstraintsIterations;
+		o_cb.tipSeparation = style.tipSeparation;
+		for (size_t k = 0; k < windCorners.size(); ++k)
+			o_cb.wind[k] = windCorners[k] * style.windResponse;
 		o_cb.colliderCount = settings.collision ? GatherColliders(a_instance, a_skin, a_palette, frameBone, a_eye, o_cb.colliders) : 0;
 
 		a_instance.simEye = a_eye;
