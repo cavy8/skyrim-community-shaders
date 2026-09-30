@@ -722,6 +722,20 @@ Check these first in game:
 
 ## Not done (candidates)
 
+-   Hair gathered into a tie. A high ponytail's nape hair runs down from the tie, not up into
+    it (Apachii hair 79; the flow before `0-3-0` had the same fault). Tried during `0-3-0`:
+    scalp hair runs towards where the hanging pieces start. That turned hair 79's nape
+    towards the tie, but made a side card of KS WindyCity grow from the ear, because loose
+    hair's crown roots look the same as a tie. It needs a tie detector (a compact cluster of
+    hanging roots) and more tied hairstyles to check it against.
+-   Braids and long hair built from separate segments. Strands start again at every
+    segment, rooted in mid-air and pinned to the head, so the segments do not hang from one
+    another (KS TombRaider's braid: 18% of strand length; vanilla hair 13's braid: 5%).
+    Joining strands to "a card just ahead that runs the same way" does not work: 93-100% of
+    ordinary strand tips have one within 0.75 units (a longer neighbouring layer). A root
+    clear of the scalp is always a segment start, though. Candidates: join backwards from
+    such roots only (the coverage trim must skip the join), or root those strands on the
+    strand that feeds them in the simulation.
 -   Strand shadow maps and self-shadowing beyond Hair Specular's, and deep opacity maps.
     Cards cast the shadows.
 -   Hair-hair collision, and colliders fitted to the actual body mesh (breasts, armour,
