@@ -1,45 +1,38 @@
 #include "Common/NeuralRenderingCategories.hlsli"
 #include "NeuralRendering/ColorTransfer.hlsli"
+#include "NeuralRendering/TransferParams.hlsli"
 
-cbuffer TransferParams : register(b0)
-{
-	float2 JitterOffset;  // Sub-pixel projection offset of the original raster, in render pixels.
-	float ColorStrength;
-	float TransferStrength;  // Overall edit weight (0 = untouched frame, 1 = the model's change, 2 = doubled).
-	uint2 ActiveSize;  // Valid region of OriginalColor and DestinationColor, in their texels.
-	uint2 WorkSize;    // Model raster; ModelColor and ProxyColor are allocated at this size.
-	uint2 GuideSize;   // Valid region of GuideDepth (render resolution), in its texels.
-	uint DepthAwareResolve;  // Non-zero: fade the edit across depth silhouettes (see NeuralSilhouetteWeight).
-	uint StaleAnswer;        // Non-zero: ModelColor/ProxyColor are the previous frame's; reproject them through MotionVectors.
-	uint HueGuardMask;       // Bit i set: category i (NeuralRenderingCategories) hue-guards its chroma change.
-	float2 GuideJitterOffset;  // Projection offset of the guide rasters relative to the colour raster, in guide texels.
-	uint ColorDomain;          // kNeuralColorDomain* - how OriginalColor and DestinationColor are encoded.
-	float4 CategoryColorStrengths[2];
-	float4 CategoryTransferStrengths[2];
-	float4 CategoryLuminosityStrengths[2];
-	float4 DisplayParam;      // x: replicate the vanilla tonemap, y: ISHDR Param.y (white point), z: ISHDR Param.z (Hejl-Burgess-Dawson).
-	float4 DisplayCinematic;  // ISHDR Cinematic: x saturation, z contrast, w brightness.
-	float4 DisplayTint;       // ISHDR Tint: xyz colour, w amount.
-	float4 DisplayExposure;   // x: apply Post Processing auto exposure, y: 0.18 * compensation, zw: adaptation range.
-	float LuminosityStrength;  // Overall multiplier on the model's luminance change alone (see ResolveNeuralColor).
-	uint DebugCategoryView;    // Non-zero: render the classified category (NeuralRenderingCategories::DebugColor) instead of the model's edit.
-	float MaxRatio;            // Two-sided guard on the model/proxy luminance ratio (1/MaxRatio..MaxRatio); see ResolveNeuralColor.
-	uint RawModelOutput;       // Non-zero: write Feature 18's answer directly, bypassing the resolve entirely (Finished Image diagnostic).
-	float HighlightWhite;      // Display gamma: display peak for the HDR highlight shoulder (NeuralHighlightRolloff); 0 = none.
-	float WipePosition;        // Split-screen comparison: split as a fraction of the active width; negative = off.
-	uint2 Reserved;
-};
-
-Texture2D<float4> ModelColor : register(t0);     // Feature 18 answer, display-referred proxy domain.
-Texture2D<float4> OriginalColor : register(t1);  // Untouched linear scene colour, jittered raster.
-Texture2D<float4> ProxyColor : register(t2);     // The exact proxy EncodeColorCS handed the model.
-Texture2D<float> GuideDepth : register(t3);      // Game depth at the guide resolution.
-Texture2D<float> MaterialCategories : register(t4);  // Masks2: category in the low three R16_UNORM bits.
+Texture2D<float4> ModelColor : register(t0);                   // Feature 18 answer, display-referred proxy domain.
+Texture2D<float4> OriginalColor : register(t1);                // Untouched linear scene colour, jittered raster.
+Texture2D<float4> ProxyColor : register(t2);                   // The exact proxy EncodeColorCS handed the model.
+Texture2D<float> GuideDepth : register(t3);                    // Game depth at the guide resolution.
+Texture2D<float> MaterialCategories : register(t4);            // Masks2: category in the low three R16_UNORM bits.
 Texture2D<float2> VanillaAdaptation : register(t5);            // Same inputs EncodeColorCS used for the display transform,
 StructuredBuffer<float> PostProcessAdaptation : register(t6);  // so a stale proxy can be compared with a fresh encode.
-Texture2D<float2> MotionVectors : register(t7);  // Game motion vectors at the guide resolution (current -> previous, normalised UV).
+Texture2D<float2> MotionVectors : register(t7);                // Game motion vectors at the guide resolution (current -> previous, normalised UV).
+Texture2D<float2> ToneLow : register(t8);                      // y: the edge-aware blur of the edit (FilterToneDataCS); x unused here.
 RWTexture2D<float4> DestinationColor : register(u0);
+// Debug readback, only written while kNeuralDebugStats is set: 0 clamped samples,
+// 1 samples taken, 2 peak model luminance as asuint. Sampled on an 8x8 grid, which is
+// plenty for a diagnostic and keeps the atomics off the hot path.
+RWStructuredBuffer<uint> DebugStats : register(u1);
 SamplerState LinearClampSampler : register(s0);
+
+/**
+ * One band of the model's luminance edit, rendered on its own for tuning Band Radius.
+ *
+ * Mid-grey is no change; black and white are two stops down and up. In the display-gamma
+ * domain that grey is simply 0.5; in a scene domain the frame still has the game's tonemap
+ * ahead of it, so the value is divided back out by the exposure the proxy applied - the same
+ * trick the split-screen divider uses to draw a white line.
+ */
+float4 NeuralBandDebugColor(float band, float exposure, uint domain, float alpha)
+{
+	float grey = saturate(0.5 + band * 0.25);
+	if (domain != kNeuralColorDomainDisplayGamma)
+		grey /= max(exposure, 1e-4);
+	return float4(grey.xxx, alpha);
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -54,6 +47,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	if (any(dispatchThreadID.xy >= active) || any(ActiveSize == 0))
 		return;
 
+	const uint modelSpace = NeuralTransferModelSpace();
+
 	// Split-screen comparison ("Compare: Split Screen", runtime only): left of the split the
 	// frame passes through exactly as it arrived - no edit, no debug view - and a two-pixel
 	// black/white divider marks the split so it reads on both bright and dark content. White
@@ -66,7 +61,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 			float white = 1.0;
 			if (ColorDomain != kNeuralColorDomainDisplayGamma) {
 				NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
-					VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite);
+					VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite,
+					ProxyCurve);
 				white = 1.0 / max(display.exposure, 1e-4);
 			}
 			DestinationColor[dispatchThreadID.xy] = float4((offset < 0.0 ? 0.0 : white).xxx, passthrough.a);
@@ -121,6 +117,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		answerOnScreen = all(answerUV >= 0.0) && all(answerUV <= 1.0);
 	}
 	float4 model = ModelColor.SampleLevel(LinearClampSampler, answerUV, 0);
+	model.rgb = NeuralTransferModelChannels(model.rgb);
 	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, answerUV, 0);
 
 	float4 original = OriginalColor[dispatchThreadID.xy];
@@ -133,7 +130,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	// has to process, which is not a meaningful image. Not the normal path; it
 	// exists to tell apart a weak model answer from an over-conservative resolve.
 	if (RawModelOutput != 0 && ColorDomain == kNeuralColorDomainDisplayGamma) {
-		float3 rawLinear = NeuralModelToLinear(model.rgb, ColorDomain);
+		float3 rawLinear = NeuralModelToLinear(model.rgb, modelSpace);
 		DestinationColor[dispatchThreadID.xy] = float4(NeuralLinearToDomain(rawLinear, ColorDomain), original.a);
 		return;
 	}
@@ -197,18 +194,23 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 	// Category controls shape the local result first. The existing global sliders
 	// remain a final multiplier over every category.
-	float resolvedColorStrength = categoryColorStrength * ColorStrength;
 	float editWeight = categoryTransferStrength * TransferStrength;
-	float resolvedLuminosityStrength = categoryLuminosityStrength * LuminosityStrength;
 	// A stale answer has been reprojected above; fade it out wherever the content
 	// under the pixel still differs from what the model saw (disocclusion, a light
 	// switching, an animated surface). The fresh frame is encoded with the same
 	// display transform the stale proxy received, so only genuine content changes
 	// register.
-	if (StaleAnswer != 0) {
+	// The debug views below draw in frame units, so in a scene domain they need the exposure
+	// the proxy applied to divide back out; the stale-edit guard needs the whole transform.
+	float displayExposure = 1.0;
+	if (StaleAnswer != 0 ||
+		(DebugFlags & (kNeuralDebugBroadBand | kNeuralDebugDetailBand | kNeuralDebugGuardClamp)) != 0) {
 		NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
-			VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite);
-		editWeight *= answerOnScreen ? NeuralStaleEditWeight(proxy, original, ColorDomain, display) : 0.0;
+			VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite,
+			ProxyCurve);
+		displayExposure = display.exposure;
+		if (StaleAnswer != 0)
+			editWeight *= answerOnScreen ? NeuralStaleEditWeight(proxy, original, ColorDomain, modelSpace, display) : 0.0;
 	}
 	if (DepthAwareResolve != 0 && all(GuideSize > 0)) {
 		// Left fractional (not rounded to a texel) so NeuralSilhouetteWeight can
@@ -218,6 +220,56 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 		editWeight *= NeuralSilhouetteWeight(GuideDepth, LinearClampSampler, guideTexel, GuideSize);
 	}
 
-	DestinationColor[dispatchThreadID.xy] = ResolveNeuralColor(model, proxy, original, resolvedColorStrength, editWeight,
-		resolvedLuminosityStrength, ColorDomain, categoryHueGuardAmount, MaxRatio);
+	// The band split is sampled at the same (possibly reprojected) model position as the
+	// answer it belongs to, so a reused answer carries its own band data with it.
+	NeuralResolveInputs resolveInputs;
+	resolveInputs.modelColor = model;
+	resolveInputs.proxyColor = proxy;
+	resolveInputs.originalColor = original;
+	resolveInputs.colorStrength = categoryColorStrength * ColorStrength;
+	resolveInputs.editWeight = editWeight;
+	resolveInputs.categoryLuminosity = categoryLuminosityStrength;
+	resolveInputs.broadLuminosity = BroadLuminosity;
+	resolveInputs.detailLuminosity = BandParams.x;
+	resolveInputs.hasToneData = NeuralTransferHasToneData();
+	resolveInputs.toneLow = resolveInputs.hasToneData ? ToneLow.SampleLevel(LinearClampSampler, answerUV, 0).y : 0.0;
+	resolveInputs.domain = ColorDomain;
+	resolveInputs.modelSpace = modelSpace;
+	resolveInputs.hueGuardAmount = categoryHueGuardAmount;
+	resolveInputs.maxRatio = MaxRatio;
+
+	NeuralResolveDebug resolveDebug;
+	float4 result = ResolveNeuralColor(resolveInputs, resolveDebug);
+
+	// Sparse readback for the settings UI: how often the ratio guard actually binds, and how
+	// far above one the model's answer reaches. One grid point per 8x8 block keeps the atomic
+	// traffic on a single address bounded while still sampling tens of thousands of pixels.
+	if ((DebugFlags & kNeuralDebugStats) != 0 && (dispatchThreadID.x & 7u) == 0u && (dispatchThreadID.y & 7u) == 0u) {
+		uint previous;
+		InterlockedAdd(DebugStats[1], 1u, previous);
+		if (resolveDebug.clamped != 0)
+			InterlockedAdd(DebugStats[0], 1u, previous);
+		// asuint is monotonic over non-negative floats, so a max on the bit pattern is a max
+		// on the value; the resolve never produces a negative luminance.
+		InterlockedMax(DebugStats[2], asuint(max(resolveDebug.modelLuma, 0.0)));
+	}
+
+	if ((DebugFlags & kNeuralDebugBroadBand) != 0) {
+		DestinationColor[dispatchThreadID.xy] = NeuralBandDebugColor(resolveDebug.lowBand, displayExposure, ColorDomain, original.a);
+		return;
+	}
+	if ((DebugFlags & kNeuralDebugDetailBand) != 0) {
+		DestinationColor[dispatchThreadID.xy] = NeuralBandDebugColor(resolveDebug.highBand, displayExposure, ColorDomain, original.a);
+		return;
+	}
+	// "Show Guard Clamping": tint the pixels the guard caught, leaving the rest of the frame
+	// readable underneath so it is obvious *what* is being clamped.
+	if ((DebugFlags & kNeuralDebugGuardClamp) != 0 && resolveDebug.clamped != 0) {
+		float3 marker = resolveDebug.clamped > 0 ? float3(1.0, 0.0, 0.0) : float3(0.0, 0.3, 1.0);
+		if (ColorDomain != kNeuralColorDomainDisplayGamma)
+			marker /= max(displayExposure, 1e-4);
+		result.rgb = lerp(result.rgb, marker, 0.6);
+	}
+
+	DestinationColor[dispatchThreadID.xy] = result;
 }

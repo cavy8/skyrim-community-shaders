@@ -260,6 +260,34 @@ over-bright proxy. The one exception is HDR Display's float16 redirect when the 
 is linear (Linear Lighting, or Post Processing owning the tonemap) - the same test `HDROutputCS`
 applies - which keeps `kSceneLinear`.
 
+### Scene gamma (Linear Lighting off)
+
+A third domain, `kSceneGamma`, exists for the pre-tonemap placements while Linear
+Lighting is **off**. `kMAIN` then holds gamma-encoded values, and in SDR `ISHDR.hlsl`
+grades them and writes the result straight out - it only calls `LinearToGammaSafe`
+under `ENABLE_LL`. Treating that buffer as linear was wrong twice over: the proxy
+sRGB-encoded an already-encoded frame, handing the model a washed-out image, and
+the resolve multiplied the raw encoded buffer by a ratio measured in linear light,
+which makes the edit roughly 2.2x stronger in stops than the model asked for.
+
+`SceneColorDomain()` picks `kSceneGamma` for Before, After and Separate Upscaling
+whenever Linear Lighting is not in effect (`IsLinearLightingActive()`: its setting is off,
+or the flat world map is open, where Linear Lighting stands down). In that domain
+`NeuralDomainToLinear` / `NeuralLinearToDomain` use `kNeuralSceneGamma` (2.2, the
+curve ISHDR itself linearises this pipeline's output with in its HDR path; Open
+Shaders uses Skyrim's 1.6 instead, and the constant is kept in one place so the two
+can be A/B'd), so the resolve decodes the original, applies the edit in linear light
+and re-encodes with no special case of its own. `EncodeNeuralProxy` puts exposure
+where the game puts it - on the encoded values - and then either runs the ISHDR
+replica there and decodes its display-encoded result, or decodes first and hands
+linear light to whichever other curve is selected.
+
+The **Legacy** proxy curve is exempt: it stays in `kSceneLinear` whatever Linear
+Lighting is doing, because reproducing the September 2026 build means reproducing
+its encoding behaviour too. If you play with Linear Lighting off, part of that
+build's punch may be exactly this - the ratio applied to gamma-encoded values is
+roughly the linear-light edit raised to 2.2.
+
 `ColorTransfer.hlsli` maps the linear open-ended HDR scene colour into the
 display-referred (tone-mapped + sRGB) domain the model was trained on - and it
 does so through the display transform the frame is actually about to receive,
@@ -439,19 +467,28 @@ is tonemapped. It works in every placement. Before Upscaling feeds DLSS a split
 frame, which is fine for a visual comparison. The model still evaluates the whole
 frame, so the right half is exactly what the full-screen result would be.
 
-**Frame Hold** (`CompareView::frameHold`, Finished Image only). The model's tuning
+**Frame Hold** (`CompareView::frameHold`, Finished Image and After Upscaling). The model's tuning
 parameters rebuild the feature and its history when they change, and the live
 scene keeps moving, so judging a slider change by eye is unreliable. Frame Hold
 freezes the input instead: on its first frame `CaptureFrameHold` copies the
 finished colour, the depth snapshot and the category snapshot into `heldColor` /
 `heldDepth` / `heldCategories` (each mirroring its source's description so a
 whole-resource `CopyResource` is valid) and records the guide extent and guide
-jitter. From then on `EvaluateFinishedImage` evaluates those instead of the live
-frame, every frame, with a history reset on capture. The live guides are still
+jitter. From then on the placement evaluates those instead of the live frame,
+every frame, with a history reset on capture. The live guides are still
 consumed, so the one-evaluation-per-frame contract is unchanged, and the result
-still goes through `ApplyFinishedImage`'s copy-back. The screen therefore shows the
+still goes through the placement's usual copy-back. The screen therefore shows the
 held frame with the current strengths and tuning while the game keeps running
 underneath. The HUD is drawn later and stays live.
+
+After Upscaling holds the same three resources, taken at its own point in the
+frame: the upscaled colour `ResolveUpscaledFrame` is about to edit, the live
+`kMAIN` depth, and the category snapshot. Finished Image holds its pre-`UpscaleDepth`
+depth snapshot instead, because that is the raster its guides are on. `heldPlacement`
+records which placement captured the hold, so switching placement releases it
+rather than re-evaluating one placement's frame under another's guide contract.
+Before and Separate Upscaling hand their frame straight to DLSS and have nothing
+to freeze, so the checkbox is disabled there.
 
 A held frame has no motion, so `Options::staticMotion` makes `EvaluateModel` clear
 the shared motion-vector texture to zero instead of copying the live vectors
@@ -591,17 +628,74 @@ to 8 - so past 4 in the UI (or an ini edit past 8) had no further effect, which
 read as the guard being unliftable. The guard is now opt-in and its two ranges
 match (1..8 both in the UI and in `Backend.cpp`).
 
-## Luminosity strength
+## Broad and Detail luminosity
 
-`Luminosity Strength` (0..2, default 1) is a second exponent applied on top of
-`Transfer Strength`, but only to the luminance ratio - `ResolveNeuralColor`
-raises the model/proxy ratio to `editWeight * luminosityStrength` instead of
-`editWeight` alone. The chroma blend (`Color Strength`) is untouched, so lowering
-it damps the light/dark swings a strong transfer can read as overly contrasty
-while keeping the model's colour and detail edit at whatever strength the other
-sliders already give it. One reproduces the pre-luminosity-strength behaviour
-exactly; zero freezes luminance at the original regardless of `Transfer
-Strength`.
+`Broad Luminosity` and `Detail Luminosity` (both 0..2, default 1) replace the
+single `Luminosity Strength` they grew out of. Both scale only the luminance
+edit - the chroma blend gated by `Color Strength` is untouched - but they scale
+different halves of it.
+
+`ResolveNeuralColor` measures the edit in stops,
+`delta = log2((modelLuma + floor) / (proxyLuma + floor))`, and splits it:
+
+```
+low   = toneLow            // edge-aware blur of delta, or delta itself when absent
+high  = delta - low
+tone  = editWeight * categoryLuminosity * (low * Broad + high * Detail)
+ratio = clamp(exp2(tone), 1 / maxRatio, maxRatio)
+```
+
+`low` is the region-level relighting - a whole wall or hillside the model wants
+brighter - and `high` is its own local contrast and micro-detail. Everything
+after `targetLuma` is unchanged, and the per-category luminosity multiplier
+scales both bands equally, so whether the split is active depends only on the
+two global values. **With `Broad == Detail == x` this is exactly
+`ratio^(editWeight * categoryLuminosity * x)`** - the old single exponent - so an
+upgraded config produces an identical frame, and the shader takes that path
+whether or not the band data exists.
+
+### The band passes
+
+They run once per model evaluation, right after the answer is copied back, at the
+model raster, and only while the two strengths differ. Two `R16G16_FLOAT`
+textures at the model raster (`toneData`, `toneScratch`) are all they need; they
+are ordinary D3D11 textures, never shared with D3D12. Half precision resolves
+about 0.01 stops, far finer than the edit carries.
+
+- **`PrepareToneDataCS`** reads the proxy and the answer with the same decode the
+  resolve uses and writes `(log2 proxy luminance, delta)`. The proxy luminance
+  rides along because the filter is edge-aware: it has to know where the *image*
+  has an edge, not just where the edit does.
+- **`FilterToneDataCS`**, dispatched horizontally then vertically (the `VERTICAL`
+  define picks the axis), is a separable bilateral blur of `delta` alone:
+  17 taps, Gaussian spatial weights, and an edge weight of
+  `exp(-kNeuralBandEdgeSharpness * |change in log2 proxy luminance|)`. Separable
+  bilateral filtering does not compose into a true 2D bilateral kernel, but the
+  thing being filtered is a smooth edit map rather than an image. The horizontal
+  pass writes `toneScratch`; the vertical one writes back into `toneData`, which
+  no pass is reading at that point, so two textures suffice.
+- **`DecodeColorCS`** samples `toneData.y` bilinearly at the same (possibly
+  reprojected) model position it already samples the answer and the proxy at, so
+  a reused alternating-frame answer carries its own band data with it.
+
+`Band Radius` (2..32 model texels, default 8) sets how far the blur reaches. It
+is scaled by the model resolution so it covers the same part of the screen at
+0.5x and at 1x, and the tap count is fixed - the stride stretches (or shrinks) to
+fit the radius - so the cost does not change with it. The stride is fractional and
+the taps are read through the bilinear sampler; a whole-texel stride would round the
+reach to multiples of eight texels and leave most of the range without effect. Open Shaders splits at a 5x5 kernel
+with a 1-texel radius; at that size "high" is only the model's sharpening and
+"broad" still contains all the region-level relighting that reads as the Neural
+Rendering look, which is the thing worth controlling separately.
+`kNeuralBandEdgeSharpness` is 2 (Open's value); 3-4 is tighter, for content where
+the detail band shows halos.
+
+`TransferParams.BandParams.z` tells the resolve whether the band textures hold
+data for this evaluation; when they do not - equal strengths, a failed
+allocation, a shader that would not compile, or the first frame after a raster
+change - `hasToneData` is false, `low` falls back to `delta`, `high` is zero, and
+only `Broad` applies. That is the same maths as the unsplit edit, so the fallback
+is silent rather than a visible change.
 
 ## Per-category colour, transfer, luminosity strengths and hue guard
 
@@ -774,6 +868,345 @@ across the skipped one. A history reset keeps the plain one-frame scale (there i
 no history to bridge), and a gap longer than two frames is not treated as a skip:
 it only happens when `Run` was not called at all, e.g. while a menu paused the
 game. The proxy does not do this; it hands the model one frame of motion for two.
+
+## Presets and the Advanced section
+
+A preset is a table of values (`NeuralRendering::PresetValues`, `kPresets` in
+`NeuralRendering.cpp`) that `ApplyPreset()` writes into the ordinary settings. There is no
+separate code path behind it: every slider still works once a preset is applied, and the
+preset only records where the current values came from.
+
+| Setting | Full (default) | Vanilla-Plus |
+|---|---|---|
+| Placement | Finished Image | After Upscaling |
+| NR Style | Default (0) | Cinematic (2) |
+| NR Intensity | 1.0 | 0.8 |
+| Local Tone / Local Structure | 1.0 / 1.0 | 0.75 / 0.9 |
+| Skin Structure | Auto (-1) | 0.9 |
+| Automatic Mask | on | on |
+| Proxy Curve | Display-matched | Legacy |
+| Color Strength | 1.0 | 0 |
+| Transfer Strength | 1.0 | 1.0 |
+| Broad / Detail Luminosity | 1.0 / 1.0 | 1.0 / 1.0 |
+| Band Radius | 8 | 8 |
+| Ratio Guard | off | on, Max Ratio 2.0 |
+| Category strengths | all 1.0 except Skin Color 0.6; Hair hue guard on | all 1.0, hue guards off |
+| Depth-Aware Silhouette | off | off |
+
+**Full** is the current look: the model's own answer applied to the finished frame, with no
+guard on how far it may push a pixel. Skin Color Strength is 0.6 because the model's skin tint
+is its most visible overreach; the `Settings` default matches, so a fresh install and
+`Restore Defaults` agree.
+
+**Vanilla-Plus** reproduces the 2026-09-09 build (`5947cf63`) on the current resolve rather
+than by restoring old code. That build's edit was luminance-only, and `Color Strength` at zero
+reproduces it *exactly*, not approximately: the resolve raises the model/proxy chroma ratio to
+`colorStrength`, so zero collapses it to one in every channel, `normalizedTarget` reduces to
+`normalizedOriginal`, and the two endpoints of the final `lerp` coincide whatever its weight
+is. Its Style is Cinematic (2): the 2026-09-09 build asked for Style 3, which aliases 2 (the
+72-case probe in kibblerz's findings), and a stored 3 has been clamped to 2 on load since
+`NeuralRendering.cpp:586`. Its category values are neutral rather than absent, so moving on
+from Vanilla-Plus starts from a clean state even though they do nothing while Color Strength
+is zero. Its guard is the +-1 stop that build always applied; see *Ratio guard A/B* under
+*What still has to be measured*.
+
+Presets never touch Enable, Model Resolution, Alternate Frames, Show Advanced, or the
+runtime-only comparison aids, so switching one never moves the frame's cost or hides a
+comparison the user set up.
+
+### Behaviour
+
+Selecting a preset writes every row above. Style, Local Tone/Structure, Skin Structure,
+Automatic Mask and Intensity are latched when Feature 18 is created, so the backend's
+debounced `SettleTuning` recreate picks the change up on its own - nothing in `ApplyPreset`
+tears the feature down.
+
+`MatchesPreset()` compares every row **except Placement and NR Intensity**, with a 1e-4 float
+tolerance, and runs once per frame while the menu is open. Those two are basic controls a user
+is expected to move without leaving the preset: a Vanilla-Plus moved to Finished Image is
+still Vanilla-Plus - luminance-only with a +-1-stop guard on the finished frame - and the
+Legacy proxy simply has no effect there. `Max Ratio` only counts while the guard is on, and
+`Band Radius` only while Broad and Detail differ, so a stale, hidden stored value cannot make a
+preset look modified. Anything else shows
+"`<preset>` (modified)" in the combo with a **Reset to preset** button beside it. This is
+deliberately not a third "Custom" entry, which would lose track of which look the settings
+came from.
+
+Loading a config reads the stored values and never re-applies the preset, so modified settings
+survive a restart. `RestoreDefaultSettings()` is `ApplyPreset(Full)` plus hiding Advanced.
+
+### Layout
+
+**Show Advanced Settings** (`Settings::showAdvanced`, saved, off by default) splits the tab.
+Always visible: Enable, the comparison screenshot button, Preset (+ Reset to preset),
+Placement, Model Resolution and its scale(s), Alternate Frames, NR Intensity, and Split Screen
+with its position slider. Split Screen stays out of Advanced on purpose - it is how anyone
+judges whether the edit is an improvement at all.
+
+Behind Advanced: NR Style, Local Tone/Structure/Skin, Automatic Mask, Proxy Curve,
+Color/Transfer/Broad/Detail strengths, Band Radius, Ratio Guard and Max Ratio, the
+per-category trees, Depth-Aware Silhouette, Frame Hold, and the whole Debug group.
+
+### Settings migration
+
+New keys are `preset`, `showAdvanced`, `proxyCurve`, `broadLuminosity`, `detailLuminosity` and
+`bandRadius`; `luminosityStrength` is dropped. `LoadSettings` reads which keys the config
+actually carries *before* assigning it over the defaults, and:
+
+- **no `preset` key** (a config from before presets): `preset = Full` and every stored value
+  kept, so nobody's look changes silently and the combo shows "Full (modified)" wherever it
+  differs - including the old Skin Color Strength of 1.0.
+- **`luminosityStrength` present, the new keys absent**: copied into both `broadLuminosity` and
+  `detailLuminosity`, which is the same edit; the old key is simply not written again.
+- **no `showAdvanced` key**: defaulted to **true** when the loaded values differ from Full, so
+  someone who tuned things before Advanced existed still sees their sliders, and false
+  otherwise.
+- `proxyCurve` is clamped below `kHdrLinear`: that one is never a stored choice.
+
+The feature ini is `1-1-0`.
+
+## Proxy curve
+
+`Proxy Curve` (`Settings::proxyCurve` -> `TransferParams.ProxyCurve` ->
+`NeuralDisplayTransform::proxyCurve`) chooses how the scene-linear placements build the image
+the model sees. It has no effect on Finished Image, whose proxy is the finished frame itself,
+and the combo is greyed out there. That holds even when HDR Display hands Finished Image a
+scene-linear frame: `EvaluateFinishedImage` forces Display-matched (the identity transform)
+unless the HDR path's HDR Linear override is in force.
+
+| Value | What the model sees | Used by |
+|---|---|---|
+| Display-matched (0) | The ISHDR replica, or the ACES fallback when grading cannot be captured | Full |
+| Neutwo (1) | Exposed scene linear through Open Shaders' `NeutwoEncode` - `c * rsqrt(peak^2 + 1)`, one hue-preserving scale, identity at black | option |
+| Legacy (2) | The 2026-09-09 proxy: per-channel Reinhard `c / (1 + c)`, no exposure, no Linear Lighting decode | Vanilla-Plus |
+| HDR Linear (3) | Exposed scene linear, float16, no curve and no clamp | never chosen by hand |
+
+HDR Linear is not offered in the combo. It is selected at runtime by `ResolveProxyCurve()`,
+and only while HDR Display is loaded *and* redirecting the framebuffer - the same test
+Finished Image already uses to pick its colour domain - and only once the Model Contract probe
+below has been run and its HDR contract enabled. While it is in force the combo shows
+"HDR Linear (HDR Display)", disabled; the stored curve is not changed, so both presets return
+to their own value as soon as HDR Display is off.
+
+### Model space
+
+How the proxy is *encoded* for the model is a separate question from which curve built it, and
+`NeuralModelSpace(domain, proxyCurve, vanillaGrading)` answers it from constants alone, so the
+encode and the decode always agree without either reading the adaptation textures:
+
+- **HDR Linear** -> linear: no encode, and - unlike the 0-1 spaces - no `saturate` on the way
+  back either, because the model was handed open-ended light and its answer is read in the
+  same units.
+- **display gamma**, or **Display-matched with vanilla grading** -> plain 2.2.
+- everything else -> piecewise sRGB.
+
+The 2.2 case is a fix. With Linear Lighting on, ISHDR encodes its SDR output as `pow(x, 1/2.2)`
+followed by `FrameBuffer::ToSRGBColor` (`pow(x, FrameParams.x)`, the in-game gamma setting).
+The replica encoded with piecewise sRGB instead, which lifts the proxy's shadows relative to
+the frame actually on screen. It now uses 2.2, the same treatment Finished Image already gets.
+`FrameParams.x` is not captured, so a non-default in-game gamma is still a small residual that
+`Transfer Strength` corrects. Neutwo and Legacy keep sRGB: that is what the builds they
+reproduce used.
+
+## Model contract probe
+
+Feature 18 has always been created here with **no creation flags and no selectors**. The other
+DLSS Neural Rendering projects do set some: Open Shaders creates with
+`IsHDR | DoSharpening | AutoExposure` (0x61) and writes `Hdr=1`, `SDR=0`, `AutoExposure=1`,
+unit pre-exposure and exposure scale, and `Sharpness=0` every frame; DLSS5VKLayer sets
+`DoSharpening | AutoExposure` always and `IsHDR` only when the DLL advertises it, and on its
+HDR path sends float16 linear light with 1.0 at paper white, unbounded.
+
+If Feature 18 accepts white-point-normalised linear light, the scene-linear placements can hand
+the model exposed linear colour and the ISHDR replica and ACES fallback stop being needed at
+all. Open's documentation asserts the HDR selectors do *not* permit unbounded input but cites
+no test; DLSS5VKLayer sends it anyway. Neither has published an image-quality comparison, so
+this has to be measured, and the machinery to measure it is what shipped here.
+
+**Model Contract** (Advanced -> Debug, session-only, never saved) selects one of:
+
+- **A - Current**: no creation flags, no selectors. What every released build does.
+- **B - SDR + Auto Exposure**: creation flags `DoSharpening | AutoExposure`, with `DLSSNR.SDR=1`,
+  `DLSSNR.Hdr=0`, `DLSSNR.AutoExposure=1`, `DLSSNR.InPreExposure` / `DLSSNR.InExposureScale` /
+  `DLSS.Pre.Exposure` / `DLSS.Exposure.Scale` all 1.0, and `Sharpness=0`.
+- **C - HDR**: B plus `IsHDR`, `DLSSNR.Hdr=1`, `DLSSNR.SDR=0`.
+
+B and C deliberately do **not** add `MVLowRes`, so each step differs from the one before it in
+exactly the thing being measured. (The plan this came from assumed contract A already set
+`MVLowRes`; it does not - that flag is only ever set on Separate Upscaling's *private DLSS-SR*
+feature, never on Feature 18. The 2026-09-09 build set no flags either, so Vanilla-Plus is
+already faithful on this point and there is nothing to test.)
+
+The flags are written under both `DLSS.Feature.Create.Flags` and `DLSSNR.Feature.Create.Flags`,
+because Feature 18's own name for them is undocumented and setting a key nothing reads costs
+nothing. `DoSharpening` with `Sharpness` at zero should be a no-op; stating it every frame is
+what makes that true rather than assumed. The contract is part of `NeuralRenderingNGX::Tuning`,
+so changing it goes through the same debounced recreate a Style change does.
+
+**Hand the Model Linear Light** (the same Debug group) is the input variant: contract C plus
+HDR Display active switches the proxy to HDR Linear. In a scene-linear placement that is
+exposed scene light with no curve; on Finished Image over the HDR redirect it is the float16
+frame passed through without `NeuralHighlightRolloff`. Either way the answer is read back as
+linear in the input's units, and the luminance ratio itself is unchanged, so results stay
+directly comparable across contracts.
+
+### DLL identity
+
+`Runtime::Probe` logs the runtime's file name, version, application id and API version, and
+whether the DLL exports `NVSDK_NGX_D3D12_GetFeatureRequirements`. When it does,
+`Runtime::LogFeatureRequirements` calls it once for Feature 18 on the adapter the private D3D12
+device runs on and logs the result. The DLL's **SHA-256** follows on its own `[DLSSNR]` line:
+the file is over 100 MB and Probe runs again on every runtime initialisation, so it is hashed
+on a worker thread, once per file per session.
+
+That query reports support, minimum GPU architecture and minimum OS version. It does **not**
+report which creation flags the feature would accept - `NVSDK_NGX_FeatureRequirement` has no
+such field, in either the D3D12 or the Vulkan form - so it cannot answer the HDR question on
+its own. The A/B/C probe is what answers it.
+
+The hash matters because output channel order is known to differ between builds carrying the
+same 310.8 version (Open found a `.bgr` swap producing a full-frame blue cast). **Swap Output
+R/B** in the Debug group swaps red and blue in the answer before the resolve reads it, so an
+obviously miscoloured frame can be identified as such. Unknown builds are not refused the way
+Open refuses them: that locks users out of DLLs that work.
+
+## Debug views and readback
+
+All of these live in `NeuralRendering::DebugState`, not `Settings`, so none of them is saved.
+
+**Show Broad Band** / **Show Detail Band** render one half of the luminance edit on its own:
+mid-grey where the model asks for no change, black and white at two stops down and up. In a
+scene domain the value is divided by the proxy's exposure first, the same trick the split-screen
+divider uses, so it still reads as mid-grey once the frame is tonemapped. Only available while
+Broad and Detail differ - there are no separate bands otherwise - and mutually exclusive.
+
+**Show Guard Clamping** tints every pixel the ratio guard actually caught: red where it stopped
+the model brightening a pixel, blue where it stopped it darkening one, blended 0.6 over the
+normal image so what is being clamped stays readable. With the guard off, nothing is marked.
+
+**Measure Model Output Peak** reads back the brightest luminance the answer carried. Together
+with the guard view it feeds one line in the settings tab: model peak and the share of sampled
+pixels the guard clamped. `DecodeColorCS` accumulates both into a four-`uint`
+`RWStructuredBuffer` at `u1` - two `InterlockedAdd`s and one `InterlockedMax` on `asuint` of the
+luminance, which is monotonic over non-negative floats - from **one pixel per 8x8 block**. That
+sampling keeps the atomic traffic on a single address bounded (about 130k samples at 4K) while
+still being far more than a diagnostic needs; it is an estimate, not a census. The buffer is
+copied into a three-deep ring of staging buffers and mapped three frames later with
+`D3D11_MAP_FLAG_DO_NOT_WAIT`, so nothing stalls, and the counters are cleared before the decode
+that fills them. The whole path is skipped unless one of the two toggles is on.
+
+A peak above 1.0 means the model is answering outside the 0-1 range it was trained on - which
+is the single most useful thing to know about a contract change.
+
+## What still has to be measured
+
+Everything above is implemented and compiles; none of it has been run in game. These are the
+tests the design depends on, in the order they matter.
+
+### Model contract (Step 0)
+
+Run each on a held frame (Frame Hold now works at After Upscaling as well as Finished Image).
+Contract C must be tested with HDR Display enabled and redirecting.
+
+1. **Accepts**: creation and evaluation result codes for A, B and C.
+2. **Output encoding**: with Intensity, Local Tone and Local Structure at 0, does output equal
+   input? Under HDR Linear this shows whether the answer comes back linear in input units.
+3. **Range**: scale the held input's highlights x2 and x4 above paper white. Does the output
+   keep their structure or clip at 1? (Model Output Peak answers this directly.)
+4. **Exposure invariance**: feed the held frame at x0.25, x1 and x4 exposure and compare the
+   mean and spread of the resolved log-ratio map, under B with the 0-1 proxy as well as under C
+   with linear light. If the edit barely moves, the proxy does not need to match the game's
+   exposure at all - this is the direct answer to whether the flags spare the early proxies.
+5. **Temporal stability**: live, static camera, 300 frames; mean frame-to-frame absolute change
+   in log ratio per contract.
+6. **Look**: split screen against contract A at the same placement.
+
+Decision gate:
+
+| Result | Action |
+|---|---|
+| Linear light passes tests 2-5 | Make HDR Linear Full's scene-linear default while HDR Display is active, on contract C. Display-matched and ACES become legacy options. |
+| Only test 4 passes, with the 0-1 proxy | Keep the 0-1 proxy but drop exposure matching; Neutwo without exposure becomes Full's scene-linear default. |
+| Nothing improves | Keep contract A and Display-matched, as shipped. |
+
+Note one precision caveat for linear light in a scene-linear placement: the shared proxy and
+answer textures mirror `kMAIN`'s format, which is usually `R11G11B10_FLOAT`. That holds
+positive values well above one, but with less precision than float16. Finished Image over the
+HDR redirect is float16 and unaffected.
+
+### Vanilla-Plus fidelity
+
+Build `5947cf63` as the reference with the same `nvngx_dlssnr.dll`. Fix the scene in both
+builds - same save, `set gamehour`, `fw`, `tfc`, `tai`, a fixed camera, Linear Lighting in the
+same state - and capture NR off and NR on at After Upscaling in each, using the matched
+on/off screenshot feature. Compare `log2(on / off)` per pixel between the two builds.
+**Pass: mean absolute difference under 0.02 stops, with no structured differences.** Repeat
+once with Linear Lighting off, since Legacy has to reproduce that build's encoding behaviour.
+
+### Presets and migration
+
+Selecting each preset writes every row of the table and triggers one feature recreate. Editing
+any Advanced control shows "(modified)"; Reset to preset clears it; changing Placement, scale,
+Alternate Frames or Intensity does not. Settings and the modified state survive a restart.
+Upgrading a config with `luminosityStrength` 0.7 gives Broad = Detail = 0.7 and an identical
+log-ratio map. Restore Defaults gives Full with Advanced hidden.
+
+### Luminosity split
+
+Broad = Detail = x matches the pre-change build at Luminosity x on the same ratio-map test, and
+the profiler shows no `NeuralRendering::ToneBands` event. Broad 0 / Detail 1 keeps texture and
+contrast with no region-level relighting; Broad 1 / Detail 0 the reverse - check both with the
+band views. Detail 2 at high-contrast edges (branches against sky, torches in interiors) should
+show no halos at the default edge sharpness. Band Radius should cover the same screen area at
+0.5x and 1x model scale. Alternating Frames, Frame Hold and Split Screen all still work with
+the split active.
+
+### Proxy curve and the Linear Lighting fix
+
+Each curve at Before, After and Separate Upscaling; the combo greyed out on Finished Image.
+With Linear Lighting off, After Upscaling, Display-matched: capture the proxy texture in
+RenderDoc next to the finished frame - their brightness and contrast should now roughly match,
+where before the fix the proxy is visibly washed out. The proxy's shadows should match the
+finished frame at the default in-game gamma and at one non-default value. The DLL SHA-256
+should appear in the log, and Swap Output R/B should produce a full-frame colour swap,
+confirming the current build is already RGBA.
+
+### Ratio guard A/B
+
+This decides whether Vanilla-Plus keeps the 2026-09-09 build's Max Ratio 2.0 (+-1 stop) or moves
+to Open's 4.0 (+-2 stops). Use Show Guard Clamping and the clamped-pixel percentage across a
+midday exterior, a torch-lit interior, and a night or cave scene, with the same fixed-scene
+setup as the fidelity test. Run Vanilla-Plus at Max Ratio 2.0, 4.0 and guard off on the same
+held frame, then live for stability. Measure the clamped-pixel percentage, the 300-frame
+stability metric, and a split-screen comparison of each run against guard off.
+
+Starting thresholds, adjustable: if 2.0 clamps more than about 5% of pixels in normal scenes,
+or visibly flattens shadows the model is clearly placing on purpose, move to 4.0. If 4.0's
+stability metric is more than about 20% worse than 2.0's, keep 2.0. If both hold, prefer 2.0
+for fidelity.
+
+### Performance
+
+Record the NR timers for every pass at 1440p and 4K, at 1x and 0.5x model scale, with the split
+off and on. The tone passes should cost well under the model evaluation; if they do not, drop
+to 9 taps per pass before reaching for a downsampled blur.
+
+## Deferred
+
+Two items from the same design are deliberately not implemented.
+
+**Hejl-Burgess-Dawson replica.** When vanilla uses HBD (`Param.z > 0.5`) the replica runs HBD on
+luminance only, while ISHDR's real path is `DisplayMapping::HuePreservingHejlBurgessDawson` - an
+adaptive desaturation in ICtCp, per-channel HBD, then bloom. Porting that means lifting its
+`PSHADER && BLEND` include guard or copying it. Deferred until after the contract probe: if
+linear light or exposure invariance wins, the replica stops being the default and this stops
+mattering.
+
+**ACES fallback scaling.** Narkowicz's ACES fit expects input pre-scaled by about 0.6.
+Unscaled it brightens midtones and crushes near-black in the proxy (0.18 -> 0.55 against
+Neutwo's 0.46; 0.01 -> 0.05 against 0.10, as sRGB-encoded proxy output). Adding the 0.6 changes
+Full's look on Post Processing and Effects11 setups, so it needs a split-screen check first;
+Neutwo is available as the alternative in the meantime.
 
 ## Model tuning parameters
 

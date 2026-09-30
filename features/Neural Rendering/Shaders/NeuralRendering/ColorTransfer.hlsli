@@ -91,6 +91,55 @@ static const float kNeuralHighlightKnee = 0.8;
 // TransferParams.ColorDomain values; keep in sync with NeuralRendering::ColorDomain.
 static const uint kNeuralColorDomainSceneLinear = 0;   // Linear, open-ended HDR scene colour (pre-tonemap placements).
 static const uint kNeuralColorDomainDisplayGamma = 1;  // Finished gamma-2.2 display-referred frame (Finished Image).
+// Pre-tonemap placement with Linear Lighting off: kMAIN holds gamma-encoded values, which the
+// vanilla tonemap grades and writes straight out (ISHDR.hlsl only calls LinearToGammaSafe under
+// ENABLE_LL). Both the proxy and the resolve have to decode with kNeuralSceneGamma first.
+static const uint kNeuralColorDomainSceneGamma = 2;
+
+// Curve a finished display-referred frame is encoded with (HDR Display uses the same one).
+static const float kNeuralDisplayGamma = 2.2;
+// Curve this pipeline's own output carries while Linear Lighting is off. ISHDR itself
+// linearises it with 2.2 in its HDR path; Open Shaders uses Skyrim's 1.6 instead. Kept in one
+// place so the two can be A/B'd (see docs/development/neural-rendering.md).
+static const float kNeuralSceneGamma = 2.2;
+
+// TransferParams.ProxyCurve values; keep in sync with NeuralRendering::ProxyCurve.
+static const uint kNeuralProxyDisplayMatched = 0;  // The ISHDR replica, or the ACES fallback.
+static const uint kNeuralProxyNeutwo = 1;          // Exposed scene linear through Open Shaders' Neutwo curve.
+static const uint kNeuralProxyLegacy = 2;          // 5947cf63: per-channel Reinhard, unexposed.
+static const uint kNeuralProxyHdrLinear = 3;       // Exposed scene linear, no curve, no clamp.
+
+// How the proxy is encoded for the model, and therefore how its answer is read back.
+static const uint kNeuralModelSpaceSrgb = 0;     // Piecewise sRGB, as Open Shaders and 5947cf63 used.
+static const uint kNeuralModelSpaceGamma22 = 1;  // Plain 2.2, what the displayed frame actually carries.
+static const uint kNeuralModelSpaceLinear = 2;   // No encode and no clamp (HDR Linear).
+
+// TransferParams.DebugFlags bits.
+static const uint kNeuralDebugGuardClamp = 1u << 0;    // Mark the pixels the ratio guard caught.
+static const uint kNeuralDebugBroadBand = 1u << 1;     // Show the smooth half of the luminance edit.
+static const uint kNeuralDebugDetailBand = 1u << 2;    // Show the remainder.
+static const uint kNeuralDebugSwapOutputRB = 1u << 3;  // The model answer arrives as BGRA.
+static const uint kNeuralDebugStats = 1u << 4;         // Accumulate the peak/clamp readback.
+
+/**
+ * Model-space encoding for a given colour domain and proxy curve.
+ *
+ * Derived from constants alone, so both the encode and the decode reach the same answer
+ * without reading the adaptation textures. Display-matched uses the plain 2.2 curve the
+ * displayed frame actually carries rather than piecewise sRGB, which lifted the proxy's
+ * shadows relative to the screen; Neutwo and Legacy keep sRGB, which is what the builds they
+ * reproduce used.
+ *
+ * @param vanillaGrading TransferParams.DisplayParam.x - the vanilla tonemap owns the frame.
+ */
+uint NeuralModelSpace(uint domain, uint proxyCurve, bool vanillaGrading)
+{
+	if (proxyCurve == kNeuralProxyHdrLinear)
+		return kNeuralModelSpaceLinear;
+	if (domain == kNeuralColorDomainDisplayGamma)
+		return kNeuralModelSpaceGamma22;
+	return (proxyCurve == kNeuralProxyDisplayMatched && vanillaGrading) ? kNeuralModelSpaceGamma22 : kNeuralModelSpaceSrgb;
+}
 
 float3 NeuralLinearToSrgb(float3 v)
 {
@@ -124,6 +173,7 @@ struct NeuralDisplayTransform
 	float3 tintColor;        // ISHDR Tint.xyz.
 	float tintAmount;        // ISHDR Tint.w.
 	float highlightWhite;    // Display gamma only: linear peak the display can show (>1 = HDR target); 0 = none.
+	uint proxyCurve;         // kNeuralProxy*: how the scene-linear placements build the proxy.
 };
 
 /** No exposure and no grading: the plain hue-preserving ACES-filmic proxy (NeuralAcesFilmic). */
@@ -141,6 +191,7 @@ NeuralDisplayTransform NeuralIdentityDisplayTransform()
 	display.tintColor = 1.0;
 	display.tintAmount = 0.0;
 	display.highlightWhite = 0.0;
+	display.proxyCurve = kNeuralProxyDisplayMatched;
 	return display;
 }
 
@@ -158,9 +209,11 @@ NeuralDisplayTransform NeuralIdentityDisplayTransform()
  * @param vanillaAdaptation ISHDR AvgTex: x adapted luminance, y target luminance.
  * @param postProcessAdaptedLuminance Post Processing's adapted luminance.
  * @param highlightWhite TransferParams.HighlightWhite (see NeuralHighlightRolloff).
+ * @param proxyCurve TransferParams.ProxyCurve (see kNeuralProxy*).
  */
 NeuralDisplayTransform MakeNeuralDisplayTransform(float4 displayParam, float4 displayCinematic, float4 displayTint,
-	float4 displayExposure, float2 vanillaAdaptation, float postProcessAdaptedLuminance, float highlightWhite)
+	float4 displayExposure, float2 vanillaAdaptation, float postProcessAdaptedLuminance, float highlightWhite,
+	uint proxyCurve)
 {
 	NeuralDisplayTransform display = NeuralIdentityDisplayTransform();
 	// ISHDR: if (avgValue.x != 0 && avgValue.y != 0) inputColor *= avgValue.y / avgValue.x;
@@ -180,6 +233,7 @@ NeuralDisplayTransform MakeNeuralDisplayTransform(float4 displayParam, float4 di
 	display.tintColor = displayTint.xyz;
 	display.tintAmount = displayTint.w;
 	display.highlightWhite = highlightWhite;
+	display.proxyCurve = proxyCurve;
 	return display;
 }
 
@@ -187,26 +241,44 @@ NeuralDisplayTransform MakeNeuralDisplayTransform(float4 displayParam, float4 di
 float3 NeuralDomainToLinear(float3 color, uint domain)
 {
 	color = max(color, 0.0);
-	return domain == kNeuralColorDomainDisplayGamma ? pow(color, 2.2) : color;
+	if (domain == kNeuralColorDomainDisplayGamma)
+		return pow(color, kNeuralDisplayGamma);
+	if (domain == kNeuralColorDomainSceneGamma)
+		return pow(color, kNeuralSceneGamma);
+	return color;
 }
 
 /** Inverse of NeuralDomainToLinear. */
 float3 NeuralLinearToDomain(float3 color, uint domain)
 {
 	color = max(color, 0.0);
-	return domain == kNeuralColorDomainDisplayGamma ? pow(color, 1.0 / 2.2) : color;
+	if (domain == kNeuralColorDomainDisplayGamma)
+		return pow(color, 1.0 / kNeuralDisplayGamma);
+	if (domain == kNeuralColorDomainSceneGamma)
+		return pow(color, 1.0 / kNeuralSceneGamma);
+	return color;
 }
 
-/** Model-space (display-encoded, 0-1) value to linear light, using @p domain's curve. */
-float3 NeuralModelToLinear(float3 v, uint domain)
+/**
+ * Model-space value to linear light, using @p space's curve (see NeuralModelSpace).
+ *
+ * The 0-1 spaces clamp, because the model was handed a 0-1 proxy and anything outside that
+ * range is not a value it can have meant. kNeuralModelSpaceLinear does not: there the model
+ * was handed open-ended linear light and its answer is read back in the same units.
+ */
+float3 NeuralModelToLinear(float3 v, uint space)
 {
-	return domain == kNeuralColorDomainDisplayGamma ? pow(saturate(v), 2.2) : NeuralSrgbToLinear(v);
+	if (space == kNeuralModelSpaceLinear)
+		return max(v, 0.0);
+	return space == kNeuralModelSpaceGamma22 ? pow(saturate(v), kNeuralDisplayGamma) : NeuralSrgbToLinear(v);
 }
 
-/** Linear light (0-1) to the model-space encoding for @p domain. */
-float3 NeuralLinearToModel(float3 v, uint domain)
+/** Linear light to the model-space encoding for @p space. */
+float3 NeuralLinearToModel(float3 v, uint space)
 {
-	return domain == kNeuralColorDomainDisplayGamma ? pow(saturate(v), 1.0 / 2.2) : NeuralLinearToSrgb(v);
+	if (space == kNeuralModelSpaceLinear)
+		return max(v, 0.0);
+	return space == kNeuralModelSpaceGamma22 ? pow(saturate(v), 1.0 / kNeuralDisplayGamma) : NeuralLinearToSrgb(v);
 }
 
 /** ISHDR's Hejl-Burgess-Dawson curve on one luminance value, linear out (GetTonemapFactorHejlBurgessDawson). */
@@ -240,6 +312,20 @@ float NeuralAcesFilmic(float x)
 }
 
 /**
+ * Open Shaders' NeutwoEncode: one hue-preserving scale driven by the peak channel.
+ *
+ * `c / sqrt(peak^2 + 1)` is the identity at black, rolls off smoothly and never clips, and
+ * because the scale is scalar it does not distort hue before the model sees it. Offered as a
+ * neutral alternative to the display-matched replica for setups whose grading cannot be
+ * captured (Effects11, third-party tonemappers).
+ */
+float3 NeuralNeutwo(float3 c)
+{
+	float peak = max(c.r, max(c.g, c.b));
+	return c * rsqrt(peak * peak + 1.0);
+}
+
+/**
  * Display-linear proxy of scene-linear @p linearColor under @p display.
  *
  * Without vanilla grading this is the exposed colour through NeuralAcesFilmic,
@@ -251,9 +337,9 @@ float NeuralAcesFilmic(float x)
  * the adapted luminance - omitting only bloom, the fade overlay and the HDR
  * display mapping. The output is clamped to 0..1 like the frame it stands for.
  */
-float3 ApplyNeuralDisplayTransform(float3 linearColor, NeuralDisplayTransform display)
+float3 ApplyNeuralDisplayTransformExposed(float3 exposedColor, NeuralDisplayTransform display)
 {
-	float3 color = max(linearColor, 0.0) * display.exposure;
+	float3 color = max(exposedColor, 0.0);
 	if (!display.vanillaGrading) {
 		float luminance = dot(color, kNeuralLuma);
 		float mapped = NeuralAcesFilmic(luminance);
@@ -275,6 +361,12 @@ float3 ApplyNeuralDisplayTransform(float3 linearColor, NeuralDisplayTransform di
 	float3 contrastedModified = pow(max(0.0, abs(tinted) / safeAverage), display.contrast) * safeAverage * sign(tinted);
 	contrasted = lerp(contrastedModified, contrasted, saturate(contrastedModified / 0.1));
 	return saturate(contrasted);
+}
+
+/** ApplyNeuralDisplayTransformExposed with the transform's own exposure applied first. */
+float3 ApplyNeuralDisplayTransform(float3 linearColor, NeuralDisplayTransform display)
+{
+	return ApplyNeuralDisplayTransformExposed(max(linearColor, 0.0) * display.exposure, display);
 }
 
 /**
@@ -307,36 +399,89 @@ float NeuralHighlightRolloff(float peak, float white)
 }
 
 /**
- * Linear-light proxy of @p color with every channel at or below one.
+ * The scene-linear proxy curve @p display selects, applied to linear light.
  *
- * Display gamma: the frame is already tonemapped, so an SDR frame passes through
- * unchanged. Over-range (HDR) pixels are brought back into range by one
- * hue-preserving factor: on an HDR target with a known display peak
- * (display.highlightWhite > 1) that factor is NeuralHighlightRolloff's soft
- * shoulder, otherwise a plain scale-down to a peak of one. Scene linear: the
- * colour goes through @p display
- * (see ApplyNeuralDisplayTransform); with the identity transform that is the
- * hue-preserving scalar ACES-filmic curve, a single positive scale of the
- * linear light.
+ * @p exposure is passed rather than read from @p display because the scene-gamma domain
+ * applies it earlier, on the encoded buffer, where the game itself does; that path passes
+ * one here so it is not applied twice.
  */
-float3 EncodeNeuralProxy(float3 color, uint domain, NeuralDisplayTransform display)
+float3 EncodeNeuralSceneCurve(float3 linearColor, float exposure, NeuralDisplayTransform display)
 {
-	float3 linearColor = NeuralDomainToLinear(color, domain);
-	if (domain == kNeuralColorDomainDisplayGamma) {
-		float peak = max(linearColor.r, max(linearColor.g, linearColor.b));
-		if (display.highlightWhite > 1.0)
-			return linearColor * (NeuralHighlightRolloff(peak, display.highlightWhite) / max(peak, 1e-5));
-		return linearColor / max(peak, 1.0);
-	}
-	return ApplyNeuralDisplayTransform(linearColor, display);
+	// 5947cf63 exactly: per-channel Reinhard on the raw buffer, no exposure, no grading.
+	if (display.proxyCurve == kNeuralProxyLegacy)
+		return linearColor / (1.0 + linearColor);
+	// Open Shaders' NeutwoEncode: one hue-preserving scale driven by the peak channel.
+	if (display.proxyCurve == kNeuralProxyNeutwo)
+		return NeuralNeutwo(linearColor * exposure);
+	// No curve at all: the model is handed exposed linear light with 1.0 at paper white.
+	if (display.proxyCurve == kNeuralProxyHdrLinear)
+		return linearColor * exposure;
+	return ApplyNeuralDisplayTransformExposed(max(linearColor, 0.0) * exposure, display);
 }
 
 /**
- * Transform colour stored in @p domain into the display-referred proxy the model sees.
+ * Display-linear proxy of an already finished, gamma-encoded frame.
+ *
+ * SDR passes through unchanged. An over-range HDR pixel is brought back inside 0-1 by one
+ * hue-preserving factor: NeuralHighlightRolloff's soft shoulder where the display's peak is
+ * known, a plain scale-down otherwise. HDR Linear wants the frame in its own units and takes
+ * neither.
  */
-float4 EncodeNeuralColor(float4 color, uint domain, NeuralDisplayTransform display)
+float3 EncodeNeuralDisplayProxy(float3 color, NeuralDisplayTransform display)
 {
-	return float4(NeuralLinearToModel(EncodeNeuralProxy(color.rgb, domain, display), domain), color.a);
+	float3 linearColor = pow(color, kNeuralDisplayGamma);
+	if (display.proxyCurve == kNeuralProxyHdrLinear)
+		return linearColor;
+	float peak = max(linearColor.r, max(linearColor.g, linearColor.b));
+	float scale = display.highlightWhite > 1.0 ?
+	                  NeuralHighlightRolloff(peak, display.highlightWhite) / max(peak, 1e-5) :
+	                  1.0 / max(peak, 1.0);
+	return linearColor * scale;
+}
+
+/**
+ * Linear-light proxy of @p color, with every channel at or below one except under HDR Linear.
+ *
+ * Display gamma: the finished frame (EncodeNeuralDisplayProxy). Scene linear: the curve
+ * @p display selects (EncodeNeuralSceneCurve); Display-matched with the identity transform
+ * is the hue-preserving scalar ACES-filmic curve, a single positive scale of the linear
+ * light. Scene gamma: the same curves, with exposure applied to the encoded values where the
+ * game applies it.
+ */
+float3 EncodeNeuralProxy(float3 color, uint domain, NeuralDisplayTransform display)
+{
+	color = max(color, 0.0);
+
+	// One assignment per branch rather than an early return from each: fxc's
+	// uninitialised-read analysis loses track of the result across a three-way dispatch of
+	// returns and reports X4000 at the first call, which CI treats as an error.
+	float3 proxy = color;
+	if (domain == kNeuralColorDomainDisplayGamma) {
+		proxy = EncodeNeuralDisplayProxy(color, display);
+	} else if (domain == kNeuralColorDomainSceneGamma) {
+		// Linear Lighting off. The vanilla tonemap applies its exposure and its curve to the
+		// gamma-encoded buffer directly and writes the result out without re-encoding, so the
+		// replica has to work in the same place - on the encoded values - and the result it
+		// produces is display-encoded rather than display-linear.
+		if (display.proxyCurve == kNeuralProxyDisplayMatched && display.vanillaGrading) {
+			proxy = pow(max(ApplyNeuralDisplayTransform(color, display), 0.0), kNeuralSceneGamma);
+		} else {
+			// Every other curve takes linear light. Exposure still belongs where the game
+			// applies it, on the encoded values, so it goes on before the decode, not after.
+			proxy = EncodeNeuralSceneCurve(pow(max(color * display.exposure, 0.0), kNeuralSceneGamma), 1.0, display);
+		}
+	} else {
+		proxy = EncodeNeuralSceneCurve(color, display.exposure, display);
+	}
+	return proxy;
+}
+
+/**
+ * Transform colour stored in @p domain into the proxy the model sees, encoded for @p space.
+ */
+float4 EncodeNeuralColor(float4 color, uint domain, uint space, NeuralDisplayTransform display)
+{
+	return float4(NeuralLinearToModel(EncodeNeuralProxy(color.rgb, domain, display), space), color.a);
 }
 
 /**
@@ -638,9 +783,9 @@ float NeuralSilhouetteWeight(Texture2D<float> guideDepth, SamplerState linearCla
  * the clean current frame rather than a misplaced ratio. Constants match the
  * proxy's skip-frame guard.
  */
-float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor, uint domain, NeuralDisplayTransform display)
+float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor, uint domain, uint space, NeuralDisplayTransform display)
 {
-	float staleLuma = dot(NeuralModelToLinear(proxyColor.rgb, domain), kNeuralLuma);
+	float staleLuma = dot(NeuralModelToLinear(proxyColor.rgb, space), kNeuralLuma);
 	float freshLuma = dot(EncodeNeuralProxy(originalColor.rgb, domain, display), kNeuralLuma);
 	float difference = abs(staleLuma - freshLuma);
 	return saturate(1.0 - (difference * 2.5) / (staleLuma + freshLuma + 0.05));
@@ -668,6 +813,34 @@ float3 NeuralChromaOffset(float3 color)
 	float luma = dot(color, kNeuralLuma);
 	return luma > 1e-5 ? color / luma - 1.0 : 0.0;
 }
+
+/** Everything ResolveNeuralColor needs for one pixel; see its documentation below. */
+struct NeuralResolveInputs
+{
+	float4 modelColor;     // Feature 18's answer, in model space.
+	float4 proxyColor;     // The exact proxy it was handed, same position, same space.
+	float4 originalColor;  // The untouched frame pixel, stored in `domain`.
+	float colorStrength;
+	float editWeight;
+	float categoryLuminosity;  // This pixel's per-category multiplier on the luminance edit.
+	float broadLuminosity;
+	float detailLuminosity;
+	float toneLow;     // Edge-aware blur of the log2 luminance edit, in stops.
+	bool hasToneData;  // False: `toneLow` is unset and the edit is not split.
+	uint domain;       // kNeuralColorDomain*: how originalColor and the result are stored.
+	uint modelSpace;   // kNeuralModelSpace*: how modelColor and proxyColor are encoded.
+	float hueGuardAmount;
+	float maxRatio;
+};
+
+/** What the resolve measured on the way, for the debug views and the readback. */
+struct NeuralResolveDebug
+{
+	float lowBand;    // Smooth half of the model's luminance edit, in stops.
+	float highBand;   // The remainder.
+	int clamped;      // 1 the guard capped a brighten, -1 a darken, 0 it did not bind.
+	float modelLuma;  // Luminance of the model's answer, in linear model-space units.
+};
 
 /**
  * Compose the Feature 18 answer onto the untouched scene colour.
@@ -716,11 +889,15 @@ float3 NeuralChromaOffset(float3 color)
  * extrapolates the same relative colour change further, re-guarded to the same
  * bound afterwards so a strength above one cannot escape it either.
  *
- * @p luminosityStrength further scales only the luminance exponent, on top of
- * @p editWeight: one reproduces the plain @p editWeight behaviour above exactly,
- * below one damps the light/dark change (useful when a strong transfer reads as
- * overly contrasty) without touching the chroma edit, and above one exaggerates
- * it further. Zero freezes luminance at the original regardless of @p editWeight.
+ * The luminance edit is measured in stops and split in two before it is scaled.
+ * @p toneLow is an edge-aware blur of it (FilterToneDataCS), so it carries the
+ * smooth, region-level relighting; the remainder carries the model's own local
+ * contrast and micro-detail. @p broadLuminosity and @p detailLuminosity scale
+ * the two independently, on top of @p editWeight and @p categoryLuminosity.
+ * Equal values are exactly the single luminosity multiplier they replace,
+ * whatever the split is, so @p hasToneData can be false and the whole band
+ * machinery skipped whenever they agree. Zero on both freezes luminance at the
+ * original regardless of @p editWeight.
  *
  * @p hueGuardAmount blends the hue guard above in (1) or out (0); a fractional
  * value - as produced by blending several categories' toggles across a material
@@ -739,26 +916,43 @@ float3 NeuralChromaOffset(float3 color)
  * binds and a correct large swing - such as putting a lit surface fully into
  * shadow - reaches the frame untouched.
  */
-float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalColor, float colorStrength,
-	float editWeight, float luminosityStrength, uint domain, float hueGuardAmount, float maxRatio)
+float4 ResolveNeuralColor(NeuralResolveInputs inputs, out NeuralResolveDebug o_debug)
 {
-	maxRatio = max(maxRatio, 1.0);
-	float3 original = NeuralDomainToLinear(originalColor.rgb, domain);
-	float3 proxy = NeuralModelToLinear(proxyColor.rgb, domain);
-	float3 model = NeuralModelToLinear(modelColor.rgb, domain);
+	o_debug = (NeuralResolveDebug)0;
+
+	const uint domain = inputs.domain;
+	const uint space = inputs.modelSpace;
+	float maxRatio = max(inputs.maxRatio, 1.0);
+	float colorStrength = inputs.colorStrength;
+	float hueGuardAmount = inputs.hueGuardAmount;
+	float3 original = NeuralDomainToLinear(inputs.originalColor.rgb, domain);
+	float3 proxy = NeuralModelToLinear(inputs.proxyColor.rgb, space);
+	float3 model = NeuralModelToLinear(inputs.modelColor.rgb, space);
 
 	float proxyLuma = dot(proxy, kNeuralLuma);
 	float modelLuma = dot(model, kNeuralLuma);
+	o_debug.modelLuma = modelLuma;
 	// Some incompatible model/runtime combinations return an empty or invalid
 	// frame. Treat that as no edit instead of turning a transient failure into a
 	// half-bright flash through the lower ratio guard.
 	if (!(modelLuma > 1e-5))
-		return float4(NeuralLinearToDomain(original, domain), originalColor.a);
+		return float4(NeuralLinearToDomain(original, domain), inputs.originalColor.a);
 
-	editWeight = max(editWeight, 0.0);
-	float lumaExponent = max(editWeight * max(luminosityStrength, 0.0), 0.0);
-	float ratio = (modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor);
-	ratio = clamp(pow(ratio, lumaExponent), 1.0 / maxRatio, maxRatio);
+	float editWeight = max(inputs.editWeight, 0.0);
+	// The edit in stops, split into the smooth part the band filter found and the
+	// remainder, each scaled on its own. With the two strengths equal this collapses to
+	// exp2(editWeight * categoryLuminosity * strength * delta) - exactly the single
+	// luminosity exponent it replaces - whether or not the band data exists.
+	float delta = log2((modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor));
+	float lowBand = inputs.hasToneData ? inputs.toneLow : delta;
+	float highBand = delta - lowBand;
+	o_debug.lowBand = lowBand;
+	o_debug.highBand = highBand;
+	float bandScale = editWeight * max(inputs.categoryLuminosity, 0.0);
+	float tone = bandScale * (lowBand * max(inputs.broadLuminosity, 0.0) + highBand * max(inputs.detailLuminosity, 0.0));
+	float unclampedRatio = exp2(tone);
+	float ratio = clamp(unclampedRatio, 1.0 / maxRatio, maxRatio);
+	o_debug.clamped = unclampedRatio > maxRatio ? 1 : (unclampedRatio < 1.0 / maxRatio ? -1 : 0);
 
 	float3 luminanceResult = original * ratio;
 	float targetLuma = dot(luminanceResult, kNeuralLuma);
@@ -817,7 +1011,7 @@ float4 ResolveNeuralColor(float4 modelColor, float4 proxyColor, float4 originalC
 		min(proxyLuma, modelLuma));
 	float resolvedColorStrength = shadowConfidence * saturate(editWeight);
 
-	return float4(NeuralLinearToDomain(lerp(luminanceResult, fullColorResult, resolvedColorStrength), domain), originalColor.a);
+	return float4(NeuralLinearToDomain(lerp(luminanceResult, fullColorResult, resolvedColorStrength), domain), inputs.originalColor.a);
 }
 
 #endif

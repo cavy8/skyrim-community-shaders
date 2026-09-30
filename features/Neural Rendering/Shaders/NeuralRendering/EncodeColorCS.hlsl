@@ -1,33 +1,5 @@
 #include "NeuralRendering/ColorTransfer.hlsli"
-
-cbuffer TransferParams : register(b0)
-{
-	float2 JitterOffset;  // Sub-pixel projection offset of the source raster, in render pixels.
-	float ColorStrength;
-	float TransferStrength;
-	uint2 ActiveSize;  // Valid region of SourceColor, in source texels.
-	uint2 WorkSize;    // Model raster; DestinationColor is allocated at this size.
-	uint2 GuideSize;   // Unused here; keeps the layout shared with DecodeColorCS.
-	uint DepthAwareResolve;
-	uint StaleAnswer;           // Unused here; layout shared with DecodeColorCS.
-	uint HueGuardMask;          // Unused here; layout shared with DecodeColorCS.
-	float2 GuideJitterOffset;   // Unused here; layout shared with DecodeColorCS.
-	uint ColorDomain;           // kNeuralColorDomain* - how SourceColor is encoded.
-	float4 CategoryColorStrengths[2];       // Unused here; layout shared with DecodeColorCS.
-	float4 CategoryTransferStrengths[2];    // Unused here; layout shared with DecodeColorCS.
-	float4 CategoryLuminosityStrengths[2];  // Unused here; layout shared with DecodeColorCS.
-	float4 DisplayParam;      // x: replicate the vanilla tonemap, y: ISHDR Param.y (white point), z: ISHDR Param.z (Hejl-Burgess-Dawson).
-	float4 DisplayCinematic;  // ISHDR Cinematic: x saturation, z contrast, w brightness.
-	float4 DisplayTint;       // ISHDR Tint: xyz colour, w amount.
-	float4 DisplayExposure;   // x: apply Post Processing auto exposure, y: 0.18 * compensation, zw: adaptation range.
-	float LuminosityStrength;  // Unused here; layout shared with DecodeColorCS.
-	uint DebugCategoryView;    // Unused here; layout shared with DecodeColorCS.
-	float MaxRatio;            // Unused here; layout shared with DecodeColorCS.
-	uint RawModelOutput;       // Unused here; layout shared with DecodeColorCS.
-	float HighlightWhite;      // Display gamma: display peak for the HDR highlight shoulder (NeuralHighlightRolloff); 0 = none.
-	float WipePosition;        // Unused here; layout shared with DecodeColorCS.
-	uint2 Reserved;
-};
+#include "NeuralRendering/TransferParams.hlsli"
 
 Texture2D<float4> SourceColor : register(t0);
 // ISHDR's AvgTex from the previous frame's tonemap pass: x adapted luminance, y target luminance.
@@ -71,9 +43,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float2 footprint = float2(active) / float2(work);
 	float2 scenePosition = (float2(dispatchThreadID.xy) + 0.5) * footprint;
 	float2 position = scenePosition + JitterOffset;
-	float3 color = any(footprint > 1.0)
-		? SampleNeuralSourceAreaMinify(SourceColor, position, footprint, float2(active))
-		: SampleNeuralSourceCatmullRom(SourceColor, LinearClampSampler, position, float2(active), float2(sourceWidth, sourceHeight));
+	float3 color = any(footprint > 1.0) ? SampleNeuralSourceAreaMinify(SourceColor, position, footprint, float2(active)) : SampleNeuralSourceCatmullRom(SourceColor, LinearClampSampler, position, float2(active), float2(sourceWidth, sourceHeight));
 	uint2 nearest = min(uint2(scenePosition), active - 1);
 	float alpha = SourceColor[nearest].a;
 
@@ -83,6 +53,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	// are uniform, so the texture centre stands for the whole target; an unbound
 	// input reads zero and drops out of the transform.
 	NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
-		VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite);
-	DestinationColor[dispatchThreadID.xy] = EncodeNeuralColor(float4(color, alpha), ColorDomain, display);
+		VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite,
+		ProxyCurve);
+	DestinationColor[dispatchThreadID.xy] = EncodeNeuralColor(float4(color, alpha), ColorDomain, NeuralTransferModelSpace(), display);
 }

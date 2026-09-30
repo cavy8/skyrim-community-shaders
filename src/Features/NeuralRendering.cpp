@@ -29,10 +29,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	NeuralRendering::Settings,
 	enabled,
+	preset,
+	showAdvanced,
 	placement,
 	style,
 	intensity,
 	colorStrength,
+	proxyCurve,
 	localToneStrength,
 	localStructureStrength,
 	skinStructureStrength,
@@ -42,7 +45,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	resolutionScaleX,
 	resolutionScaleY,
 	transferStrength,
-	luminosityStrength,
+	broadLuminosity,
+	detailLuminosity,
+	bandRadius,
 	maxRatio,
 	ratioGuardEnabled,
 	everythingElseStrengths,
@@ -59,6 +64,87 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 namespace
 {
+	using Preset = NeuralRendering::Preset;
+	using ProxyCurve = NeuralRendering::ProxyCurve;
+	using PresetValues = NeuralRendering::PresetValues;
+
+	/// Neutral per-category block: no override of the global strengths, no hue guard.
+	constexpr NeuralRendering::CategoryStrengths kNeutralCategory{ 1.0f, 1.0f, 1.0f, false };
+
+	/**
+	 * The preset table (see NeuralRendering::Preset), in Preset order.
+	 *
+	 * Full is the current look and the default. Vanilla-Plus reproduces the 2026-09-09 build
+	 * (5947cf63): the Legacy proxy on a pre-tonemap placement, a luminance-only edit (Color
+	 * Strength 0 collapses the chroma ratio to the original's own chroma exactly) and that
+	 * build's always-on +-1-stop ratio guard. Its category values are neutral rather than
+	 * absent, so moving on from Vanilla-Plus starts from a clean state even though they do
+	 * nothing while Color Strength is zero.
+	 */
+	constexpr PresetValues kPresets[NeuralRendering::kPresetCount] = {
+		// Full
+		{
+			static_cast<uint>(NeuralRendering::Placement::kFinishedImage),
+			0,      // Default style
+			1.0f,   // intensity
+			1.0f,   // localToneStrength
+			1.0f,   // localStructureStrength
+			-1.0f,  // skinStructureStrength: automatic
+			true,   // automaticMask
+			static_cast<uint>(ProxyCurve::kDisplayMatched),
+			1.0f,   // colorStrength
+			1.0f,   // transferStrength
+			1.0f,   // broadLuminosity
+			1.0f,   // detailLuminosity
+			8.0f,   // bandRadius
+			false,  // ratioGuardEnabled
+			2.0f,   // maxRatio
+			false,  // depthAwareResolve
+			{ {
+				kNeutralCategory,             // Everything Else
+				{ 0.6f, 1.0f, 1.0f, false },  // Skin: damp the model's skin tint
+				{ 1.0f, 1.0f, 1.0f, true },   // Hair: hue-guarded
+				kNeutralCategory,             // Eyes
+				kNeutralCategory,             // Foliage
+				kNeutralCategory,             // Landscape
+				kNeutralCategory,             // Equipment
+			} },
+		},
+		// Vanilla-Plus
+		{
+			static_cast<uint>(NeuralRendering::Placement::kAfterUpscaling),
+			2,      // Cinematic style (the 2026-09-09 build asked for 3, which aliases 2)
+			0.8f,   // intensity
+			0.75f,  // localToneStrength
+			0.9f,   // localStructureStrength
+			0.9f,   // skinStructureStrength
+			true,   // automaticMask
+			static_cast<uint>(ProxyCurve::kLegacy),
+			0.0f,   // colorStrength: luminance-only, as the 2026-09-09 resolve was
+			1.0f,   // transferStrength
+			1.0f,   // broadLuminosity
+			1.0f,   // detailLuminosity
+			8.0f,   // bandRadius
+			true,   // ratioGuardEnabled
+			2.0f,   // maxRatio: the +-1 stop that build always applied
+			false,  // depthAwareResolve
+			{ {
+				kNeutralCategory,
+				kNeutralCategory,
+				kNeutralCategory,
+				kNeutralCategory,
+				kNeutralCategory,
+				kNeutralCategory,
+				kNeutralCategory,
+			} },
+		},
+	};
+
+	bool NearlyEqual(float a_left, float a_right)
+	{
+		return std::abs(a_left - a_right) <= 1e-4f;
+	}
+
 	NeuralRenderingBackend::FrameInputs MakeFrameInputs(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
 		ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV, ID3D11ShaderResourceView* materialCategoriesSRV,
 		ID3D11Resource* motionVectors, ID3D11ShaderResourceView* motionVectorsSRV,
@@ -83,6 +169,8 @@ namespace
 		inputs.resolutionScaleX = options.resolutionScaleX;
 		inputs.resolutionScaleY = options.resolutionScaleY;
 		inputs.colorDomain = static_cast<std::uint32_t>(options.colorDomain);
+		inputs.proxyCurve = static_cast<std::uint32_t>(options.proxyCurve);
+		inputs.modelContract = static_cast<std::uint32_t>(options.modelContract);
 		inputs.display.vanillaGrading = options.display.vanillaGrading;
 		std::copy_n(options.display.param, 4, inputs.display.param);
 		std::copy_n(options.display.cinematic, 4, inputs.display.cinematic);
@@ -98,7 +186,9 @@ namespace
 		inputs.intensity = options.intensity;
 		inputs.colorStrength = options.colorStrength;
 		inputs.transferStrength = options.transferStrength;
-		inputs.luminosityStrength = options.luminosityStrength;
+		inputs.broadLuminosity = options.broadLuminosity;
+		inputs.detailLuminosity = options.detailLuminosity;
+		inputs.bandRadius = options.bandRadius;
 		inputs.maxRatio = options.maxRatio;
 		inputs.ratioGuardEnabled = options.ratioGuardEnabled;
 		for (std::size_t index = 0; index < options.categoryStrengths.size(); ++index) {
@@ -118,6 +208,11 @@ namespace
 		inputs.automaticMask = options.automaticMask;
 		inputs.debugCategoryView = options.debugCategoryView;
 		inputs.rawModelOutput = options.rawModelOutput;
+		inputs.debugGuardClamp = options.debugGuardClamp;
+		inputs.debugBroadBand = options.debugBroadBand;
+		inputs.debugDetailBand = options.debugDetailBand;
+		inputs.swapModelOutputRB = options.swapModelOutputRB;
+		inputs.measureModelPeak = options.measureModelPeak;
 		inputs.reset = options.reset;
 		// Reverse Z is latched at boot, so the private DLSS SR's create-time flag stays valid.
 		inputs.depthInverted = globals::features::reverseZ.IsActive();
@@ -228,6 +323,12 @@ bool NeuralRendering::IsFeatureAvailable() const
 	return backend->IsFeatureAvailable();
 }
 
+NeuralRendering::DebugReadback NeuralRendering::GetDebugReadback() const
+{
+	const auto readback = backend->GetDebugReadback();
+	return { readback.modelPeakLuminance, readback.guardClampedPercent, readback.valid };
+}
+
 bool NeuralRendering::Evaluate(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
 	ID3D11Resource* depth, ID3D11ShaderResourceView* depthSRV,
 	ID3D11ShaderResourceView* materialCategoriesSRV,
@@ -272,13 +373,127 @@ void NeuralRendering::DestroyModelResources()
 // Settings
 // ---------------------------------------------------------------------------------------------
 
+std::array<NeuralRendering::CategoryStrengths*, NeuralRendering::kMaterialCategoryCount> NeuralRendering::CategorySettings()
+{
+	return { &settings.everythingElseStrengths, &settings.skinStrengths, &settings.hairStrengths,
+		&settings.eyesStrengths, &settings.foliageStrengths, &settings.landscapeStrengths,
+		&settings.equipmentStrengths };
+}
+
+std::array<const NeuralRendering::CategoryStrengths*, NeuralRendering::kMaterialCategoryCount> NeuralRendering::CategorySettings() const
+{
+	return { &settings.everythingElseStrengths, &settings.skinStrengths, &settings.hairStrengths,
+		&settings.eyesStrengths, &settings.foliageStrengths, &settings.landscapeStrengths,
+		&settings.equipmentStrengths };
+}
+
+const NeuralRendering::PresetValues& NeuralRendering::GetPreset(Preset a_preset)
+{
+	const auto index = std::min(static_cast<std::size_t>(a_preset), kPresetCount - 1);
+	return kPresets[index];
+}
+
+void NeuralRendering::ApplyPreset(Preset a_preset)
+{
+	const auto& preset = GetPreset(a_preset);
+	settings.preset = static_cast<uint>(a_preset);
+	settings.placement = preset.placement;
+	settings.style = preset.style;
+	settings.intensity = preset.intensity;
+	settings.localToneStrength = preset.localToneStrength;
+	settings.localStructureStrength = preset.localStructureStrength;
+	settings.skinStructureStrength = preset.skinStructureStrength;
+	settings.automaticMask = preset.automaticMask;
+	settings.proxyCurve = preset.proxyCurve;
+	settings.colorStrength = preset.colorStrength;
+	settings.transferStrength = preset.transferStrength;
+	settings.broadLuminosity = preset.broadLuminosity;
+	settings.detailLuminosity = preset.detailLuminosity;
+	settings.bandRadius = preset.bandRadius;
+	settings.ratioGuardEnabled = preset.ratioGuardEnabled;
+	settings.maxRatio = preset.maxRatio;
+	settings.depthAwareResolve = preset.depthAwareResolve;
+	auto categories = CategorySettings();
+	for (std::size_t index = 0; index < kMaterialCategoryCount; ++index)
+		*categories[index] = preset.categories[index];
+}
+
+bool NeuralRendering::MatchesPreset(Preset a_preset) const
+{
+	const auto& preset = GetPreset(a_preset);
+	// Placement and NR Intensity are basic controls; moving either keeps the preset.
+	if (settings.style != preset.style || settings.automaticMask != preset.automaticMask ||
+		settings.proxyCurve != preset.proxyCurve || settings.ratioGuardEnabled != preset.ratioGuardEnabled ||
+		settings.depthAwareResolve != preset.depthAwareResolve)
+		return false;
+	if (!NearlyEqual(settings.localToneStrength, preset.localToneStrength) ||
+		!NearlyEqual(settings.localStructureStrength, preset.localStructureStrength) ||
+		!NearlyEqual(settings.skinStructureStrength, preset.skinStructureStrength) ||
+		!NearlyEqual(settings.colorStrength, preset.colorStrength) ||
+		!NearlyEqual(settings.transferStrength, preset.transferStrength) ||
+		!NearlyEqual(settings.broadLuminosity, preset.broadLuminosity) ||
+		!NearlyEqual(settings.detailLuminosity, preset.detailLuminosity))
+		return false;
+	// Max Ratio only exists while the guard is on, and Band Radius only while Broad and
+	// Detail differ, so an unused (and hidden) stored value cannot leave a preset looking
+	// modified.
+	if (settings.ratioGuardEnabled && !NearlyEqual(settings.maxRatio, preset.maxRatio))
+		return false;
+	if (!NearlyEqual(settings.broadLuminosity, settings.detailLuminosity) &&
+		!NearlyEqual(settings.bandRadius, preset.bandRadius))
+		return false;
+	const auto categories = CategorySettings();
+	for (std::size_t index = 0; index < kMaterialCategoryCount; ++index) {
+		const auto& current = *categories[index];
+		const auto& expected = preset.categories[index];
+		if (current.hueGuard != expected.hueGuard ||
+			!NearlyEqual(current.colorStrength, expected.colorStrength) ||
+			!NearlyEqual(current.transferStrength, expected.transferStrength) ||
+			!NearlyEqual(current.luminosityStrength, expected.luminosityStrength))
+			return false;
+	}
+	return true;
+}
+
+bool NeuralRendering::IsHDRDisplayActive() const
+{
+	const auto& hdrDisplay = globals::features::hdrDisplay;
+	return hdrDisplay.loaded && hdrDisplay.framebufferRedirected;
+}
+
+NeuralRendering::ProxyCurve NeuralRendering::ResolveProxyCurve() const
+{
+	// HDR Linear is never a stored choice: it is the HDR path's own input, used for both
+	// presets while HDR Display redirects the framebuffer and only once the Model Contract
+	// probe has confirmed Feature 18 accepts unbounded linear light (Step 0's C2).
+	if (debugState.hdrLinearProxy && IsHDRDisplayActive() &&
+		debugState.modelContract == static_cast<uint>(ModelContract::kHdr))
+		return ProxyCurve::kHdrLinear;
+	const auto stored = settings.proxyCurve;
+	return stored < static_cast<uint>(ProxyCurve::kCount) && stored != static_cast<uint>(ProxyCurve::kHdrLinear) ?
+	           static_cast<ProxyCurve>(stored) :
+	           ProxyCurve::kDisplayMatched;
+}
+
+bool NeuralRendering::IsLinearLightingActive()
+{
+	return globals::features::linearLighting.settings.enableLinearLighting && !globals::state->IsFlatWorldMapOpen();
+}
+
+NeuralRendering::ColorDomain NeuralRendering::SceneColorDomain(ProxyCurve a_curve) const
+{
+	if (a_curve == ProxyCurve::kLegacy || IsLinearLightingActive())
+		return ColorDomain::kSceneLinear;
+	return ColorDomain::kSceneGamma;
+}
+
 #define I18N_KEY_PREFIX "feature.neural_rendering."
 
 void NeuralRendering::DrawSettings()
 {
 	if (!IsDLSSActive()) {
 		ImGui::TextDisabled("%s", T(TKEY("requires_dlss"),
-			"DLSS Neural Rendering requires the DLSS upscaling method. Select DLSS in the Upscaling feature first."));
+									  "DLSS Neural Rendering requires the DLSS upscaling method. Select DLSS in the Upscaling feature first."));
 		return;
 	}
 
@@ -286,12 +501,12 @@ void NeuralRendering::DrawSettings()
 	const bool featureAvailable = IsFeatureAvailable();
 	if (!backendAvailable) {
 		ImGui::TextDisabled("%s", T(TKEY("unavailable"),
-			"DLSS Neural Rendering is unavailable. Install a compatible user-supplied nvngx_dlssnr.dll."));
+									  "DLSS Neural Rendering is unavailable. Install a compatible user-supplied nvngx_dlssnr.dll."));
 	} else if (featureAvailable) {
 		ImGui::TextUnformatted(T(TKEY("available"), "DLSS Neural Rendering is available."));
 	} else {
 		ImGui::TextDisabled("%s", T(TKEY("backend_ready"),
-			"NGX backend ready; feature support will be tested when enabled."));
+									  "NGX backend ready; feature support will be tested when enabled."));
 	}
 
 	ImGui::Checkbox(T(TKEY("enabled"), "Enable Neural Rendering"), &settings.enabled);
@@ -314,6 +529,51 @@ void NeuralRendering::DrawSettings()
 	const bool controlsAvailable = settings.enabled && backendAvailable;
 	if (!controlsAvailable)
 		ImGui::BeginDisabled();
+
+	// --- Preset: the single control most users ever touch ---
+	const auto activePreset = static_cast<Preset>(std::min<uint>(settings.preset, static_cast<uint>(Preset::kVanillaPlus)));
+	// Once per frame while the menu is open; the comparison is a handful of scalar tests.
+	const bool presetIntact = MatchesPreset(activePreset);
+	const char* presetNames[] = {
+		T(TKEY("preset_full"), "Full"),
+		T(TKEY("preset_vanilla_plus"), "Vanilla-Plus")
+	};
+	const std::string presetPreview = presetIntact ?
+	                                      presetNames[static_cast<std::size_t>(activePreset)] :
+	                                      std::format("{} {}", presetNames[static_cast<std::size_t>(activePreset)],
+											  T(TKEY("preset_modified"), "(modified)"));
+	if (ImGui::BeginCombo(T(TKEY("preset"), "Preset"), presetPreview.c_str())) {
+		for (std::size_t index = 0; index < kPresetCount; ++index) {
+			const bool selected = index == static_cast<std::size_t>(activePreset);
+			if (ImGui::Selectable(presetNames[index], selected))
+				ApplyPreset(static_cast<Preset>(index));
+			if (selected)
+				ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("preset_tooltip"),
+			"Full applies the model's own answer to the finished frame: its colour work, its local "
+			"contrast, and no guard on how far it may push a pixel.\n"
+			"Vanilla-Plus reproduces the September 2026 build - a luminance-only edit on the upscaled "
+			"scene, through that build's proxy, capped at one stop in either direction.\n"
+			"A preset only writes values into the settings below; every one of them still works "
+			"afterwards, and editing one marks the preset modified rather than leaving it."));
+	}
+	if (!presetIntact) {
+		ImGui::SameLine();
+		if (ImGui::Button(T(TKEY("preset_reset"), "Reset to preset")))
+			ApplyPreset(activePreset);
+	}
+
+	ImGui::Checkbox(T(TKEY("show_advanced"), "Show Advanced Settings"), &settings.showAdvanced);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("show_advanced_tooltip"),
+			"Reveals everything that shapes the edit itself - the model's own tuning, the proxy it "
+			"sees, the per-category overrides, and the debug views. The controls left visible decide "
+			"where Neural Rendering runs and how much it costs."));
+	}
 
 	// --- Pipeline: where, and at what resolution, Neural Rendering runs ---
 	const char* placementLabels[] = {
@@ -371,12 +631,6 @@ void NeuralRendering::DrawSettings()
 				"Model height relative to the frame height. Changes apply once the slider settles."));
 		}
 	}
-	ImGui::Checkbox(T(TKEY("depth_aware_resolve"), "Depth-Aware Silhouette Preservation (Experimental)"), &settings.depthAwareResolve);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("depth_aware_resolve_tooltip"),
-			"When the model runs below full resolution, fades its edit across depth edges so background "
-			"changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0."));
-	}
 	ImGui::Checkbox(T(TKEY("alternate_frames"), "Alternate Frames (Experimental)"), &settings.alternateFrames);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("alternate_frames_tooltip"),
@@ -385,119 +639,14 @@ void NeuralRendering::DrawSettings()
 			"Halves the neural cost; the model's lighting and detail changes can trail fast motion by a frame."));
 	}
 
-	// --- Model tuning: information handed to the DLSS Neural Rendering model itself ---
-	ImGui::Separator();
-	ImGui::TextUnformatted(T(TKEY("model_inputs"), "Model Tuning"));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("model_inputs_tooltip"),
-			"These are handed to the DLSS Neural Rendering model itself, guiding what it does to the frame. "
-			"The strengths further down control how much of its answer Cav's Unity Shaders actually applies."));
-	}
-
-	const char* neuralStyles[] = {
-		T(TKEY("style_default"), "Default"),
-		T(TKEY("style_natural"), "Natural"),
-		T(TKEY("style_cinematic"), "Cinematic")
-	};
-	int neuralStyle = static_cast<int>(settings.style);
-	if (ImGui::Combo(T(TKEY("style"), "NR Style"), &neuralStyle, neuralStyles, IM_ARRAYSIZE(neuralStyles)))
-		settings.style = static_cast<uint>(std::clamp(neuralStyle, 0, 2));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("style_tooltip"), "Choose the Neural Rendering visual style."));
-	}
-
 	ImGui::SliderFloat(T(TKEY("intensity"), "NR Intensity"), &settings.intensity, 0.0f, 2.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("intensity_tooltip"), "Adjust the overall Neural Rendering intensity."));
 	}
-	ImGui::SliderFloat(T(TKEY("local_tone"), "Local Tone Strength"), &settings.localToneStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("local_tone_tooltip"), "Adjust local tone detail."));
-	}
-	ImGui::SliderFloat(T(TKEY("local_structure"), "Local Structure Strength"), &settings.localStructureStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("local_structure_tooltip"), "Adjust local structure detail."));
-	}
-	ImGui::SliderFloat(T(TKEY("skin_structure"), "Skin Structure Strength"), &settings.skinStructureStrength, -1.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("skin_structure_tooltip"), "Adjust skin structure detail. -1 disables this control."));
-	}
-	ImGui::Checkbox(T(TKEY("automatic_mask"), "Automatic Mask"), &settings.automaticMask);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("automatic_mask_tooltip"), "Generates the skin mask automatically."));
-	}
-
-	// --- Strengths: how much of the model's answer Cav's Unity Shaders applies ---
-	ImGui::Separator();
-	ImGui::TextUnformatted(T(TKEY("strengths"), "Strengths"));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("strengths_tooltip"),
-			"How much of the model's answer is actually applied to the frame. The per-category overrides "
-			"below multiply on top of these as a final adjustment layer."));
-	}
-
-	ImGui::SliderFloat(T(TKEY("color_strength"), "Color Strength"), &settings.colorStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("color_strength_tooltip"),
-			"Blend the model's color changes independently of its bounded lighting and detail changes. 1 is the "
-			"model's own color change; above 1 extrapolates the same change further."));
-	}
-	ImGui::SliderFloat(T(TKEY("transfer_strength"), "Transfer Strength"), &settings.transferStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("transfer_strength_tooltip"),
-			"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
-			"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
-	}
-	ImGui::SliderFloat(T(TKEY("luminosity_strength"), "Luminosity Strength"), &settings.luminosityStrength, 0.0f, 2.0f, "%.2f");
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("luminosity_strength_tooltip"),
-			"Scales only the model's light/dark change, on top of Transfer Strength; its color and detail edit "
-			"are unaffected. Lower it if Neural Rendering reads as too contrasty without giving up its color work."));
-	}
-	ImGui::Checkbox(T(TKEY("ratio_guard_enabled"), "Enable Ratio Guard"), &settings.ratioGuardEnabled);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("ratio_guard_enabled_tooltip"),
-			"Off by default: the model's light/dark change is applied exactly as it computed it, however far it "
-			"swings - including turning a lit surface fully into shadow. Turn this on to cap that swing with Max "
-			"Ratio below, if a specific scene flashes or flickers; capping it can also crush shadow detail the "
-			"model was correctly reproducing."));
-	}
-	if (settings.ratioGuardEnabled) {
-		ImGui::SliderFloat(T(TKEY("max_ratio"), "Max Ratio"), &settings.maxRatio, 1.0f, 8.0f, "%.2f");
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("max_ratio_tooltip"),
-				"How far the model's light/dark change is allowed to push a pixel, as a multiple of its original "
-				"brightness in either direction (2 means at most half as dark or twice as bright). 1 disables any "
-				"brightness change. Lower this if a specific scene flashes or flickers; raising it further "
-				"re-approaches the guard being off."));
-		}
-	}
-
-	// --- Per-category overrides, each with its own hue guard ---
-	ImGui::Separator();
-	ImGui::TextUnformatted(T(TKEY("category_overrides"), "Per-Category Overrides"));
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("category_overrides_tooltip"),
-			"Override the strengths above, and toggle hue guard, independently for each material category. "
-			"The strengths above still apply afterwards as a final multiplier over every category."));
-	}
-
-	DrawCategoryStrengths("Skin", T(TKEY("category_skin"), "Skin"), settings.skinStrengths);
-	DrawCategoryStrengths("Hair", T(TKEY("category_hair"), "Hair"), settings.hairStrengths);
-	DrawCategoryStrengths("Eyes", T(TKEY("category_eyes"), "Eyes"), settings.eyesStrengths);
-	DrawCategoryStrengths("Foliage", T(TKEY("category_foliage"), "Foliage"), settings.foliageStrengths,
-		T(TKEY("category_foliage_tooltip"), "Trees and grass."));
-	DrawCategoryStrengths("Landscape", T(TKEY("category_landscape"), "Landscape"), settings.landscapeStrengths);
-	DrawCategoryStrengths("Equipment", T(TKEY("category_equipment"), "Equipment"), settings.equipmentStrengths,
-		T(TKEY("category_equipment_tooltip"), "Armor, clothing, and weapons worn or wielded by humanoid actors. Bare skin counts as Skin."));
-	DrawCategoryStrengths("EverythingElse", T(TKEY("category_everything_else"), "Everything Else"),
-		settings.everythingElseStrengths,
-		T(TKEY("category_everything_else_tooltip"),
-			"Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above."));
 
 	// --- Compare: runtime-only aids for judging the edit (never saved) ---
-	ImGui::Separator();
-	ImGui::TextUnformatted(T(TKEY("compare"), "Compare"));
+	// Split Screen stays out of Advanced: it is how anyone judges whether the edit is an
+	// improvement at all, so it has to be reachable without opening the tuning controls.
 	ImGui::Checkbox(T(TKEY("compare_wipe"), "Split Screen"), &compareView.wipe);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("compare_wipe_tooltip"),
@@ -506,38 +655,279 @@ void NeuralRendering::DrawSettings()
 	}
 	if (compareView.wipe)
 		ImGui::SliderFloat(T(TKEY("compare_wipe_position"), "Split Position"), &compareView.wipePosition, 0.0f, 1.0f, "%.2f");
-	ImGui::BeginDisabled(!IsPlacement(Placement::kFinishedImage));
-	ImGui::Checkbox(T(TKEY("frame_hold"), "Frame Hold"), &compareView.frameHold);
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("frame_hold_tooltip"),
-			"Finished Image only. Freezes the current frame and keeps running the model on it, so strength "
-			"and tuning changes can be judged on an identical image while the game keeps running underneath "
-			"(the HUD stays live). Combine with Split Screen for an on/off comparison of the held frame. "
-			"Not saved."));
-	}
 
-	// --- Debug: inspect the category classification itself ---
-	ImGui::Separator();
-	ImGui::TextUnformatted(T(TKEY("debug"), "Debug"));
+	if (settings.showAdvanced) {
+		// --- Model tuning: information handed to the DLSS Neural Rendering model itself ---
+		ImGui::Separator();
+		ImGui::TextUnformatted(T(TKEY("model_inputs"), "Model Tuning"));
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("model_inputs_tooltip"),
+				"These are handed to the DLSS Neural Rendering model itself, guiding what it does to the frame. "
+				"The strengths further down control how much of its answer Cav's Unity Shaders actually applies."));
+		}
 
-	ImGui::Checkbox(T(TKEY("debug_category_view"), "Show Material Categories"), &settings.debugCategoryView);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("debug_category_view_tooltip"),
-			"Replaces the frame with a flat colour per classified material category (red Skin, orange Hair, "
-			"yellow Eyes, green Foliage, cyan Landscape, purple Equipment, near-black Everything Else). Shows "
-			"the raw per-pixel classification, not the per-category strengths above. Neural Rendering still "
-			"evaluates normally underneath, so this costs the same as leaving it off."));
-	}
+		const char* neuralStyles[] = {
+			T(TKEY("style_default"), "Default"),
+			T(TKEY("style_natural"), "Natural"),
+			T(TKEY("style_cinematic"), "Cinematic")
+		};
+		int neuralStyle = static_cast<int>(settings.style);
+		if (ImGui::Combo(T(TKEY("style"), "NR Style"), &neuralStyle, neuralStyles, IM_ARRAYSIZE(neuralStyles)))
+			settings.style = static_cast<uint>(std::clamp(neuralStyle, 0, 2));
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("style_tooltip"), "Choose the Neural Rendering visual style."));
+		}
 
-	ImGui::BeginDisabled(!IsPlacement(Placement::kFinishedImage));
-	ImGui::Checkbox(T(TKEY("raw_model_output"), "Raw Model Output"), &settings.rawModelOutput);
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("raw_model_output_tooltip"),
-			"Finished Image only. Writes what the DLSS model actually produced straight to the screen, skipping "
-			"every strength, guard, and blend above entirely. Useful for telling apart a weak model answer from "
-			"an over-conservative resolve - not meant to be left on."));
+		ImGui::SliderFloat(T(TKEY("local_tone"), "Local Tone Strength"), &settings.localToneStrength, 0.0f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("local_tone_tooltip"), "Adjust local tone detail."));
+		}
+		ImGui::SliderFloat(T(TKEY("local_structure"), "Local Structure Strength"), &settings.localStructureStrength, 0.0f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("local_structure_tooltip"), "Adjust local structure detail."));
+		}
+		ImGui::SliderFloat(T(TKEY("skin_structure"), "Skin Structure Strength"), &settings.skinStructureStrength, -1.0f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("skin_structure_tooltip"), "Adjust skin structure detail. -1 disables this control."));
+		}
+		ImGui::Checkbox(T(TKEY("automatic_mask"), "Automatic Mask"), &settings.automaticMask);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("automatic_mask_tooltip"), "Generates the skin mask automatically."));
+		}
+
+		// --- Proxy: the image the scene-linear placements build for the model ---
+		const bool finishedImage = IsPlacement(Placement::kFinishedImage);
+		const bool hdrOverride = ResolveProxyCurve() == ProxyCurve::kHdrLinear;
+		const char* proxyCurveLabels[] = {
+			T(TKEY("proxy_display_matched"), "Display-matched"),
+			T(TKEY("proxy_neutwo"), "Neutwo"),
+			T(TKEY("proxy_legacy"), "Legacy")
+		};
+		ImGui::BeginDisabled(finishedImage || hdrOverride);
+		if (hdrOverride) {
+			int shown = 0;
+			const char* hdrLabel = T(TKEY("proxy_hdr_linear"), "HDR Linear (HDR Display)");
+			ImGui::Combo(T(TKEY("proxy_curve"), "Proxy Curve"), &shown, &hdrLabel, 1);
+		} else {
+			int proxyCurve = static_cast<int>(std::min<uint>(settings.proxyCurve, static_cast<uint>(ProxyCurve::kLegacy)));
+			if (ImGui::Combo(T(TKEY("proxy_curve"), "Proxy Curve"), &proxyCurve, proxyCurveLabels, IM_ARRAYSIZE(proxyCurveLabels)))
+				settings.proxyCurve = static_cast<uint>(std::clamp(proxyCurve, 0, 2));
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("proxy_curve_tooltip"),
+				"Changes the image the model sees on Before, After and Separate Upscaling. Finished Image "
+				"always shows the model the finished frame, so this has no effect there. On Finished Image, "
+				"Vanilla-Plus is luminance-only with its ratio guard. With HDR Display active, the HDR path "
+				"replaces this setting.\n"
+				"Display-matched replicates the tonemap and grading the frame is about to receive. Neutwo is "
+				"a neutral exposed curve. Legacy is the September 2026 proxy: per-channel Reinhard, no exposure."));
+		}
+
+		// --- Strengths: how much of the model's answer Cav's Unity Shaders applies ---
+		ImGui::Separator();
+		ImGui::TextUnformatted(T(TKEY("strengths"), "Strengths"));
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("strengths_tooltip"),
+				"How much of the model's answer is actually applied to the frame. The per-category overrides "
+				"below multiply on top of these as a final adjustment layer."));
+		}
+
+		ImGui::SliderFloat(T(TKEY("color_strength"), "Color Strength"), &settings.colorStrength, 0.0f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("color_strength_tooltip"),
+				"Blend the model's color changes independently of its bounded lighting and detail changes. 1 is the "
+				"model's own color change; above 1 extrapolates the same change further."));
+		}
+		ImGui::SliderFloat(T(TKEY("transfer_strength"), "Transfer Strength"), &settings.transferStrength, 0.0f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("transfer_strength_tooltip"),
+				"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
+				"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
+		}
+		ImGui::SliderFloat(T(TKEY("broad_luminosity"), "Broad Luminosity"), &settings.broadLuminosity, 0.0f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("broad_luminosity_tooltip"),
+				"Scales the smooth, region-level half of the model's light/dark change - the relighting that makes a "
+				"whole wall or hillside read differently. Lower it if Neural Rendering redistributes light more than "
+				"you want while keeping its texture work."));
+		}
+		ImGui::SliderFloat(T(TKEY("detail_luminosity"), "Detail Luminosity"), &settings.detailLuminosity, 0.0f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("detail_luminosity_tooltip"),
+				"Scales the remainder: the model's own local contrast and micro-detail. Equal to Broad Luminosity "
+				"this is exactly the single Luminosity Strength these two replace, and the extra passes are skipped."));
+		}
+		if (!NearlyEqual(settings.broadLuminosity, settings.detailLuminosity)) {
+			ImGui::SliderFloat(T(TKEY("band_radius"), "Band Radius"), &settings.bandRadius, 2.0f, 32.0f, "%.0f");
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::TextUnformatted(T(TKEY("band_radius_tooltip"),
+					"Where the split between the two falls, in model pixels. Larger keeps more of the model's work in "
+					"Detail; smaller moves it into Broad. Scaled with the model resolution, so it covers the same part "
+					"of the screen at every scale. Only used while the two strengths differ."));
+			}
+		}
+		ImGui::Checkbox(T(TKEY("ratio_guard_enabled"), "Enable Ratio Guard"), &settings.ratioGuardEnabled);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("ratio_guard_enabled_tooltip"),
+				"Off by default: the model's light/dark change is applied exactly as it computed it, however far it "
+				"swings - including turning a lit surface fully into shadow. Turn this on to cap that swing with Max "
+				"Ratio below, if a specific scene flashes or flickers; capping it can also crush shadow detail the "
+				"model was correctly reproducing."));
+		}
+		if (settings.ratioGuardEnabled) {
+			ImGui::SliderFloat(T(TKEY("max_ratio"), "Max Ratio"), &settings.maxRatio, 1.0f, 8.0f, "%.2f");
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::TextUnformatted(T(TKEY("max_ratio_tooltip"),
+					"How far the model's light/dark change is allowed to push a pixel, as a multiple of its original "
+					"brightness in either direction (2 means at most half as dark or twice as bright). 1 disables any "
+					"brightness change. Lower this if a specific scene flashes or flickers; raising it further "
+					"re-approaches the guard being off."));
+			}
+		}
+
+		// --- Per-category overrides, each with its own hue guard ---
+		ImGui::Separator();
+		ImGui::TextUnformatted(T(TKEY("category_overrides"), "Per-Category Overrides"));
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("category_overrides_tooltip"),
+				"Override the strengths above, and toggle hue guard, independently for each material category. "
+				"The strengths above still apply afterwards as a final multiplier over every category."));
+		}
+
+		DrawCategoryStrengths("Skin", T(TKEY("category_skin"), "Skin"), settings.skinStrengths);
+		DrawCategoryStrengths("Hair", T(TKEY("category_hair"), "Hair"), settings.hairStrengths);
+		DrawCategoryStrengths("Eyes", T(TKEY("category_eyes"), "Eyes"), settings.eyesStrengths);
+		DrawCategoryStrengths("Foliage", T(TKEY("category_foliage"), "Foliage"), settings.foliageStrengths,
+			T(TKEY("category_foliage_tooltip"), "Trees and grass."));
+		DrawCategoryStrengths("Landscape", T(TKEY("category_landscape"), "Landscape"), settings.landscapeStrengths);
+		DrawCategoryStrengths("Equipment", T(TKEY("category_equipment"), "Equipment"), settings.equipmentStrengths,
+			T(TKEY("category_equipment_tooltip"), "Armor, clothing, and weapons worn or wielded by humanoid actors. Bare skin counts as Skin."));
+		DrawCategoryStrengths("EverythingElse", T(TKEY("category_everything_else"), "Everything Else"),
+			settings.everythingElseStrengths,
+			T(TKEY("category_everything_else_tooltip"),
+				"Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above."));
+
+		ImGui::Separator();
+		ImGui::Checkbox(T(TKEY("depth_aware_resolve"), "Depth-Aware Silhouette Preservation (Experimental)"), &settings.depthAwareResolve);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("depth_aware_resolve_tooltip"),
+				"When the model runs below full resolution, fades its edit across depth edges so background "
+				"changes do not bleed into thin foreground geometry. Has no effect at a resolution scale of 1.0."));
+		}
+
+		// Frame Hold needs a placement that captures its own input; Before and Separate
+		// Upscaling hand their frame straight to DLSS and have nothing to freeze.
+		const bool frameHoldSupported = finishedImage || IsPlacement(Placement::kAfterUpscaling);
+		ImGui::BeginDisabled(!frameHoldSupported);
+		ImGui::Checkbox(T(TKEY("frame_hold"), "Frame Hold"), &compareView.frameHold);
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("frame_hold_tooltip"),
+				"Finished Image and After Upscaling only. Freezes the current frame and keeps running the model "
+				"on it, so strength and tuning changes can be judged on an identical image while the game keeps "
+				"running underneath (the HUD stays live). Combine with Split Screen for an on/off comparison of "
+				"the held frame. Not saved."));
+		}
+
+		// --- Debug: inspect the classification, the bands, and the model contract ---
+		ImGui::Separator();
+		ImGui::TextUnformatted(T(TKEY("debug"), "Debug"));
+
+		ImGui::Checkbox(T(TKEY("debug_category_view"), "Show Material Categories"), &settings.debugCategoryView);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("debug_category_view_tooltip"),
+				"Replaces the frame with a flat colour per classified material category (red Skin, orange Hair, "
+				"yellow Eyes, green Foliage, cyan Landscape, purple Equipment, near-black Everything Else). Shows "
+				"the raw per-pixel classification, not the per-category strengths above. Neural Rendering still "
+				"evaluates normally underneath, so this costs the same as leaving it off."));
+		}
+
+		ImGui::BeginDisabled(!finishedImage);
+		ImGui::Checkbox(T(TKEY("raw_model_output"), "Raw Model Output"), &settings.rawModelOutput);
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("raw_model_output_tooltip"),
+				"Finished Image only. Writes what the DLSS model actually produced straight to the screen, skipping "
+				"every strength, guard, and blend above entirely. Useful for telling apart a weak model answer from "
+				"an over-conservative resolve - not meant to be left on."));
+		}
+
+		const bool bandsSeparated = !NearlyEqual(settings.broadLuminosity, settings.detailLuminosity);
+		ImGui::BeginDisabled(!bandsSeparated);
+		ImGui::Checkbox(T(TKEY("debug_broad_band"), "Show Broad Band"), &debugState.broadBandView);
+		ImGui::Checkbox(T(TKEY("debug_detail_band"), "Show Detail Band"), &debugState.detailBandView);
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("debug_band_tooltip"),
+				"Renders one half of the model's light/dark edit on its own: mid-grey where it asks for no change, "
+				"black and white at two stops down and up. Use it to see what Band Radius is actually separating. "
+				"Only available while Broad and Detail Luminosity differ. Not saved."));
+		}
+
+		ImGui::Checkbox(T(TKEY("debug_guard_clamp"), "Show Guard Clamping"), &debugState.guardClampView);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("debug_guard_clamp_tooltip"),
+				"Tints every pixel the ratio guard actually caught: red where it stopped the model brightening a "
+				"pixel, blue where it stopped it darkening one. With the guard off nothing is marked. Not saved."));
+		}
+
+		ImGui::Checkbox(T(TKEY("debug_swap_rb"), "Swap Output R/B"), &debugState.swapModelOutputRB);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("debug_swap_rb_tooltip"),
+				"Swaps red and blue in the model's answer before it is resolved. Some DLSS Neural Rendering DLL "
+				"builds return the frame in the opposite channel order; if the image has a full-frame blue or red "
+				"cast, this tells you which one you have. Not saved."));
+		}
+
+		// Session-only: the creation contract Feature 18 is built under. Changing it goes
+		// through the backend's ordinary debounced recreate, the same as a style change.
+		const char* contractLabels[] = {
+			T(TKEY("model_contract_current"), "A - Current"),
+			T(TKEY("model_contract_sdr"), "B - SDR + Auto Exposure"),
+			T(TKEY("model_contract_hdr"), "C - HDR")
+		};
+		int modelContract = static_cast<int>(std::min<uint>(debugState.modelContract, static_cast<uint>(ModelContract::kHdr)));
+		if (ImGui::Combo(T(TKEY("model_contract"), "Model Contract"), &modelContract, contractLabels, IM_ARRAYSIZE(contractLabels)))
+			debugState.modelContract = static_cast<uint>(std::clamp(modelContract, 0, 2));
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("model_contract_tooltip"),
+				"Which creation flags and selectors Feature 18 is built with. A is what every released build uses. "
+				"B adds the auto-exposure and sharpening flags the other DLSS Neural Rendering projects set, with "
+				"sharpening at zero. C adds the HDR flag on top. Rebuilds the model when it settles, which costs a "
+				"brief hitch. Not saved - every session starts on A."));
+		}
+
+		const bool hdrContract = debugState.modelContract == static_cast<uint>(ModelContract::kHdr);
+		ImGui::BeginDisabled(!hdrContract || !IsHDRDisplayActive());
+		ImGui::Checkbox(T(TKEY("debug_hdr_linear"), "Hand the Model Linear Light"), &debugState.hdrLinearProxy);
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("debug_hdr_linear_tooltip"),
+				"Contract C with HDR Display active only. Sends exposed scene-linear light, with 1.0 at paper white "
+				"and no curve, instead of a 0-1 proxy, and reads the answer back in the same units. This is the "
+				"probe that decides whether the display-matched proxy is needed at all. Not saved."));
+		}
+
+		ImGui::Checkbox(T(TKEY("debug_measure_peak"), "Measure Model Output Peak"), &debugState.measurePeak);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("debug_measure_peak_tooltip"),
+				"Reads the brightest luminance the model returned back from the GPU each frame. Above 1.0 means it "
+				"is answering with values outside the 0-1 range it was trained on. Costs a small readback. Not saved."));
+		}
+		if (debugState.measurePeak || debugState.guardClampView) {
+			const auto readback = GetDebugReadback();
+			if (readback.valid) {
+				// Formatted here rather than handed to ImGui as a format string: the text
+				// comes from a translation file, which must never reach printf as one.
+				ImGui::TextUnformatted(std::format("{} {:.3f} - {} {:.2f}%",
+					T(TKEY("debug_peak_label"), "Model peak"), readback.modelPeakLuminance,
+					T(TKEY("debug_clamped_label"), "guard clamped"), readback.guardClampedPercent)
+						.c_str());
+			} else {
+				ImGui::TextDisabled("%s", T(TKEY("debug_readback_pending"), "Measuring..."));
+			}
+		}
 	}
 
 	if (!controlsAvailable)
@@ -577,7 +967,36 @@ void NeuralRendering::SaveSettings(json& o_json)
 
 void NeuralRendering::LoadSettings(json& o_json)
 {
+	// Read before the assignment below overwrites the defaults: which keys a config actually
+	// carries is what the migrations below key off, not the values they end up holding.
+	const bool hasPreset = o_json.is_object() && o_json.contains("preset");
+	const bool hasShowAdvanced = o_json.is_object() && o_json.contains("showAdvanced");
+	const bool hasBandStrengths = o_json.is_object() &&
+	                              (o_json.contains("broadLuminosity") || o_json.contains("detailLuminosity"));
+	float legacyLuminosity = 1.0f;
+	bool hasLegacyLuminosity = false;
+	if (o_json.is_object()) {
+		if (const auto entry = o_json.find("luminosityStrength");
+			entry != o_json.end() && entry->is_number()) {
+			legacyLuminosity = entry->get<float>();
+			hasLegacyLuminosity = true;
+		}
+	}
+
 	settings = o_json;
+
+	// A config written before the split carried one Luminosity Strength. Broad = Detail = that
+	// value is exactly the same edit, so the look does not change across the upgrade. The old
+	// key is simply not written again on the next save.
+	if (hasLegacyLuminosity && !hasBandStrengths) {
+		settings.broadLuminosity = legacyLuminosity;
+		settings.detailLuminosity = legacyLuminosity;
+	}
+
+	// A config from before presets existed keeps every value it stored; it is labelled Full and,
+	// wherever it differs, "Full (modified)". Nobody's look changes silently on upgrade.
+	if (!hasPreset)
+		settings.preset = static_cast<uint>(Preset::kFull);
 
 	if (settings.placement > 3) {
 		logger::warn("[NeuralRendering] Loaded placement {} out of range, clamping to 1", settings.placement);
@@ -602,7 +1021,15 @@ void NeuralRendering::LoadSettings(json& o_json)
 	sanitizeFloat(settings.resolutionScaleX, 1.0f, 0.25f, 1.0f);
 	sanitizeFloat(settings.resolutionScaleY, 1.0f, 0.25f, 1.0f);
 	sanitizeFloat(settings.transferStrength, 1.0f, 0.0f, 2.0f);
-	sanitizeFloat(settings.luminosityStrength, 1.0f, 0.0f, 2.0f);
+	sanitizeFloat(settings.broadLuminosity, 1.0f, 0.0f, 2.0f);
+	sanitizeFloat(settings.detailLuminosity, 1.0f, 0.0f, 2.0f);
+	sanitizeFloat(settings.bandRadius, 8.0f, 2.0f, 32.0f);
+	if (settings.preset >= static_cast<uint>(Preset::kCount))
+		settings.preset = static_cast<uint>(Preset::kFull);
+	// HDR Linear is chosen by the HDR path, never stored; anything else out of range
+	// falls back to the proxy the default preset uses.
+	if (settings.proxyCurve >= static_cast<uint>(ProxyCurve::kHdrLinear))
+		settings.proxyCurve = static_cast<uint>(ProxyCurve::kDisplayMatched);
 	const auto sanitizeCategoryStrengths = [&](CategoryStrengths& strengths) {
 		sanitizeFloat(strengths.colorStrength, 1.0f, 0.0f, 1.0f);
 		sanitizeFloat(strengths.transferStrength, 1.0f, 0.0f, 2.0f);
@@ -615,11 +1042,20 @@ void NeuralRendering::LoadSettings(json& o_json)
 	sanitizeCategoryStrengths(settings.foliageStrengths);
 	sanitizeCategoryStrengths(settings.landscapeStrengths);
 	sanitizeCategoryStrengths(settings.equipmentStrengths);
+
+	// Someone who tuned things before Advanced existed should still see their sliders; a
+	// config that still matches its preset exactly starts with them folded away. Every config
+	// written before the Full preset lowered Skin Color Strength to 0.6 counts as modified,
+	// which is accurate - the combo says so too.
+	if (!hasShowAdvanced)
+		settings.showAdvanced = !MatchesPreset(static_cast<Preset>(settings.preset));
 }
 
 void NeuralRendering::RestoreDefaultSettings()
 {
 	settings = {};
+	ApplyPreset(Preset::kFull);
+	settings.showAdvanced = false;
 }
 
 void NeuralRendering::MigrateLegacyUpscalingSettings(json& a_root)
@@ -712,6 +1148,7 @@ void NeuralRendering::DestroyFrameResources()
 	ReleaseTexture(heldColor);
 	ReleaseTexture(heldDepth);
 	ReleaseTexture(heldCategories);
+	heldPlacement = UINT_MAX;
 }
 
 void NeuralRendering::BeginFrame()
@@ -738,8 +1175,10 @@ void NeuralRendering::BeginFrame()
 		activePlacement = UINT_MAX;
 	}
 
-	// A held frame only means something while Finished Image is running on it.
-	if (heldColor && (!compareView.frameHold || !settings.enabled || !IsPlacement(Placement::kFinishedImage)))
+	// A held frame only means something while the placement that captured it is still running.
+	const bool frameHoldPlacement = IsPlacement(Placement::kFinishedImage) || IsPlacement(Placement::kAfterUpscaling);
+	if (heldColor && (!compareView.frameHold || !settings.enabled || !frameHoldPlacement ||
+						 heldPlacement != settings.placement))
 		ReleaseFrameHold();
 }
 
@@ -795,6 +1234,7 @@ ID3D11Resource* NeuralRendering::PrepareUpscaleInput(ID3D11Resource* a_color, ID
 	options.jitterOffsetY = -upscaling.jitter.y;
 	// Pre-tonemap: show the model the frame exposed and graded as it will be displayed.
 	options.display = MakeDisplayTransform();
+	options.colorDomain = SceneColorDomain(options.proxyCurve);
 	const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 	// The pre-blended-decals snapshot, not the live Masks2 - see CaptureCategories.
@@ -882,13 +1322,48 @@ void NeuralRendering::ResolveUpscaledFrame(Texture2D* a_upscaled)
 			options.guideJitterOffsetY = -jitter.y;
 			// Pre-tonemap: show the model the frame exposed and graded as it will be displayed.
 			options.display = MakeDisplayTransform();
+			options.colorDomain = SceneColorDomain(options.proxyCurve);
+
+			// Frame Hold: re-evaluate one captured upscaled frame every frame instead of the
+			// live one, so a tuning change can be judged on an identical image. The guides are
+			// held with it; the captured raster is the one the hold was taken on, so a
+			// resolution change releases it through the size check below.
+			ID3D11Texture2D* colorIn = a_upscaled->resource.get();
+			ID3D11Texture2D* depthTexture = depth.texture;
+			ID3D11ShaderResourceView* depthSRV = depth.depthSRV;
+			if (compareView.frameHold) {
+				const bool heldMatches = heldColor && heldColor->desc.Width == a_upscaled->desc.Width &&
+				                         heldColor->desc.Height == a_upscaled->desc.Height &&
+				                         heldColor->desc.Format == a_upscaled->desc.Format;
+				if (heldColor && !heldMatches)
+					ReleaseFrameHold();
+				if (!heldColor && CaptureFrameHold(colorIn, depth.texture, depth.depthSRV)) {
+					heldGuideWidth = options.guideWidth;
+					heldGuideHeight = options.guideHeight;
+					heldGuideJitterX = options.guideJitterOffsetX;
+					heldGuideJitterY = options.guideJitterOffsetY;
+					options.reset = true;
+				}
+				if (heldColor) {
+					colorIn = heldColor->resource.get();
+					depthTexture = heldDepth->resource.get();
+					depthSRV = heldDepth->srv.get();
+					materialCategoriesSRV = heldCategories->srv.get();
+					options.guideWidth = heldGuideWidth;
+					options.guideHeight = heldGuideHeight;
+					options.guideJitterOffsetX = heldGuideJitterX;
+					options.guideJitterOffsetY = heldGuideJitterY;
+					options.staticMotion = true;
+				}
+			}
+
 			// Raw game motion-vector target, not the dilated ghosting-reduction copy
 			// DLSS consumes; see the matching note in PrepareUpscaleInput().
 			globals::profiler->BeginPass("NeuralRendering::Generate");
-			resultValid = Evaluate(a_upscaled->resource.get(),
+			resultValid = Evaluate(colorIn,
 				output->resource.get(),
-				depth.texture,
-				depth.depthSRV,
+				depthTexture,
+				depthSRV,
 				materialCategoriesSRV,
 				motionVector.texture,
 				motionVector.SRV,
@@ -1081,7 +1556,9 @@ NeuralRendering::Options NeuralRendering::MakeOptions() const
 	options.intensity = settings.intensity;
 	options.colorStrength = settings.colorStrength;
 	options.transferStrength = settings.transferStrength;
-	options.luminosityStrength = settings.luminosityStrength;
+	options.broadLuminosity = settings.broadLuminosity;
+	options.detailLuminosity = settings.detailLuminosity;
+	options.bandRadius = settings.bandRadius;
 	options.maxRatio = settings.maxRatio;
 	options.ratioGuardEnabled = settings.ratioGuardEnabled;
 	const auto setCategoryStrengths = [&](MaterialCategory category, const CategoryStrengths& strengths) {
@@ -1102,6 +1579,17 @@ NeuralRendering::Options NeuralRendering::MakeOptions() const
 	options.automaticMask = settings.automaticMask;
 	options.debugCategoryView = settings.debugCategoryView;
 	options.rawModelOutput = settings.rawModelOutput;
+	options.proxyCurve = ResolveProxyCurve();
+	options.modelContract = static_cast<ModelContract>(
+		std::min<uint>(debugState.modelContract, static_cast<uint>(ModelContract::kHdr)));
+	// The band views are only meaningful once the two strengths actually separate the bands,
+	// and they are mutually exclusive; Broad wins if both are ticked.
+	const bool bandsSeparated = !NearlyEqual(settings.broadLuminosity, settings.detailLuminosity);
+	options.debugBroadBand = bandsSeparated && debugState.broadBandView;
+	options.debugDetailBand = bandsSeparated && debugState.detailBandView && !options.debugBroadBand;
+	options.debugGuardClamp = debugState.guardClampView;
+	options.swapModelOutputRB = debugState.swapModelOutputRB;
+	options.measureModelPeak = debugState.measurePeak;
 	options.wipePosition = compareView.wipe ? std::clamp(compareView.wipePosition, 0.0f, 1.0f) : -1.0f;
 	options.reset = resetThisFrame;
 	const bool perAxis = settings.resolutionMode == 1;
@@ -1147,9 +1635,10 @@ void NeuralRendering::CaptureDisplayTransform(RE::ImageSpaceShaderParam* a_param
 	if (!plausible) {
 		if (!displayCaptureLogged) {
 			displayCaptureLogged = true;
-			logger::warn("[NeuralRendering] Display transform: implausible ISHDR constants "
-						 "(white {:.3f}, saturation {:.3f}, contrast {:.3f}, brightness {:.3f}, tint amount {:.3f}); "
-						 "using the plain proxy",
+			logger::warn(
+				"[NeuralRendering] Display transform: implausible ISHDR constants "
+				"(white {:.3f}, saturation {:.3f}, contrast {:.3f}, brightness {:.3f}, tint amount {:.3f}); "
+				"using the plain proxy",
 				capture.param[1], capture.cinematic[0], capture.cinematic[2], capture.cinematic[3], capture.tint[3]);
 		}
 		return;
@@ -1176,9 +1665,10 @@ void NeuralRendering::CaptureDisplayTransform(RE::ImageSpaceShaderParam* a_param
 	capture.valid = true;
 	if (!displayCaptureLogged) {
 		displayCaptureLogged = true;
-		logger::info("[NeuralRendering] Display transform captured: adaptation {}x{} format {}, "
-					 "white {:.3f} filmic {:.0f}, saturation {:.3f} contrast {:.3f} brightness {:.3f}, "
-					 "tint ({:.3f}, {:.3f}, {:.3f}) x {:.3f}",
+		logger::info(
+			"[NeuralRendering] Display transform captured: adaptation {}x{} format {}, "
+			"white {:.3f} filmic {:.0f}, saturation {:.3f} contrast {:.3f} brightness {:.3f}, "
+			"tint ({:.3f}, {:.3f}, {:.3f}) x {:.3f}",
 			desc.Width, desc.Height, static_cast<int>(desc.Format),
 			capture.param[1], capture.param[2], capture.cinematic[0], capture.cinematic[2], capture.cinematic[3],
 			capture.tint[0], capture.tint[1], capture.tint[2], capture.tint[3]);
@@ -1254,8 +1744,9 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	auto* depthSRV = finishedImageDepthSnapshot->srv.get();
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 	if (!depthTexture || !depthSRV || !motionVector.texture || !motionVector.SRV) {
-		logger::debug("[NeuralRendering] Finished Image skipped: depth or motion-vector guide missing "
-					  "(depthSnapshot={} depthSnapshotSRV={} motionVector.texture={} motionVector.SRV={})",
+		logger::debug(
+			"[NeuralRendering] Finished Image skipped: depth or motion-vector guide missing "
+			"(depthSnapshot={} depthSnapshotSRV={} motionVector.texture={} motionVector.SRV={})",
 			(void*)depthTexture, (void*)depthSRV, (void*)motionVector.texture, (void*)motionVector.SRV);
 		return false;
 	}
@@ -1292,9 +1783,15 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	// is its effective DisableVanillaTonemapping (see PostProcessing::GetCommonBufferData()).
 	const auto& hdrDisplay = globals::features::hdrDisplay;
 	const bool sceneLinear = hdrDisplay.loaded && hdrDisplay.framebufferRedirected &&
-	                         (globals::features::linearLighting.settings.enableLinearLighting ||
+	                         (IsLinearLightingActive() ||
 								 globals::state->GetTonemapOwner() == State::TonemapOwner::kPostProcessing);
 	options.colorDomain = sceneLinear ? ColorDomain::kSceneLinear : ColorDomain::kDisplayGamma;
+	// Proxy Curve belongs to the pre-tonemap placements. Even when the HDR frame arrives here
+	// scene linear, Finished Image's proxy is that finished frame through the identity
+	// transform, never a stored curve such as Vanilla-Plus's Legacy; only the HDR path's own
+	// HDR Linear override applies.
+	if (options.proxyCurve != ProxyCurve::kHdrLinear)
+		options.proxyCurve = ProxyCurve::kDisplayMatched;
 
 	// Frame Hold: evaluate one captured frame every frame instead of the live one. The live
 	// guides were still consumed above, so the one-evaluation-per-frame contract holds.
@@ -1306,7 +1803,8 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 		                         heldColor->desc.Height == liveDesc.Height && heldColor->desc.Format == liveDesc.Format;
 		if (heldColor && !heldMatches)
 			ReleaseFrameHold();
-		if (!heldColor && CaptureFrameHold(a_colorIn)) {
+		if (!heldColor && CaptureFrameHold(a_colorIn, finishedImageDepthSnapshot->resource.get(),
+							  finishedImageDepthSnapshot->srv.get())) {
 			heldGuideWidth = finishedImageGuideWidth;
 			heldGuideHeight = finishedImageGuideHeight;
 			heldGuideJitterX = options.guideJitterOffsetX;
@@ -1337,8 +1835,9 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 		nativeWidth, nativeHeight, options);
 	globals::profiler->EndPass();
 	if (!evaluated) {
-		logger::debug("[NeuralRendering] Finished Image skipped: Evaluate() returned false "
-					  "(see preceding [NeuralRendering] log lines for the reason)");
+		logger::debug(
+			"[NeuralRendering] Finished Image skipped: Evaluate() returned false "
+			"(see preceding [NeuralRendering] log lines for the reason)");
 		return false;
 	}
 
@@ -1346,10 +1845,10 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	return true;
 }
 
-bool NeuralRendering::CaptureFrameHold(ID3D11Texture2D* a_colorIn)
+bool NeuralRendering::CaptureFrameHold(ID3D11Texture2D* a_colorIn, ID3D11Texture2D* a_depth,
+	ID3D11ShaderResourceView* a_depthSRV)
 {
-	if (!a_colorIn || !finishedImageDepthSnapshot || !finishedImageDepthSnapshot->srv ||
-		!materialCategoriesSnapshot || !materialCategoriesSnapshot->srv)
+	if (!a_colorIn || !a_depth || !a_depthSRV || !materialCategoriesSnapshot || !materialCategoriesSnapshot->srv)
 		return false;
 
 	// Each copy mirrors its source's own description (bind flags included, as the depth
@@ -1378,8 +1877,11 @@ bool NeuralRendering::CaptureFrameHold(ID3D11Texture2D* a_colorIn)
 	colorDesc.CPUAccessFlags = 0;
 	colorDesc.MiscFlags = 0;
 
+	D3D11_TEXTURE2D_DESC depthDesc{};
+	a_depth->GetDesc(&depthDesc);
+
 	heldColor = makeCopy(colorDesc, nullptr, "NeuralRendering::HeldColor");
-	heldDepth = makeCopy(finishedImageDepthSnapshot->desc, finishedImageDepthSnapshot->srv.get(), "NeuralRendering::HeldDepth");
+	heldDepth = makeCopy(depthDesc, a_depthSRV, "NeuralRendering::HeldDepth");
 	heldCategories = makeCopy(materialCategoriesSnapshot->desc, materialCategoriesSnapshot->srv.get(), "NeuralRendering::HeldCategories");
 	if (!heldColor || !heldDepth || !heldCategories) {
 		ReleaseTexture(heldColor);
@@ -1390,8 +1892,9 @@ bool NeuralRendering::CaptureFrameHold(ID3D11Texture2D* a_colorIn)
 
 	auto* context = globals::d3d::context;
 	context->CopyResource(heldColor->resource.get(), a_colorIn);
-	context->CopyResource(heldDepth->resource.get(), finishedImageDepthSnapshot->resource.get());
+	context->CopyResource(heldDepth->resource.get(), a_depth);
 	context->CopyResource(heldCategories->resource.get(), materialCategoriesSnapshot->resource.get());
+	heldPlacement = settings.placement;
 	return true;
 }
 
@@ -1401,6 +1904,7 @@ void NeuralRendering::ReleaseFrameHold()
 	ReleaseTexture(heldColor);
 	ReleaseTexture(heldDepth);
 	ReleaseTexture(heldCategories);
+	heldPlacement = UINT_MAX;
 	// The model's history is of the held frame; the live frame it returns to is unrelated.
 	if (wasHeld)
 		RequestHistoryReset();
@@ -1471,8 +1975,9 @@ Texture2D* NeuralRendering::EnsureFinishedImageTexture(const D3D11_TEXTURE2D_DES
 	if (!uavCapable || a_targetDesc.SampleDesc.Count != 1) {
 		if (finishedImageRejectedFormat != a_targetDesc.Format) {
 			finishedImageRejectedFormat = a_targetDesc.Format;
-			logger::warn("[NeuralRendering] Finished Image disabled: tonemap output format {} (samples {}) "
-						 "cannot be written through a UAV",
+			logger::warn(
+				"[NeuralRendering] Finished Image disabled: tonemap output format {} (samples {}) "
+				"cannot be written through a UAV",
 				static_cast<int>(a_targetDesc.Format), a_targetDesc.SampleDesc.Count);
 		}
 		return nullptr;

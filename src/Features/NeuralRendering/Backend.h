@@ -40,7 +40,7 @@ public:
 		bool postProcessExposure = false;  ///< Post Processing's Histogram Auto Exposure is active downstream.
 		/// Post Processing's adapted-luminance buffer (a single float).
 		ID3D11ShaderResourceView* postProcessAdaptationSRV = nullptr;
-		float postProcessExposureScale = 0.18f;               ///< 0.18 * exp2(exposure compensation).
+		float postProcessExposureScale = 0.18f;             ///< 0.18 * exp2(exposure compensation).
 		float postProcessAdaptationRange[2]{ 0.0f, 1.0f };  ///< Linear clamp range of the adapted luminance.
 	};
 
@@ -62,14 +62,14 @@ public:
 		ID3D11ShaderResourceView* depthSRV = nullptr;               ///< SRV over @c depth, used by the guide pass.
 		ID3D11ShaderResourceView* materialCategoriesSRV = nullptr;  ///< Packed Masks2 material categories.
 		ID3D11Resource* motionVectors = nullptr;                    ///< Motion vectors matching @c depth.
-	/// SRV over @c motionVectors; the decode reprojects a previous frame's answer through it.
-	/// Optional: without it alternating-frame mode evaluates every frame.
-	ID3D11ShaderResourceView* motionVectorsSRV = nullptr;
-		ID3D11Resource* superResolutionMotionVectors = nullptr;     ///< Processed motion field used by main DLSS.
-		std::uint32_t width = 0;                                    ///< Colour/output active region width in pixels.
-		std::uint32_t height = 0;                                   ///< Colour/output active region height in pixels.
-		std::uint32_t guideWidth = 0;                               ///< Depth/motion-vector active region width (render resolution).
-		std::uint32_t guideHeight = 0;                              ///< Depth/motion-vector active region height (render resolution).
+		/// SRV over @c motionVectors; the decode reprojects a previous frame's answer through it.
+		/// Optional: without it alternating-frame mode evaluates every frame.
+		ID3D11ShaderResourceView* motionVectorsSRV = nullptr;
+		ID3D11Resource* superResolutionMotionVectors = nullptr;  ///< Processed motion field used by main DLSS.
+		std::uint32_t width = 0;                                 ///< Colour/output active region width in pixels.
+		std::uint32_t height = 0;                                ///< Colour/output active region height in pixels.
+		std::uint32_t guideWidth = 0;                            ///< Depth/motion-vector active region width (render resolution).
+		std::uint32_t guideHeight = 0;                           ///< Depth/motion-vector active region height (render resolution).
 		/// Sub-pixel projection offset of @c colorIn in render pixels (Streamline
 		/// convention: a scene point at unjittered position u lands at u + offset).
 		/// Non-zero only when @c colorIn is the game's jittered render; the
@@ -93,6 +93,13 @@ public:
 		/// How @c colorIn is encoded: 0 = linear open-ended HDR scene colour, 1 = finished
 		/// gamma-2.2 display-referred frame (NeuralRendering::ColorDomain).
 		std::uint32_t colorDomain = 0;
+		/// How the scene-linear placements build the proxy (NeuralRendering::ProxyCurve);
+		/// ignored in the display-gamma domain except that HDR Linear suppresses the
+		/// highlight shoulder.
+		std::uint32_t proxyCurve = 0;
+		/// Creation-time contract for Feature 18 (NeuralRendering::ModelContract). Latched
+		/// with the rest of the tuning, so a change goes through the debounced recreate.
+		std::uint32_t modelContract = 0;
 		/// Display transform the scene-linear proxy replicates (identity by default).
 		DisplayTransform display{};
 		/// Display-gamma domain only: the linear peak the display can show, in the frame's
@@ -109,9 +116,12 @@ public:
 		float colorStrength = 1.0f;
 		/// Overall weight of the model's edit (0..2); one applies it exactly.
 		float transferStrength = 1.0f;
-		/// Additional multiplier on the model's luminance change alone; see
-		/// NeuralRendering::Options::luminosityStrength.
-		float luminosityStrength = 1.0f;
+		/// The two halves of the model's luminance change; see
+		/// NeuralRendering::Options::broadLuminosity. Equal values skip the band passes.
+		float broadLuminosity = 1.0f;
+		float detailLuminosity = 1.0f;
+		/// Radius of the edge-aware blur that separates them, in model texels.
+		float bandRadius = 8.0f;
 		/// Two-sided guard (1/maxRatio..maxRatio) on the model/proxy luminance ratio;
 		/// see NeuralRendering::Options::maxRatio.
 		float maxRatio = 2.0f;
@@ -145,6 +155,12 @@ public:
 		/// entirely; see NeuralRendering::Options::rawModelOutput. Only honoured
 		/// in the display-gamma colour domain (Finished Image).
 		bool rawModelOutput = false;
+		/// Debug views and readbacks; see the matching NeuralRendering::Options fields.
+		bool debugGuardClamp = false;
+		bool debugBroadBand = false;
+		bool debugDetailBand = false;
+		bool swapModelOutputRB = false;
+		bool measureModelPeak = false;
 		bool reset = false;          ///< Force a history reset on this frame.
 		bool depthInverted = false;  ///< Depth guide is Reverse Z (near = 1, far = 0).
 	};
@@ -166,6 +182,21 @@ public:
 	 * @return True after a successful Execute; false while latched, uninitialised, or torn down.
 	 */
 	bool IsFeatureAvailable() const;
+
+	/**
+	 * @brief Last diagnostics the resolve wrote back (Debug: model peak, guard clamping).
+	 *
+	 * DecodeColorCS accumulates both into one small buffer, which is staged back over a few
+	 * frames so nothing stalls the pipeline; the values therefore lag the screen slightly and
+	 * only move while their toggle is on.
+	 */
+	struct DebugReadback
+	{
+		float modelPeakLuminance = 0.0f;
+		float guardClampedPercent = 0.0f;
+		bool valid = false;
+	};
+	DebugReadback GetDebugReadback() const;
 
 	/**
 	 * @brief Runs the full Neural Rendering pass for one frame.

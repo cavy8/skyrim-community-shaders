@@ -81,6 +81,10 @@ struct NeuralRendering : Feature
 	{
 		kSceneLinear = 0,   ///< Linear, open-ended HDR scene colour (every pre-tonemap placement).
 		kDisplayGamma = 1,  ///< Finished gamma-2.2 display-referred frame, 0-1 in SDR (Finished Image).
+		/// Pre-tonemap placement while Linear Lighting is off: kMAIN holds gamma-encoded values
+		/// that the vanilla tonemap writes straight out, so the proxy and the resolve both have
+		/// to decode with kNeuralSceneGamma first (see ColorTransfer.hlsli).
+		kSceneGamma = 2,
 	};
 
 	/** @brief Where in the frame Neural Rendering runs (Settings::placement). */
@@ -90,6 +94,56 @@ struct NeuralRendering : Feature
 		kAfterUpscaling = 1,
 		kSeparateUpscaling = 2,
 		kFinishedImage = 3,
+	};
+
+	/**
+	 * @brief Named starting points for the whole settings block (Settings::preset).
+	 *
+	 * A preset is a table of values ApplyPreset() writes into the ordinary settings, not a
+	 * separate code path: every slider still works afterwards, and an edit only changes which
+	 * label the UI shows (see MatchesPreset()).
+	 */
+	enum class Preset : uint32_t
+	{
+		kFull = 0,         ///< The model's own answer applied in full; the default.
+		kVanillaPlus = 1,  ///< Faithful recreation of the 2026-09-09 build (5947cf63).
+		kCount
+	};
+
+	static constexpr std::size_t kPresetCount = static_cast<std::size_t>(Preset::kCount);
+
+	/**
+	 * @brief How the scene-linear placements build the image the model sees (Settings::proxyCurve).
+	 *
+	 * No effect on Finished Image, whose proxy is the finished frame itself. Mirrored by
+	 * ColorTransfer.hlsli (kNeuralProxyCurve*).
+	 */
+	enum class ProxyCurve : uint32_t
+	{
+		kDisplayMatched = 0,  ///< The ISHDR replica, or the ACES fallback when grading cannot be captured.
+		kNeutwo = 1,          ///< Exposed scene linear through Open Shaders' Neutwo curve, then the domain encode.
+		kLegacy = 2,          ///< The 2026-09-09 proxy: per-channel Reinhard, no exposure, no Linear Lighting decode.
+		/// Exposed scene linear, float16, no curve. Never selected by hand: it overrides the
+		/// stored curve at runtime while HDR Display redirects the framebuffer, and only once
+		/// the Model Contract probe has shown Feature 18 accepts it (see Settings::hdrLinearProxy).
+		kHdrLinear = 3,
+		kCount
+	};
+
+	/**
+	 * @brief Creation-time contract Feature 18 is built under (Settings::modelContract, session only).
+	 *
+	 * Feature 18 latches its creation flags and selectors, so changing this goes through the
+	 * same debounced recreate a tuning change does. Contract A is what every shipped build has
+	 * used. B and C exist to measure whether the flags the other DLSS-NR projects set change
+	 * the answer; see docs/development/neural-rendering.md, "Model contract probe".
+	 */
+	enum class ModelContract : uint32_t
+	{
+		kCurrent = 0,          ///< A: no creation flags and no selectors, as shipped.
+		kSdrAutoExposure = 1,  ///< B: DoSharpening | AutoExposure, SDR=1, unit pre-exposure/exposure scale, Sharpness 0.
+		kHdr = 2,              ///< C: B plus IsHDR and Hdr=1/SDR=0.
+		kCount
 	};
 
 	/**
@@ -110,7 +164,7 @@ struct NeuralRendering : Feature
 		bool postProcessExposure = false;  ///< Post Processing's Histogram Auto Exposure is active downstream.
 		/// Post Processing's adapted-luminance buffer (a single float).
 		ID3D11ShaderResourceView* postProcessAdaptationSRV = nullptr;
-		float postProcessExposureScale = 0.18f;               ///< 0.18 * exp2(exposure compensation).
+		float postProcessExposureScale = 0.18f;             ///< 0.18 * exp2(exposure compensation).
 		float postProcessAdaptationRange[2]{ 0.0f, 1.0f };  ///< Linear clamp range of the adapted luminance.
 	};
 
@@ -124,13 +178,19 @@ struct NeuralRendering : Feature
 		/// frame untouched, one applies the model's change exactly, two doubles its
 		/// relative luminance change (still inside the resolve's ratio guard).
 		float transferStrength = 1.0f;
-		/// Additional multiplier on top of Transfer Strength applied only to the
-		/// model's light/dark (luminance) change; the chroma transfer gated by
-		/// Color Strength is unaffected. Lower values keep the model's colour and
-		/// detail edit while damping the contrast swings that drive it. Zero
-		/// leaves luminance untouched (still subject to Transfer Strength being
-		/// non-zero); one matches the pre-luminosity-strength behaviour exactly.
-		float luminosityStrength = 1.0f;
+		/// Multiplier on top of Transfer Strength applied only to the *smooth* part
+		/// of the model's light/dark (luminance) change - the region-level relighting
+		/// left after an edge-aware blur of its log-luminance edit. The chroma
+		/// transfer gated by Color Strength is unaffected.
+		float broadLuminosity = 1.0f;
+		/// The same, for the remainder of that edit: the model's own local contrast
+		/// and sharpening. Equal to @ref broadLuminosity this is exactly the single
+		/// Luminosity Strength it replaces, and the band passes are skipped entirely.
+		float detailLuminosity = 1.0f;
+		/// Radius of the edge-aware blur that separates the two bands, in model texels
+		/// (2..32). Scaled with the model resolution so it covers the same screen area
+		/// at every scale. Only consulted while the two strengths differ.
+		float bandRadius = 8.0f;
 		/// Two-sided guard (1/maxRatio..maxRatio) on the model/proxy luminance
 		/// ratio the resolve applies (see ColorTransfer.hlsli, ResolveNeuralColor),
 		/// only in effect while @ref ratioGuardEnabled is true. One disables any
@@ -177,6 +237,20 @@ struct NeuralRendering : Feature
 		/// image. Not meant to ship on; it exists to tell apart a weak model answer
 		/// from an over-conservative resolve.
 		bool rawModelOutput = false;
+		/// Debug view: mark every pixel the ratio guard actually clamped - red where it
+		/// stopped a brighten, blue where it stopped a darken - over the normal image.
+		/// Pairs with the clamped-pixel percentage in the settings UI.
+		bool debugGuardClamp = false;
+		/// Debug views of the two luminosity bands, mid-grey at no change and scaled
+		/// to +-2 stops. Only meaningful while the bands are actually separated.
+		bool debugBroadBand = false;
+		bool debugDetailBand = false;
+		/// Diagnostic for DLSS-NR builds that return the model answer as BGRA: swap the
+		/// answer's red and blue channels before the resolve reads it.
+		bool swapModelOutputRB = false;
+		/// Read back the model answer's peak luminance each frame (an extra reduction
+		/// pass plus a staged copy); surfaced in the settings UI.
+		bool measureModelPeak = false;
 		bool reset = false;
 
 		/// Valid region of @p depth and @p motionVectors, i.e. the game's render
@@ -223,6 +297,12 @@ struct NeuralRendering : Feature
 		/// applies the edit in linear light decoded with the same 2.2 curve.
 		ColorDomain colorDomain = ColorDomain::kSceneLinear;
 
+		/// How the scene-linear placements build the proxy; ignored by Finished Image.
+		ProxyCurve proxyCurve = ProxyCurve::kDisplayMatched;
+
+		/// Creation-time contract for Feature 18 (session only; see ModelContract).
+		ModelContract modelContract = ModelContract::kCurrent;
+
 		/// Display transform the scene-linear proxy replicates so the model sees the frame
 		/// the way the user will. Set by the pre-tonemap placements (built from the captured
 		/// ISHDR pass and Post Processing's auto exposure); left at the identity by Finished
@@ -250,10 +330,18 @@ struct NeuralRendering : Feature
 	struct Settings
 	{
 		bool enabled = false;
+		/// Which preset the current values came from (see Preset). Never re-applied on load:
+		/// the stored values win, and the UI marks the preset "(modified)" where they differ.
+		uint preset = static_cast<uint>(Preset::kFull);
+		/// Show the settings that shape the edit itself rather than where and how big it runs.
+		bool showAdvanced = false;
 		uint placement = static_cast<uint>(Placement::kFinishedImage);
 		uint style = 0;  // 0=Default, 1=Natural, 2=Cinematic
 		float intensity = 1.0f;
 		float colorStrength = 1.0f;
+		/// How the scene-linear placements build the proxy (see ProxyCurve). Never stored as
+		/// HDR Linear: that one is chosen at runtime by the HDR path, not by the user.
+		uint proxyCurve = static_cast<uint>(ProxyCurve::kDisplayMatched);
 		float localToneStrength = 1.0f;
 		float localStructureStrength = 1.0f;
 		float skinStructureStrength = -1.0f;
@@ -263,14 +351,19 @@ struct NeuralRendering : Feature
 		float resolutionScaleX = 1.0f;
 		float resolutionScaleY = 1.0f;
 		float transferStrength = 1.0f;
-		float luminosityStrength = 1.0f;
-		float maxRatio = 2.0f;  // Two-sided guard on the model/proxy luminance ratio (1/x..x).
+		/// The two halves of the old single Luminosity Strength; equal values reproduce it
+		/// exactly (see Options::broadLuminosity).
+		float broadLuminosity = 1.0f;
+		float detailLuminosity = 1.0f;
+		float bandRadius = 8.0f;  // Model texels; only used while the two above differ.
+		float maxRatio = 2.0f;    // Two-sided guard on the model/proxy luminance ratio (1/x..x).
 		// Off by default: the guard above is not applied at all, so a correct large
 		// light/dark swing (e.g. a lit surface the model puts fully into shadow)
 		// is never capped. On, Max Ratio governs the swing as before.
 		bool ratioGuardEnabled = false;
 		CategoryStrengths everythingElseStrengths;
-		CategoryStrengths skinStrengths;
+		// Full damps skin colour: the model's own skin tint is its most visible overreach.
+		CategoryStrengths skinStrengths{ 0.6f, 1.0f, 1.0f, false };
 		// Hair is the only category that hue-guards its chroma change by default.
 		CategoryStrengths hairStrengths{ 1.0f, 1.0f, 1.0f, true };
 		CategoryStrengths eyesStrengths;
@@ -288,6 +381,55 @@ struct NeuralRendering : Feature
 	Settings settings;
 
 	/**
+	 * @brief The values one preset writes into @ref Settings (see ApplyPreset()).
+	 *
+	 * Everything a preset owns and nothing else: Enable, Model Resolution, Alternate Frames,
+	 * Show Advanced and the runtime-only comparison aids are deliberately absent, so switching
+	 * preset never moves the frame's cost or hides a comparison the user set up.
+	 */
+	struct PresetValues
+	{
+		uint placement;
+		uint style;
+		float intensity;
+		float localToneStrength;
+		float localStructureStrength;
+		float skinStructureStrength;
+		bool automaticMask;
+		uint proxyCurve;
+		float colorStrength;
+		float transferStrength;
+		float broadLuminosity;
+		float detailLuminosity;
+		float bandRadius;
+		bool ratioGuardEnabled;
+		float maxRatio;
+		bool depthAwareResolve;
+		CategoryStrengthArray categories;
+	};
+
+	/** @brief The preset table, indexed by Preset. */
+	static const PresetValues& GetPreset(Preset a_preset);
+
+	/**
+	 * @brief Writes every value @p a_preset owns into @ref settings and records the choice.
+	 *
+	 * Style, Local Tone/Structure, Skin Structure, Automatic Mask and Intensity are latched
+	 * when Feature 18 is created, so the backend's debounced recreate picks the change up on
+	 * its own; nothing here has to tear the feature down.
+	 */
+	void ApplyPreset(Preset a_preset);
+
+	/**
+	 * @brief Whether @ref settings still match @p a_preset.
+	 *
+	 * Placement and NR Intensity are excluded: both are basic controls a user is expected to
+	 * move without leaving the preset (a Vanilla-Plus moved to Finished Image is still
+	 * Vanilla-Plus). Floats compare to 1e-4.
+	 */
+	bool MatchesPreset(Preset a_preset) const;
+
+	/**
 	 * Runtime-only comparison aids - never saved, so neither can be left on by accident
 	 * across sessions. See neural-rendering.md, "Comparison aids".
 	 */
@@ -295,9 +437,30 @@ struct NeuralRendering : Feature
 	{
 		bool wipe = false;          ///< Split screen: left of wipePosition shows the frame without Neural Rendering.
 		float wipePosition = 0.5f;  ///< Split position as a fraction of the frame width.
-		bool frameHold = false;     ///< Finished Image: keep re-evaluating one captured frame (see EvaluateFinishedImage).
+		/// Keep re-evaluating one captured frame instead of the live one, so tuning changes can
+		/// be judged on an identical image. Supported by Finished Image and After Upscaling.
+		bool frameHold = false;
 	};
 	CompareView compareView;
+
+	/**
+	 * Runtime-only diagnostics, never saved: the creation contract probe and the debug views
+	 * that measure it. See docs/development/neural-rendering.md, "Model contract probe".
+	 */
+	struct DebugState
+	{
+		uint modelContract = static_cast<uint>(ModelContract::kCurrent);
+		/// Hand the model exposed scene-linear light instead of a 0-1 proxy, and treat its
+		/// answer as linear in the same units. Only offered under contract C with HDR Display
+		/// redirecting the framebuffer; this is Step 0's C2/C3 input variant.
+		bool hdrLinearProxy = false;
+		bool guardClampView = false;     ///< Mark the pixels the ratio guard actually clamped.
+		bool broadBandView = false;      ///< Show the smooth half of the model's luminance edit.
+		bool detailBandView = false;     ///< Show the remainder.
+		bool swapModelOutputRB = false;  ///< Diagnostic for builds that return the answer as BGRA.
+		bool measurePeak = false;        ///< Read the model answer's peak luminance back each frame.
+	};
+	DebugState debugState;
 
 	NeuralRendering();
 	~NeuralRendering();
@@ -339,6 +502,20 @@ struct NeuralRendering : Feature
 	 * @return True after a successful evaluation; false does not imply the runtime is absent.
 	 */
 	bool IsFeatureAvailable() const;
+
+	/**
+	 * @brief Last read-back diagnostics from the resolve (Debug: Model Contract probe).
+	 *
+	 * Both are collected by DecodeColorCS into one small buffer and staged back a few frames
+	 * later, so they lag the screen slightly and are only updated while their toggle is on.
+	 */
+	struct DebugReadback
+	{
+		float modelPeakLuminance = 0.0f;   ///< Peak luminance of the model's answer, in model-space units.
+		float guardClampedPercent = 0.0f;  ///< Share of resolved pixels the ratio guard actually clamped.
+		bool valid = false;
+	};
+	DebugReadback GetDebugReadback() const;
 
 	/**
 	 * @brief Executes Neural Rendering on the current D3D11 immediate context.
@@ -608,11 +785,15 @@ private:
 		ID3D11Texture2D* a_colorOut);
 
 	/**
-	 * @brief Copies this frame's Finished Image colour, depth snapshot and category snapshot
-	 *        into the Frame Hold textures, (re)creating them to match.
+	 * @brief Copies this frame's colour, depth and category snapshot into the Frame Hold
+	 *        textures, (re)creating them to match.
+	 * @param a_colorIn The frame to hold, in whatever format its placement produces.
+	 * @param a_depth Depth guide to hold alongside it: Finished Image's pre-UpscaleDepth
+	 *        snapshot, or the live kMAIN depth for After Upscaling.
+	 * @param a_depthSRV SRV over @p a_depth, mirrored onto the copy.
 	 * @return False (the frame stays live) when a copy cannot be made.
 	 */
-	bool CaptureFrameHold(ID3D11Texture2D* a_colorIn);
+	bool CaptureFrameHold(ID3D11Texture2D* a_colorIn, ID3D11Texture2D* a_depth, ID3D11ShaderResourceView* a_depthSRV);
 
 	/** @brief Releases the Frame Hold textures and resets the model's history if a frame was held. */
 	void ReleaseFrameHold();
@@ -636,6 +817,41 @@ private:
 
 	/** @brief Draws one per-category strengths tree node in the settings UI. */
 	void DrawCategoryStrengths(const char* a_id, const char* a_label, CategoryStrengths& a_strengths, const char* a_tooltip = nullptr);
+
+	/** @brief Every per-category block of @ref settings in MaterialCategory order. */
+	std::array<CategoryStrengths*, kMaterialCategoryCount> CategorySettings();
+	std::array<const CategoryStrengths*, kMaterialCategoryCount> CategorySettings() const;
+
+	/**
+	 * @brief Whether HDR Display is loaded and actually redirecting the framebuffer.
+	 *
+	 * The single test that decides whether the HDR model contract and the HDR Linear proxy
+	 * are in play, for both presets; the same one Finished Image already uses to pick its
+	 * colour domain.
+	 */
+	bool IsHDRDisplayActive() const;
+
+	/** @brief The proxy curve to use this frame, after the HDR path's runtime override. */
+	ProxyCurve ResolveProxyCurve() const;
+
+	/**
+	 * @brief Whether kMAIN holds linear light this frame.
+	 *
+	 * Linear Lighting's setting, except on the flat world map, where Linear Lighting stands
+	 * down (the same test HDR Display's BuildHDRData applies).
+	 */
+	static bool IsLinearLightingActive();
+
+	/**
+	 * @brief The colour domain kMAIN is in for the pre-tonemap placements.
+	 *
+	 * Scene linear with Linear Lighting on. With it off kMAIN holds gamma-encoded values that
+	 * the vanilla tonemap writes straight out, so the proxy has to stop sRGB-encoding an
+	 * already-encoded frame and the resolve has to apply its ratio in decoded light
+	 * (ColorTransfer.hlsli, kNeuralColorDomainSceneGamma). Legacy is exempt: reproducing the
+	 * 2026-09-09 build means reproducing its encoding behaviour too.
+	 */
+	ColorDomain SceneColorDomain(ProxyCurve a_curve) const;
 
 	/** kMAIN-format output of the Before/After/Separate placements. */
 	Texture2D* outputTexture = nullptr;
@@ -671,6 +887,8 @@ private:
 	uint32_t heldGuideHeight = 0;
 	float heldGuideJitterX = 0.0f;
 	float heldGuideJitterY = 0.0f;
+	/// Placement the held frame was captured for; a hold never survives a placement change.
+	uint32_t heldPlacement = UINT_MAX;
 
 	/** Last vanilla tonemap pass inputs captured by CaptureDisplayTransform(). */
 	struct DisplayCapture

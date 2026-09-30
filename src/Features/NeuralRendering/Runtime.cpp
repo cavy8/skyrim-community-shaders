@@ -4,18 +4,29 @@
 #include "Utils/Format.h"
 #include "Utils/WinApi.h"
 
-#include <Windows.h>
 #include <Psapi.h>
+#include <Windows.h>
+#include <bcrypt.h>
 #include <d3d12.h>
+#include <dxgi.h>
 #include <nvsdk_ngx.h>
 
 #include <algorithm>
 #include <array>
 #include <cstring>
 #include <format>
+#include <fstream>
+#include <mutex>
+#include <set>
+#include <thread>
 #include <vector>
 
+#include <winrt/base.h>
+
 #include <nvsdk_ngx_helpers.h>
+
+// The DLL identity log line hashes nvngx_dlssnr.dll; bcrypt is not linked project-wide.
+#pragma comment(lib, "bcrypt.lib")
 
 namespace NeuralRenderingNGX
 {
@@ -47,7 +58,121 @@ namespace NeuralRenderingNGX
 		using CreateFeature = NVSDK_NGX_Result(NVSDK_CONV*)(ID3D12GraphicsCommandList*, NVSDK_NGX_Feature, NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**);
 		using EvaluateFeature = NVSDK_NGX_Result(NVSDK_CONV*)(ID3D12GraphicsCommandList*, const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter*, PFN_NVSDK_NGX_ProgressCallback);
 		using ReleaseFeature = NVSDK_NGX_Result(NVSDK_CONV*)(NVSDK_NGX_Handle*);
+		using GetFeatureRequirements = NVSDK_NGX_Result(NVSDK_CONV*)(IDXGIAdapter*,
+			const NVSDK_NGX_FeatureDiscoveryInfo*, NVSDK_NGX_FeatureRequirement*);
 		using GetModuleFileNameWFunction = DWORD(WINAPI*)(HMODULE, LPWSTR, DWORD);
+
+		/**
+		 * @brief Feature 18 creation flags and selectors, by NeuralRendering::ModelContract.
+		 *
+		 * Contract A is what every shipped build has used: no creation flags and no selectors
+		 * at all. B adds the auto-exposure and (zero-strength) sharpening flags the other
+		 * DLSS Neural Rendering projects set, C adds the HDR flag on top. B and C deliberately
+		 * do *not* add MVLowRes, so each step differs from the one before it in exactly the
+		 * thing being measured. See docs/development/neural-rendering.md.
+		 */
+		// The SDK marks DoSharpening deprecated; the value is what matters here, and naming
+		// the enumerator would raise a deprecation diagnostic on a build that treats them as
+		// errors. The three together are the 0x61 Open Shaders creates Feature 18 with.
+		constexpr unsigned int kCreateFlagIsHDR = 1u << 0;
+		constexpr unsigned int kCreateFlagDoSharpening = 1u << 5;
+		constexpr unsigned int kCreateFlagAutoExposure = 1u << 6;
+
+		constexpr std::uint32_t kModelContractCurrent = 0;
+		constexpr std::uint32_t kModelContractSdrAutoExposure = 1;
+		constexpr std::uint32_t kModelContractHdr = 2;
+
+		unsigned int ModelContractCreateFlags(std::uint32_t contract)
+		{
+			if (contract == kModelContractSdrAutoExposure)
+				return kCreateFlagDoSharpening | kCreateFlagAutoExposure;
+			if (contract == kModelContractHdr)
+				return kCreateFlagIsHDR | kCreateFlagDoSharpening | kCreateFlagAutoExposure;
+			return 0;
+		}
+
+		/**
+		 * @brief Writes the selectors that go with @p contract into @p parameters.
+		 *
+		 * Called at creation and again at every evaluation: the plan's B and C contracts state
+		 * Sharpness explicitly every frame so it cannot become a hidden variable, and the
+		 * exposure values are unit so the DLL's own adaptation is the only thing acting.
+		 * Contract A writes nothing, leaving the parameter block exactly as it has always been.
+		 */
+		void ApplyModelContractSelectors(NVSDK_NGX_Parameter* parameters, std::uint32_t contract)
+		{
+			if (contract == kModelContractCurrent)
+				return;
+			const bool hdr = contract == kModelContractHdr;
+			parameters->Set("DLSSNR.Hdr", hdr ? 1u : 0u);
+			parameters->Set("DLSSNR.SDR", hdr ? 0u : 1u);
+			parameters->Set("DLSSNR.AutoExposure", 1u);
+			parameters->Set("DLSSNR.InPreExposure", 1.0f);
+			parameters->Set("DLSSNR.InExposureScale", 1.0f);
+			parameters->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
+			parameters->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
+			// DoSharpening with a sharpness of zero should be a no-op; stating it every frame
+			// is what makes that true rather than assumed.
+			parameters->Set("DLSSNR.Sharpness", 0.0f);
+			parameters->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
+		}
+
+		/** @brief SHA-256 of a file, lower-case hex, or an empty string when it cannot be read. */
+		std::string FileSha256(const std::filesystem::path& path)
+		{
+			std::ifstream file(path, std::ios::binary);
+			if (!file)
+				return {};
+
+			BCRYPT_ALG_HANDLE algorithm = nullptr;
+			if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0)))
+				return {};
+			BCRYPT_HASH_HANDLE hash = nullptr;
+			std::string result;
+			if (BCRYPT_SUCCESS(BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0))) {
+				std::array<char, 64 * 1024> buffer{};
+				bool ok = true;
+				while (ok && file) {
+					file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+					const auto read = static_cast<ULONG>(file.gcount());
+					if (!read)
+						break;
+					ok = BCRYPT_SUCCESS(BCryptHashData(hash, reinterpret_cast<PUCHAR>(buffer.data()), read, 0));
+				}
+				std::array<unsigned char, 32> digest{};
+				if (ok && BCRYPT_SUCCESS(BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0))) {
+					result.reserve(digest.size() * 2);
+					for (const auto byte : digest)
+						result += std::format("{:02x}", byte);
+				}
+				BCryptDestroyHash(hash);
+			}
+			BCryptCloseAlgorithmProvider(algorithm, 0);
+			return result;
+		}
+
+		/**
+		 * @brief Logs the SHA-256 of @p path from a worker thread, once per file per session.
+		 *
+		 * Output channel order and behaviour differ between builds carrying the same 310.8
+		 * version, so the hash - not the version - is what identifies one. The DLL is well over
+		 * 100 MB and Probe() runs again on every runtime initialisation, so hashing inline would
+		 * stall the calling (render) thread each time.
+		 */
+		void LogRuntimeHashAsync(const std::filesystem::path& path)
+		{
+			static std::mutex mutex;
+			static std::set<std::filesystem::path> hashed;
+			{
+				std::scoped_lock lock(mutex);
+				if (!hashed.insert(path).second)
+					return;
+			}
+			std::thread([path] {
+				const auto hash = FileSha256(path);
+				logger::info("[DLSSNR] Runtime {} sha256={}", path.filename().string(), hash.empty() ? "unavailable" : hash);
+			}).detach();
+		}
 
 		GetModuleFileNameWFunction g_originalGetModuleFileNameW = nullptr;
 		HMODULE g_callerModule = nullptr;
@@ -189,22 +314,32 @@ namespace NeuralRenderingNGX
 		NVSDK_NGX_PerfQuality_Value ToPerfQuality(std::uint32_t qualityMode)
 		{
 			switch (qualityMode) {
-			case 0: return NVSDK_NGX_PerfQuality_Value_DLAA;
-			case 2: return NVSDK_NGX_PerfQuality_Value_Balanced;
-			case 3: return NVSDK_NGX_PerfQuality_Value_MaxPerf;
-			case 4: return NVSDK_NGX_PerfQuality_Value_UltraPerformance;
-			default: return NVSDK_NGX_PerfQuality_Value_MaxQuality;
+			case 0:
+				return NVSDK_NGX_PerfQuality_Value_DLAA;
+			case 2:
+				return NVSDK_NGX_PerfQuality_Value_Balanced;
+			case 3:
+				return NVSDK_NGX_PerfQuality_Value_MaxPerf;
+			case 4:
+				return NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+			default:
+				return NVSDK_NGX_PerfQuality_Value_MaxQuality;
 			}
 		}
 
 		NVSDK_NGX_DLSS_Hint_Render_Preset ToRenderPreset(std::uint32_t preset)
 		{
 			switch (preset) {
-			case 1: return NVSDK_NGX_DLSS_Hint_Render_Preset_J;
-			case 2: return NVSDK_NGX_DLSS_Hint_Render_Preset_K;
-			case 3: return NVSDK_NGX_DLSS_Hint_Render_Preset_L;
-			case 4: return NVSDK_NGX_DLSS_Hint_Render_Preset_M;
-			default: return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
+			case 1:
+				return NVSDK_NGX_DLSS_Hint_Render_Preset_J;
+			case 2:
+				return NVSDK_NGX_DLSS_Hint_Render_Preset_K;
+			case 3:
+				return NVSDK_NGX_DLSS_Hint_Render_Preset_L;
+			case 4:
+				return NVSDK_NGX_DLSS_Hint_Render_Preset_M;
+			default:
+				return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
 			}
 		}
 
@@ -276,8 +411,68 @@ namespace NeuralRenderingNGX
 		}
 		applicationId_ = getAppId();
 		apiVersion_ = getApi();
+
+		// Identity of the exact DLL in use. Output channel order and behaviour differ between
+		// 310.8 builds, so a bug report is only actionable with the hash in the log; it is
+		// also what a per-build note would key off. The hash follows on its own line.
+		logger::info("[DLSSNR] Runtime {} version={} appId=0x{:08X} api=0x{:X}",
+			path_.filename().string(), version_, applicationId_, apiVersion_);
+		LogRuntimeHashAsync(path_);
+		// Whether this build exposes the capability query at all. The D3D12 form returns
+		// support, minimum architecture and minimum OS - not the creation flags it would
+		// accept, which the NGX API has no way to report. The Model Contract probe in the
+		// settings UI is what actually answers the HDR question.
+		hasFeatureRequirements_ = GetProcAddress(static_cast<HMODULE>(module_),
+									  "NVSDK_NGX_D3D12_GetFeatureRequirements") != nullptr;
+		logger::info("[DLSSNR] GetFeatureRequirements export {}",
+			hasFeatureRequirements_ ? "present" : "absent");
+
 		status_ = RuntimeStatus::Ready;
 		return true;
+	}
+
+	void Runtime::LogFeatureRequirements(ID3D12Device* device)
+	{
+		if (!hasFeatureRequirements_ || featureRequirementsLogged_ || !device || !module_)
+			return;
+		featureRequirementsLogged_ = true;
+
+		auto query = reinterpret_cast<GetFeatureRequirements>(
+			GetProcAddress(static_cast<HMODULE>(module_), "NVSDK_NGX_D3D12_GetFeatureRequirements"));
+		if (!query)
+			return;
+
+		// The query is per adapter, so recover the one this private D3D12 device runs on.
+		winrt::com_ptr<IDXGIFactory1> factory;
+		if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.put()))))
+			return;
+		const auto luid = device->GetAdapterLuid();
+		winrt::com_ptr<IDXGIAdapter> adapter;
+		for (UINT index = 0; factory->EnumAdapters(index, adapter.put()) != DXGI_ERROR_NOT_FOUND; ++index) {
+			DXGI_ADAPTER_DESC desc{};
+			if (SUCCEEDED(adapter->GetDesc(&desc)) && desc.AdapterLuid.LowPart == luid.LowPart &&
+				desc.AdapterLuid.HighPart == luid.HighPart)
+				break;
+			adapter = nullptr;
+		}
+		if (!adapter)
+			return;
+
+		NVSDK_NGX_FeatureDiscoveryInfo discovery{};
+		discovery.SDKVersion = NVSDK_NGX_Version_API;
+		discovery.FeatureID = kFeatureDlssNr;
+		discovery.Identifier.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Application_Id;
+		discovery.Identifier.v.ApplicationId = applicationId_;
+		NVSDK_NGX_FeatureRequirement requirement{};
+		const auto result = query(adapter.get(), &discovery, &requirement);
+		if (result != NVSDK_NGX_Result_Success) {
+			logger::info("[DLSSNR] GetFeatureRequirements(18) failed 0x{:08X}", static_cast<std::uint32_t>(result));
+			return;
+		}
+		requirement.MinOSVersion[std::size(requirement.MinOSVersion) - 1] = '\0';
+		logger::info("[DLSSNR] Feature 18 requirements: support=0x{:X} minArchitecture=0x{:X} minOS={}",
+			static_cast<std::uint32_t>(requirement.FeatureSupported), requirement.MinHWArchitecture,
+			requirement.MinOSVersion);
 	}
 
 	bool Runtime::Initialize(ID3D12Device* device, const std::filesystem::path& dataPath)
@@ -361,6 +556,7 @@ namespace NeuralRenderingNGX
 		}
 		parameters_ = parameters;
 		status_ = RuntimeStatus::Initialized;
+		LogFeatureRequirements(device);
 		return true;
 	}
 
@@ -418,6 +614,15 @@ namespace NeuralRenderingNGX
 			parameters->Set("DLSSNR.SkinStructureStrength", tuning.skinStructureStrength);
 			parameters->Set("DLSSNR.UseAutoMask", tuning.useAutoMask ? 1u : 0u);
 			parameters->Set("DLSSNR.UICorrection", tuning.uiCorrection ? 1u : 0u);
+			// Creation flags are latched here and nowhere else. Contract A sets none, which
+			// is what every shipped build has done; the parameter is written under both the
+			// documented DLSS name and the snippet's own prefix because Feature 18's is
+			// undocumented and setting an unread key costs nothing.
+			if (const auto createFlags = ModelContractCreateFlags(tuning.modelContract)) {
+				parameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, createFlags);
+				parameters->Set("DLSSNR.Feature.Create.Flags", createFlags);
+			}
+			ApplyModelContractSelectors(parameters, tuning.modelContract);
 			NVSDK_NGX_Handle* handle = nullptr;
 			ngxResult_ = static_cast<std::uint32_t>(create(commandList, kFeatureDlssNr, parameters, &handle));
 			if (ngxResult_ != NVSDK_NGX_Result_Success || !handle) {
@@ -472,6 +677,9 @@ namespace NeuralRenderingNGX
 		parameters->Set("DLSSNR.UseAutoMask", tuning.useAutoMask ? 1u : 0u);
 		parameters->Set("DLSSNR.Style", tuning.style);
 		parameters->Set("DLSSNR.UICorrection", tuning.uiCorrection ? 1u : 0u);
+		// Reset() cleared the block, so the contract's selectors are restated here too;
+		// Sharpness in particular is meant to be set every frame (see the function).
+		ApplyModelContractSelectors(parameters, tuning.modelContract);
 		ngxResult_ = static_cast<std::uint32_t>(evaluate(commandList,
 			static_cast<NVSDK_NGX_Handle*>(featureHandle_), parameters, nullptr));
 		if (ngxResult_ != NVSDK_NGX_Result_Success) {
@@ -632,7 +840,8 @@ namespace NeuralRenderingNGX
 			HMODULE core = FindNgxCoreModule();
 			if (core) {
 				auto destroy = reinterpret_cast<DestroyParameters>(GetProcAddress(core, "NVSDK_NGX_D3D12_DestroyParameters"));
-				if (destroy && parameters_) destroy(static_cast<NVSDK_NGX_Parameter*>(parameters_));
+				if (destroy && parameters_)
+					destroy(static_cast<NVSDK_NGX_Parameter*>(parameters_));
 				if (destroy && superResolutionParameters_)
 					destroy(static_cast<NVSDK_NGX_Parameter*>(superResolutionParameters_));
 			}
@@ -648,12 +857,15 @@ namespace NeuralRenderingNGX
 			device_->Release();
 			device_ = nullptr;
 		}
-		if (module_) FreeLibrary(static_cast<HMODULE>(module_));
+		if (module_)
+			FreeLibrary(static_cast<HMODULE>(module_));
 		module_ = nullptr;
 		status_ = RuntimeStatus::NotProbed;
 		path_.clear();
 		version_.clear();
 		detail_.clear();
+		hasFeatureRequirements_ = false;
+		featureRequirementsLogged_ = false;
 		ngxResult_ = applicationId_ = apiVersion_ = 0;
 		successfulFrames_ = 0;
 	}
@@ -661,17 +873,28 @@ namespace NeuralRenderingNGX
 	const char* ToString(RuntimeStatus status)
 	{
 		switch (status) {
-		case RuntimeStatus::NotProbed: return "not-probed";
-		case RuntimeStatus::NotFound: return "not-found";
-		case RuntimeStatus::VersionUnavailable: return "version-unavailable";
-		case RuntimeStatus::UnsupportedVersion: return "unsupported-version";
-		case RuntimeStatus::LoadFailed: return "load-failed";
-		case RuntimeStatus::MissingExport: return "missing-export";
-		case RuntimeStatus::Ready: return "ready";
-		case RuntimeStatus::InitializationFailed: return "initialization-failed";
-		case RuntimeStatus::CoreUnavailable: return "core-unavailable";
-		case RuntimeStatus::ParameterAllocationFailed: return "parameter-allocation-failed";
-		case RuntimeStatus::Initialized: return "initialized";
+		case RuntimeStatus::NotProbed:
+			return "not-probed";
+		case RuntimeStatus::NotFound:
+			return "not-found";
+		case RuntimeStatus::VersionUnavailable:
+			return "version-unavailable";
+		case RuntimeStatus::UnsupportedVersion:
+			return "unsupported-version";
+		case RuntimeStatus::LoadFailed:
+			return "load-failed";
+		case RuntimeStatus::MissingExport:
+			return "missing-export";
+		case RuntimeStatus::Ready:
+			return "ready";
+		case RuntimeStatus::InitializationFailed:
+			return "initialization-failed";
+		case RuntimeStatus::CoreUnavailable:
+			return "core-unavailable";
+		case RuntimeStatus::ParameterAllocationFailed:
+			return "parameter-allocation-failed";
+		case RuntimeStatus::Initialized:
+			return "initialized";
 		}
 		return "unknown";
 	}

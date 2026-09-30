@@ -8,9 +8,12 @@
 #include "Utils/D3D.h"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <iterator>
 #include <utility>
+#include <vector>
 
 #include <d3d11.h>
 #include <d3d12.h>
@@ -22,7 +25,7 @@
 
 namespace
 {
-	/// Shared by EncodeColorCS and DecodeColorCS (register b0).
+	/// Shared by every transfer pass (register b0); mirrored by NeuralRendering/TransferParams.hlsli.
 	struct alignas(16) TransferParams
 	{
 		float jitterOffset[2]{};  ///< Sub-pixel projection offset of the colour raster, in render pixels.
@@ -33,26 +36,47 @@ namespace
 		std::uint32_t guideSize[2]{};         ///< Depth guide active region, in guide texels.
 		std::uint32_t depthAwareResolve = 0;  ///< Non-zero: fade the edit across depth silhouettes in the decode.
 		std::uint32_t staleAnswer = 0;        ///< Non-zero: the decode reprojects the previous frame's answer.
-		std::uint32_t hueGuardMask = 0;  ///< Bit i set: category i (NeuralRendering::MaterialCategory) hue-guards its chroma change.
-		float guideJitterOffset[2]{};   ///< Projection offset of the guide rasters relative to the colour raster, in guide texels.
-		std::uint32_t colorDomain = 0;  ///< NeuralRendering::ColorDomain: how the colour input is encoded.
+		std::uint32_t hueGuardMask = 0;       ///< Bit i set: category i (NeuralRendering::MaterialCategory) hue-guards its chroma change.
+		float guideJitterOffset[2]{};         ///< Projection offset of the guide rasters relative to the colour raster, in guide texels.
+		std::uint32_t colorDomain = 0;        ///< NeuralRendering::ColorDomain: how the colour input is encoded.
 		float categoryColorStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		float categoryTransferStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		float categoryLuminosityStrengths[8]{ 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 		// Display transform of the scene-linear proxy (ColorTransfer.hlsli, MakeNeuralDisplayTransform).
-		float displayParam[4]{};                      ///< x vanilla grading on/off, y ISHDR Param.y, z ISHDR Param.z.
+		float displayParam[4]{};                              ///< x vanilla grading on/off, y ISHDR Param.y, z ISHDR Param.z.
 		float displayCinematic[4]{ 1.0f, 0.0f, 1.0f, 1.0f };  ///< ISHDR Cinematic.
 		float displayTint[4]{ 1.0f, 1.0f, 1.0f, 0.0f };       ///< ISHDR Tint.
 		float displayExposure[4]{ 0.0f, 0.18f, 0.0f, 1.0f };  ///< x Post Processing exposure on/off, y scale, zw range.
-		float luminosityStrength = 1.0f;  ///< Overall multiplier on the model's luminance change alone.
+		/// Multiplier on the smooth half of the model's luminance change. This is the slot the
+		/// single Luminosity Strength used to occupy, and with Detail equal to it the maths is
+		/// identical, so an upgraded config resolves to exactly the same edit.
+		float broadLuminosity = 1.0f;
 		std::uint32_t debugCategoryView = 0;  ///< Non-zero: the decode renders the classified category, not the model's edit.
 		float maxRatio = 2.0f;                ///< Two-sided guard on the model/proxy luminance ratio (1/maxRatio..maxRatio).
 		std::uint32_t rawModelOutput = 0;     ///< Non-zero: the decode writes Feature 18's answer directly (Finished Image diagnostic).
 		float highlightWhite = 0.0f;          ///< Display gamma: display peak for the HDR highlight shoulder; 0 = none.
 		float wipePosition = -1.0f;           ///< Split-screen comparison split (fraction of the width); negative = off.
-		std::uint32_t reserved[2]{};
+		std::uint32_t proxyCurve = 0;         ///< NeuralRendering::ProxyCurve: how the scene-linear proxy is built.
+		std::uint32_t debugFlags = 0;         ///< kNeuralDebug* bits (ColorTransfer.hlsli).
+		/// x Detail Luminosity, y band radius in model texels, z band data present, w spare.
+		float bandParams[4]{ 1.0f, 8.0f, 0.0f, 0.0f };
 	};
-	static_assert(sizeof(TransferParams) == 256);
+	static_assert(sizeof(TransferParams) == 272);
+
+	/// kNeuralDebug* in ColorTransfer.hlsli; keep the two in sync.
+	constexpr std::uint32_t kDebugFlagGuardClamp = 1u << 0;
+	constexpr std::uint32_t kDebugFlagBroadBand = 1u << 1;
+	constexpr std::uint32_t kDebugFlagDetailBand = 1u << 2;
+	constexpr std::uint32_t kDebugFlagSwapOutputRB = 1u << 3;
+	constexpr std::uint32_t kDebugFlagStats = 1u << 4;
+
+	/// DebugStats slots, matching DecodeColorCS's RWStructuredBuffer<uint>.
+	constexpr std::uint32_t kDebugStatClampedSamples = 0;
+	constexpr std::uint32_t kDebugStatSamples = 1;
+	constexpr std::uint32_t kDebugStatPeakBits = 2;
+	constexpr std::uint32_t kDebugStatCount = 4;
+	/// Frames the staged readback trails the GPU by, so a Map never waits on it.
+	constexpr std::size_t kDebugReadbackFrames = 3;
 
 	constexpr float kMinimumResolutionScale = 0.25f;
 	/// Native. Supersampling the model (scale above one) was removed: it cost the
@@ -95,6 +119,8 @@ namespace
 
 	constexpr const wchar_t* kEncodeColorPath = L"Data\\Shaders\\NeuralRendering\\EncodeColorCS.hlsl";
 	constexpr const wchar_t* kDecodeColorPath = L"Data\\Shaders\\NeuralRendering\\DecodeColorCS.hlsl";
+	constexpr const wchar_t* kPrepareToneDataPath = L"Data\\Shaders\\NeuralRendering\\PrepareToneDataCS.hlsl";
+	constexpr const wchar_t* kFilterToneDataPath = L"Data\\Shaders\\NeuralRendering\\FilterToneDataCS.hlsl";
 	constexpr const wchar_t* kCopyDepthGuidePath = L"Data\\Shaders\\NeuralRendering\\CopyDepthGuideCS.hlsl";
 	constexpr const wchar_t* kEncodeResidualPath = L"Data\\Shaders\\NeuralRendering\\EncodeResidualCS.hlsl";
 	constexpr const wchar_t* kApplyResidualPath = L"Data\\Shaders\\NeuralRendering\\ApplyResidualCS.hlsl";
@@ -158,6 +184,9 @@ struct NeuralRenderingBackend::State
 	winrt::com_ptr<ID3D11ComputeShader> copyDepthGuideCS;
 	winrt::com_ptr<ID3D11ComputeShader> encodeResidualCS;
 	winrt::com_ptr<ID3D11ComputeShader> applyResidualCS;
+	winrt::com_ptr<ID3D11ComputeShader> prepareToneDataCS;
+	winrt::com_ptr<ID3D11ComputeShader> filterToneDataHorizontalCS;
+	winrt::com_ptr<ID3D11ComputeShader> filterToneDataVerticalCS;
 	winrt::com_ptr<ID3D11Buffer> transferParamsCB;
 	/// Linear clamp sampler for the jitter-compensating resample in both colour passes.
 	winrt::com_ptr<ID3D11SamplerState> linearClampSampler;
@@ -166,6 +195,41 @@ struct NeuralRenderingBackend::State
 	bool copyDepthGuideAttempted = false;
 	bool encodeResidualAttempted = false;
 	bool applyResidualAttempted = false;
+	bool prepareToneDataAttempted = false;
+	bool filterToneDataHorizontalAttempted = false;
+	bool filterToneDataVerticalAttempted = false;
+
+	/**
+	 * Band split scratch, at the model raster and private to D3D11 (never shared with D3D12).
+	 * `toneData` holds (log2 proxy luminance, the edit in stops) from PrepareToneDataCS; the
+	 * horizontal filter writes `toneScratch` and the vertical one writes back into `toneData`,
+	 * which is what the decode then samples. Two textures are enough because no pass ever
+	 * reads the target it is writing.
+	 */
+	winrt::com_ptr<ID3D11Texture2D> toneData;
+	winrt::com_ptr<ID3D11ShaderResourceView> toneDataSRV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> toneDataUAV;
+	winrt::com_ptr<ID3D11Texture2D> toneScratch;
+	winrt::com_ptr<ID3D11ShaderResourceView> toneScratchSRV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> toneScratchUAV;
+	std::uint32_t toneWidth = 0;
+	std::uint32_t toneHeight = 0;
+	/// True once the band passes have written data for the live model raster; cleared whenever
+	/// the textures are (re)built, so the first decode after a resize never reads noise.
+	bool toneDataValid = false;
+	bool loggedToneFailure = false;
+
+	/**
+	 * Debug readback (Model Contract probe): DecodeColorCS accumulates a clamp count, a sample
+	 * count and a peak into `debugStats`, which is copied into a small ring of staging buffers
+	 * and mapped kDebugReadbackFrames later, so the CPU never waits on the GPU.
+	 */
+	winrt::com_ptr<ID3D11Buffer> debugStats;
+	winrt::com_ptr<ID3D11UnorderedAccessView> debugStatsUAV;
+	std::array<winrt::com_ptr<ID3D11Buffer>, kDebugReadbackFrames> debugStaging;
+	std::array<bool, kDebugReadbackFrames> debugStagingPending{};
+	std::size_t debugStagingSlot = 0;
+	NeuralRenderingBackend::DebugReadback debugReadback{};
 
 	/// SRV over the Feature 18 output, consumed by the colour decode pass.
 	winrt::com_ptr<ID3D11ShaderResourceView> outputSRV;
@@ -280,11 +344,12 @@ struct NeuralRenderingBackend::State
 	}
 
 	ID3D11ComputeShader* GetShader(winrt::com_ptr<ID3D11ComputeShader>& slot, bool& attempted,
-		const wchar_t* path, const char* label)
+		const wchar_t* path, const char* label,
+		const std::vector<std::pair<const char*, const char*>>& defines = {})
 	{
 		if (!attempted) {
 			attempted = true;
-			slot.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(path, {}, "cs_5_0")));
+			slot.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(path, defines, "cs_5_0")));
 			if (slot)
 				Util::SetResourceName(slot.get(), "NeuralRendering::%s", label);
 			else if (!loggedShaderFailure) {
@@ -498,6 +563,180 @@ struct NeuralRenderingBackend::State
 		return true;
 	}
 
+	/**
+	 * @brief Allocates the two band-split scratch textures at the model raster.
+	 *
+	 * Private to D3D11: nothing here is shared with D3D12, so these are ordinary textures
+	 * rather than interop allocations. A failure is logged once and turns the split off for
+	 * the session rather than failing the frame - the resolve falls back to the unsplit edit,
+	 * which is what equal Broad/Detail values produce anyway.
+	 *
+	 * @return False when the textures are unavailable; the caller must then leave the band
+	 *         data flagged absent.
+	 */
+	bool EnsureToneResources(std::uint32_t modelWidth, std::uint32_t modelHeight)
+	{
+		if (toneData && toneScratch && toneWidth == modelWidth && toneHeight == modelHeight)
+			return true;
+		if (loggedToneFailure)
+			return false;
+
+		toneData = nullptr;
+		toneDataSRV = nullptr;
+		toneDataUAV = nullptr;
+		toneScratch = nullptr;
+		toneScratchSRV = nullptr;
+		toneScratchUAV = nullptr;
+		toneWidth = 0;
+		toneHeight = 0;
+		toneDataValid = false;
+		if (!modelWidth || !modelHeight)
+			return false;
+
+		D3D11_TEXTURE2D_DESC desc{};
+		desc.Width = modelWidth;
+		desc.Height = modelHeight;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		// Half precision resolves about 0.01 stops, far finer than the edit it carries.
+		desc.Format = DXGI_FORMAT_R16G16_FLOAT;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+		auto* device = globals::d3d::device;
+		const auto create = [&](winrt::com_ptr<ID3D11Texture2D>& texture,
+								winrt::com_ptr<ID3D11ShaderResourceView>& srv,
+								winrt::com_ptr<ID3D11UnorderedAccessView>& uav, const char* name) {
+			if (FAILED(device->CreateTexture2D(&desc, nullptr, texture.put())))
+				return false;
+			Util::SetResourceName(texture.get(), "NeuralRendering::%s", name);
+			D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+			srvDesc.Format = desc.Format;
+			srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+			srvDesc.Texture2D.MipLevels = 1;
+			if (FAILED(device->CreateShaderResourceView(texture.get(), &srvDesc, srv.put())))
+				return false;
+			Util::SetResourceName(srv.get(), "NeuralRendering::%s SRV", name);
+			D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+			uavDesc.Format = desc.Format;
+			uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+			if (FAILED(device->CreateUnorderedAccessView(texture.get(), &uavDesc, uav.put())))
+				return false;
+			Util::SetResourceName(uav.get(), "NeuralRendering::%s UAV", name);
+			return true;
+		};
+
+		if (!create(toneData, toneDataSRV, toneDataUAV, "ToneData") ||
+			!create(toneScratch, toneScratchSRV, toneScratchUAV, "ToneScratch")) {
+			loggedToneFailure = true;
+			logger::warn("[NeuralRendering] Broad/Detail Luminosity disabled: band textures could not be created at {}x{}",
+				modelWidth, modelHeight);
+			toneData = nullptr;
+			toneDataSRV = nullptr;
+			toneDataUAV = nullptr;
+			toneScratch = nullptr;
+			toneScratchSRV = nullptr;
+			toneScratchUAV = nullptr;
+			return false;
+		}
+
+		toneWidth = modelWidth;
+		toneHeight = modelHeight;
+		return true;
+	}
+
+	/** @brief Allocates the debug statistics buffer and its readback ring on first use. */
+	bool EnsureDebugStats()
+	{
+		if (debugStats && debugStatsUAV)
+			return true;
+
+		auto* device = globals::d3d::device;
+		D3D11_BUFFER_DESC desc{};
+		desc.ByteWidth = kDebugStatCount * sizeof(std::uint32_t);
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+		desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+		desc.StructureByteStride = sizeof(std::uint32_t);
+		if (FAILED(device->CreateBuffer(&desc, nullptr, debugStats.put()))) {
+			debugStats = nullptr;
+			return false;
+		}
+		Util::SetResourceName(debugStats.get(), "NeuralRendering::DebugStats");
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+		uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+		uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+		uavDesc.Buffer.NumElements = kDebugStatCount;
+		if (FAILED(device->CreateUnorderedAccessView(debugStats.get(), &uavDesc, debugStatsUAV.put()))) {
+			debugStats = nullptr;
+			debugStatsUAV = nullptr;
+			return false;
+		}
+		Util::SetResourceName(debugStatsUAV.get(), "NeuralRendering::DebugStats UAV");
+
+		D3D11_BUFFER_DESC stagingDesc{};
+		stagingDesc.ByteWidth = desc.ByteWidth;
+		stagingDesc.Usage = D3D11_USAGE_STAGING;
+		stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		for (auto& staging : debugStaging) {
+			if (FAILED(device->CreateBuffer(&stagingDesc, nullptr, staging.put()))) {
+				debugStats = nullptr;
+				debugStatsUAV = nullptr;
+				for (auto& slot : debugStaging)
+					slot = nullptr;
+				return false;
+			}
+			Util::SetResourceName(staging.get(), "NeuralRendering::DebugStats Readback");
+		}
+		debugStagingPending.fill(false);
+		debugStagingSlot = 0;
+		return true;
+	}
+
+	/**
+	 * @brief Reads the oldest queued statistics copy and queues this frame's.
+	 *
+	 * The ring is kDebugReadbackFrames deep, so the slot being mapped was written that many
+	 * frames ago and the map never blocks; D3D11_MAP_FLAG_DO_NOT_WAIT covers the case where it
+	 * would anyway. The counters are cleared afterwards, before the decode that fills them.
+	 */
+	void ServiceDebugReadback(ID3D11DeviceContext* context, bool enabled)
+	{
+		if (!enabled) {
+			debugReadback = {};
+			debugStagingPending.fill(false);
+			return;
+		}
+		if (!EnsureDebugStats())
+			return;
+
+		auto& slot = debugStaging[debugStagingSlot];
+		if (debugStagingPending[debugStagingSlot]) {
+			D3D11_MAPPED_SUBRESOURCE mapped{};
+			if (SUCCEEDED(context->Map(slot.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped)) && mapped.pData) {
+				const auto* values = static_cast<const std::uint32_t*>(mapped.pData);
+				const auto samples = values[kDebugStatSamples];
+				debugReadback.guardClampedPercent = samples ?
+				                                        100.0f * static_cast<float>(values[kDebugStatClampedSamples]) / static_cast<float>(samples) :
+				                                        0.0f;
+				debugReadback.modelPeakLuminance = std::bit_cast<float>(values[kDebugStatPeakBits]);
+				debugReadback.valid = samples != 0;
+				context->Unmap(slot.get(), 0);
+				debugStagingPending[debugStagingSlot] = false;
+			}
+		}
+
+		// Take this frame's counters before clearing them for the decode that follows.
+		context->CopyResource(slot.get(), debugStats.get());
+		debugStagingPending[debugStagingSlot] = true;
+		debugStagingSlot = (debugStagingSlot + 1) % kDebugReadbackFrames;
+
+		const UINT clearValues[4]{ 0, 0, 0, 0 };
+		context->ClearUnorderedAccessViewUint(debugStatsUAV.get(), clearValues);
+	}
+
 	ID3D11ShaderResourceView* GetColorInSRV(ID3D11Device* device, ID3D11Resource* resource)
 	{
 		if (colorInSRV && colorInSRVSource == resource)
@@ -601,31 +840,40 @@ struct NeuralRenderingBackend::State
 		return colorOutUAV.get();
 	}
 
-	/// Most SRVs any transfer pass binds (DecodeColorCS: t0-t7).
-	static constexpr std::size_t kMaxTransferSources = 8;
+	/// Most SRVs any transfer pass binds (DecodeColorCS: t0-t8).
+	static constexpr std::size_t kMaxTransferSources = 9;
+	/// The colour destination, plus the decode's optional debug-stats buffer.
+	static constexpr std::size_t kMaxTransferDestinations = 2;
 
-	/// Runs a single-UAV compute pass over the given extent with @p sources bound from t0 upwards, and unbinds afterwards.
+	/**
+	 * Runs one compute pass over the given extent with @p sources bound from t0 upwards, and
+	 * unbinds everything afterwards.
+	 *
+	 * @param destination u0. @param statistics u1, or null when the pass writes no statistics.
+	 */
 	static void DispatchTransfer(ID3D11DeviceContext* context, ID3D11ComputeShader* shader,
 		std::initializer_list<ID3D11ShaderResourceView*> sources,
 		ID3D11UnorderedAccessView* destination,
 		ID3D11Buffer* constants, ID3D11SamplerState* sampler,
-		std::uint32_t width, std::uint32_t height)
+		std::uint32_t width, std::uint32_t height,
+		ID3D11UnorderedAccessView* statistics = nullptr)
 	{
 		ID3D11ShaderResourceView* boundSources[kMaxTransferSources]{};
 		std::copy_n(sources.begin(), std::min(sources.size(), kMaxTransferSources), boundSources);
+		ID3D11UnorderedAccessView* boundDestinations[kMaxTransferDestinations]{ destination, statistics };
 		context->CSSetShader(shader, nullptr, 0);
 		context->CSSetShaderResources(0, static_cast<UINT>(kMaxTransferSources), boundSources);
-		context->CSSetUnorderedAccessViews(0, 1, &destination, nullptr);
+		context->CSSetUnorderedAccessViews(0, static_cast<UINT>(kMaxTransferDestinations), boundDestinations, nullptr);
 		context->CSSetConstantBuffers(0, 1, &constants);
 		context->CSSetSamplers(0, 1, &sampler);
 		context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 
 		ID3D11ShaderResourceView* nullSRVs[kMaxTransferSources]{};
-		ID3D11UnorderedAccessView* nullUAV = nullptr;
+		ID3D11UnorderedAccessView* nullUAVs[kMaxTransferDestinations]{};
 		ID3D11Buffer* nullCB = nullptr;
 		ID3D11SamplerState* nullSampler = nullptr;
 		context->CSSetShaderResources(0, static_cast<UINT>(std::size(nullSRVs)), nullSRVs);
-		context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+		context->CSSetUnorderedAccessViews(0, static_cast<UINT>(std::size(nullUAVs)), nullUAVs, nullptr);
 		context->CSSetConstantBuffers(0, 1, &nullCB);
 		context->CSSetSamplers(0, 1, &nullSampler);
 		context->CSSetShader(nullptr, nullptr, 0);
@@ -637,7 +885,8 @@ struct NeuralRenderingBackend::State
 		                      inputs.colorIn != inputs.motionVectors && inputs.colorOut != inputs.depth &&
 		                      inputs.colorOut != inputs.motionVectors && inputs.depth != inputs.motionVectors;
 		const bool finite = std::isfinite(inputs.intensity) && std::isfinite(inputs.colorStrength) &&
-		                    std::isfinite(inputs.transferStrength) && std::isfinite(inputs.luminosityStrength) &&
+		                    std::isfinite(inputs.transferStrength) && std::isfinite(inputs.broadLuminosity) &&
+		                    std::isfinite(inputs.detailLuminosity) && std::isfinite(inputs.bandRadius) &&
 		                    std::isfinite(inputs.maxRatio) && std::isfinite(inputs.highlightWhite) &&
 		                    std::isfinite(inputs.wipePosition) &&
 		                    std::isfinite(inputs.jitterOffsetX) && std::isfinite(inputs.jitterOffsetY) &&
@@ -815,6 +1064,7 @@ struct NeuralRenderingBackend::State
 		desiredTuning.style = inputs.style;
 		desiredTuning.useAutoMask = inputs.automaticMask;
 		desiredTuning.uiCorrection = false;  // Cav's Unity Shaders never runs Neural Rendering after the UI composite.
+		desiredTuning.modelContract = inputs.modelContract <= 2u ? inputs.modelContract : 0u;
 		if (SettleTuning(desiredTuning)) {
 			if (!interop.WaitForIdle())
 				return LatchFailure("tuning change", interop.LastError());
@@ -894,7 +1144,8 @@ struct NeuralRenderingBackend::State
 		transferParams.staleAnswer = skipFrame ? 1u : 0u;
 		// Only 0 (scene linear) and 1 (display gamma) exist; anything else falls back to the
 		// original scene-linear behaviour rather than an undefined shader branch.
-		transferParams.colorDomain = inputs.colorDomain <= 1u ? inputs.colorDomain : 0u;
+		transferParams.colorDomain = inputs.colorDomain <= 2u ? inputs.colorDomain : 0u;
+		transferParams.proxyCurve = inputs.proxyCurve <= 3u ? inputs.proxyCurve : 0u;
 		// Display transform of the scene-linear proxy. A stage whose GPU input is missing is
 		// switched off here rather than left to read an unbound slot.
 		const auto& display = inputs.display;
@@ -908,7 +1159,39 @@ struct NeuralRenderingBackend::State
 		transferParams.displayExposure[1] = display.postProcessExposureScale;
 		transferParams.displayExposure[2] = display.postProcessAdaptationRange[0];
 		transferParams.displayExposure[3] = display.postProcessAdaptationRange[1];
-		transferParams.luminosityStrength = std::clamp(inputs.luminosityStrength, 0.0f, 2.0f);
+		// The band split only exists while the two strengths differ; equal values take the
+		// single-exponent path in the resolve, so the extra passes and textures are skipped.
+		transferParams.broadLuminosity = std::clamp(inputs.broadLuminosity, 0.0f, 2.0f);
+		transferParams.bandParams[0] = std::clamp(inputs.detailLuminosity, 0.0f, 2.0f);
+		transferParams.bandParams[1] = std::clamp(inputs.bandRadius, 2.0f, 32.0f);
+		const bool bandsSeparated = std::abs(transferParams.broadLuminosity - transferParams.bandParams[0]) > 1e-4f;
+		const bool toneReady = bandsSeparated && EnsureToneResources(modelWidth, modelHeight) &&
+		                       GetShader(prepareToneDataCS, prepareToneDataAttempted, kPrepareToneDataPath, "PrepareToneDataCS") &&
+		                       GetShader(filterToneDataHorizontalCS, filterToneDataHorizontalAttempted,
+								   kFilterToneDataPath, "FilterToneDataCS") &&
+		                       GetShader(filterToneDataVerticalCS, filterToneDataVerticalAttempted,
+								   kFilterToneDataPath, "FilterToneDataCS Vertical", { { "VERTICAL", "1" } });
+		if (!bandsSeparated)
+			toneDataValid = false;
+		// The decode may only read the band textures once a pass has actually filled them for
+		// this raster; a skipped (alternating) frame keeps the previous evaluation's data.
+		transferParams.bandParams[2] = toneReady && (toneDataValid || !skipFrame) ? 1.0f : 0.0f;
+
+		std::uint32_t debugFlags = 0;
+		if (inputs.debugGuardClamp)
+			debugFlags |= kDebugFlagGuardClamp;
+		// Only meaningful while the bands are genuinely separated, and mutually exclusive.
+		if (transferParams.bandParams[2] > 0.5f && inputs.debugBroadBand)
+			debugFlags |= kDebugFlagBroadBand;
+		else if (transferParams.bandParams[2] > 0.5f && inputs.debugDetailBand)
+			debugFlags |= kDebugFlagDetailBand;
+		if (inputs.swapModelOutputRB)
+			debugFlags |= kDebugFlagSwapOutputRB;
+		const bool collectStats = inputs.measureModelPeak || inputs.debugGuardClamp;
+		ServiceDebugReadback(context, collectStats);
+		if (collectStats && debugStatsUAV)
+			debugFlags |= kDebugFlagStats;
+		transferParams.debugFlags = debugFlags;
 		// The guard is two-sided (1/maxRatio..maxRatio) and only meaningful at or
 		// above one; a stale or misconfigured value below that would otherwise
 		// invert into a guard tighter than the floor it is supposed to raise.
@@ -945,6 +1228,23 @@ struct NeuralRenderingBackend::State
 					modelWidth, modelHeight, guideWidth, guideHeight, bridgedSkip ? 2.0f : 1.0f))
 				return false;
 			lastEvaluatedFrameIndex = evaluateFrameIndex;
+
+			// Split the answer's luminance edit into its smooth and detail halves, once per
+			// evaluation and at the model raster, while the proxy and the answer are the pair
+			// the resolve is about to use. PrepareToneDataCS writes (log proxy luminance,
+			// edit); the two filter passes blur only the edit, along one axis each, and the
+			// vertical one lands back in toneData for the decode to sample.
+			if (transferParams.bandParams[2] > 0.5f) {
+				globals::state->BeginPerfEvent("NeuralRendering::ToneBands");
+				DispatchTransfer(context, prepareToneDataCS.get(), { colorSRV.get(), outputSRV.get() },
+					toneDataUAV.get(), transferParamsCB.get(), linearClampSampler.get(), modelWidth, modelHeight);
+				DispatchTransfer(context, filterToneDataHorizontalCS.get(), { toneDataSRV.get() },
+					toneScratchUAV.get(), transferParamsCB.get(), linearClampSampler.get(), modelWidth, modelHeight);
+				DispatchTransfer(context, filterToneDataVerticalCS.get(), { toneScratchSRV.get() },
+					toneDataUAV.get(), transferParamsCB.get(), linearClampSampler.get(), modelWidth, modelHeight);
+				globals::state->EndPerfEvent();
+				toneDataValid = true;
+			}
 		}
 
 		// Re-anchor the model's bounded luminance to the untouched source, then
@@ -956,8 +1256,10 @@ struct NeuralRenderingBackend::State
 		// reproject a stale answer.
 		DispatchTransfer(context, decodeShader,
 			{ outputSRV.get(), colorInView, colorSRV.get(), inputs.depthSRV, inputs.materialCategoriesSRV,
-				inputs.display.vanillaAdaptationSRV, inputs.display.postProcessAdaptationSRV, inputs.motionVectorsSRV },
-			colorOutView, transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight);
+				inputs.display.vanillaAdaptationSRV, inputs.display.postProcessAdaptationSRV, inputs.motionVectorsSRV,
+				transferParams.bandParams[2] > 0.5f ? toneDataSRV.get() : nullptr },
+			colorOutView, transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight,
+			(transferParams.debugFlags & kDebugFlagStats) != 0 ? debugStatsUAV.get() : nullptr);
 
 		resetPending = false;
 		featureAvailable = true;
@@ -1186,6 +1488,9 @@ struct NeuralRenderingBackend::State
 		copyDepthGuideCS = nullptr;
 		encodeResidualCS = nullptr;
 		applyResidualCS = nullptr;
+		prepareToneDataCS = nullptr;
+		filterToneDataHorizontalCS = nullptr;
+		filterToneDataVerticalCS = nullptr;
 		transferParamsCB = nullptr;
 		linearClampSampler = nullptr;
 		encodeColorAttempted = false;
@@ -1193,6 +1498,28 @@ struct NeuralRenderingBackend::State
 		copyDepthGuideAttempted = false;
 		encodeResidualAttempted = false;
 		applyResidualAttempted = false;
+		prepareToneDataAttempted = false;
+		filterToneDataHorizontalAttempted = false;
+		filterToneDataVerticalAttempted = false;
+
+		toneData = nullptr;
+		toneDataSRV = nullptr;
+		toneDataUAV = nullptr;
+		toneScratch = nullptr;
+		toneScratchSRV = nullptr;
+		toneScratchUAV = nullptr;
+		toneWidth = 0;
+		toneHeight = 0;
+		toneDataValid = false;
+		loggedToneFailure = false;
+
+		debugStats = nullptr;
+		debugStatsUAV = nullptr;
+		for (auto& staging : debugStaging)
+			staging = nullptr;
+		debugStagingPending.fill(false);
+		debugStagingSlot = 0;
+		debugReadback = {};
 
 		failureLatched = false;
 		featureAvailable = false;
@@ -1247,6 +1574,11 @@ bool NeuralRenderingBackend::IsAvailable()
 bool NeuralRenderingBackend::IsFeatureAvailable() const
 {
 	return state->featureAvailable;
+}
+
+NeuralRenderingBackend::DebugReadback NeuralRenderingBackend::GetDebugReadback() const
+{
+	return state->debugReadback;
 }
 
 bool NeuralRenderingBackend::Evaluate(const FrameInputs& inputs)
