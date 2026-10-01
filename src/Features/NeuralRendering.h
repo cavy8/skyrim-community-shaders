@@ -6,8 +6,11 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include <d3d11.h>
 #include <winrt/base.h>
@@ -312,6 +315,9 @@ struct NeuralRendering : Feature
 		/// Which preset the current values came from (see Preset). Never re-applied on load:
 		/// the stored values win, and the UI marks the preset "(modified)" where they differ.
 		uint preset = static_cast<uint>(Preset::kFull);
+		/// Name of the user preset the current values came from (see UserPreset); empty when they
+		/// came from the built-in @ref preset. Like @ref preset, never re-applied on load.
+		std::string userPreset;
 		/// Show the settings that shape the edit itself rather than where and how big it runs.
 		bool showAdvanced = false;
 		uint placement = static_cast<uint>(Placement::kFinishedImage);
@@ -406,6 +412,63 @@ struct NeuralRendering : Feature
 	 * Vanilla-Plus). Floats compare to 1e-4.
 	 */
 	bool MatchesPreset(Preset a_preset) const;
+
+	/** @brief The values the current @ref settings would store as a preset. */
+	PresetValues CapturePresetValues() const;
+
+	/**
+	 * @brief Writes @p a_values into @ref settings without changing which preset is recorded
+	 *        as their source (Settings::preset / Settings::userPreset).
+	 */
+	void ApplyPresetValues(const PresetValues& a_values);
+
+	/** @brief MatchesPreset() against any value table, e.g. a user preset's. */
+	bool MatchesPresetValues(const PresetValues& a_values) const;
+
+	/**
+	 * @brief A preset the user saved: one JSON file per preset in UserPresetDirectory(), named
+	 *        after the preset, so sharing one is copying its file.
+	 *
+	 * The file carries the PresetValues under the same keys the settings JSON uses; a missing
+	 * key falls back to Full and every value is sanitized on load. The built-in presets are
+	 * never files and can never be overwritten.
+	 */
+	struct UserPreset
+	{
+		std::string name;  ///< UTF-8; also the file's stem.
+		PresetValues values;
+	};
+
+	/** @brief Data/SKSE/Plugins/CommunityShaders/NeuralRendering/Presets. */
+	static std::filesystem::path UserPresetDirectory();
+
+	/** @brief Re-reads every preset file; unreadable or malformed files are skipped with a warning. */
+	void RefreshUserPresets();
+
+	/** @brief The loaded user preset named @p a_name (exact match), or nullptr. */
+	const UserPreset* FindUserPreset(std::string_view a_name) const;
+
+	/** @brief Writes @p a_values into @ref settings and records @p a_preset as their source. */
+	void ApplyUserPreset(const UserPreset& a_preset);
+
+	/**
+	 * @brief Creates or overwrites the preset file named @p a_name and updates the loaded list.
+	 * @return False (logged) when the file cannot be written.
+	 */
+	bool WriteUserPreset(const std::string& a_name, const PresetValues& a_values);
+
+	/**
+	 * @brief Renames a user preset's file, following it in Settings::userPreset if it is active.
+	 * @return False (logged) when the file cannot be renamed.
+	 */
+	bool RenameUserPreset(const std::string& a_from, const std::string& a_to);
+
+	/**
+	 * @brief Deletes a user preset's file; if it was active, the label falls back to the
+	 *        built-in Settings::preset while the current values stay as they are.
+	 * @return False (logged) when the file cannot be removed.
+	 */
+	bool DeleteUserPreset(const std::string& a_name);
 
 	/**
 	 * Runtime-only comparison aids - never saved, so neither can be left on by accident
@@ -786,6 +849,48 @@ private:
 	 *        Neural Rendering state), false when called after compositing (to queue the screenshot).
 	 */
 	void ServiceComparison(bool a_framePhaseStart);
+
+	/** @brief Loaded user presets, sorted by name; see RefreshUserPresets(). */
+	std::vector<UserPreset> userPresets;
+	bool userPresetsLoaded = false;
+
+	/** Runtime state of the preset name and delete popups; never saved. */
+	struct PresetEditor
+	{
+		enum class Action
+		{
+			kNone,
+			kSaveAsNew,  ///< Store the current values under a new name.
+			kCopy,       ///< Store the active preset's stored values under a new name.
+			kRename,     ///< Rename the active user preset.
+		};
+		Action action = Action::kNone;
+		bool popupOpen = false;
+		bool openRequested = false;
+		std::string name;        ///< The name being typed.
+		std::string renameFrom;  ///< kRename only.
+		PresetValues source{};   ///< kSaveAsNew / kCopy: the values to store.
+		std::string error;       ///< Shown inside the name popup.
+		std::string status;      ///< Shown under the preset buttons (a failed Save or Delete).
+		std::string deleteName;  ///< The preset the delete confirmation is about.
+	};
+	PresetEditor presetEditor;
+
+	/** @brief Draws the preset combo, Reset to preset, and the save/copy/rename/delete buttons. */
+	void DrawPresetControls();
+
+	/** @brief Draws the preset name and delete confirmation popups, outside any disabled block. */
+	void DrawPresetPopups();
+
+	/** @brief Opens the name popup for @p a_action, pre-filled with @p a_name. */
+	void OpenPresetNamePopup(PresetEditor::Action a_action, std::string a_name, const PresetValues& a_source);
+
+	/**
+	 * @brief Why @p a_name cannot name a new preset, or nullptr when it can.
+	 * @param a_name The sanitized name.
+	 * @param a_renameFrom The preset being renamed (it may keep its own name), or empty.
+	 */
+	const char* PresetNameProblem(const std::string& a_name, const std::string& a_renameFrom) const;
 
 	/** @brief Draws one per-category strengths tree node in the settings UI. */
 	void DrawCategoryStrengths(const char* a_id, const char* a_label, CategoryStrengths& a_strengths, const char* a_tooltip = nullptr);

@@ -960,11 +960,53 @@ came from.
 Loading a config reads the stored values and never re-applies the preset, so modified settings
 survive a restart. `RestoreDefaultSettings()` is `ApplyPreset(Full)` plus hiding Advanced.
 
+### User presets
+
+Users can save their own presets next to the two built-ins. Each one is a `PresetValues` table
+in its own JSON file, `Data/SKSE/Plugins/CommunityShaders/NeuralRendering/Presets/<name>.json`
+(`UserPresetDirectory()`), so sharing a preset means copying that file. Under Mod Organizer 2,
+saved files land in Overwrite. The file name is the preset's name: there is no separate display
+name that could disagree with it. The file uses the same keys as the settings JSON (`placement`,
+`style`, ..., `skinStrengths`, ...) plus `format` (1). On load, a missing key falls back to
+Full and every value goes through the same `SanitizePresetValues()` that `LoadSettings` uses,
+so a hand-edited or truncated file cannot push a control out of range. A file that does not
+parse, or has a wrongly typed key, is skipped with a log warning.
+
+`Settings::userPreset` names the active user preset; empty means the built-in
+`Settings::preset` is active. `MatchesPresetValues()` gives the "(modified)" label for both
+kinds by the same rules. The combo lists the built-ins, a separator, then the user presets
+sorted case-insensitively. The folder is re-read each time the combo opens, so a shared file
+dropped in shows up without a restart.
+
+The buttons under the combo:
+
+- **Save**: user presets only. Overwrites the active preset's file
+  with the current values, Placement and NR Intensity included (which "(modified)" ignores).
+  The built-ins are never files and nothing can overwrite them.
+- **Save As New...**: stores the current values under a new name.
+- **Copy...**: stores the active preset's *stored* values (not unsaved edits) under a new
+  name, suggested as "`<name>` Copy". Works on built-ins too; this is how to start an
+  editable variant of Full or Vanilla-Plus.
+- **Rename...**: user presets only. Renames the file and follows it in `userPreset`.
+- **Delete**: user presets only, behind a confirmation. Removes the file. If it was active,
+  the label falls back to the built-in `preset` while the live values stay.
+
+Save As New and Copy make the new preset the active label but leave the live values as they
+are. A copy taken while edited therefore reads "(modified)", and Save then stores the edits in
+it. A new name is sanitized as a file name (`Util::FileHelpers::SanitizeFileName`). It must not
+be empty, must not match a built-in's English or translated name, and must not match another
+user preset; both comparisons are case-insensitive, as Windows file names are. Renaming a
+preset to a new case of its own name is allowed. Names are UTF-8 from ImGui and are converted
+to paths through `std::u8string`, not the ANSI code page.
+
+`LoadSettings` re-reads the folder and clears a `userPreset` whose file is gone. Its values
+stay, labelled as the built-in they were based on.
+
 ### Layout
 
 **Show Advanced Settings** (`Settings::showAdvanced`, saved, off by default) splits the tab.
-Always visible: Enable, the comparison screenshot button, Preset (+ Reset to preset),
-Placement, Model Resolution and its scale(s), Alternate Frames, NR Intensity, and Split Screen
+Always visible: Enable, the comparison screenshot button, Preset (+ Reset to preset, and the
+Save / Save As New / Copy / Rename / Delete buttons), Placement, Model Resolution and its scale(s), Alternate Frames, NR Intensity, and Split Screen
 with its position slider. Split Screen stays out of Advanced on purpose - it is how anyone
 judges whether the edit is an improvement at all.
 
@@ -974,8 +1016,8 @@ per-category trees, Depth-Aware Silhouette, Frame Hold, and the whole Debug grou
 
 ### Settings migration
 
-New keys are `preset`, `showAdvanced`, `proxyCurve`, `broadLuminosity`, `detailLuminosity` and
-`bandRadius`; `luminosityStrength` is dropped. `LoadSettings` reads which keys the config
+New keys are `preset`, `userPreset`, `showAdvanced`, `proxyCurve`, `broadLuminosity`,
+`detailLuminosity` and `bandRadius`; `luminosityStrength` is dropped. `LoadSettings` reads which keys the config
 actually carries *before* assigning it over the defaults, and:
 
 - **no `preset` key** (a config from before presets): `preset = Full` and every stored value
@@ -990,8 +1032,13 @@ actually carries *before* assigning it over the defaults, and:
   otherwise.
 - `proxyCurve` out of range - including 3, the retired HDR Linear - falls back to
   Display-matched.
+- **no `userPreset` key**: empty, i.e. the built-in `preset` is active.
 
-The feature ini is `1-2-0` (per-category Broad/Detail Luminosity; `1-1-0` added presets).
+Every preset-owned value, `Max Ratio` included (1..8), is clamped by `SanitizePresetValues()`,
+the same routine user preset files go through.
+
+The feature ini is `1-3-0` (user presets; `1-2-0` per-category Broad/Detail Luminosity;
+`1-1-0` added presets).
 
 ## Proxy curve
 
@@ -1107,6 +1154,14 @@ any Advanced control shows "(modified)"; Reset to preset clears it; changing Pla
 Alternate Frames or Intensity does not. Settings and the modified state survive a restart.
 Upgrading a config with `luminosityStrength` 0.7 gives Broad = Detail = 0.7 and an identical
 log-ratio map. Restore Defaults gives Full with Advanced hidden.
+
+User presets: Save As New writes `<name>.json` and selects it unmodified. Editing a slider shows
+"(modified)"; Save clears it and rewrites the file, and Save after moving only Placement
+rewrites it too. Copy of Full while edited gives "Full Copy (modified)". Rename follows the file, and a case-only rename works. Delete asks
+first and removes the file. "full", an existing name in another case, and an empty name are all
+refused. The active user preset survives a restart; deleting its file outside the game drops it
+on the next load. A file copied into the folder appears the next time the combo opens. A broken
+file is skipped with a log warning.
 
 ### Luminosity split
 

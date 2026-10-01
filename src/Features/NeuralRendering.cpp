@@ -6,18 +6,22 @@
 #include "Deferred.h"
 #include "HDRDisplay.h"
 #include "LinearLighting.h"
+#include "Menu.h"
 #include "PostProcessing.h"
 #include "PostProcessing/HistogramAutoExposure.h"
 #include "ReverseZ.h"
 #include "ScreenshotFeature.h"
 #include "State.h"
 #include "Upscaling.h"
+#include "Utils/FileSystem.h"
 #include "Utils/Game.h"
 #include "Utils/UI.h"
+#include "imgui_stdlib.h"
 
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <fstream>
 #include <optional>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -32,6 +36,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	NeuralRendering::Settings,
 	enabled,
 	preset,
+	userPreset,
 	showAdvanced,
 	placement,
 	style,
@@ -145,6 +150,129 @@ namespace
 	bool NearlyEqual(float a_left, float a_right)
 	{
 		return std::abs(a_left - a_right) <= 1e-4f;
+	}
+
+	/// JSON key of each per-category block, in CategorySettings() order.
+	constexpr std::array<const char*, NeuralRendering::kMaterialCategoryCount> kCategoryKeys{ "everythingElseStrengths",
+		"skinStrengths", "hairStrengths", "eyesStrengths", "foliageStrengths", "landscapeStrengths",
+		"equipmentStrengths" };
+
+	/// Format of a user preset file, for a future migration to key off.
+	constexpr int kUserPresetFormat = 1;
+
+	void SanitizeFloat(float& a_value, float a_fallback, float a_min, float a_max)
+	{
+		if (!std::isfinite(a_value))
+			a_value = a_fallback;
+		a_value = std::clamp(a_value, a_min, a_max);
+	}
+
+	/// Clamps every value a preset owns into range; shared by LoadSettings and preset files.
+	void SanitizePresetValues(PresetValues& a_values)
+	{
+		if (a_values.placement > 3) {
+			logger::warn("[NeuralRendering] Loaded placement {} out of range, clamping to 1", a_values.placement);
+			a_values.placement = 1;
+		}
+		if (a_values.style > 2)
+			a_values.style = 2;
+		SanitizeFloat(a_values.intensity, 0.8f, 0.0f, 2.0f);
+		SanitizeFloat(a_values.colorStrength, 1.0f, 0.0f, 1.0f);
+		SanitizeFloat(a_values.localToneStrength, 1.0f, 0.0f, 2.0f);
+		SanitizeFloat(a_values.localStructureStrength, 1.0f, 0.0f, 2.0f);
+		SanitizeFloat(a_values.skinStructureStrength, -1.0f, -1.0f, 2.0f);
+		SanitizeFloat(a_values.transferStrength, 1.0f, 0.0f, 2.0f);
+		SanitizeFloat(a_values.broadLuminosity, 1.0f, 0.0f, 2.0f);
+		SanitizeFloat(a_values.detailLuminosity, 1.0f, 0.0f, 2.0f);
+		SanitizeFloat(a_values.bandRadius, 8.0f, 2.0f, 32.0f);
+		SanitizeFloat(a_values.maxRatio, 2.0f, 1.0f, 8.0f);
+		// Out of range (including the retired HDR Linear, 3) falls back to the proxy the default
+		// preset uses.
+		if (a_values.proxyCurve >= static_cast<uint>(ProxyCurve::kCount))
+			a_values.proxyCurve = static_cast<uint>(ProxyCurve::kDisplayMatched);
+		for (auto& category : a_values.categories) {
+			SanitizeFloat(category.colorStrength, 1.0f, 0.0f, 1.0f);
+			SanitizeFloat(category.transferStrength, 1.0f, 0.0f, 2.0f);
+			SanitizeFloat(category.broadLuminosity, 1.0f, 0.0f, 2.0f);
+			SanitizeFloat(category.detailLuminosity, 1.0f, 0.0f, 2.0f);
+		}
+	}
+
+	json PresetValuesToJson(const PresetValues& a_values)
+	{
+		json result = {
+			{ "format", kUserPresetFormat },
+			{ "placement", a_values.placement },
+			{ "style", a_values.style },
+			{ "intensity", a_values.intensity },
+			{ "localToneStrength", a_values.localToneStrength },
+			{ "localStructureStrength", a_values.localStructureStrength },
+			{ "skinStructureStrength", a_values.skinStructureStrength },
+			{ "automaticMask", a_values.automaticMask },
+			{ "proxyCurve", a_values.proxyCurve },
+			{ "colorStrength", a_values.colorStrength },
+			{ "transferStrength", a_values.transferStrength },
+			{ "broadLuminosity", a_values.broadLuminosity },
+			{ "detailLuminosity", a_values.detailLuminosity },
+			{ "bandRadius", a_values.bandRadius },
+			{ "ratioGuardEnabled", a_values.ratioGuardEnabled },
+			{ "maxRatio", a_values.maxRatio },
+			{ "depthAwareResolve", a_values.depthAwareResolve },
+		};
+		for (std::size_t index = 0; index < NeuralRendering::kMaterialCategoryCount; ++index)
+			result[kCategoryKeys[index]] = a_values.categories[index];
+		return result;
+	}
+
+	/// Reads a preset file's values over @p a_fallback; throws on a wrongly typed key.
+	PresetValues PresetValuesFromJson(const json& a_json, const PresetValues& a_fallback)
+	{
+		PresetValues values = a_fallback;
+		values.placement = a_json.value("placement", values.placement);
+		values.style = a_json.value("style", values.style);
+		values.intensity = a_json.value("intensity", values.intensity);
+		values.localToneStrength = a_json.value("localToneStrength", values.localToneStrength);
+		values.localStructureStrength = a_json.value("localStructureStrength", values.localStructureStrength);
+		values.skinStructureStrength = a_json.value("skinStructureStrength", values.skinStructureStrength);
+		values.automaticMask = a_json.value("automaticMask", values.automaticMask);
+		values.proxyCurve = a_json.value("proxyCurve", values.proxyCurve);
+		values.colorStrength = a_json.value("colorStrength", values.colorStrength);
+		values.transferStrength = a_json.value("transferStrength", values.transferStrength);
+		values.broadLuminosity = a_json.value("broadLuminosity", values.broadLuminosity);
+		values.detailLuminosity = a_json.value("detailLuminosity", values.detailLuminosity);
+		values.bandRadius = a_json.value("bandRadius", values.bandRadius);
+		values.ratioGuardEnabled = a_json.value("ratioGuardEnabled", values.ratioGuardEnabled);
+		values.maxRatio = a_json.value("maxRatio", values.maxRatio);
+		values.depthAwareResolve = a_json.value("depthAwareResolve", values.depthAwareResolve);
+		for (std::size_t index = 0; index < NeuralRendering::kMaterialCategoryCount; ++index) {
+			if (const auto block = a_json.find(kCategoryKeys[index]); block != a_json.end() && block->is_object())
+				values.categories[index] = block->get<NeuralRendering::CategoryStrengths>();
+		}
+		return values;
+	}
+
+	// Preset names come from ImGui as UTF-8; std::filesystem::path(std::string) would read
+	// them in the ANSI code page instead.
+	std::filesystem::path PathFromUtf8(std::string_view a_text)
+	{
+		return std::filesystem::path(std::u8string(a_text.begin(), a_text.end()));
+	}
+
+	std::string Utf8FromPath(const std::filesystem::path& a_path)
+	{
+		const auto text = a_path.u8string();
+		return std::string(text.begin(), text.end());
+	}
+
+	std::filesystem::path UserPresetPath(const std::string& a_name)
+	{
+		return NeuralRendering::UserPresetDirectory() / PathFromUtf8(a_name + ".json");
+	}
+
+	Util::ConfirmationPopup& DeletePresetPopup()
+	{
+		static Util::ConfirmationPopup popup;
+		return popup;
 	}
 
 	NeuralRenderingBackend::FrameInputs MakeFrameInputs(ID3D11Resource* colorIn, ID3D11Resource* colorOut,
@@ -408,32 +536,67 @@ const NeuralRendering::PresetValues& NeuralRendering::GetPreset(Preset a_preset)
 
 void NeuralRendering::ApplyPreset(Preset a_preset)
 {
-	const auto& preset = GetPreset(a_preset);
+	ApplyPresetValues(GetPreset(a_preset));
 	settings.preset = static_cast<uint>(a_preset);
-	settings.placement = preset.placement;
-	settings.style = preset.style;
-	settings.intensity = preset.intensity;
-	settings.localToneStrength = preset.localToneStrength;
-	settings.localStructureStrength = preset.localStructureStrength;
-	settings.skinStructureStrength = preset.skinStructureStrength;
-	settings.automaticMask = preset.automaticMask;
-	settings.proxyCurve = preset.proxyCurve;
-	settings.colorStrength = preset.colorStrength;
-	settings.transferStrength = preset.transferStrength;
-	settings.broadLuminosity = preset.broadLuminosity;
-	settings.detailLuminosity = preset.detailLuminosity;
-	settings.bandRadius = preset.bandRadius;
-	settings.ratioGuardEnabled = preset.ratioGuardEnabled;
-	settings.maxRatio = preset.maxRatio;
-	settings.depthAwareResolve = preset.depthAwareResolve;
-	auto categories = CategorySettings();
-	for (std::size_t index = 0; index < kMaterialCategoryCount; ++index)
-		*categories[index] = preset.categories[index];
+	settings.userPreset.clear();
 }
 
 bool NeuralRendering::MatchesPreset(Preset a_preset) const
 {
-	const auto& preset = GetPreset(a_preset);
+	return MatchesPresetValues(GetPreset(a_preset));
+}
+
+NeuralRendering::PresetValues NeuralRendering::CapturePresetValues() const
+{
+	PresetValues values{};
+	values.placement = settings.placement;
+	values.style = settings.style;
+	values.intensity = settings.intensity;
+	values.localToneStrength = settings.localToneStrength;
+	values.localStructureStrength = settings.localStructureStrength;
+	values.skinStructureStrength = settings.skinStructureStrength;
+	values.automaticMask = settings.automaticMask;
+	values.proxyCurve = settings.proxyCurve;
+	values.colorStrength = settings.colorStrength;
+	values.transferStrength = settings.transferStrength;
+	values.broadLuminosity = settings.broadLuminosity;
+	values.detailLuminosity = settings.detailLuminosity;
+	values.bandRadius = settings.bandRadius;
+	values.ratioGuardEnabled = settings.ratioGuardEnabled;
+	values.maxRatio = settings.maxRatio;
+	values.depthAwareResolve = settings.depthAwareResolve;
+	const auto categories = CategorySettings();
+	for (std::size_t index = 0; index < kMaterialCategoryCount; ++index)
+		values.categories[index] = *categories[index];
+	return values;
+}
+
+void NeuralRendering::ApplyPresetValues(const PresetValues& a_values)
+{
+	settings.placement = a_values.placement;
+	settings.style = a_values.style;
+	settings.intensity = a_values.intensity;
+	settings.localToneStrength = a_values.localToneStrength;
+	settings.localStructureStrength = a_values.localStructureStrength;
+	settings.skinStructureStrength = a_values.skinStructureStrength;
+	settings.automaticMask = a_values.automaticMask;
+	settings.proxyCurve = a_values.proxyCurve;
+	settings.colorStrength = a_values.colorStrength;
+	settings.transferStrength = a_values.transferStrength;
+	settings.broadLuminosity = a_values.broadLuminosity;
+	settings.detailLuminosity = a_values.detailLuminosity;
+	settings.bandRadius = a_values.bandRadius;
+	settings.ratioGuardEnabled = a_values.ratioGuardEnabled;
+	settings.maxRatio = a_values.maxRatio;
+	settings.depthAwareResolve = a_values.depthAwareResolve;
+	auto categories = CategorySettings();
+	for (std::size_t index = 0; index < kMaterialCategoryCount; ++index)
+		*categories[index] = a_values.categories[index];
+}
+
+bool NeuralRendering::MatchesPresetValues(const PresetValues& a_values) const
+{
+	const auto& preset = a_values;
 	// Placement and NR Intensity are basic controls; moving either keeps the preset.
 	if (settings.style != preset.style || settings.automaticMask != preset.automaticMask ||
 		settings.proxyCurve != preset.proxyCurve || settings.ratioGuardEnabled != preset.ratioGuardEnabled ||
@@ -465,6 +628,117 @@ bool NeuralRendering::MatchesPreset(Preset a_preset) const
 			!NearlyEqual(current.detailLuminosity, expected.detailLuminosity))
 			return false;
 	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// User presets
+// ---------------------------------------------------------------------------------------------
+
+std::filesystem::path NeuralRendering::UserPresetDirectory()
+{
+	return Util::PathHelpers::GetCommunityShaderPath() / "NeuralRendering" / "Presets";
+}
+
+void NeuralRendering::RefreshUserPresets()
+{
+	userPresets.clear();
+	userPresetsLoaded = true;
+	const auto directory = UserPresetDirectory();
+	std::error_code error;
+	if (!std::filesystem::is_directory(directory, error))
+		return;
+	try {
+		for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+			if (!entry.is_regular_file() || entry.path().extension() != ".json")
+				continue;
+			const auto name = Utf8FromPath(entry.path().stem());
+			try {
+				std::ifstream file{ entry.path() };
+				const json data = json::parse(file);
+				if (!data.is_object())
+					throw std::runtime_error("not a JSON object");
+				auto values = PresetValuesFromJson(data, GetPreset(Preset::kFull));
+				SanitizePresetValues(values);
+				userPresets.push_back(UserPreset{ name, values });
+			} catch (const std::exception& e) {
+				logger::warn("[NeuralRendering] Skipping preset file '{}': {}", name, e.what());
+			}
+		}
+	} catch (const std::exception& e) {
+		logger::warn("[NeuralRendering] Could not list presets in {}: {}", Utf8FromPath(directory), e.what());
+	}
+	std::ranges::sort(userPresets, [](const UserPreset& a_left, const UserPreset& a_right) {
+		return _stricmp(a_left.name.c_str(), a_right.name.c_str()) < 0;
+	});
+}
+
+const NeuralRendering::UserPreset* NeuralRendering::FindUserPreset(std::string_view a_name) const
+{
+	const auto found = std::ranges::find(userPresets, a_name, &UserPreset::name);
+	return found != userPresets.end() ? &*found : nullptr;
+}
+
+void NeuralRendering::ApplyUserPreset(const UserPreset& a_preset)
+{
+	ApplyPresetValues(a_preset.values);
+	settings.userPreset = a_preset.name;
+}
+
+bool NeuralRendering::WriteUserPreset(const std::string& a_name, const PresetValues& a_values)
+{
+	const auto path = UserPresetPath(a_name);
+	std::error_code error;
+	std::filesystem::create_directories(path.parent_path(), error);
+	{
+		std::ofstream file{ path, std::ios::trunc };
+		if (file)
+			file << PresetValuesToJson(a_values).dump(4);
+		if (!file) {
+			logger::warn("[NeuralRendering] Could not write preset file {}", Utf8FromPath(path));
+			return false;
+		}
+	}
+	logger::info("[NeuralRendering] Saved preset '{}'", a_name);
+
+	if (const auto existing = std::ranges::find(userPresets, a_name, &UserPreset::name); existing != userPresets.end()) {
+		existing->values = a_values;
+	} else {
+		const auto position = std::ranges::find_if(userPresets, [&](const UserPreset& a_preset) {
+			return _stricmp(a_name.c_str(), a_preset.name.c_str()) < 0;
+		});
+		userPresets.insert(position, UserPreset{ a_name, a_values });
+	}
+	return true;
+}
+
+bool NeuralRendering::RenameUserPreset(const std::string& a_from, const std::string& a_to)
+{
+	std::error_code error;
+	std::filesystem::rename(UserPresetPath(a_from), UserPresetPath(a_to), error);
+	if (error) {
+		logger::warn("[NeuralRendering] Could not rename preset '{}' to '{}': {}", a_from, a_to, error.message());
+		return false;
+	}
+	logger::info("[NeuralRendering] Renamed preset '{}' to '{}'", a_from, a_to);
+	if (settings.userPreset == a_from)
+		settings.userPreset = a_to;
+	RefreshUserPresets();
+	return true;
+}
+
+bool NeuralRendering::DeleteUserPreset(const std::string& a_name)
+{
+	std::error_code error;
+	std::filesystem::remove(UserPresetPath(a_name), error);
+	if (error) {
+		logger::warn("[NeuralRendering] Could not delete preset '{}': {}", a_name, error.message());
+		return false;
+	}
+	logger::info("[NeuralRendering] Deleted preset '{}'", a_name);
+	if (settings.userPreset == a_name)
+		settings.userPreset.clear();
+	std::erase_if(userPresets, [&](const UserPreset& a_preset) { return a_preset.name == a_name; });
 	return true;
 }
 
@@ -530,41 +804,7 @@ void NeuralRendering::DrawSettings()
 		ImGui::BeginDisabled();
 
 	// --- Preset: the single control most users ever touch ---
-	const auto activePreset = static_cast<Preset>(std::min<uint>(settings.preset, static_cast<uint>(Preset::kVanillaPlus)));
-	// Once per frame while the menu is open; the comparison is a handful of scalar tests.
-	const bool presetIntact = MatchesPreset(activePreset);
-	const char* presetNames[] = {
-		T(TKEY("preset_full"), "Full"),
-		T(TKEY("preset_vanilla_plus"), "Vanilla-Plus")
-	};
-	const std::string presetPreview = presetIntact ?
-	                                      presetNames[static_cast<std::size_t>(activePreset)] :
-	                                      std::format("{} {}", presetNames[static_cast<std::size_t>(activePreset)],
-											  T(TKEY("preset_modified"), "(modified)"));
-	if (ImGui::BeginCombo(T(TKEY("preset"), "Preset"), presetPreview.c_str())) {
-		for (std::size_t index = 0; index < kPresetCount; ++index) {
-			const bool selected = index == static_cast<std::size_t>(activePreset);
-			if (ImGui::Selectable(presetNames[index], selected))
-				ApplyPreset(static_cast<Preset>(index));
-			if (selected)
-				ImGui::SetItemDefaultFocus();
-		}
-		ImGui::EndCombo();
-	}
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("preset_tooltip"),
-			"Full applies the model's own answer to the finished frame: its colour work, its local "
-			"contrast, and no guard on how far it may push a pixel.\n"
-			"Vanilla-Plus reproduces the September 2026 build - a luminance-only edit on the upscaled "
-			"scene, through that build's proxy, capped at one stop in either direction.\n"
-			"A preset only writes values into the settings below; every one of them still works "
-			"afterwards, and editing one marks the preset modified rather than leaving it."));
-	}
-	if (!presetIntact) {
-		ImGui::SameLine();
-		if (ImGui::Button(T(TKEY("preset_reset"), "Reset to preset")))
-			ApplyPreset(activePreset);
-	}
+	DrawPresetControls();
 
 	ImGui::Checkbox(T(TKEY("show_advanced"), "Show Advanced Settings"), &settings.showAdvanced);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -886,6 +1126,234 @@ void NeuralRendering::DrawSettings()
 
 	if (!controlsAvailable)
 		ImGui::EndDisabled();
+
+	DrawPresetPopups();
+}
+
+void NeuralRendering::DrawPresetControls()
+{
+	if (!userPresetsLoaded)
+		RefreshUserPresets();
+
+	const char* builtInNames[] = {
+		T(TKEY("preset_full"), "Full"),
+		T(TKEY("preset_vanilla_plus"), "Vanilla-Plus")
+	};
+	const auto builtIn = static_cast<Preset>(std::min<uint>(settings.preset, static_cast<uint>(Preset::kVanillaPlus)));
+	const auto builtInIndex = static_cast<std::size_t>(builtIn);
+	// A user preset whose file has gone falls back to the built-in label it was based on.
+	const auto* userPreset = settings.userPreset.empty() ? nullptr : FindUserPreset(settings.userPreset);
+	const bool userActive = userPreset != nullptr;
+	const std::string activeName = userActive ? userPreset->name : builtInNames[builtInIndex];
+	// Once per frame while the menu is open; the comparison is a handful of scalar tests.
+	const bool presetIntact = MatchesPresetValues(userActive ? userPreset->values : GetPreset(builtIn));
+	const std::string presetPreview = presetIntact ?
+	                                      activeName :
+	                                      std::format("{} {}", activeName, T(TKEY("preset_modified"), "(modified)"));
+	if (ImGui::BeginCombo(T(TKEY("preset"), "Preset"), presetPreview.c_str())) {
+		// Re-read the folder each time the list opens, so a preset file someone shared shows up
+		// without a restart.
+		if (ImGui::IsWindowAppearing())
+			RefreshUserPresets();
+		for (std::size_t index = 0; index < kPresetCount; ++index) {
+			const bool selected = !userActive && index == builtInIndex;
+			if (ImGui::Selectable(builtInNames[index], selected))
+				ApplyPreset(static_cast<Preset>(index));
+			if (selected)
+				ImGui::SetItemDefaultFocus();
+		}
+		if (!userPresets.empty())
+			ImGui::Separator();
+		for (std::size_t index = 0; index < userPresets.size(); ++index) {
+			const auto& preset = userPresets[index];
+			const bool selected = userActive && preset.name == settings.userPreset;
+			ImGui::PushID(static_cast<int>(index));
+			if (ImGui::Selectable(preset.name.c_str(), selected))
+				ApplyUserPreset(preset);
+			ImGui::PopID();
+			if (selected)
+				ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("preset_tooltip"),
+			"Full applies the model's own answer to the finished frame: its colour work, its local "
+			"contrast, and no guard on how far it may push a pixel.\n"
+			"Vanilla-Plus reproduces the September 2026 build - a luminance-only edit on the upscaled "
+			"scene, through that build's proxy, capped at one stop in either direction.\n"
+			"Presets you save are listed below those two.\n"
+			"A preset only writes values into the settings below; every one of them still works "
+			"afterwards, and editing one marks the preset modified rather than leaving it."));
+	}
+
+	// The combo may have re-read the folder or switched preset; resolve the active one again.
+	userPreset = settings.userPreset.empty() ? nullptr : FindUserPreset(settings.userPreset);
+	const PresetValues& activeValues = userPreset ? userPreset->values : GetPreset(builtIn);
+	const std::string activeLabel = userPreset ? userPreset->name : builtInNames[builtInIndex];
+	const bool modified = !MatchesPresetValues(activeValues);
+	if (modified) {
+		ImGui::SameLine();
+		if (ImGui::Button(T(TKEY("preset_reset"), "Reset to preset")))
+			ApplyPresetValues(activeValues);
+	}
+
+	// The built-in presets are read-only: Save only ever overwrites a preset the user made.
+	if (userPreset) {
+		if (Util::ButtonWithFlash(T(TKEY("preset_save"), "Save"))) {
+			presetEditor.status.clear();
+			if (!WriteUserPreset(userPreset->name, CapturePresetValues()))
+				presetEditor.status = T(TKEY("preset_write_failed"), "Could not write the preset file. See the log for details.");
+		}
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(std::format("{} '{}'",
+				T(TKEY("preset_save_tooltip"), "Stores the current values in"), activeLabel)
+					.c_str());
+		}
+		ImGui::SameLine();
+	}
+	if (Util::ButtonWithFlash(T(TKEY("preset_save_as_new"), "Save As New..."))) {
+		presetEditor.status.clear();
+		OpenPresetNamePopup(PresetEditor::Action::kSaveAsNew, {}, CapturePresetValues());
+	}
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(T(TKEY("preset_save_as_new_tooltip"),
+			"Stores the current values as a new preset. Each preset is one file in "
+			"Data/SKSE/Plugins/CommunityShaders/NeuralRendering/Presets; share it by copying that "
+			"file, and drop a shared one there to use it (under Mod Organizer 2 saved presets land "
+			"in Overwrite)."));
+	}
+	ImGui::SameLine();
+	if (Util::ButtonWithFlash(T(TKEY("preset_copy"), "Copy..."))) {
+		presetEditor.status.clear();
+		// Suggest "<name> Copy", then "<name> Copy 2", ... until the name is free.
+		const std::string base = std::format("{} {}", activeLabel, T(TKEY("preset_copy_suffix"), "Copy"));
+		std::string suggestion = base;
+		for (int number = 2; PresetNameProblem(suggestion, {}) && number < 100; ++number)
+			suggestion = std::format("{} {}", base, number);
+		OpenPresetNamePopup(PresetEditor::Action::kCopy, suggestion, activeValues);
+	}
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextUnformatted(std::format("{} '{}'",
+			T(TKEY("preset_copy_tooltip"), "Creates a new preset from the stored values (not your unsaved edits) of"),
+			activeLabel)
+				.c_str());
+	}
+	if (userPreset) {
+		ImGui::SameLine();
+		if (Util::ButtonWithFlash(T(TKEY("preset_rename"), "Rename..."))) {
+			presetEditor.status.clear();
+			OpenPresetNamePopup(PresetEditor::Action::kRename, userPreset->name, userPreset->values);
+			presetEditor.renameFrom = userPreset->name;
+		}
+		ImGui::SameLine();
+		if (Util::ErrorButtonWithFlash(T(TKEY("preset_delete"), "Delete"))) {
+			presetEditor.status.clear();
+			presetEditor.deleteName = userPreset->name;
+			auto& popup = DeletePresetPopup();
+			popup.title = std::format("{}###NeuralRenderingDeletePreset", T(TKEY("preset_delete_title"), "Delete Preset"));
+			popup.message = std::format("{} '{}'\n\n{}", T(TKEY("preset_delete_confirm"), "Delete the preset"),
+				userPreset->name, T(TKEY("preset_delete_confirm_detail"), "Its file is removed. This cannot be undone."));
+			popup.confirmLabel = T(TKEY("preset_delete"), "Delete");
+			popup.cancelLabel = T(TKEY("preset_cancel"), "Cancel");
+			popup.Request();
+		}
+	}
+	if (!presetEditor.status.empty())
+		ImGui::TextColored(Menu::GetSingleton()->GetTheme().StatusPalette.Error, "%s", presetEditor.status.c_str());
+}
+
+void NeuralRendering::OpenPresetNamePopup(PresetEditor::Action a_action, std::string a_name, const PresetValues& a_source)
+{
+	presetEditor.action = a_action;
+	presetEditor.name = std::move(a_name);
+	presetEditor.renameFrom.clear();
+	presetEditor.source = a_source;
+	presetEditor.error.clear();
+	presetEditor.openRequested = true;
+}
+
+const char* NeuralRendering::PresetNameProblem(const std::string& a_name, const std::string& a_renameFrom) const
+{
+	if (a_name.empty())
+		return T(TKEY("preset_name_required"), "Enter a name.");
+	// Compared in English and in the current language, so neither spelling can shadow one.
+	const char* builtInNames[] = { "Full", "Vanilla-Plus", T(TKEY("preset_full"), "Full"),
+		T(TKEY("preset_vanilla_plus"), "Vanilla-Plus") };
+	for (const char* builtInName : builtInNames) {
+		if (Util::IEquals(a_name, builtInName))
+			return T(TKEY("preset_name_built_in"), "The built-in presets cannot be replaced. Choose another name.");
+	}
+	// Windows file names are case-insensitive; renaming a preset to a new case of its own name is fine.
+	for (const auto& preset : userPresets) {
+		if (Util::IEquals(a_name, preset.name) && !Util::IEquals(preset.name, a_renameFrom))
+			return T(TKEY("preset_name_taken"), "A preset with this name already exists.");
+	}
+	return nullptr;
+}
+
+void NeuralRendering::DrawPresetPopups()
+{
+	using Action = PresetEditor::Action;
+	const char* title = presetEditor.action == Action::kRename ? T(TKEY("preset_rename_title"), "Rename Preset") :
+	                    presetEditor.action == Action::kCopy   ? T(TKEY("preset_copy_title"), "Copy Preset") :
+	                                                             T(TKEY("preset_save_as_new_title"), "Save Preset As");
+	// The ### suffix keeps one popup ID whatever the translated title is.
+	const std::string popupId = std::format("{}###NeuralRenderingPresetName", title);
+	if (presetEditor.openRequested) {
+		presetEditor.openRequested = false;
+		presetEditor.popupOpen = true;
+		ImGui::OpenPopup(popupId.c_str());
+	}
+	if (auto popup = Util::CenteredPopupModal(popupId.c_str(), &presetEditor.popupOpen)) {
+		if (ImGui::IsWindowAppearing())
+			ImGui::SetKeyboardFocusHere();
+		const bool submitted = ImGui::InputText(T(TKEY("preset_name"), "Name"), &presetEditor.name,
+			ImGuiInputTextFlags_EnterReturnsTrue);
+		const std::string name = Util::FileHelpers::SanitizeFileName(presetEditor.name);
+		const char* problem = PresetNameProblem(name, presetEditor.renameFrom);
+		const auto& palette = Menu::GetSingleton()->GetTheme().StatusPalette;
+		if (problem && !presetEditor.name.empty())
+			ImGui::TextColored(palette.Error, "%s", problem);
+		else if (!problem)
+			ImGui::TextDisabled("%s", std::format("{} {}.json", T(TKEY("preset_file_label"), "File:"), name).c_str());
+
+		ImGui::Separator();
+		const char* confirmLabel = presetEditor.action == Action::kRename ? T(TKEY("preset_rename_confirm"), "Rename") :
+		                           presetEditor.action == Action::kCopy   ? T(TKEY("preset_copy_confirm"), "Create Copy") :
+		                                                                    T(TKEY("preset_save"), "Save");
+		ImGui::BeginDisabled(problem != nullptr);
+		const bool confirmed = Util::ButtonWithFlash(confirmLabel, ImVec2(ThemeManager::Constants::POPUP_BUTTON_WIDTH, 0)) ||
+		                       (submitted && !problem);
+		ImGui::EndDisabled();
+		if (confirmed) {
+			bool succeeded = false;
+			if (presetEditor.action == Action::kRename) {
+				succeeded = name == presetEditor.renameFrom || RenameUserPreset(presetEditor.renameFrom, name);
+			} else if (WriteUserPreset(name, presetEditor.source)) {
+				// The new preset becomes the active label; the live values are left alone, so
+				// a copy taken while edited reads "(modified)" and Save stores the edits in it.
+				settings.userPreset = name;
+				succeeded = true;
+			}
+			if (succeeded) {
+				presetEditor.popupOpen = false;
+				ImGui::CloseCurrentPopup();
+			} else {
+				presetEditor.error = T(TKEY("preset_write_failed"), "Could not write the preset file. See the log for details.");
+			}
+		}
+		ImGui::SameLine();
+		if (ImGui::Button(T(TKEY("preset_cancel"), "Cancel"), ImVec2(ThemeManager::Constants::POPUP_BUTTON_WIDTH, 0))) {
+			presetEditor.popupOpen = false;
+			ImGui::CloseCurrentPopup();
+		}
+		if (!presetEditor.error.empty())
+			ImGui::TextColored(palette.Error, "%s", presetEditor.error.c_str());
+	}
+
+	if (DeletePresetPopup().Draw() && !DeleteUserPreset(presetEditor.deleteName))
+		presetEditor.status = T(TKEY("preset_delete_failed"), "Could not delete the preset file. See the log for details.");
 }
 
 void NeuralRendering::DrawCategoryStrengths(const char* a_id, const char* a_label, CategoryStrengths& a_strengths, const char* a_tooltip)
@@ -938,10 +1406,7 @@ void NeuralRendering::LoadSettings(json& o_json)
 			hasLegacyLuminosity = true;
 		}
 	}
-	// The same split per category, keyed by each block's JSON name in CategorySettings() order.
-	constexpr std::array<const char*, kMaterialCategoryCount> kCategoryKeys{ "everythingElseStrengths",
-		"skinStrengths", "hairStrengths", "eyesStrengths", "foliageStrengths", "landscapeStrengths",
-		"equipmentStrengths" };
+	// The same split per category, keyed by each block's JSON name (kCategoryKeys).
 	std::array<std::optional<float>, kMaterialCategoryCount> legacyCategoryLuminosity{};
 	if (o_json.is_object()) {
 		for (std::size_t index = 0; index < kMaterialCategoryCount; ++index) {
@@ -981,51 +1446,27 @@ void NeuralRendering::LoadSettings(json& o_json)
 	if (!hasPreset)
 		settings.preset = static_cast<uint>(Preset::kFull);
 
-	if (settings.placement > 3) {
-		logger::warn("[NeuralRendering] Loaded placement {} out of range, clamping to 1", settings.placement);
-		settings.placement = 1;
+	{
+		auto values = CapturePresetValues();
+		SanitizePresetValues(values);
+		ApplyPresetValues(values);
 	}
-	if (settings.style > 2)
-		settings.style = 2;
-	const auto sanitizeFloat = [](float& value, float fallback, float min, float max) {
-		if (!std::isfinite(value))
-			value = fallback;
-		value = std::clamp(value, min, max);
-	};
-	sanitizeFloat(settings.intensity, 0.8f, 0.0f, 2.0f);
-	sanitizeFloat(settings.colorStrength, 1.0f, 0.0f, 1.0f);
-	sanitizeFloat(settings.localToneStrength, 1.0f, 0.0f, 2.0f);
-	sanitizeFloat(settings.localStructureStrength, 1.0f, 0.0f, 2.0f);
-	sanitizeFloat(settings.skinStructureStrength, -1.0f, -1.0f, 2.0f);
 	if (settings.resolutionMode > 1)
 		settings.resolutionMode = 1;
 	// Scales above native (model supersampling) are no longer offered; a saved one runs at native.
-	sanitizeFloat(settings.resolutionScale, 1.0f, 0.25f, 1.0f);
-	sanitizeFloat(settings.resolutionScaleX, 1.0f, 0.25f, 1.0f);
-	sanitizeFloat(settings.resolutionScaleY, 1.0f, 0.25f, 1.0f);
-	sanitizeFloat(settings.transferStrength, 1.0f, 0.0f, 2.0f);
-	sanitizeFloat(settings.broadLuminosity, 1.0f, 0.0f, 2.0f);
-	sanitizeFloat(settings.detailLuminosity, 1.0f, 0.0f, 2.0f);
-	sanitizeFloat(settings.bandRadius, 8.0f, 2.0f, 32.0f);
+	SanitizeFloat(settings.resolutionScale, 1.0f, 0.25f, 1.0f);
+	SanitizeFloat(settings.resolutionScaleX, 1.0f, 0.25f, 1.0f);
+	SanitizeFloat(settings.resolutionScaleY, 1.0f, 0.25f, 1.0f);
 	if (settings.preset >= static_cast<uint>(Preset::kCount))
 		settings.preset = static_cast<uint>(Preset::kFull);
-	// Out of range (including the retired HDR Linear, 3) falls back to the proxy the default
-	// preset uses.
-	if (settings.proxyCurve >= static_cast<uint>(ProxyCurve::kCount))
-		settings.proxyCurve = static_cast<uint>(ProxyCurve::kDisplayMatched);
-	const auto sanitizeCategoryStrengths = [&](CategoryStrengths& strengths) {
-		sanitizeFloat(strengths.colorStrength, 1.0f, 0.0f, 1.0f);
-		sanitizeFloat(strengths.transferStrength, 1.0f, 0.0f, 2.0f);
-		sanitizeFloat(strengths.broadLuminosity, 1.0f, 0.0f, 2.0f);
-		sanitizeFloat(strengths.detailLuminosity, 1.0f, 0.0f, 2.0f);
-	};
-	sanitizeCategoryStrengths(settings.everythingElseStrengths);
-	sanitizeCategoryStrengths(settings.skinStrengths);
-	sanitizeCategoryStrengths(settings.hairStrengths);
-	sanitizeCategoryStrengths(settings.eyesStrengths);
-	sanitizeCategoryStrengths(settings.foliageStrengths);
-	sanitizeCategoryStrengths(settings.landscapeStrengths);
-	sanitizeCategoryStrengths(settings.equipmentStrengths);
+
+	// A user preset whose file is gone is forgotten; its values stay and read as the built-in
+	// preset they were based on, "(modified)" wherever they differ.
+	RefreshUserPresets();
+	if (!settings.userPreset.empty() && !FindUserPreset(settings.userPreset)) {
+		logger::info("[NeuralRendering] Preset '{}' no longer exists; keeping its values", settings.userPreset);
+		settings.userPreset.clear();
+	}
 
 	// Someone who tuned things before Advanced existed should still see their sliders; a
 	// config that still matches its preset exactly starts with them folded away. Every config
