@@ -724,17 +724,17 @@ void NeuralRendering::DrawSettings()
 				"below multiply on top of these as a final adjustment layer."));
 		}
 
-		ImGui::SliderFloat(T(TKEY("color_strength"), "Color Strength"), &settings.colorStrength, 0.0f, 2.0f, "%.2f");
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("color_strength_tooltip"),
-				"Blend the model's color changes independently of its bounded lighting and detail changes. 1 is the "
-				"model's own color change; above 1 extrapolates the same change further."));
-		}
 		ImGui::SliderFloat(T(TKEY("transfer_strength"), "Transfer Strength"), &settings.transferStrength, 0.0f, 2.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("transfer_strength_tooltip"),
 				"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
 				"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
+		}
+		ImGui::SliderFloat(T(TKEY("color_strength"), "Color Strength"), &settings.colorStrength, 0.0f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("color_strength_tooltip"),
+				"Blend the model's color changes independently of its bounded lighting and detail changes. 1 is the "
+				"model's own color change; above 1 extrapolates the same change further."));
 		}
 		ImGui::SliderFloat(T(TKEY("broad_luminosity"), "Broad Luminosity"), &settings.broadLuminosity, 0.0f, 2.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -896,10 +896,10 @@ void NeuralRendering::DrawCategoryStrengths(const char* a_id, const char* a_labe
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextUnformatted(a_tooltip);
 	}
-	ImGui::SliderFloat(T(TKEY("color_strength"), "Color Strength"),
-		&a_strengths.colorStrength, 0.0f, 2.0f, "%.2f");
 	ImGui::SliderFloat(T(TKEY("transfer_strength"), "Transfer Strength"),
 		&a_strengths.transferStrength, 0.0f, 2.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("color_strength"), "Color Strength"),
+		&a_strengths.colorStrength, 0.0f, 2.0f, "%.2f");
 	ImGui::SliderFloat(T(TKEY("broad_luminosity"), "Broad Luminosity"),
 		&a_strengths.broadLuminosity, 0.0f, 2.0f, "%.2f");
 	ImGui::SliderFloat(T(TKEY("detail_luminosity"), "Detail Luminosity"),

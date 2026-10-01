@@ -969,7 +969,7 @@ with its position slider. Split Screen stays out of Advanced on purpose - it is 
 judges whether the edit is an improvement at all.
 
 Behind Advanced: NR Style, Local Tone/Structure/Skin, Automatic Mask, Proxy Curve,
-Color/Transfer/Broad/Detail strengths, Band Radius, Ratio Guard and Max Ratio, the
+Transfer/Color/Broad/Detail strengths, Band Radius, Ratio Guard and Max Ratio, the
 per-category trees, Depth-Aware Silhouette, Frame Hold, and the whole Debug group.
 
 ### Settings migration
