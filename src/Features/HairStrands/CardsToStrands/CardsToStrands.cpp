@@ -91,7 +91,7 @@ namespace CardsToStrands
 		constexpr float kSkullCentreOffset = 5.0f;   // head bone (skull base) to skull centre, up
 		constexpr float kRootEntryThreshold = 0.3f;  // how squarely flow must enter a root edge
 		constexpr float kFoldThreshold = -0.2f;      // neighbour normals this opposed end a strand
-		constexpr float kShortHairLength = 1.0f;     // Auto seeding: median card guide below this is short hair
+		constexpr float kShortHairLength = 1.0f;     // Auto seeding: short hair if half the traced length lies in card guides shorter than this
 		constexpr uint32_t kMaxStepsPerStrand = 4096;
 		constexpr uint32_t kMaxCrossingsPerStep = 64;  // triangles one step may cross (slivers)
 		constexpr float kRootBudgetShare = 0.85f;      // of the card guide cap, the rest left for fill guides
@@ -2173,15 +2173,26 @@ namespace CardsToStrands
 				SeedRoots();
 				SeedFill();
 				if (mode == Seeding::Auto) {
+					// Short hair if most of the traced hair (by length, not by count) lies in short
+					// card guides. Dense long hair yields many short streamlines too (from card side
+					// edges, between transparent gaps, through small fill triangles), and those can
+					// outnumber the long ones.
 					std::vector<float> lengths;
-					for (const auto& g : guides)
+					double total = 0.0;
+					for (const auto& g : guides) {
 						lengths.push_back(g.path.back().s);
-					bool shortHair = lengths.empty();
-					if (!shortHair) {
-						std::nth_element(lengths.begin(), lengths.begin() + lengths.size() / 2, lengths.end());
-						shortHair = lengths[lengths.size() / 2] < kShortHairLength;
+						total += g.path.back().s;
 					}
-					mode = shortHair ? Seeding::Area : Seeding::Scalp;
+					std::ranges::sort(lengths);
+					float weightedMedian = 0.0f;
+					double below = 0.0;
+					for (float length : lengths) {
+						below += length;
+						weightedMedian = length;
+						if (below >= 0.5 * total)
+							break;
+					}
+					mode = weightedMedian < kShortHairLength ? Seeding::Area : Seeding::Scalp;
 				}
 			}
 			o_result.stats.cardGuides = static_cast<uint32_t>(guides.size());

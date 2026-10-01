@@ -103,8 +103,12 @@ per guide, so per clump), `clumpStrength`, `clumpTwist`, `volume`, `layerJitter`
    through the innermost 10% of the hair.
 3. **Card guides.** Streamlines traced along the cards from upstream edges and through
    triangles they missed, trimmed to the painted hair, as before, one per `clumpSize` of card
-   width (clamped to 0.4 to 2 units). `seeding: auto` switches to area seeding when the median
-   guide is under 1 unit.
+   width (clamped to 0.4 to 2 units). `seeding: auto` switches to area seeding when half the
+   traced length lies in guides under 1 unit. That is weighted by length, not a median count:
+   dense long hair traces far more short streamlines than long ones. Apachii hair 09 (33,000
+   triangles) traces 7,288, 7,005 of them repeats or fragments, and its median guide is under
+   1 unit; by count it came out as 35,000 strands 1.1 units long, by length as 8,020 strands
+   of median length 27.8, all rooted on the scalp.
 4. **Drop repeats** (`PruneRedundant`), longest first and within one sheet only (overlapping
    sheets are layers, each carrying its own hair). A guide goes if over 80% of it runs within
    half a spacing of a kept one, or if it is a fragment: shorter than 0.35 of its sheet's long
