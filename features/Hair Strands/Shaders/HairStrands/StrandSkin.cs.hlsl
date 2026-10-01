@@ -14,8 +14,8 @@
 // Only guides collide in the simulation. A strand nearer the scalp than its guide can be
 // carried into the head by the guide's offset, so each strand point is also kept out of the
 // head field (never deeper than its own target lies), as TressFX's signed distance field
-// collision treats every point of every strand, and out of the body colliders (but for the two
-// points at the root, pinned in the simulation too).
+// collision treats every point of every strand, and off the body's distance field as far as its
+// own target lies (but for the two points at the root, pinned in the simulation too).
 
 #include "HairStrands/Skinning.hlsli"
 
@@ -84,12 +84,15 @@ RWStructuredBuffer<HairStrands::SkinnedPoint> Skinned : register(u0);
 			followedPrevious = HairStrandsSkin::CollideHead(followedPrevious, HairStrandsSkin::HeadDepth(previousTarget, previousHead), previousHead);
 		}
 		if ((Flags & HAIR_STRANDS_FLAG_BODY_FIELD) && id % PointsPerStrand >= 2) {
-			[loop] for (uint collider = 0; collider < BodyColliderCount; ++collider)
-			{
-				float3 q, normal;
-				HairStrandsSkin::CollideBody(collider, HairStrandsSkin::MakeBodyFrame(HairStrandsSkin::LoadBodyRows(collider, 0)), followed, target, q, normal);
-				HairStrandsSkin::CollideBody(collider, HairStrandsSkin::MakeBodyFrame(HairStrandsSkin::LoadBodyRows(collider, 1)), followedPrevious, previousTarget, q, normal);
-			}
+			// Last frame's position goes against last frame's surface: this frame's, taken back by its
+			// move over the frame.
+			const float2 limits = HairStrandsSkin::BodyLimits(target);
+			float surfaceDistance;
+			float3 normal, move;
+			HairStrandsSkin::CollideBody(followed, (float3)0, limits, surfaceDistance, normal, move);
+			float3 previousHere = followedPrevious + PreviousToCurrent;
+			HairStrandsSkin::CollideBody(previousHere, HairStrandsSkin::BodyAhead(previousHere, 0.0), limits, surfaceDistance, normal, move);
+			followedPrevious = previousHere - PreviousToCurrent;
 		}
 		const float4 rotation = normalize(lerp(a.Rotation, dot(a.Rotation, b.Rotation) < 0.0 ? -b.Rotation : b.Rotation, w));
 

@@ -10,7 +10,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "BodyField.h"
+#include "BodySdf.h"
 #include "StrandGenerator.h"
 #include "StrandStyle.h"
 
@@ -87,7 +87,7 @@ namespace Strands
 			kReset = 2,       // guides restart from their targets
 			kCollide = 4,     // guides keep out of the colliders
 			kHeadField = 8,   // every strand keeps out of the head field (t4)
-			kBodyField = 16,  // every strand keeps out of the body colliders (t5)
+			kBodyField = 16,  // every strand keeps off the body's distance field (t5, t6)
 		};
 
 		uint32_t pointCount;
@@ -128,16 +128,20 @@ namespace Strands
 		uint32_t colliderCount;
 
 		float3 headFieldCentre;  // skin space
-		uint32_t bodyColliderCount;
+		float bodyMinClearance;  // units
 
 		float4 wind[4];
 		float4 colliders[kMaxColliders * 2];
-		// Per body collider: field-to-world rows this frame, then last frame's, each relative to its frame's camera.
-		float4 bodyFrames[kBodySlots * 6];
-		float4 bodyShapes[kBodySlots];  // segment length, bounding radius, its map (uint bits), unused
+		// The body's distance field (BodySdf.h), this frame's.
+		float4 bodyToGrid[3];  // camera-relative position to grid cells
+		float3 bodyGridSize;
+		float bodyMaxClearance;  // units
+		float3 bodyTexel;
+		float bodyTrust;         // units
+		float4 bodyRootMove[3];  // a camera-relative point's move with the actor's root over the frame
 	};
 	STATIC_ASSERT_ALIGNAS_16(SkinCB);
-	static_assert(sizeof(SkinCB) == 208 + kMaxColliders * 32 + kBodySlots * 112);
+	static_assert(sizeof(SkinCB) == 208 + kMaxColliders * 32 + 128);
 
 	/** @brief Global options the renderer reads every frame (owned by the HairStrands feature). */
 	struct RenderSettings
@@ -199,6 +203,9 @@ namespace Strands
 		uint64_t gpuBytes = 0;
 		uint32_t simulatedHair = 0;
 		uint64_t guidesSimulated = 0;
+		uint32_t bodyActors = 0;     // characters with a collision mesh
+		uint32_t bodyTriangles = 0;  // in their collision meshes
+		uint32_t bodyFields = 0;     // distance fields built
 	};
 
 	/**
@@ -291,18 +298,28 @@ namespace Strands
 		/** @brief The strand shaders for a lighting permutation if already compiled, without requesting them. */
 		ShaderVariant* FindVariant(uint32_t a_pixelDescriptor);
 		/** @brief The shader once compiled (null until then); requests the compile on first call. a_failure is logged if it fails. */
-		winrt::com_ptr<ID3D11ComputeShader> EnsureComputeShader(ComputeShader& a_slot, const wchar_t* a_path, const char* a_failure);
+		winrt::com_ptr<ID3D11ComputeShader> EnsureComputeShader(ComputeShader& a_slot, const wchar_t* a_path, const char* a_entry, const char* a_failure);
 		bool EnsureSkinShader();
 		/** @brief LOD and skinning, once per rendered frame; true if the hair draws strands this frame. */
 		bool PrepareStrands(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin);
 		bool UpdateLod(Instance& a_instance, RE::BSGeometry* a_geometry);
 		bool Skin(Instance& a_instance, RE::NiSkinInstance* a_skin);
+
+		/** @brief What a simulated hair asks of its actor's body field this frame. */
+		struct BodyRequest
+		{
+			bool wanted = false;  // the actor has a collision mesh (no bone capsules were gathered)
+			float3 centre;        // camera-relative: the hair's skull centre
+			float reach = 0.0f;   // units from it the hair can reach
+		};
+
 		/**
 		 * @brief Fills the simulation part of a_cb for this frame.
 		 * @param a_palette This frame's skin-to-world rows, absolute translations.
+		 * @param o_body    Whether (and how far round the head) to build the body field.
 		 * @return false if the hair is not simulated this frame (plain skinning).
 		 */
-		bool PrepareSimulation(Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb);
+		bool PrepareSimulation(Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb, BodyRequest& o_body);
 		/**
 		 * @brief Builds a_instance's head field from its actor's head mesh (the Face head part),
 		 * once per asset. Leaves it empty, and the head sphere in use, if the actor has no
@@ -311,18 +328,17 @@ namespace Strands
 		 */
 		void BuildHeadField(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin);
 		/**
-		 * @brief Keeps a_instance's body colliders in step with what its actor wears: looks at the worn
-		 * meshes now and then, builds the colliders on a worker when they change, and takes a finished
-		 * build. Until one is ready the last colliders (or the bone capsules) stay.
+		 * @brief Keeps a_instance's actor's collision mesh in step with what it wears (BodyCollision::Update).
+		 * Until one is built, the bone capsules stand in.
 		 */
-		void UpdateBodyField(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin);
+		void UpdateBody(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin);
+		/** @brief BodySdf.cs.hlsl's kernels once compiled (null members until then). */
+		BodySdfPrograms GetBodyPrograms();
 		/**
 		 * @brief The head sphere (without a head field) and, when the hair hangs from a humanoid head and
-		 * no body colliders were built from its actor's worn meshes, neck, torso and arm capsules.
+		 * a_bodyCapsules is set (its actor has no collision mesh), neck, torso and arm capsules.
 		 */
-		uint32_t GatherColliders(const Instance& a_instance, const BodySkeleton& a_skeleton, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, float4* o_colliders) const;
-		/** @brief This frame's body colliders (from UpdateBodyField) into a_cb, on their bones' poses this frame and last. */
-		uint32_t GatherBodyColliders(Instance& a_instance, const BodySkeleton& a_skeleton, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb);
+		uint32_t GatherColliders(const Instance& a_instance, const BodySkeleton& a_skeleton, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, bool a_bodyCapsules, float4* o_colliders) const;
 		/** @brief Draws the strands with the bound pass state; a_depthOnly draws depth alone, and only if the pass writes depth. */
 		void Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport, bool a_depthOnly);
 		ID3D11RasterizerState* GetNoCullState(ID3D11RasterizerState* a_current);
@@ -346,6 +362,11 @@ namespace Strands
 		std::mutex computeShaderMutex;
 		ComputeShader skinShader;
 		ComputeShader simShader;
+		ComputeShader bodySkinShader;  // BodySdf.cs.hlsl's kernels
+		ComputeShader bodySplatShader;
+		ComputeShader bodyFinalizeShader;
+
+		std::unique_ptr<BodyCollision> bodyCollision;
 
 		// Simulation clock, advanced once per frame: fixed steps shared by all hair (none while
 		// paused), where in the frame they end, and how far the frame is past the last one.

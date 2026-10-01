@@ -34,12 +34,12 @@
 //     segment before it, turned by the shortest arc from that segment's rest direction to its
 //     current one.
 //  4. LengthConstriantsWindAndCollision: wind across each segment, distance constraints in even
-//     then odd pairs, capsule collision (which stops the point), and the position delta clamp. The
-//     body colliders (not TressFX) come with the capsules.
-//  5. TressFX's collision with the body's signed distance field (CollideHairVerticesWithSdf),
-//     here the head field: the actor's own head mesh (see Skinning.hlsli). A point inside is put
-//     back on the surface and stops. TressFX runs it after the simulation on every point but
-//     the first two, followers included; StrandSkin.cs.hlsl does the followers.
+//     then odd pairs, capsule collision (which stops the point), and the position delta clamp.
+//  5. TressFX's collision with the body's signed distance field (CollideHairVerticesWithSdf):
+//     here the body's distance field, built this frame from what the actor wears
+//     (BodySdf.cs.hlsl), and the head field, the actor's own head mesh (see Skinning.hlsli). A
+//     point inside is put back on the surface. TressFX runs it after the simulation on every point
+//     but the first two, followers included; StrandSkin.cs.hlsl does the followers.
 // TressFX runs these as separate dispatches over every vertex or strand; one thread runs a whole
 // strand here, and each pass is a loop with the same result.
 //
@@ -66,11 +66,21 @@
 //  - Collision keeps a styled shape that already lies inside a capsule or the head from being
 //    pushed out (see Collide and HairStrandsSkin::CollideHead), and the position delta clamp
 //    leaves the two pinned points alone.
-//  - The body colliders are the actor's own body and what it wears (HairStrandsSkin::CollideBody),
-//    on their bones' poses at each step, as the targets are. A point pushed out of one moves on
-//    with the surface: it keeps the surface's move over the step and BodySlide of its own slide
-//    along it, none of its motion into or off it. Stopping it dead, as TressFX's capsules do, left
-//    hair on a moving body to be caught up and shoved every step, and it shook.
+//  - TressFX builds its distance field at each pass's pose. The body's is built once a frame, at
+//    the frame's pose, and stores how the surface moved over the frame: a step part-way through
+//    the frame takes the point ahead (with the actor's root, then the surface) to the frame's end,
+//    collides it there, and takes it back. It runs with the capsules, before the clamp, rather
+//    than after the whole pass.
+//  - The body keeps a point as far off it as the point's target lies (between BodyMinClearance and
+//    BodyMaxClearance), so a styled shape resting on the body rests as styled, and one styled into
+//    armour lies on the armour. A point pushed out moves on with the surface: it keeps the
+//    surface's move over the step and BodySlide of its own slide along it, none of its motion into
+//    or off it, less the move VSP gives it with the root. Stopping it dead, as TressFX does, left
+//    hair on a moving body to be caught up and shoved every step, and it shook. With VSP's move on
+//    top, hair on the back of a running body was driven into it a little every step.
+//  - A point that went past the middle of a thin part (a shield, a plate) in one step reads inside
+//    it, from the far side's surface. If where it began the step reads the other way, it goes back
+//    there, on the surface's side it came from, rather than out through the part.
 
 #include "HairStrands/Skinning.hlsli"
 
@@ -83,7 +93,7 @@ namespace HairStrandsSim
 {
 	// TressFX ResolveCapsuleCollisions: the share of a colliding point's move along the capsule kept.
 	static const float CapsuleFriction = 0.4;
-	// The share of a point's slide along a body collider (relative to it) kept: TressFX's capsule friction.
+	// The share of a point's slide along the body (relative to it) kept: TressFX's capsule friction.
 	static const float BodySlide = CapsuleFriction;
 	// Longest a segment may end a step, relative to its rest length.
 	static const float MaxStretch = 1.2;
@@ -228,17 +238,6 @@ namespace HairStrandsSim
 		return frame;
 	}
 
-	// Body collider a_collider's frame at a_f of the way from last frame's pose to this frame's, as the
-	// targets are taken at each step (a_f below 0 carries last frame's motion on backwards).
-	HairStrandsSkin::BodyFrame StepBodyFrame(uint a_collider, float a_f)
-	{
-		float3x4 previous = HairStrandsSkin::LoadBodyRows(a_collider, 1);
-		previous[0].w += PreviousToCurrent.x;
-		previous[1].w += PreviousToCurrent.y;
-		previous[2].w += PreviousToCurrent.z;
-		return HairStrandsSkin::MakeBodyFrame(lerp(previous, HairStrandsSkin::LoadBodyRows(a_collider, 0), a_f));
-	}
-
 	// TressFX mixes its four wind vectors per strand, so neighbouring strands blow apart.
 	float3 GuideWind(uint a_guide)
 	{
@@ -260,7 +259,8 @@ namespace HairStrandsSim
 	float3 previous[MAX_POINTS];            // g_HairVertexPositionsPrev
 	float3 stepOffset[MAX_POINTS];          // position - target, at the last step
 	float3 previousStepOffset[MAX_POINTS];  // and at the step before
-	uint i, step, iteration, collider;
+	float2 bodyLimits[MAX_POINTS];          // how far off the body each point is kept, and the deepest it is believed to be
+	uint i, step, iteration;
 
 	[loop] for (i = 0; i < n; ++i)
 	{
@@ -300,7 +300,13 @@ namespace HairStrandsSim
 	const bool haveWind = any(wind != 0.0);
 	const bool collide = (Flags & HAIR_STRANDS_FLAG_COLLIDE) != 0 && ColliderCount > 0;
 	const bool collideHead = (Flags & HAIR_STRANDS_FLAG_HEAD_FIELD) != 0;
-	const bool collideBody = (Flags & HAIR_STRANDS_FLAG_BODY_FIELD) != 0 && BodyColliderCount > 0;
+	const bool collideBody = (Flags & HAIR_STRANDS_FLAG_BODY_FIELD) != 0;
+	[loop] for (i = 0; i < n; ++i)
+	{
+		bodyLimits[i] = 0;
+		if (collideBody)
+			bodyLimits[i] = HairStrandsSkin::BodyLimits(targetEnd[i]);
+	}
 
 	[loop] for (step = 0; step < steps; ++step)
 	{
@@ -322,14 +328,18 @@ namespace HairStrandsSim
 			position[i] = next;
 		}
 
-		// CalculateStrandLevelData, then VelocityShockPropagation.
+		// CalculateStrandLevelData, then VelocityShockPropagation. The root's motion over the step
+		// (rotation, translation) and the share of it given to the strand stay for the body contact.
+		float4 rotation;
+		float3 translation;
+		float vsp;
 		{
 			const float3 u = HairStrandsSkin::SafeNormalize(previous[1] - previous[0], float3(0, 0, -1));
 			const float3 v = HairStrandsSkin::SafeNormalize(position[1] - position[0], u);
-			const float4 rotation = HairStrandsSim::QuatFromTwoUnitVectors(u, v);
-			const float3 translation = position[0] - HairStrandsSim::MultQuaternionAndVector(rotation, previous[0]);
+			rotation = HairStrandsSim::QuatFromTwoUnitVectors(u, v);
+			translation = position[0] - HairStrandsSim::MultQuaternionAndVector(rotation, previous[0]);
 			const float accel = length(position[1] - 2.0 * previous[1] + previousPrevious1);
-			const float vsp = accel > VspAccelThreshold ? 1.0 : VspCoeff * lengthScale;
+			vsp = accel > VspAccelThreshold ? 1.0 : VspCoeff * lengthScale;
 			[loop] for (i = 2; i < n; ++i)
 			{
 				position[i] = lerp(position[i], HairStrandsSim::MultQuaternionAndVector(rotation, position[i]) + translation, vsp);
@@ -407,16 +417,28 @@ namespace HairStrandsSim
 			bool contact = false;
 			float3 contactNormal = 0;
 			float3 surfaceMove = 0;
+			float3 shift = 0;  // VSP's move of the point (and its previous position) with the root this step
 			if (collideBody) {
-				[loop] for (collider = 0; collider < BodyColliderCount; ++collider)
-				{
-					float3 q, normal;
-					if (HairStrandsSkin::CollideBody(collider, HairStrandsSim::StepBodyFrame(collider, f), position[i], target, q, normal)) {
-						// Where that point of the surface was a step ago.
-						const HairStrandsSkin::BodyFrame before = HairStrandsSim::StepBodyFrame(collider, f - StepFraction);
-						surfaceMove = position[i] - (before.origin + mul(before.toCamera, q));
-						contactNormal = normal;
-						contact = true;
+				shift = (HairStrandsSim::MultQuaternionAndVector(rotation, position[i]) + translation - position[i]) * vsp;
+				// The field is the body at the frame's end: the point goes ahead with the surface to
+				// then, and the surface moved over the step as over the frame.
+				const float3 ahead = HairStrandsSkin::BodyAhead(position[i], f);
+				float surfaceDistance;
+				float3 frameMove;
+				if (HairStrandsSkin::CollideBody(position[i], ahead, bodyLimits[i], surfaceDistance, contactNormal, frameMove)) {
+					surfaceMove = frameMove * StepFraction;
+					contact = true;
+					// Into a thin part from the other side in one step (inside it, the field is the far
+					// side's): back where it began on the surface, on the side it came from.
+					if (surfaceDistance < 0.0) {
+						const float3 start = previous[i] - shift + surfaceMove;
+						float startDistance;
+						float3 startNormal, startMove;
+						const bool started = HairStrandsSkin::SampleBody(start + ahead, startDistance, startNormal, startMove);
+						if (started && dot(startNormal, contactNormal) < 0.0) {
+							position[i] = start + startNormal * max(bodyLimits[i].x - startDistance, 0.0);
+							contactNormal = startNormal;
+						}
 					}
 				}
 			}
@@ -429,10 +451,12 @@ namespace HairStrandsSim
 			if (collided) {
 				previous[i] = position[i];
 			} else if (contact) {
-				// On the body: the point moves on with the surface, keeping BodySlide of its slide along it.
-				float3 slide = position[i] - previous[i] - surfaceMove;
+				// On the body: the point moves on with the surface, keeping BodySlide of its slide along
+				// it. VSP will move it with the root again next step: its velocity is the surface's move
+				// less that.
+				float3 slide = position[i] - previous[i] + shift - surfaceMove;
 				slide -= contactNormal * dot(slide, contactNormal);
-				previous[i] = position[i] - surfaceMove - HairStrandsSim::BodySlide * slide;
+				previous[i] = position[i] - (surfaceMove - shift) - HairStrandsSim::BodySlide * slide;
 			}
 		}
 

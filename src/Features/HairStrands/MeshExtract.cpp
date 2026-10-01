@@ -16,51 +16,6 @@ namespace Strands
 		using DirectX::PackedVector::XMConvertHalfToFloat;
 		using RE::BSGraphics::Vertex;
 
-		// SSE packs vertex attributes in a fixed order; offsets follow from the flags alone
-		// (the descriptor's offset nibbles are not trusted, see the hair-mesh notes).
-		struct VertexLayout
-		{
-			int32_t position = -1;
-			int32_t uv = -1;
-			int32_t normal = -1;
-			int32_t skinning = -1;
-			uint32_t stride = 0;
-		};
-
-		VertexLayout GetLayout(const RE::BSGraphics::VertexDesc& a_desc)
-		{
-			VertexLayout layout;
-			uint32_t offset = 0;
-			if (a_desc.HasFlag(Vertex::VF_VERTEX)) {
-				// SSE positions are always three floats plus the bitangent's x, whether or not
-				// VF_FULLPREC is set (a Fallout 4 flag many SSE meshes carry, and many do not).
-				layout.position = static_cast<int32_t>(offset);
-				offset += 16;
-			}
-			if (a_desc.HasFlag(Vertex::VF_UV)) {
-				layout.uv = static_cast<int32_t>(offset);
-				offset += 4;
-			}
-			if (a_desc.HasFlag(Vertex::VF_UV_2))
-				offset += 4;
-			if (a_desc.HasFlag(Vertex::VF_NORMAL)) {
-				layout.normal = static_cast<int32_t>(offset);
-				offset += 4;
-				if (a_desc.HasFlag(Vertex::VF_TANGENT))
-					offset += 4;
-			}
-			if (a_desc.HasFlag(Vertex::VF_COLORS))
-				offset += 4;
-			if (a_desc.HasFlag(Vertex::VF_SKINNED)) {
-				layout.skinning = static_cast<int32_t>(offset);
-				offset += 12;
-			}
-			if (a_desc.HasFlag(Vertex::VF_EYEDATA))
-				offset += 4;
-			layout.stride = offset;
-			return layout;
-		}
-
 		float Half(const uint8_t* a_data)
 		{
 			return XMConvertHalfToFloat(*reinterpret_cast<const uint16_t*>(a_data));
@@ -176,9 +131,96 @@ namespace Strands
 		}
 	}
 
-	bool ExtractHairMesh(RE::BSGeometry* a_geometry, HairMeshData& o_mesh, std::string& o_error)
+	VertexLayout GetVertexLayout(const RE::BSGraphics::VertexDesc& a_desc)
 	{
-		o_mesh = {};
+		VertexLayout layout;
+		uint32_t offset = 0;
+		if (a_desc.HasFlag(Vertex::VF_VERTEX)) {
+			// SSE positions are always three floats plus the bitangent's x, whether or not
+			// VF_FULLPREC is set (a Fallout 4 flag many SSE meshes carry, and many do not).
+			layout.position = static_cast<int32_t>(offset);
+			offset += 16;
+		}
+		if (a_desc.HasFlag(Vertex::VF_UV)) {
+			layout.uv = static_cast<int32_t>(offset);
+			offset += 4;
+		}
+		if (a_desc.HasFlag(Vertex::VF_UV_2))
+			offset += 4;
+		if (a_desc.HasFlag(Vertex::VF_NORMAL)) {
+			layout.normal = static_cast<int32_t>(offset);
+			offset += 4;
+			if (a_desc.HasFlag(Vertex::VF_TANGENT))
+				offset += 4;
+		}
+		if (a_desc.HasFlag(Vertex::VF_COLORS))
+			offset += 4;
+		if (a_desc.HasFlag(Vertex::VF_SKINNED)) {
+			layout.skinning = static_cast<int32_t>(offset);
+			offset += 12;
+		}
+		if (a_desc.HasFlag(Vertex::VF_EYEDATA))
+			offset += 4;
+		layout.stride = offset;
+		return layout;
+	}
+
+	uint32_t GetDeclaredStride(const RE::BSGraphics::VertexDesc& a_desc)
+	{
+		return static_cast<uint32_t>(std::bit_cast<uint64_t>(a_desc) & 0xF) * 4;
+	}
+
+	bool BeginBufferReadback(ID3D11Buffer* a_buffer, uint32_t a_size, const char* a_name, BufferReadback& o_readback, std::string& o_error)
+	{
+		o_readback = {};
+		if (!a_buffer || a_size == 0) {
+			o_error = "no GPU buffer";
+			return false;
+		}
+		D3D11_BUFFER_DESC desc{};
+		a_buffer->GetDesc(&desc);
+		if (desc.ByteWidth < a_size) {
+			o_error = std::format("GPU buffer holds {} bytes, {} expected", desc.ByteWidth, a_size);
+			return false;
+		}
+		D3D11_BUFFER_DESC stagingDesc{};
+		stagingDesc.ByteWidth = a_size;
+		stagingDesc.Usage = D3D11_USAGE_STAGING;
+		stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		if (FAILED(globals::d3d::device->CreateBuffer(&stagingDesc, nullptr, o_readback.staging.put()))) {
+			o_error = "cannot create the staging buffer";
+			return false;
+		}
+		Util::SetResourceName(o_readback.staging.get(), a_name);
+		const D3D11_BOX box{ 0, 0, 0, a_size, 1, 1 };
+		globals::d3d::context->CopySubresourceRegion(o_readback.staging.get(), 0, 0, 0, 0, a_buffer, 0, &box);
+		o_readback.size = a_size;
+		return true;
+	}
+
+	ReadbackStatus PollBufferReadback(BufferReadback& io_readback)
+	{
+		if (!io_readback.staging)
+			return io_readback.bytes.empty() ? ReadbackStatus::Failed : ReadbackStatus::Done;
+		auto* context = globals::d3d::context;
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		const HRESULT hr = context->Map(io_readback.staging.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+		if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+			return ReadbackStatus::Pending;
+		if (FAILED(hr)) {
+			io_readback.staging = nullptr;
+			return ReadbackStatus::Failed;
+		}
+		const auto* data = static_cast<const uint8_t*>(mapped.pData);
+		io_readback.bytes.assign(data, data + io_readback.size);
+		context->Unmap(io_readback.staging.get(), 0);
+		io_readback.staging = nullptr;
+		return ReadbackStatus::Done;
+	}
+
+	bool CopySkinnedMesh(RE::BSGeometry* a_geometry, bool a_allowReadback, SkinnedMeshCopy& o_copy, std::string& o_error)
+	{
+		o_copy = {};
 		if (!a_geometry) {
 			o_error = "no geometry";
 			return false;
@@ -191,52 +233,48 @@ namespace Strands
 			return false;
 		}
 		auto* partition = skinInstance->skinPartition.get();
-		auto* skinData = skinInstance->skinData.get();
 		const uint32_t vertexCount = partition->vertexCount;
-		const uint32_t boneCount = skinData->GetBoneCount();
+		const uint32_t boneCount = skinInstance->skinData->GetBoneCount();
 		if (vertexCount == 0 || partition->numPartitions == 0 || boneCount == 0) {
 			o_error = "empty skin partition";
 			return false;
 		}
 
-		// All partitions share one vertex buffer; find the first that kept its CPU copy.
+		// All partitions share one vertex buffer; find the first that kept its CPU copy (or,
+		// if none did and that is allowed, the GPU's).
 		const RE::NiSkinPartition::Partition* dataPartition = nullptr;
+		const RE::NiSkinPartition::Partition* gpuPartition = nullptr;
 		for (uint32_t p = 0; p < partition->numPartitions; ++p) {
 			const auto& part = partition->partitions[p];
 			if (part.buffData && part.buffData->rawVertexData) {
 				dataPartition = &part;
 				break;
 			}
+			if (!gpuPartition && part.buffData && part.buffData->vertexBuffer)
+				gpuPartition = &part;
 		}
-		if (!dataPartition) {
+		if (!dataPartition && (!a_allowReadback || !gpuPartition)) {
 			o_error = "no CPU vertex data";
 			return false;
 		}
 
-		const auto layout = GetLayout(dataPartition->vertexDesc);
-		if (layout.uv < 0 || layout.skinning < 0 || layout.stride == 0) {
-			o_error = "vertex data has no UV or skinning";
+		const auto& vertexDesc = (dataPartition ? dataPartition : gpuPartition)->vertexDesc;
+		const auto layout = GetVertexLayout(vertexDesc);
+		if (layout.skinning < 0 || layout.stride == 0) {
+			o_error = "vertex data has no skinning";
 			return false;
 		}
 		// The descriptor's size nibble must agree, or every attribute would be read from the
 		// wrong bytes and the strands would scatter.
-		const auto rawDesc = std::bit_cast<uint64_t>(dataPartition->vertexDesc);
-		const uint32_t declaredStride = static_cast<uint32_t>(rawDesc & 0xF) * 4;
+		const uint32_t declaredStride = GetDeclaredStride(vertexDesc);
 		if (declaredStride != layout.stride) {
-			o_error = std::format("unexpected vertex layout (flags {:#x}, stride {} but {} declared)", rawDesc >> 44, layout.stride, declaredStride);
+			o_error = std::format("unexpected vertex layout (flags {:#x}, stride {} but {} declared)", std::bit_cast<uint64_t>(vertexDesc) >> 44, layout.stride, declaredStride);
 			return false;
 		}
 
-		o_mesh.positions.resize(vertexCount);
-		o_mesh.uvs.resize(vertexCount);
-		o_mesh.boneIndices.assign(vertexCount, { 0, 0, 0, 0 });
-		o_mesh.boneWeights.assign(vertexCount, { 0.0f, 0.0f, 0.0f, 0.0f });
-		if (layout.normal >= 0)
-			o_mesh.normals.resize(vertexCount);
-
 		// Dynamic shapes (head parts) keep positions outside the partition data.
-		auto* dynamicShape = netimmerse_cast<RE::BSDynamicTriShape*>(a_geometry);
 		if (layout.position < 0) {
+			auto* dynamicShape = netimmerse_cast<RE::BSDynamicTriShape*>(a_geometry);
 			if (!dynamicShape) {
 				o_error = "vertex data has no positions";
 				return false;
@@ -248,31 +286,18 @@ namespace Strands
 				return false;
 			}
 			const auto* positions = static_cast<const float4*>(dynamicData.dynamicData);
+			o_copy.dynamicPositions.resize(vertexCount);
 			for (uint32_t v = 0; v < vertexCount; ++v)
-				o_mesh.positions[v] = { positions[v].x, positions[v].y, positions[v].z };
-		}
-
-		const uint8_t* raw = dataPartition->buffData->rawVertexData;
-		for (uint32_t v = 0; v < vertexCount; ++v) {
-			const uint8_t* vertex = raw + static_cast<size_t>(v) * layout.stride;
-			if (layout.position >= 0) {
-				const auto* f = reinterpret_cast<const float*>(vertex + layout.position);
-				o_mesh.positions[v] = { f[0], f[1], f[2] };
-			}
-			const uint8_t* uv = vertex + layout.uv;
-			o_mesh.uvs[v] = { Half(uv), Half(uv + 2) };
-			if (layout.normal >= 0) {
-				const uint8_t* n = vertex + layout.normal;
-				float3 normal{ UnpackByte(n[0]), UnpackByte(n[1]), UnpackByte(n[2]) };
-				normal.Normalize();
-				o_mesh.normals[v] = normal;
-			}
+				o_copy.dynamicPositions[v] = { positions[v].x, positions[v].y, positions[v].z };
 		}
 
 		// Triangles, and each vertex's partition (its bone indices are partition-local).
-		std::vector<int32_t> vertexPartition(vertexCount, -1);
+		o_copy.vertexPartition.assign(vertexCount, -1);
+		o_copy.partitionBones.resize(partition->numPartitions);
 		for (uint32_t p = 0; p < partition->numPartitions; ++p) {
 			const auto& part = partition->partitions[p];
+			if (part.bones)
+				o_copy.partitionBones[p].assign(part.bones, part.bones + part.numBones);
 			if (!part.triList || part.triangles == 0)
 				continue;
 			const uint32_t indexCount = part.triangles * 3u;
@@ -289,30 +314,88 @@ namespace Strands
 					o_error = "triangle index out of range";
 					return false;
 				}
-				o_mesh.indices.push_back(index);
-				if (vertexPartition[index] < 0)
-					vertexPartition[index] = static_cast<int32_t>(p);
+				o_copy.indices.push_back(index);
+				if (o_copy.vertexPartition[index] < 0)
+					o_copy.vertexPartition[index] = static_cast<int32_t>(p);
 			}
 		}
-		if (o_mesh.indices.empty()) {
+		if (o_copy.indices.empty()) {
 			o_error = "no triangles";
 			return false;
 		}
 
+		o_copy.vertexDesc = vertexDesc;
+		o_copy.vertexCount = vertexCount;
+		o_copy.boneCount = boneCount;
+		const size_t bytes = static_cast<size_t>(vertexCount) * layout.stride;
+		if (dataPartition) {
+			const uint8_t* raw = dataPartition->buffData->rawVertexData;
+			o_copy.vertices.assign(raw, raw + bytes);
+			return true;
+		}
+		return BeginBufferReadback(reinterpret_cast<ID3D11Buffer*>(gpuPartition->buffData->vertexBuffer), static_cast<uint32_t>(bytes), "HairStrands::SkinnedMeshReadback", o_copy.vertexReadback, o_error);
+	}
+
+	bool DecodeSkinnedMesh(const SkinnedMeshCopy& a_copy, bool a_requireUV, HairMeshData& o_mesh, std::string& o_error)
+	{
+		o_mesh = {};
+		const auto layout = GetVertexLayout(a_copy.vertexDesc);
+		const uint32_t vertexCount = a_copy.vertexCount;
+		if (layout.skinning < 0 || layout.stride == 0 || (a_requireUV && layout.uv < 0)) {
+			o_error = "vertex data has no UV or skinning";
+			return false;
+		}
+		if (a_copy.vertices.size() < static_cast<size_t>(vertexCount) * layout.stride) {
+			o_error = "no CPU vertex data";
+			return false;
+		}
+		if (layout.position < 0 && a_copy.dynamicPositions.size() < vertexCount) {
+			o_error = "dynamic positions missing";
+			return false;
+		}
+
+		o_mesh.positions.resize(vertexCount);
+		if (layout.uv >= 0)
+			o_mesh.uvs.resize(vertexCount);
+		if (layout.normal >= 0)
+			o_mesh.normals.resize(vertexCount);
+		o_mesh.boneIndices.assign(vertexCount, { 0, 0, 0, 0 });
+		o_mesh.boneWeights.assign(vertexCount, { 0.0f, 0.0f, 0.0f, 0.0f });
+
+		const uint8_t* raw = a_copy.vertices.data();
 		for (uint32_t v = 0; v < vertexCount; ++v) {
-			const int32_t p = vertexPartition[v];
-			if (p < 0)
+			const uint8_t* vertex = raw + static_cast<size_t>(v) * layout.stride;
+			if (layout.position >= 0) {
+				const auto* f = reinterpret_cast<const float*>(vertex + layout.position);
+				o_mesh.positions[v] = { f[0], f[1], f[2] };
+			} else {
+				o_mesh.positions[v] = a_copy.dynamicPositions[v];
+			}
+			if (layout.uv >= 0) {
+				const uint8_t* uv = vertex + layout.uv;
+				o_mesh.uvs[v] = { Half(uv), Half(uv + 2) };
+			}
+			if (layout.normal >= 0) {
+				const uint8_t* n = vertex + layout.normal;
+				float3 normal{ UnpackByte(n[0]), UnpackByte(n[1]), UnpackByte(n[2]) };
+				normal.Normalize();
+				o_mesh.normals[v] = normal;
+			}
+
+			// Weights over the bones of the vertex's partition, as skin-instance bones.
+			const int32_t p = v < a_copy.vertexPartition.size() ? a_copy.vertexPartition[v] : -1;
+			if (p < 0 || static_cast<size_t>(p) >= a_copy.partitionBones.size())
 				continue;
-			const auto& part = partition->partitions[p];
-			const uint8_t* skin = raw + static_cast<size_t>(v) * layout.stride + layout.skinning;
+			const auto& bones = a_copy.partitionBones[p];
+			const uint8_t* skin = vertex + layout.skinning;
 			float total = 0.0f;
 			for (int i = 0; i < 4; ++i) {
 				const float weight = Half(skin + i * 2);
 				const uint8_t local = skin[8 + i];
-				if (weight <= 0.0f || local >= part.numBones || !part.bones)
+				if (!(weight > 0.0f) || local >= bones.size())
 					continue;
-				const uint16_t bone = part.bones[local];
-				if (bone >= boneCount)
+				const uint16_t bone = bones[local];
+				if (bone >= a_copy.boneCount)
 					continue;
 				o_mesh.boneIndices[v][i] = bone;
 				o_mesh.boneWeights[v][i] = weight;
@@ -323,16 +406,141 @@ namespace Strands
 					weight /= total;
 			}
 		}
+		o_mesh.indices = a_copy.indices;
+		return true;
+	}
 
-		o_mesh.boneNames.resize(boneCount);
-		o_mesh.boneBindPositions.resize(boneCount);
-		for (uint32_t b = 0; b < boneCount; ++b) {
+	bool ExtractHairMesh(RE::BSGeometry* a_geometry, HairMeshData& o_mesh, std::string& o_error)
+	{
+		o_mesh = {};
+		SkinnedMeshCopy copy;
+		if (!CopySkinnedMesh(a_geometry, false, copy, o_error) || !DecodeSkinnedMesh(copy, true, o_mesh, o_error))
+			return false;
+
+		auto* skinInstance = a_geometry->GetGeometryRuntimeData().skinInstance.get();
+		auto* skinData = skinInstance->skinData.get();
+		o_mesh.boneNames.resize(copy.boneCount);
+		o_mesh.boneBindPositions.resize(copy.boneCount);
+		for (uint32_t b = 0; b < copy.boneCount; ++b) {
 			if (skinInstance->bones && skinInstance->bones[b])
 				o_mesh.boneNames[b] = skinInstance->bones[b]->name.c_str();
 			const auto origin = skinData->GetBoneDataSkinToBone(b).Invert().translate;
 			o_mesh.boneBindPositions[b] = { origin.x, origin.y, origin.z };
 		}
 		return true;
+	}
+
+	bool CopyRigidMesh(RE::BSGeometry* a_geometry, RigidMeshCopy& o_copy, std::string& o_error)
+	{
+		o_copy = {};
+		auto* shape = a_geometry ? a_geometry->AsTriShape() : nullptr;
+		const auto* data = shape ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
+		if (!data) {
+			o_error = "no vertex data";
+			return false;
+		}
+		const auto& counts = shape->GetTrishapeRuntimeData();
+		if (counts.vertexCount == 0 || counts.triangleCount == 0) {
+			o_error = "no triangles";
+			return false;
+		}
+		const auto layout = GetVertexLayout(data->vertexDesc);
+		if (layout.position < 0 || layout.stride == 0) {
+			o_error = "vertex data has no positions";
+			return false;
+		}
+		const uint32_t declaredStride = GetDeclaredStride(data->vertexDesc);
+		if (declaredStride != layout.stride) {
+			o_error = std::format("unexpected vertex layout (flags {:#x}, stride {} but {} declared)", std::bit_cast<uint64_t>(data->vertexDesc) >> 44, layout.stride, declaredStride);
+			return false;
+		}
+
+		o_copy.vertexDesc = data->vertexDesc;
+		o_copy.vertexCount = counts.vertexCount;
+		o_copy.triangleCount = counts.triangleCount;
+		const uint32_t vertexBytes = counts.vertexCount * layout.stride;
+		const uint32_t indexCount = counts.triangleCount * 3u;
+		if (data->rawVertexData)
+			o_copy.vertices.assign(data->rawVertexData, data->rawVertexData + vertexBytes);
+		else if (!BeginBufferReadback(reinterpret_cast<ID3D11Buffer*>(data->vertexBuffer), vertexBytes, "HairStrands::RigidMeshReadback", o_copy.vertexReadback, o_error))
+			return false;
+		if (data->rawIndexData)
+			o_copy.indices.assign(data->rawIndexData, data->rawIndexData + indexCount);
+		else if (!BeginBufferReadback(reinterpret_cast<ID3D11Buffer*>(data->indexBuffer), indexCount * static_cast<uint32_t>(sizeof(uint16_t)), "HairStrands::RigidIndexReadback", o_copy.indexReadback, o_error))
+			return false;
+		return true;
+	}
+
+	bool DecodeRigidMesh(const RigidMeshCopy& a_copy, HairMeshData& o_mesh, std::string& o_error)
+	{
+		o_mesh = {};
+		const auto layout = GetVertexLayout(a_copy.vertexDesc);
+		const uint32_t vertexCount = a_copy.vertexCount;
+		if (layout.position < 0 || a_copy.vertices.size() < static_cast<size_t>(vertexCount) * layout.stride) {
+			o_error = "no CPU vertex data";
+			return false;
+		}
+		if (a_copy.indices.size() < static_cast<size_t>(a_copy.triangleCount) * 3) {
+			o_error = "no CPU triangle data";
+			return false;
+		}
+		o_mesh.positions.resize(vertexCount);
+		if (layout.normal >= 0)
+			o_mesh.normals.resize(vertexCount);
+		o_mesh.boneIndices.assign(vertexCount, { 0, 0, 0, 0 });
+		o_mesh.boneWeights.assign(vertexCount, { 1.0f, 0.0f, 0.0f, 0.0f });
+		for (uint32_t v = 0; v < vertexCount; ++v) {
+			const uint8_t* vertex = a_copy.vertices.data() + static_cast<size_t>(v) * layout.stride;
+			const auto* f = reinterpret_cast<const float*>(vertex + layout.position);
+			o_mesh.positions[v] = { f[0], f[1], f[2] };
+			if (layout.normal >= 0) {
+				const uint8_t* n = vertex + layout.normal;
+				float3 normal{ UnpackByte(n[0]), UnpackByte(n[1]), UnpackByte(n[2]) };
+				normal.Normalize();
+				o_mesh.normals[v] = normal;
+			}
+		}
+		o_mesh.indices.resize(static_cast<size_t>(a_copy.triangleCount) * 3);
+		for (size_t i = 0; i < o_mesh.indices.size(); ++i) {
+			o_mesh.indices[i] = a_copy.indices[i];
+			if (o_mesh.indices[i] >= vertexCount) {
+				o_error = "triangle index out of range";
+				return false;
+			}
+		}
+		return true;
+	}
+
+	namespace
+	{
+		// A readback finished into a_data (by bytes), or still on its way.
+		template <class T>
+		ReadbackStatus PollInto(BufferReadback& io_readback, std::vector<T>& o_data)
+		{
+			if (!io_readback.staging)
+				return o_data.empty() ? ReadbackStatus::Failed : ReadbackStatus::Done;
+			const auto status = PollBufferReadback(io_readback);
+			if (status == ReadbackStatus::Done) {
+				o_data.resize(io_readback.bytes.size() / sizeof(T));
+				std::memcpy(o_data.data(), io_readback.bytes.data(), o_data.size() * sizeof(T));
+				io_readback.bytes = {};
+			}
+			return status;
+		}
+	}
+
+	ReadbackStatus PollMeshCopy(SkinnedMeshCopy& io_copy)
+	{
+		return PollInto(io_copy.vertexReadback, io_copy.vertices);
+	}
+
+	ReadbackStatus PollMeshCopy(RigidMeshCopy& io_copy)
+	{
+		const auto vertices = PollInto(io_copy.vertexReadback, io_copy.vertices);
+		const auto indices = PollInto(io_copy.indexReadback, io_copy.indices);
+		if (vertices == ReadbackStatus::Failed || indices == ReadbackStatus::Failed)
+			return ReadbackStatus::Failed;
+		return vertices == ReadbackStatus::Pending || indices == ReadbackStatus::Pending ? ReadbackStatus::Pending : ReadbackStatus::Done;
 	}
 
 	namespace

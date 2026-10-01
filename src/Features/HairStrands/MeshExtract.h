@@ -109,7 +109,8 @@ namespace Strands
 	/**
 	 * A CPU copy of a skinned hair shape in its bind pose (the shape's skin space), with
 	 * bone indices already resolved from partition-local to skin-instance bone indices.
-	 * Copied once on the render thread; the strand generator then runs on a worker.
+	 * Copied once on the render thread; the strand generator then runs on a worker. Body
+	 * collision decodes worn meshes into it too (without names, coverage or flow).
 	 */
 	struct HairMeshData
 	{
@@ -137,6 +138,91 @@ namespace Strands
 	 * @return false if the geometry has no CPU-side vertex data this code understands.
 	 */
 	bool ExtractHairMesh(RE::BSGeometry* a_geometry, HairMeshData& o_mesh, std::string& o_error);
+
+	/**
+	 * Where each attribute sits in an SSE vertex. SSE packs vertex attributes in a fixed order,
+	 * so offsets follow from the descriptor's flags alone (its offset nibbles are not trusted).
+	 */
+	struct VertexLayout
+	{
+		int32_t position = -1;  // three floats (and the bitangent's x); -1: kept elsewhere (dynamic shapes)
+		int32_t uv = -1;        // two halves
+		int32_t normal = -1;    // three unorm8 in [-1, 1]
+		int32_t skinning = -1;  // four half weights, four bone bytes
+		uint32_t stride = 0;
+	};
+
+	/** @brief The layout a vertex descriptor's flags give. */
+	VertexLayout GetVertexLayout(const RE::BSGraphics::VertexDesc& a_desc);
+	/** @brief The stride a vertex descriptor declares (its size nibble): GetVertexLayout's must agree. */
+	uint32_t GetDeclaredStride(const RE::BSGraphics::VertexDesc& a_desc);
+
+	/** @brief One GPU buffer's first bytes on their way to the CPU, for meshes whose CPU copy is gone. */
+	struct BufferReadback
+	{
+		winrt::com_ptr<ID3D11Buffer> staging;
+		uint32_t size = 0;
+		std::vector<uint8_t> bytes;
+	};
+
+	/**
+	 * @brief Starts copying a_size bytes from the start of a_buffer to the CPU. Render thread only.
+	 * Does not wait for the GPU.
+	 */
+	bool BeginBufferReadback(ID3D11Buffer* a_buffer, uint32_t a_size, const char* a_name, BufferReadback& o_readback, std::string& o_error);
+	/** @brief Maps the staging copy once the GPU has written it. Render thread only. */
+	ReadbackStatus PollBufferReadback(BufferReadback& io_readback);
+
+	/**
+	 * A skinned shape's vertex data as the game keeps it, copied on the render thread (the game
+	 * objects are only valid there) and decoded on any thread by DecodeSkinnedMesh.
+	 */
+	struct SkinnedMeshCopy
+	{
+		RE::BSGraphics::VertexDesc vertexDesc{};
+		uint32_t vertexCount = 0;
+		uint32_t boneCount = 0;
+		std::vector<uint8_t> vertices;                      // vertexCount x the layout's stride
+		BufferReadback vertexReadback;                      // in flight in their place when no partition kept a CPU copy
+		std::vector<float3> dynamicPositions;               // a dynamic shape's (head parts): kept outside the vertex data
+		std::vector<uint32_t> indices;                      // triangle list, shape vertex indices
+		std::vector<int32_t> vertexPartition;               // the partition whose bone table a vertex uses; -1: in no triangle
+		std::vector<std::vector<uint16_t>> partitionBones;  // per partition: its bones as skin-instance bones
+	};
+
+	/**
+	 * @brief Copies a skinned BSTriShape or BSDynamicTriShape's vertex data. Render thread only.
+	 * @param a_allowReadback Without a CPU copy of the vertices, start reading the GPU's back
+	 * (see PollMeshCopy) rather than fail.
+	 */
+	bool CopySkinnedMesh(RE::BSGeometry* a_geometry, bool a_allowReadback, SkinnedMeshCopy& o_copy, std::string& o_error);
+	/**
+	 * @brief Decodes a complete copy into positions, normals, texture coordinates, bone indices
+	 * (skin-instance bones), weights and triangles. Any thread.
+	 * @param a_requireUV Fail if the vertices have no texture coordinates.
+	 */
+	bool DecodeSkinnedMesh(const SkinnedMeshCopy& a_copy, bool a_requireUV, HairMeshData& o_mesh, std::string& o_error);
+
+	/** A rigid (unskinned) BSTriShape's vertex data, copied on the render thread. */
+	struct RigidMeshCopy
+	{
+		RE::BSGraphics::VertexDesc vertexDesc{};
+		uint32_t vertexCount = 0;
+		uint32_t triangleCount = 0;
+		std::vector<uint8_t> vertices;  // vertexCount x the layout's stride
+		std::vector<uint16_t> indices;  // triangle list
+		BufferReadback vertexReadback;  // in flight in their place when the shape kept no CPU copy
+		BufferReadback indexReadback;
+	};
+
+	/** @brief Copies a rigid BSTriShape's vertex data, or starts reading it back. Render thread only. */
+	bool CopyRigidMesh(RE::BSGeometry* a_geometry, RigidMeshCopy& o_copy, std::string& o_error);
+	/** @brief Decodes a complete copy (every vertex on bone 0 with weight 1). Any thread. */
+	bool DecodeRigidMesh(const RigidMeshCopy& a_copy, HairMeshData& o_mesh, std::string& o_error);
+
+	/** @brief Advances a copy's readbacks, if any; Done once all its data is on the CPU. Render thread only. */
+	ReadbackStatus PollMeshCopy(SkinnedMeshCopy& io_copy);
+	ReadbackStatus PollMeshCopy(RigidMeshCopy& io_copy);
 
 	/**
 	 * @brief Starts copying the pass's diffuse texture (one mip, at most 512 texels across) to the CPU.

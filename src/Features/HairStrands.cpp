@@ -305,7 +305,7 @@ void HairStrands::DrawPhysicsSettings()
 	}
 	ImGui::Checkbox(T(TKEY("body_collision"), "Collision"), &settings.BodyCollision);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("body_collision_tooltip"), "Keeps strands out of the head (the character's own head mesh) and lays them over the\nneck, torso, shoulders and upper arms: the character's own body and what it wears,\nread from their meshes whenever that changes."));
+		ImGui::Text("%s", T(TKEY("body_collision_tooltip"), "Keeps strands out of the head (the character's own head mesh) and off everything the\ncharacter wears: body, armour and clothes, and shields, weapons and quivers hanging\non it. Long hair rests on them as they move."));
 	}
 }
 
@@ -318,6 +318,7 @@ void HairStrands::DrawStatistics()
 	ImGui::Text(T(TKEY("stats_strands"), "Strands drawn: %llu"), static_cast<unsigned long long>(stats.strandsDrawn));
 	ImGui::Text(T(TKEY("stats_assets"), "Generated hairstyles: %u (%u generating), GPU memory: %.1f MB"), stats.assets, stats.pendingJobs, stats.gpuBytes / (1024.0 * 1024.0));
 	ImGui::Text(T(TKEY("stats_physics"), "Simulated hair: %u, guide strands: %llu"), stats.simulatedHair, static_cast<unsigned long long>(stats.guidesSimulated));
+	ImGui::Text(T(TKEY("stats_body"), "Body collision: %u characters, %u triangles, %u fields a frame"), stats.bodyActors, stats.bodyTriangles, stats.bodyFields);
 }
 
 bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regenerate)

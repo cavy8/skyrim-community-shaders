@@ -50,13 +50,20 @@ namespace Strands
 		constexpr float kHeadFieldMaxRadiusRatio = 1.5f;  // of the median radius: the nose, not a muzzle or ear tips
 		constexpr float kHeadFieldMinMedianRatio = 0.7f;  // median radius over the head sphere's: a head round the same centre
 		constexpr float kHeadFieldMaxMedianRatio = 2.0f;
-		constexpr uint32_t kBodyCheckFrames = 15;  // frames between looks at what an actor wears (body colliders)
+		// Body collision (BodySdf.h): how far off the body a point is kept, at scale 1. A point whose
+		// target lies closer is kept as close as its target, but no closer than the least.
+		constexpr float kBodyMinClearance = 0.15f;
+		constexpr float kBodyMaxClearance = 0.35f;
+		constexpr float kReachStretch = 1.2f;  // the field reaches as far as the hair stretched this much (StrandSim's MaxStretch)
+		constexpr float kReachMargin = 2.0f;   // and these units more
 
 		const wchar_t* kLightingShaderPath = L"Data\\Shaders\\HairStrands\\StrandLighting.hlsl";
 		const wchar_t* kSkinShaderPath = L"Data\\Shaders\\HairStrands\\StrandSkin.cs.hlsl";
 		const wchar_t* kSimShaderPath = L"Data\\Shaders\\HairStrands\\StrandSim.cs.hlsl";
+		const wchar_t* kBodySdfShaderPath = L"Data\\Shaders\\HairStrands\\BodySdf.cs.hlsl";
 		const char* kSkinShaderFailure = "Strand skinning shader failed to compile; strands are off";
 		const char* kSimShaderFailure = "Strand simulation shader failed to compile; strands are not simulated";
+		const char* kBodySdfShaderFailure = "Body field shader failed to compile; hair collides with bone capsules";
 
 		using LightingFlags = SIE::ShaderCache::LightingShaderFlags;
 		using UtilityFlags = SIE::ShaderCache::UtilityShaderFlags;
@@ -356,6 +363,7 @@ namespace Strands
 		int32_t headBone = -1;
 		float3 headCentre;
 		float headRadius = 0.0f;
+		float reach = 0.0f;  // skin units from headCentre to the furthest strand point
 		std::unique_ptr<Buffer> restPoints;
 		std::unique_ptr<Buffer> strandInfo;
 		winrt::com_ptr<ID3D11ShaderResourceView> colour;  // the strands' colour texture; null: the card texture
@@ -423,17 +431,6 @@ namespace Strands
 		uint32_t simAssetSerial = 0;            // the asset the stored guide state belongs to
 		std::unique_ptr<Buffer> headField;      // the actor's head surface; null: the head sphere
 		uint32_t headFieldSerial = UINT32_MAX;  // the asset the head field was built (or tried) for
-
-		// Body colliders from the actor's worn meshes (BodyField.h); null: the bone capsules.
-		std::unique_ptr<Buffer> bodyField;
-		std::array<BodyColliderShape, kBodySlots> bodyShapes{};
-		uint64_t bodySignature = 0;                           // the worn meshes they were built (or tried) from
-		uint32_t bodyCheckFrame = UINT32_MAX;                 // RenderFrame() of the last look at the worn meshes
-		std::future<std::unique_ptr<BodyFieldData>> bodyJob;  // a build in flight
-		uint64_t bodyJobSignature = 0;                        // the worn meshes it builds from
-		size_t bodyJobMeshes = 0;
-		std::array<std::array<float4, 3>, kBodySlots> previousBodyFrames{};  // last frame's field-to-world rows, absolute translations
-		uint32_t previousBodyFrame = UINT32_MAX;                             // RenderFrame() of previousBodyFrames
 	};
 
 	struct StrandRenderer::ShaderVariant
@@ -448,7 +445,8 @@ namespace Strands
 	};
 
 	StrandRenderer::StrandRenderer(StyleLibrary& a_library) :
-		library(a_library)
+		library(a_library),
+		bodyCollision(std::make_unique<BodyCollision>())
 	{}
 
 	StrandRenderer::~StrandRenderer()
@@ -468,6 +466,7 @@ namespace Strands
 		}
 		assets.clear();
 		jobQueue.clear();
+		bodyCollision->Reset();
 		currentPass = nullptr;
 		currentInstance = nullptr;
 		stats = {};
@@ -489,7 +488,7 @@ namespace Strands
 			variants.clear();
 		}
 		std::scoped_lock lock(computeShaderMutex);
-		for (auto* slot : { &skinShader, &simShader }) {
+		for (auto* slot : { &skinShader, &simShader, &bodySkinShader, &bodySplatShader, &bodyFinalizeShader }) {
 			slot->shader = nullptr;
 			slot->requested = false;
 			slot->failed = false;
@@ -657,6 +656,9 @@ namespace Strands
 			asset->headBone = data->headBone;
 			asset->headCentre = data->headCentre;
 			asset->headRadius = data->headRadius;
+			asset->reach = 0.0f;
+			for (const auto& point : data->points)
+				asset->reach = std::max(asset->reach, (point.position - data->headCentre).Length());
 			D3D11_SUBRESOURCE_DATA pointsInit{ data->points.data(), 0, 0 };
 			D3D11_SUBRESOURCE_DATA strandsInit{ data->strands.data(), 0, 0 };
 			try {
@@ -754,7 +756,13 @@ namespace Strands
 		}
 
 		// Statistics for the previous frame.
+		bodyCollision->BeginFrame();
+		const auto body = bodyCollision->GetStats();
 		stats = {};
+		stats.bodyActors = body.actors;
+		stats.bodyTriangles = body.triangles;
+		stats.bodyFields = body.fieldsBuilt;
+		stats.gpuBytes = body.gpuBytes;
 		for (const auto& [geometry, instance] : instances) {
 			if (!instance->isHair || frame - instance->lastSeenFrame > 2)
 				continue;
@@ -982,13 +990,13 @@ namespace Strands
 		return nullptr;
 	}
 
-	winrt::com_ptr<ID3D11ComputeShader> StrandRenderer::EnsureComputeShader(ComputeShader& a_slot, const wchar_t* a_path, const char* a_failure)
+	winrt::com_ptr<ID3D11ComputeShader> StrandRenderer::EnsureComputeShader(ComputeShader& a_slot, const wchar_t* a_path, const char* a_entry, const char* a_failure)
 	{
 		std::scoped_lock lock(computeShaderMutex);
 		if (a_slot.shader || a_slot.requested || a_slot.failed)
 			return a_slot.shader;
 		a_slot.requested = true;
-		globals::shaderCache->EnqueueComputeShaderCompile(a_path, "main", {}, [this, &a_slot, generation = a_slot.generation, a_failure](ID3D11ComputeShader* a_shader) {
+		globals::shaderCache->EnqueueComputeShaderCompile(a_path, a_entry, {}, [this, &a_slot, generation = a_slot.generation, a_failure](ID3D11ComputeShader* a_shader) {
 			std::scoped_lock lock(computeShaderMutex);
 			if (generation != a_slot.generation) {  // ClearShaders ran while this compiled
 				if (a_shader)
@@ -1007,7 +1015,16 @@ namespace Strands
 
 	bool StrandRenderer::EnsureSkinShader()
 	{
-		return EnsureComputeShader(skinShader, kSkinShaderPath, kSkinShaderFailure) != nullptr;
+		return EnsureComputeShader(skinShader, kSkinShaderPath, "main", kSkinShaderFailure) != nullptr;
+	}
+
+	BodySdfPrograms StrandRenderer::GetBodyPrograms()
+	{
+		BodySdfPrograms programs;
+		programs.skin = EnsureComputeShader(bodySkinShader, kBodySdfShaderPath, "SkinVertices", kBodySdfShaderFailure);
+		programs.splat = EnsureComputeShader(bodySplatShader, kBodySdfShaderPath, "Splat", kBodySdfShaderFailure);
+		programs.finalize = EnsureComputeShader(bodyFinalizeShader, kBodySdfShaderPath, "Finalize", kBodySdfShaderFailure);
+		return programs;
 	}
 
 	bool StrandRenderer::EnsureInstanceBuffers(Instance& a_instance)
@@ -1122,7 +1139,7 @@ namespace Strands
 			a_instance.paletteData[bones * 3 + i] = previous[i];
 			a_instance.paletteData[bones * 3 + i].w -= previousEyeRows[i % 3];
 		}
-		const auto skinProgram = EnsureComputeShader(skinShader, kSkinShaderPath, kSkinShaderFailure);
+		const auto skinProgram = EnsureComputeShader(skinShader, kSkinShaderPath, "main", kSkinShaderFailure);
 		if (!skinProgram)
 			return false;
 
@@ -1150,8 +1167,9 @@ namespace Strands
 		cb.boneCount = bones;
 		cb.pointsPerStrand = a_instance.asset->pointsPerStrand;
 		cb.guideCount = a_instance.asset->guideCount;
-		const auto simProgram = settings.physics ? EnsureComputeShader(simShader, kSimShaderPath, kSimShaderFailure) : nullptr;
-		const bool simulate = simProgram && PrepareSimulation(a_instance, a_skin, absolute, eye, previousEye, cb);
+		const auto simProgram = settings.physics ? EnsureComputeShader(simShader, kSimShaderPath, "main", kSimShaderFailure) : nullptr;
+		BodyRequest bodyRequest;
+		const bool simulate = simProgram && PrepareSimulation(a_instance, a_skin, absolute, eye, previousEye, cb, bodyRequest);
 		if (!simulate) {
 			a_instance.lastSimFrame = UINT32_MAX;
 			// Physics off for this hair: free its guide state. Past the physics distance it is kept.
@@ -1163,24 +1181,42 @@ namespace Strands
 		a_instance.previousAbsolute = std::move(absolute);
 		a_instance.previousFrame = RenderFrame();
 
-		skinCB->Update(cb);
-
 		// Mid-pass dispatches: put back every compute binding they touch.
+		constexpr UINT kSRVs = 7;
+		constexpr UINT kUAVs = 4;
 		winrt::com_ptr<ID3D11ComputeShader> oldShader;
 		context->CSGetShader(oldShader.put(), nullptr, nullptr);
 		ID3D11Buffer* oldCB = nullptr;
 		context->CSGetConstantBuffers(0, 1, &oldCB);
-		ID3D11ShaderResourceView* oldSRVs[6]{};
-		context->CSGetShaderResources(0, 6, oldSRVs);
-		ID3D11UnorderedAccessView* oldUAV = nullptr;
-		context->CSGetUnorderedAccessViews(0, 1, &oldUAV);
+		ID3D11ShaderResourceView* oldSRVs[kSRVs]{};
+		context->CSGetShaderResources(0, kSRVs, oldSRVs);
+		ID3D11UnorderedAccessView* oldUAVs[kUAVs]{};
+		context->CSGetUnorderedAccessViews(0, kUAVs, oldUAVs);
+		ID3D11SamplerState* oldSampler = nullptr;
+		context->CSGetSamplers(0, 1, &oldSampler);
+
+		// The actor's body field first, for this frame: the guides and the followers collide with it.
+		BodyFieldView body;
+		if (simulate && bodyRequest.wanted && bodyCollision->Prepare(a_instance.actorId, eye, bodyRequest.centre, bodyRequest.reach, GetBodyPrograms(), body)) {
+			cb.flags |= SkinCB::kBodyField;
+			for (int r = 0; r < 3; ++r)
+				cb.bodyToGrid[r] = body.toGrid[r];
+			cb.bodyGridSize = body.size;
+			cb.bodyTexel = body.texel;
+			cb.bodyTrust = body.trust;
+			for (int r = 0; r < 3; ++r)
+				cb.bodyRootMove[r] = body.rootMove[r];
+		}
+		skinCB->Update(cb);
 
 		ID3D11Buffer* cbBuffer = skinCB->CB();
 		ID3D11ShaderResourceView* headField = (cb.flags & SkinCB::kHeadField) ? a_instance.headField->srv.get() : nullptr;
-		ID3D11ShaderResourceView* bodyField = (cb.flags & SkinCB::kBodyField) ? a_instance.bodyField->srv.get() : nullptr;
-		ID3D11ShaderResourceView* srvs[6] = { a_instance.asset->restPoints->srv.get(), a_instance.palette->srv.get(), a_instance.asset->strandInfo->srv.get(), nullptr, headField, bodyField };
+		ID3D11ShaderResourceView* srvs[kSRVs] = { a_instance.asset->restPoints->srv.get(), a_instance.palette->srv.get(), a_instance.asset->strandInfo->srv.get(), nullptr, headField,
+			body.motion, body.surface };
+		ID3D11SamplerState* bodySampler = body.sampler;
 		context->CSSetConstantBuffers(0, 1, &cbBuffer);
-		context->CSSetShaderResources(0, 6, srvs);
+		context->CSSetShaderResources(0, kSRVs, srvs);
+		context->CSSetSamplers(0, 1, &bodySampler);
 		if (simulate) {
 			// The guides first: every strand follows one.
 			ID3D11UnorderedAccessView* guideUAV = a_instance.guideState->uav.get();
@@ -1196,25 +1232,30 @@ namespace Strands
 		context->CSSetShader(skinProgram.get(), nullptr, 0);
 		context->Dispatch((cb.pointCount + 63) / 64, 1, 1);
 
-		context->CSSetUnorderedAccessViews(0, 1, &oldUAV, nullptr);
-		context->CSSetShaderResources(0, 6, oldSRVs);
+		context->CSSetUnorderedAccessViews(0, kUAVs, oldUAVs, nullptr);
+		context->CSSetShaderResources(0, kSRVs, oldSRVs);
+		context->CSSetSamplers(0, 1, &oldSampler);
 		context->CSSetConstantBuffers(0, 1, &oldCB);
 		context->CSSetShader(oldShader.get(), nullptr, 0);
 		for (auto* srv : oldSRVs) {
 			if (srv)
 				srv->Release();
 		}
+		for (auto* uav : oldUAVs) {
+			if (uav)
+				uav->Release();
+		}
+		if (oldSampler)
+			oldSampler->Release();
 		if (oldCB)
 			oldCB->Release();
-		if (oldUAV)
-			oldUAV->Release();
 
 		a_instance.skinEye = eye;
 		a_instance.skinPreviousEye = previousEye;
 		return true;
 	}
 
-	bool StrandRenderer::PrepareSimulation(Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb)
+	bool StrandRenderer::PrepareSimulation(Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb, BodyRequest& o_body)
 	{
 		const auto& asset = *a_instance.asset;
 		const auto& style = a_instance.style;
@@ -1276,11 +1317,21 @@ namespace Strands
 		o_cb.tipSeparation = style.tipSeparation;
 		for (size_t k = 0; k < windCorners.size(); ++k)
 			o_cb.wind[k] = windCorners[k] * style.windResponse;
+		// The body: its distance field where the actor has a collision mesh (built in Skin), else the
+		// bone capsules.
 		const BodySkeleton skeleton = FindBodySkeleton(haveHead && a_skin->bones ? a_skin->bones[asset.headBone] : nullptr);
-		o_cb.colliderCount = settings.collision ? GatherColliders(a_instance, skeleton, a_palette, frameBone, a_eye, o_cb.colliders) : 0;
-		o_cb.bodyColliderCount = settings.collision ? GatherBodyColliders(a_instance, skeleton, a_eye, a_previousEye, o_cb) : 0;
-		if (o_cb.bodyColliderCount)
-			o_cb.flags |= SkinCB::kBodyField;
+		const bool bodyMesh = settings.collision && haveHead && bodyCollision->HasMesh(a_instance.actorId) && GetBodyPrograms().Ready();
+		o_cb.colliderCount = settings.collision ? GatherColliders(a_instance, skeleton, a_palette, frameBone, a_eye, !bodyMesh, o_cb.colliders) : 0;
+		if (bodyMesh) {
+			const float4* rows = &a_palette[frameBone * 3];
+			const float scale = float3(rows[0].x, rows[1].x, rows[2].x).Length();
+			const float4 centre(asset.headCentre.x, asset.headCentre.y, asset.headCentre.z, 1.0f);
+			o_body.wanted = true;
+			o_body.centre = float3(rows[0].Dot(centre), rows[1].Dot(centre), rows[2].Dot(centre)) - a_eye;
+			o_body.reach = (asset.reach * kReachStretch + kReachMargin) * scale;
+			o_cb.bodyMinClearance = kBodyMinClearance * scale;
+			o_cb.bodyMaxClearance = kBodyMaxClearance * scale;
+		}
 
 		a_instance.simEye = a_eye;
 		a_instance.lastSimFrame = RenderFrame();
@@ -1425,7 +1476,7 @@ namespace Strands
 		log(std::format("head collider from head mesh {} ({:.0f}% of directions)", face->name.c_str(), coverage * 100.0f));
 	}
 
-	uint32_t StrandRenderer::GatherColliders(const Instance& a_instance, const BodySkeleton& a_skeleton, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, float4* o_colliders) const
+	uint32_t StrandRenderer::GatherColliders(const Instance& a_instance, const BodySkeleton& a_skeleton, const std::vector<float4>& a_palette, uint32_t a_frameBone, const float3& a_eye, bool a_bodyCapsules, float4* o_colliders) const
 	{
 		uint32_t count = 0;
 		const auto add = [&](const float3& a_a, const float3& a_b, float a_radius) {
@@ -1448,10 +1499,10 @@ namespace Strands
 			add(headCentre, headCentre, asset.headRadius * float3(rows[0].x, rows[1].x, rows[2].x).Length());
 		}
 
-		// The body, from the head bone down its humanoid skeleton, while no body colliders have been
-		// built from the actor's worn meshes. The radii are well inside a body, and the shader never
-		// pushes a point further out than its own target lies.
-		if (a_instance.bodyField || !a_skeleton.Has(BodySlot::Neck))
+		// The body, from the head bone down its humanoid skeleton, while its actor has no collision
+		// mesh. The radii are well inside a body, and the shader never pushes a point further out than
+		// its own target lies.
+		if (!a_bodyCapsules || !a_skeleton.Has(BodySlot::Neck))
 			return count;
 		const float scale = a_skeleton.end[static_cast<uint32_t>(BodySlot::Neck)]->world.scale;  // the head's
 		const auto capsule = [&](BodySlot a_slot, float a_radius) {
@@ -1469,116 +1520,16 @@ namespace Strands
 		return count;
 	}
 
-	void StrandRenderer::UpdateBodyField(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin)
+	void StrandRenderer::UpdateBody(Instance& a_instance, RE::BSGeometry* a_geometry, RE::NiSkinInstance* a_skin)
 	{
-		const auto log = [&](std::string_view a_text) {
-			if (a_instance.isPlayer)
-				logger::info("[HairStrands] {}: {}", a_instance.key.ToString(), a_text);
-			else
-				logger::debug("[HairStrands] {}: {}", a_instance.key.ToString(), a_text);
-		};
-
-		// A finished build replaces the colliders; one at a time per hair.
-		if (a_instance.bodyJob.valid()) {
-			if (a_instance.bodyJob.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-				return;
-			const auto data = a_instance.bodyJob.get();
-			a_instance.bodySignature = a_instance.bodyJobSignature;
-			a_instance.bodyField.reset();
-			a_instance.previousBodyFrame = UINT32_MAX;
-			if (!data || !data->error.empty()) {
-				log(std::format("no body colliders from its {} worn meshes ({}); collision uses bone capsules", a_instance.bodyJobMeshes, data ? data->error : "no data"));
-				return;
-			}
-			D3D11_SUBRESOURCE_DATA init{ data->field.data(), 0, 0 };
-			const uint32_t texels = kBodySlots * kBodyFieldTexels;
-			try {
-				a_instance.bodyField = std::make_unique<Buffer>(StructuredDesc(sizeof(float3), texels, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0), &init, "HairStrands::BodyField");
-				a_instance.bodyField->CreateSRV(BufferSRVDesc(texels));
-			} catch (const std::exception& e) {
-				a_instance.bodyField.reset();
-				logger::error("[HairStrands] Could not create the body colliders: {}", e.what());
-				return;
-			}
-			a_instance.bodyShapes = data->shapes;
-			log(std::format("body colliders from {} worn meshes ({} of each map covered)", a_instance.bodyJobMeshes, data->summary));
-			return;
-		}
-
-		// What the actor wears, now and then; a change builds the colliders again.
-		if (a_instance.bodyCheckFrame != UINT32_MAX && RenderFrame() - a_instance.bodyCheckFrame < kBodyCheckFrames)
-			return;
-		a_instance.bodyCheckFrame = RenderFrame();
 		const auto& asset = *a_instance.asset;
 		auto* userData = a_geometry->GetUserData();
 		auto* actor = userData ? userData->As<RE::Actor>() : nullptr;
-		auto* root = actor ? actor->Get3D(false) : nullptr;
-		const bool haveHead = asset.headBone >= 0 && static_cast<uint32_t>(asset.headBone) < a_skin->skinData->GetBoneCount() && a_skin->bones;
-		const BodySkeleton skeleton = FindBodySkeleton(haveHead ? a_skin->bones[asset.headBone] : nullptr);
-		if (!root || !skeleton.Has(BodySlot::Chest)) {
-			a_instance.bodyField.reset();
-			a_instance.bodySignature = 0;
+		if (!actor || asset.headBone < 0 || static_cast<uint32_t>(asset.headBone) >= a_skin->skinData->GetBoneCount() || !a_skin->bones)
 			return;
-		}
-		uint64_t signature = 0;
-		const auto meshes = FindBodyMeshes(root, actor->GetFaceNodeSkinned(), FindFaceGeometry(actor), signature);
-		if (signature == a_instance.bodySignature)
-			return;
-		BodyFieldInput input;
-		std::string error;
-		if (!PrepareBodyField(skeleton, meshes, input, error)) {
-			a_instance.bodyField.reset();
-			a_instance.bodySignature = signature;
-			log(std::format("no body colliders: {}; collision uses bone capsules", error));
-			return;
-		}
-		a_instance.bodyJobSignature = signature;
-		a_instance.bodyJobMeshes = meshes.size();
-		a_instance.bodyJob = std::async(std::launch::async, [input = std::move(input)]() -> std::unique_ptr<BodyFieldData> {
-			auto data = std::make_unique<BodyFieldData>();
-			try {
-				BuildBodyField(input, *data);
-			} catch (const std::exception& e) {
-				data->error = e.what();  // bad_alloc on an absurd mesh must not reach the render thread
-			}
-			return data;
-		});
-	}
-
-	uint32_t StrandRenderer::GatherBodyColliders(Instance& a_instance, const BodySkeleton& a_skeleton, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb)
-	{
-		if (!a_instance.bodyField)
-			return 0;
-		// Last frame's poses give the steps in between (and the followers' previous positions); without
-		// them the colliders hold still over the frame.
-		const bool havePrevious = a_instance.previousBodyFrame + 1 == RenderFrame();
-		const float eye[3] = { a_eye.x, a_eye.y, a_eye.z };
-		const float previousEye[3] = { a_previousEye.x, a_previousEye.y, a_previousEye.z };
-		uint32_t count = 0;
-		for (uint32_t s = 0; s < kBodySlots; ++s) {
-			const auto& shape = a_instance.bodyShapes[s];
-			const RE::NiAVObject* bone = a_skeleton.start[s];
-			if (!shape.present || !bone)
-				continue;
-			// Field to world: the bone's world transform after the field's axes.
-			const RE::NiTransform& world = bone->world;
-			const RE::NiMatrix3 axes = world.rotate * shape.boneFromField;
-			std::array<float4, 3> current;
-			for (int r = 0; r < 3; ++r)
-				current[r] = { axes.entry[r][0] * world.scale, axes.entry[r][1] * world.scale, axes.entry[r][2] * world.scale, world.translate[r] };
-			const auto& previous = havePrevious ? a_instance.previousBodyFrames[s] : current;
-			for (int r = 0; r < 3; ++r) {
-				o_cb.bodyFrames[count * 6 + r] = current[r];
-				o_cb.bodyFrames[count * 6 + r].w -= eye[r];
-				o_cb.bodyFrames[count * 6 + 3 + r] = previous[r];
-				o_cb.bodyFrames[count * 6 + 3 + r].w -= previousEye[r];
-			}
-			o_cb.bodyShapes[count] = { shape.length, shape.bound, std::bit_cast<float>(s), 0.0f };
-			a_instance.previousBodyFrames[s] = current;
-			++count;
-		}
-		a_instance.previousBodyFrame = RenderFrame();
-		return count;
+		auto* head = a_skin->bones[asset.headBone];
+		if (head)
+			bodyCollision->Update(actor, head, FindFaceGeometry(actor), a_instance.isPlayer);
 	}
 
 	ID3D11RasterizerState* StrandRenderer::GetNoCullState(ID3D11RasterizerState* a_current)
@@ -1853,7 +1804,7 @@ namespace Strands
 			if (a_instance.drawThisFrame && a_instance.simWeight > 0.0f && settings.collision && a_instance.style.simulate && asset.seedingUsed != SeedMode::Area && asset.guideCount > 0) {
 				if (a_instance.headFieldSerial != asset.serial)
 					BuildHeadField(a_instance, a_geometry, a_skin);
-				UpdateBodyField(a_instance, a_geometry, a_skin);
+				UpdateBody(a_instance, a_geometry, a_skin);
 			}
 			a_instance.drawThisFrame = a_instance.drawThisFrame && Skin(a_instance, a_skin);
 			if (a_instance.drawThisFrame) {
