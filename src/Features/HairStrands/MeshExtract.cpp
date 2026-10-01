@@ -120,8 +120,8 @@ namespace Strands
 				}
 			}
 
-			o_colour.width = base.width;
-			o_colour.height = base.height;
+			o_colour.width = levels[0].width;
+			o_colour.height = levels[0].height;
 			o_colour.srgb = a_srgb;
 			o_colour.mips.resize(levels.size());
 			for (size_t k = 0; k < levels.size(); ++k) {

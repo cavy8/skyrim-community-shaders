@@ -221,6 +221,8 @@ namespace Strands
 		winrt::com_ptr<ID3D11ShaderResourceView> CreateColourTexture(const StrandColourImage& a_image, uint64_t& o_bytes)
 		{
 			o_bytes = 0;
+			if (!a_image.width || !a_image.height || a_image.mips.empty())
+				return nullptr;
 			D3D11_TEXTURE2D_DESC desc{};
 			desc.Width = a_image.width;
 			desc.Height = a_image.height;
@@ -228,21 +230,38 @@ namespace Strands
 			desc.ArraySize = 1;
 			desc.Format = a_image.srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
 			desc.SampleDesc.Count = 1;
-			desc.Usage = D3D11_USAGE_IMMUTABLE;
+			desc.Usage = D3D11_USAGE_DEFAULT;
 			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 			std::vector<D3D11_SUBRESOURCE_DATA> init(a_image.mips.size());
+			uint32_t width = a_image.width;
+			uint32_t height = a_image.height;
 			for (size_t k = 0; k < init.size(); ++k) {
-				init[k] = { a_image.mips[k].data(), std::max(a_image.width >> k, 1u) * 4u, 0 };
+				if (width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+					a_image.mips[k].size() != static_cast<size_t>(width) * height) {
+					logger::warn("[HairStrands] invalid strand colour mip {} for {}x{} texture", k, a_image.width, a_image.height);
+					o_bytes = 0;
+					return nullptr;
+				}
+				init[k] = { a_image.mips[k].data(), width * sizeof(uint32_t), 0 };
 				o_bytes += a_image.mips[k].size() * sizeof(uint32_t);
+				width = std::max(width >> 1, 1u);
+				height = std::max(height >> 1, 1u);
 			}
 			winrt::com_ptr<ID3D11Texture2D> texture;
 			winrt::com_ptr<ID3D11ShaderResourceView> srv;
-			if (FAILED(globals::d3d::device->CreateTexture2D(&desc, init.data(), texture.put())) ||
-				FAILED(globals::d3d::device->CreateShaderResourceView(texture.get(), nullptr, srv.put()))) {
+			// TextureDownscaler treats initialized mip chains as file textures. Upload after creation
+			// so this generated texture keeps the dimensions used by the strand shader.
+			if (FAILED(globals::d3d::device->CreateTexture2D(&desc, nullptr, texture.put()))) {
 				o_bytes = 0;
 				return nullptr;
 			}
 			Util::SetResourceName(texture.get(), "HairStrands::StrandColour");
+			for (size_t k = 0; k < init.size(); ++k)
+				globals::d3d::context->UpdateSubresource(texture.get(), static_cast<UINT>(k), nullptr, init[k].pSysMem, init[k].SysMemPitch, 0);
+			if (FAILED(globals::d3d::device->CreateShaderResourceView(texture.get(), nullptr, srv.put()))) {
+				o_bytes = 0;
+				return nullptr;
+			}
 			Util::SetResourceName(srv.get(), "HairStrands::StrandColour SRV");
 			return srv;
 		}
