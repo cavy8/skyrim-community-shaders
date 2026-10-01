@@ -34,9 +34,41 @@ float4 NeuralBandDebugColor(float band, float exposure, uint domain, float alpha
 	return float4(grey.xxx, alpha);
 }
 
-[numthreads(8, 8, 1)]
-void main(uint3 dispatchThreadID : SV_DispatchThreadID)
+groupshared uint gModelFrameValid;
+
+/**
+ * Whether the model's answer holds an image at all this frame (ResolveNeuralColor's
+ * empty-answer guard), shared by the whole thread group.
+ *
+ * Each of the group's 64 threads probes one point of a fixed 8x8 grid over the answer; any
+ * probe above black means the model produced a frame. Only a frame that is black at all 64
+ * points is treated as empty - there, even a real answer leaves nothing visible to edit, so
+ * passing the original through costs nothing. Every thread of the group must call this,
+ * before any early return, for the barriers to be valid.
+ */
+bool NeuralModelFrameValid(uint groupIndex, uint modelSpace)
 {
+	if (groupIndex == 0)
+		gModelFrameValid = 0;
+	GroupMemoryBarrierWithGroupSync();
+	uint modelWidth;
+	uint modelHeight;
+	ModelColor.GetDimensions(modelWidth, modelHeight);
+	uint2 probe = uint2(groupIndex & 7u, groupIndex >> 3);
+	uint2 texel = min(uint2((float2(probe) + 0.5) * 0.125 * float2(modelWidth, modelHeight)),
+		max(uint2(modelWidth, modelHeight), 1u) - 1u);
+	float3 answer = NeuralModelToLinear(ModelColor.Load(int3(texel, 0)).rgb, modelSpace);
+	if (dot(answer, kNeuralLuma) > 1e-5)
+		InterlockedOr(gModelFrameValid, 1u);
+	GroupMemoryBarrierWithGroupSync();
+	return gModelFrameValid != 0;
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
+{
+	const bool modelFrameValid = NeuralModelFrameValid(groupIndex, NeuralTransferModelSpace());
+
 	uint width;
 	uint height;
 	uint originalWidth;
@@ -239,6 +271,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	resolveInputs.modelSpace = modelSpace;
 	resolveInputs.hueGuardAmount = categoryHueGuardAmount;
 	resolveInputs.maxRatio = MaxRatio;
+	resolveInputs.modelFrameValid = modelFrameValid;
 
 	NeuralResolveDebug resolveDebug;
 	float4 result = ResolveNeuralColor(resolveInputs, resolveDebug);

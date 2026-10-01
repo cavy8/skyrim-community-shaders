@@ -304,6 +304,27 @@ rescaled onto the guarded scene luminance. With a hue-preserving scalar proxy
 this is exactly the model's own palette, and a model no-op reproduces the
 original whatever the proxy's colour was.
 
+On Finished Image (the display-gamma domain) the proxy is the original frame in
+the same units, so the `1/512` floor is a pedestal under original, proxy and
+answer alike, taken off again after the edit. That makes the resolve reproduce
+the raw model output exactly wherever original and proxy agree, and it keeps
+near-black chroma well defined, so the near-black chroma fade
+(`shadowConfidence`) is skipped there. With the floor in the ratio alone, a
+shadow the model paints over lit skin could not go darker than about 15/255
+(the ratio bottoms out at `floor / (proxy + floor)`), and shadows of about
+6-11% display brightness (`floor..4 x floor` linear) lost their colour change.
+The scene domains keep the plain floor, because a single pedestal cannot sit
+under both scene and display light.
+
+An empty answer (an incompatible runtime, or the first evaluation after a
+reset) is passed through as no edit. That test is made **per frame**, on an 8x8
+grid of the answer (`NeuralModelFrameValid` in `DecodeColorCS.hlsl`), never per
+pixel. Per pixel, black is a legitimate answer: until 2026-10-01 every answer
+pixel below `1e-5` linear luminance passed the original through, so where the
+model painted a hood shadow pure black, the lit skin it covered stayed behind as
+bright specks along the silhouette - worst at full model resolution, where the
+answer is not bilinearly smoothed.
+
 That transferred chroma is then **hue-guarded** against the original
 (`kNeuralHueGuardStart..End` in `ColorTransfer.hlsli`, on the luma-weighted
 magnitude of the original's chroma offset from neutral). Where the original is

@@ -815,6 +815,7 @@ struct NeuralResolveInputs
 	uint modelSpace;   // kNeuralModelSpace*: how modelColor and proxyColor are encoded.
 	float hueGuardAmount;
 	float maxRatio;
+	bool modelFrameValid;  // False: the answer is empty this frame (NeuralModelFrameValid); pass the original through.
 };
 
 /** What the resolve measured on the way, for the debug views and the readback. */
@@ -834,7 +835,10 @@ struct NeuralResolveDebug
  * (possibly fractional) position. A model no-op is therefore an exact no-op: its
  * luminance matches the proxy, making the ratio one. The common floor makes the
  * ratio converge smoothly to one in deep shadow, where a tiny absolute model
- * change would otherwise become an unbounded relative change. A two-sided guard
+ * change would otherwise become an unbounded relative change. In the display-gamma
+ * domain the floor is a pedestal under the original as well (see the body), so
+ * there the resolve reproduces the model exactly wherever original and proxy
+ * agree, deep shadow included. A two-sided guard
  * limits both flashes and sudden collapses without clipping individual RGB
  * channels.
  *
@@ -917,18 +921,39 @@ float4 ResolveNeuralColor(NeuralResolveInputs inputs, out NeuralResolveDebug o_d
 	float proxyLuma = dot(proxy, kNeuralLuma);
 	float modelLuma = dot(model, kNeuralLuma);
 	o_debug.modelLuma = modelLuma;
-	// Some incompatible model/runtime combinations return an empty or invalid
-	// frame. Treat that as no edit instead of turning a transient failure into a
-	// half-bright flash through the lower ratio guard.
-	if (!(modelLuma > 1e-5))
+	// Some incompatible model/runtime combinations, and the first evaluation after a reset,
+	// return an empty frame. Treat that as no edit rather than darkening the whole frame
+	// towards black. This is decided per frame (see NeuralModelFrameValid): per pixel, black
+	// is a legitimate answer - the model painting a deep shadow - and passing the original
+	// through there leaves its lit pixels standing as bright specks inside the shadow.
+	if (!inputs.modelFrameValid)
 		return float4(NeuralLinearToDomain(original, domain), inputs.originalColor.a);
+
+	// Display gamma (Finished Image): the proxy *is* the original frame, in the same units,
+	// so the ratio floor can be a pedestal under all three instead of a term in the ratio
+	// alone. The edit is then made on colour + floor and the floor taken off again, which
+	// reproduces the model's answer exactly wherever the original matches the proxy, and
+	// keeps near-black chroma well defined (it tends to neutral) without fading it out.
+	// Applied to the original only, the floor compressed every lift in the shadows and
+	// shadowConfidence below dropped their colour change - on 2.2-decoded shadowed skin,
+	// most of it. The scene domains keep the plain floor: there the original is scene
+	// light and the proxy display light, so one pedestal cannot sit under both.
+	const float pedestal = domain == kNeuralColorDomainDisplayGamma ? kNeuralRatioFloor : 0.0;
+	const float ratioFloor = kNeuralRatioFloor - pedestal;
+	float shadowConfidence = pedestal > 0.0 ? 1.0 : smoothstep(kNeuralRatioFloor, 4.0 * kNeuralRatioFloor, min(proxyLuma, modelLuma));
+	original += pedestal;
+	proxy += pedestal;
+	model += pedestal;
+	proxyLuma += pedestal;
+	modelLuma += pedestal;
 
 	float editWeight = max(inputs.editWeight, 0.0);
 	// The edit in stops, split into the smooth part the band filter found and the
 	// remainder, each scaled on its own. With the two strengths equal this collapses to
 	// exp2(editWeight * strength * delta) - exactly the single luminosity exponent it
-	// replaces - whether or not the band data exists.
-	float delta = log2((modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor));
+	// replaces - whether or not the band data exists. The same value in either domain
+	// (and so the same as PrepareToneDataCS's): the pedestal stands in for the floor.
+	float delta = log2((modelLuma + ratioFloor) / (proxyLuma + ratioFloor));
 	float lowBand = inputs.hasToneData ? inputs.toneLow : delta;
 	float highBand = delta - lowBand;
 	o_debug.lowBand = lowBand;
@@ -990,12 +1015,13 @@ float4 ResolveNeuralColor(NeuralResolveInputs inputs, out NeuralResolveDebug o_d
 	// is 1 in every channel, so normalizedTarget reduces to normalizedOriginal and
 	// fullColorResult's chroma matches luminanceResult's chroma precisely (both
 	// are the untouched original chroma), making the two lerp endpoints coincide
-	// regardless of this weight.
-	float shadowConfidence = smoothstep(kNeuralRatioFloor, 4.0 * kNeuralRatioFloor,
-		min(proxyLuma, modelLuma));
+	// regardless of this weight. shadowConfidence is computed above, before the pedestal.
 	float resolvedColorStrength = shadowConfidence * saturate(editWeight);
 
-	return float4(NeuralLinearToDomain(lerp(luminanceResult, fullColorResult, resolvedColorStrength), domain), inputs.originalColor.a);
+	// NeuralLinearToDomain clamps at zero: a darkening edit on a pixel darker than the proxy
+	// it was measured against can land below the pedestal.
+	float3 resolved = lerp(luminanceResult, fullColorResult, resolvedColorStrength) - pedestal;
+	return float4(NeuralLinearToDomain(resolved, domain), inputs.originalColor.a);
 }
 
 #endif

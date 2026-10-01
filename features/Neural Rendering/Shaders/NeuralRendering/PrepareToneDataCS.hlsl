@@ -32,9 +32,10 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 	float proxyLuma = dot(proxy, kNeuralLuma);
 	float modelLuma = dot(model, kNeuralLuma);
-	// The same floor and the same invalid-answer test the resolve applies, so the band data
-	// never disagrees with the edit it is meant to describe.
-	float delta = modelLuma > 1e-5 ? log2((modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor)) : 0.0;
+	// The same floor the resolve applies, so the band data never disagrees with the edit it is
+	// meant to describe. A black answer pixel is a real edit (a deep shadow); an empty answer
+	// is caught per frame by the resolve, which then ignores this data.
+	float delta = log2((modelLuma + kNeuralRatioFloor) / (proxyLuma + kNeuralRatioFloor));
 
 	ToneData[dispatchThreadID.xy] = float2(log2(proxyLuma + kNeuralRatioFloor), delta);
 }
