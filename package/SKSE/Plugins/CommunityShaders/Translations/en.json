@@ -1556,7 +1556,7 @@
     "feature.neural_rendering.style_tooltip": "Choose the Neural Rendering visual style.",
     "feature.neural_rendering.transfer_strength": "Transfer Strength",
     "feature.neural_rendering.transfer_strength_tooltip": "Overall enhancement strength: 0 leaves the image unchanged, 1 applies the full enhancement, and 2 exaggerates it. Applies immediately.",
-    "feature.neural_rendering.unavailable": "Neural Rendering is unavailable. Install a compatible nvngx_dlssnr.dll.",
+    "feature.neural_rendering.unavailable": "Neural Rendering is unavailable. Place a compatible nvngx_dlssnr.dll in your Skyrim installation's Data/Shaders/Upscaling/Streamline/ folder, then restart Skyrim.\nBottled Shaders cannot provide or help you acquire the required files.",
     "feature.perf_overlay.appearance": "Appearance",
     "feature.perf_overlay.bg_opacity": "Background Opacity",
     "feature.perf_overlay.clear_test_data": "Clear Test Data",

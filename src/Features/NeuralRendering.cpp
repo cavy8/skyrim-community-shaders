@@ -742,20 +742,22 @@ NeuralRendering::ColorDomain NeuralRendering::SceneColorDomain(ProxyCurve a_curv
 
 void NeuralRendering::DrawSettings()
 {
+	const bool backendAvailable = IsAvailable();
+	if (!backendAvailable) {
+		ImGui::TextWrapped("%s", T(TKEY("unavailable"),
+			"Neural Rendering is unavailable. Place a compatible nvngx_dlssnr.dll in your Skyrim installation's Data/Shaders/Upscaling/Streamline/ folder, then restart Skyrim.\nBottled Shaders cannot provide or help you acquire the required files."));
+	}
+
 	if (!IsDLSSActive()) {
 		ImGui::TextDisabled("%s", T(TKEY("requires_dlss"),
 									  "Select DLSS in Upscaling to use Neural Rendering."));
 		return;
 	}
 
-	const bool backendAvailable = IsAvailable();
 	const bool featureAvailable = IsFeatureAvailable();
-	if (!backendAvailable) {
-		ImGui::TextDisabled("%s", T(TKEY("unavailable"),
-									  "Neural Rendering is unavailable. Install a compatible nvngx_dlssnr.dll."));
-	} else if (featureAvailable) {
+	if (backendAvailable && featureAvailable) {
 		ImGui::TextUnformatted(T(TKEY("available"), "DLSS Neural Rendering is available."));
-	} else {
+	} else if (backendAvailable) {
 		ImGui::TextDisabled("%s", T(TKEY("backend_ready"),
 									  "Enable Neural Rendering to check compatibility."));
 	}
