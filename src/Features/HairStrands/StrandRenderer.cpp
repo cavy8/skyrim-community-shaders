@@ -688,10 +688,12 @@ namespace Strands
 				if (!colourImage.Empty())
 					asset->colour = CreateColourTexture(colourImage, asset->colourBytes);
 				asset->state = Asset::State::Ready;
-				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}{}", asset->key, asset->strandCount,
-					asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "root", asset->guideCount, asset->headRadius,
+				const auto& conversion = data->conversion;
+				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}{}; card guides: {} traced, {} repeats dropped, {} on the scalp, {} carrying on from rooted hair, {} following rooted hair, {} bridged to the scalp, {} too far from it", asset->key, asset->strandCount,
+					asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "scalp", asset->guideCount, asset->headRadius,
 					asset->colour ? std::format("{}x{} strand colour", colourImage.width, colourImage.height) : std::string("card colour"),
-					data->flowMapShare > 0.0f ? std::format(", flow map on {:.0f}% of the hair", data->flowMapShare * 100.0f) : std::string());
+					data->flowMapShare > 0.0f ? std::format(", flow map on {:.0f}% of the hair", data->flowMapShare * 100.0f) : std::string(),
+					conversion.cardGuides, conversion.redundantGuides, conversion.rootedGuides, conversion.continuedGuides, conversion.mergedGuides, conversion.bridgedGuides, conversion.droppedGuides);
 			} catch (const std::exception& e) {
 				asset->state = Asset::State::Failed;
 				asset->error = "GPU upload failed";

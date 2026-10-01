@@ -140,7 +140,9 @@ features:
       - src/Features/HairStrands/
       - features/Hair Strands/
       - docs/development/hair-strands.md
+      - docs/development/hair-cards-to-strands.md
       - tools/hair_strands_sim_check.py
+      - tools/hair_cards_to_strands/
     note: >-
       Owner request 2026-09-28: converts hair card meshes into GPU-skinned strands drawn inside the
       hair's own lighting pass (BSLightingShader vtable 6/7 hooks) with a strand variant of the

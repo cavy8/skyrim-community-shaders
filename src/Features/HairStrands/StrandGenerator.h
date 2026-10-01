@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "CardsToStrands/CardsToStrands.h"
 #include "MeshExtract.h"
 #include "StrandStyle.h"
 
@@ -52,36 +53,22 @@ namespace Strands
 		SeedMode seedingUsed = SeedMode::Roots;
 		uint32_t convertedTriangles = 0;
 		uint32_t totalTriangles = 0;
+		CardsToStrands::Stats conversion;  // how the card guides were bound to the scalp
 
 		uint32_t StrandCount() const { return static_cast<uint32_t>(strands.size()); }
 	};
 
-	namespace GeneratorLimits
-	{
-		inline constexpr uint32_t kMaxStrands = 40000;
-		inline constexpr uint32_t kMinPointsPerStrand = 4;
-		inline constexpr uint32_t kMaxPointsPerStrand = 32;
-		inline constexpr float kMaxStrandLength = 200.0f;
-		inline constexpr float kMinStrandLength = 0.25f;
-		inline constexpr uint32_t kStrandsPerGuide = 8;
-		inline constexpr uint32_t kMinGuides = 64;
-		inline constexpr uint32_t kMaxGuides = 4096;
-	}
-
 	/**
-	 * @brief Converts a hair mesh into strands following its texture flow.
+	 * @brief Converts a hair mesh into strands that grow from the scalp.
 	 *
-	 * Flow is the direction the chosen texture axis runs across each triangle. With
-	 * FlowAxis::Auto it comes from the flow map where there is one; elsewhere each UV island
-	 * (one card's strip of the atlas) follows the way the strands are painted in that part of
-	 * the texture. Islands welded together turn together, away from the head where they hang
-	 * free, and otherwise like the cards that sample the same texels. Double-sided cards keep
-	 * one side. Strands are streamlines of that flow traced
-	 * across the welded mesh, seeded
-	 * along upstream boundary edges (roots), plus fill streamlines through any triangles
-	 * the roots missed, or scattered over the surface for very short hair. Each strand is
-	 * then given the guide strand it follows when simulated. Pure CPU; safe to run on a
-	 * worker thread.
+	 * Adapts the game's mesh and style to the engine-agnostic CardsToStrands module, which
+	 * does the work (docs/development/hair-cards-to-strands.md), and packs its result for the
+	 * GPU. Flow follows the flow map, else the way each atlas strip's strands are painted,
+	 * oriented away from the head. Streamlines of that flow traced along the cards become card
+	 * guides; a scalp fitted to the innermost hair is where every strand grows from, and card
+	 * hair that starts away from it continues the rooted hair it lies on. Each card guide grows a
+	 * clump of strands. Then every strand is given the guide strand it follows when simulated.
+	 * Pure CPU; safe to run on a worker thread.
 	 *
 	 * @return false with o_error set if the mesh has no usable flow.
 	 */

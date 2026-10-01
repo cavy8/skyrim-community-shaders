@@ -256,6 +256,20 @@ one retry more than was used. Triangles on vertices with no bone weight (they sk
 camera) are left out. It builds with MSVC, fxc compiles the kernels, and the sim check passes.
 It has not run in game.
 
+`0-6-0` (2026-10-01) grows every strand from the scalp. Strands used to start on whatever card
+edge the flow entered: outer layers standing off the cap, under-layers, a ponytail below its tie
+and the start of a lock past a transparent gap all grew strands from mid-air, pinned to the head
+(on a synthetic layered style 26% of strands, on a ponytail 28%). The conversion now lives in an
+engine-agnostic module, `CardsToStrands/`, shared with standalone tools. It fits a scalp to the
+innermost hair, traces one guide per `clumpSize` of card width and drops guides that repeat a
+longer one. Guides starting on the scalp grow from it, and guides starting off it continue the
+rooted hair they start on or that ends where they start. Each guide then grows a clump of
+strands rooted round it on the scalp. See [Hair cards to strands](hair-cards-to-strands.md). On
+the synthetic styles no strand roots more than 2 units off the skull, stubs fall from 11-15% to
+under 1%, and median strand length doubles on long hair. `Clump Size` is now the card width
+each clump (one card guide) stands for. The module and the game's adapter build with g++ and clang, and the adapter's output matches
+the command-line converter's exactly. It has not been built with MSVC or run in game.
+
 Earlier builds are build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -269,7 +283,7 @@ Earlier builds are build-verified, and the generator fixes are checked on real m
 | Copy mesh (bind pose, weights, UVs) | `MeshExtract.cpp` | render | once per hair and style |
 | Copy one mip of the diffuse texture, and of the flow map if there is one, to staging textures, map them once the GPU is done | `BeginCoverageReadback`, `BeginFlowReadback`, `PollCoverageReadback` | render | once per hair and style, a frame or two before generation |
 | Decode the texture's alpha and luminance (any format, BC included, via DirectXTex) and fill its colour for strands; decode the flow map | `DecodeCoverage`, `DecodeFlow` | worker | start of the generation job |
-| Generate strands, pick guide strands, fit the head collider | `StrandGenerator.cpp` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
+| Generate strands (fit the scalp, bind card guides to it, grow a clump per guide), pick guide strands, fit the head collider | `StrandGenerator.cpp` → `CardsToStrands/` | worker (`std::async`, 2 at a time) | once per hair and style, shared by every actor |
 | Upload asset (strands, colour texture) | `StrandRenderer::BeginFrame` | render | when the job finishes |
 | Read the actor's head mesh into the head field | `BuildHeadField` | render, in `SetupGeometry` | once per actor and hair asset, with physics and collision on |
 | Look at what the actor wears; copy the colliding triangles of what changed | `UpdateBodyField`, `FindBodyMeshes`, `PrepareBodyField` | render, in `SetupGeometry` | every 15 frames; a copy when the worn meshes change |
@@ -394,6 +408,13 @@ identical counts are handled the same way: the first seen becomes strands, the o
 hidden.
 
 ## Conversion algorithm (`StrandGenerator.cpp`)
+
+`StrandGenerator.cpp` copies the mesh and style into `CardsToStrands` (engine-agnostic, in
+`src/Features/HairStrands/CardsToStrands/`) and packs its result for the GPU. Steps 1 to 3, 7 and
+8 are as below; since `0-6-0`, steps 4 to 6 are replaced by fitting a scalp, binding card guides
+to it and growing a clump of strands per guide, described in
+[Hair cards to strands](hair-cards-to-strands.md). Steps 4 to 6 below describe `0-5-1` and
+earlier, kept for the history of the fixes they mention.
 
 1. **Weld** positions (1/1000 unit). Vertices at one position join only if their normals
    face the same way (dot above 0), so the two sides of a double-sided card stay separate
@@ -921,8 +942,16 @@ permutation bit.
     (every slider at either end) and followers beside and longer than a 3.8-unit guide are
     checked too. A follower may not stray further than its guide, nor change length by more
     than 10% (15% in snap turns). Port solver and follow changes to it first, then tune.
--   Converter: `StrandGenerator.cpp` only needs `float3` and friends plus `logger`. It
-    builds on its own with a small shim (SimpleMath, a `logger` stub, `RE::BSGeometry`
+-   Converter: `python tools/hair_cards_to_strands/check.py` (needs numpy and scipy; a few
+    seconds) builds the `CardsToStrands` module with the host compiler and converts synthetic
+    hairstyles: layered long hair, a ponytail, a bob and a buzz cut, with presets, no texture,
+    area seeding, wide clumps and another seed. It fails if under 97% of strands root on the
+    skull, over 1% float more than 2 units off it, over 5% are stubs, over 1% of points sink
+    into it, 5% of points stray over 2 units from the cards, under 85% of the painted cards are
+    covered, or the detached stray piece grows strands. `--render DIR` draws each style;
+    `--compare EXE` runs another build beside it. See
+    [Hair cards to strands](hair-cards-to-strands.md#tools). Before `0-6-0` the generator
+    built on its own with a small shim (SimpleMath, a `logger` stub, `RE::BSGeometry`
     declared) and synthetic cards. That is how the 2026-09-28 checks ran: root/tip
     orientation with flipped V, double-sided cards with back faces on shared and on their
     own interleaved vertices, strips along U, weight normalisation, every preset, area
@@ -1040,15 +1069,19 @@ Check these first in game:
 
 ## Not done (candidates)
 
--   Hair gathered into a tie. A high ponytail's nape hair runs down from the tie, not up into
+-   Hair gathered into a tie. Since `0-6-0` a tail continues the scalp hair that ends at its
+    tie (see [Hair cards to strands](hair-cards-to-strands.md)), but only if that hair's flow
+    runs into the tie. A high ponytail's nape hair runs down from the tie, not up into
     it (Apachii hair 79; the flow before `0-3-0` had the same fault). Tried during `0-3-0`:
     scalp hair runs towards where the hanging pieces start. That turned hair 79's nape
     towards the tie, but made a side card of KS WindyCity grow from the ear, because loose
     hair's crown roots look the same as a tie. It needs a tie detector (a compact cluster of
     hanging roots) and more tied hairstyles to check it against.
--   Braids and long hair built from separate segments. Strands start again at every
-    segment, rooted in mid-air and pinned to the head, so the segments do not hang from one
-    another (KS TombRaider's braid: 18% of strand length; vanilla hair 13's braid: 5%).
+-   Braids and long hair built from separate segments. Before `0-6-0` strands started again at
+    every segment, rooted in mid-air and pinned to the head, so the segments did not hang from
+    one another (KS TombRaider's braid: 18% of strand length; vanilla hair 13's braid: 5%).
+    `0-6-0` continues a segment from the hair ending where it starts, or merges it onto the
+    hair it starts on; that is untested on these meshes. The notes below are from before it.
     Joining strands to "a card just ahead that runs the same way" does not work: 93-100% of
     ordinary strand tips have one within 0.75 units (a longer neighbouring layer). A root
     clear of the scalp is always a segment start, though. Candidates: join backwards from

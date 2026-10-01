@@ -423,7 +423,7 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		ImGui::TextDisabled("%s", T(TKEY("style_generation_note"), "These rebuild the strands when a slider is released."));
 		ImGui::SliderFloat(T(TKEY("style_density"), "Density"), &a_style.density, L::kMinDensity, L::kMaxDensity, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 		generationEdited();
-		tooltip(T(TKEY("style_density_tooltip"), "Strands per unit of card width at the roots."));
+		tooltip(T(TKEY("style_density_tooltip"), "Strands per unit of card width."));
 		ImGui::SliderFloat(T(TKEY("style_segment_length"), "Segment Length"), &a_style.segmentLength, L::kMinSegmentLength, L::kMaxSegmentLength, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		generationEdited();
 		tooltip(T(TKEY("style_segment_length_tooltip"), "Spacing of the points that follow the hair's bones and shape. Shorter follows\ntight bends better and costs more."));
@@ -444,14 +444,14 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		tooltip(T(TKEY("style_clump_strength_tooltip"), "How tightly neighbouring strands gather into locks towards their tips.\nHigh values also make curls spiral together as ringlets."));
 		ImGui::SliderFloat(T(TKEY("style_clump_size"), "Clump Size"), &a_style.clumpSize, 0.1f, L::kMaxClumpSize, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		generationEdited();
-		tooltip(T(TKEY("style_clump_size_tooltip"), "Radius of a lock at the roots, in units."));
+		tooltip(T(TKEY("style_clump_size_tooltip"), "Width of card each lock stands for, in units: each lock follows one line traced\nalong the cards, and its strands spread across this much of the card."));
 		ImGui::SliderFloat(T(TKEY("style_clump_twist"), "Twist"), &a_style.clumpTwist, -L::kMaxTwist, L::kMaxTwist, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		generationEdited();
 		tooltip(T(TKEY("style_clump_twist_tooltip"), "Turns per unit that strands twist around their lock (twists, locs, braids)."));
 
-		if (EnumCombo(T(TKEY("style_seeding"), "Strand Roots"), a_style.seeding, { T(TKEY("seeding_auto"), "Auto"), T(TKEY("seeding_roots"), "Card edges"), T(TKEY("seeding_area"), "Whole surface (short hair)") }))
+		if (EnumCombo(T(TKEY("style_seeding"), "Strand Roots"), a_style.seeding, { T(TKEY("seeding_auto"), "Auto"), T(TKEY("seeding_roots"), "Scalp"), T(TKEY("seeding_area"), "Whole surface (short hair)") }))
 			changed = o_regenerate = true;
-		tooltip(T(TKEY("style_seeding_tooltip"), "Card edges: strands grow from the edge each card's hair flows out of.\nWhole surface: short strands scattered over the mesh, for buzz cuts and fuzz.\nAuto picks the surface when the traced strands come out very short."));
+		tooltip(T(TKEY("style_seeding_tooltip"), "Scalp: every strand grows from the scalp. Cards that start away from it (lower\nlayers, a ponytail below its tie) continue the hair they lie on; pieces far from\nany hair from the head get none.\nWhole surface: short strands scattered over the cards near the scalp, for buzz\ncuts and fuzz.\nAuto picks the surface when the traced strands come out very short."));
 		ImGui::SliderFloat(T(TKEY("style_short_length"), "Short Hair Length"), &a_style.shortLength, 0.1f, L::kMaxShortLength, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		generationEdited();
 		tooltip(T(TKEY("style_short_length_tooltip"), "Strand length, in units, when roots cover the whole surface."));
