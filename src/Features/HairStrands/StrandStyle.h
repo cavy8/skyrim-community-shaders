@@ -69,7 +69,7 @@ namespace Strands
 		// Generation: changing any of these rebuilds the strand asset.
 		SeedMode seeding = SeedMode::Auto;
 		FlowAxis flowAxis = FlowAxis::Auto;
-		float density = 12.0f;           // strands per unit of root edge (Area: per square unit x 4)
+		float density = 20.0f;           // strands per unit of root edge (Area: per square unit x 4)
 		float segmentLength = 1.0f;      // control-point spacing
 		float lengthScale = 1.0f;        // fraction of the traced length kept
 		float volume = 0.15f;            // lift off the card surface towards the tip
