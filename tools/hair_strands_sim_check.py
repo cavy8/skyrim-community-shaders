@@ -11,7 +11,7 @@ frame rate; long hair streams up in a fall and trails when running; everything s
 afterwards, and once the head stops a swing dies down as a pendulum's does rather than running
 up and down the strand; short scalp locks keep their shape through one step aside or a small
 turn; points stay out of the capsule core, and a fringe out of the head (an ellipsoid head
-field) while walking and sprinting; followers stray no further than their guide and keep their
+field) while walking and sprinting; hair above an open collar's rim is not taken for its inside; followers stray no further than their guide and keep their
 length; wind moves hair without blowing it apart; extreme settings stay finite and bounded.
 
 Keep the port in step with features/Hair Strands/Shaders/HairStrands/StrandSim.cs.hlsl,
@@ -205,14 +205,19 @@ def inside_bands(vertices, triangles):
     """BodySdf.cpp: each triangle's inside band, how far behind it the field reaches: half as far as
     the mesh is solid there, the shortest of five rays from its centroid (straight in and four tilted
     by THICKNESS_TILT) to the face each leaves through (the TriangleGrid's Moller-Trumbore with a
-    little slack), at least a cell, at most the most; quantised as the GPU reads it. In cells."""
+    little slack), at least a cell, at most the most; quantised as the GPU reads it. A ray that
+    leaves the mesh's box through no face is open and does not count; with none closed, nothing is
+    solid behind the triangle and its band is 0: no inside, the field the distance either side of
+    it. (BodySdf.cpp also gives a sheet, one face of a thin pair or a two-sided material, 0; the
+    meshes here have none.) In cells."""
     a, b, c = (vertices[triangles[:, k]] for k in range(3))
     normals = np.cross(b - a, c - a)
     normals /= np.linalg.norm(normals, axis=1)[:, None]
     centroids = (a + b + c) / 3.0
     e1, e2 = b - a, c - a
     max_units = SDF_MAX_INSIDE * SDF_CELL
-    longest = 2.0 * max_units
+    used = vertices[np.unique(triangles)]
+    longest = np.linalg.norm(used.max(axis=0) - used.min(axis=0)) + 1.0
     # Triangles by the cells of a coarse grid their boxes overlap, as the TriangleGrid.
     cell = 2.0
     origin = vertices.min(axis=0) - cell
@@ -225,6 +230,7 @@ def inside_bands(vertices, triangles):
                 for z in range(low[t, 2], high[t, 2] + 1):
                     buckets.setdefault((x, y, z), []).append(t)
     thickness = np.full(len(triangles), longest)
+    solid = np.zeros(len(triangles), bool)
     tilt_cos, tilt_sin = math.cos(THICKNESS_TILT), math.sin(THICKNESS_TILT)
     steps = np.arange(0.0, longest + cell, cell * 0.5)
     for r in range(len(triangles)):
@@ -254,7 +260,8 @@ def inside_bands(vertices, triangles):
             hit = ok & (uu >= -RAY_TOLERANCE) & (uu <= 1.0 + RAY_TOLERANCE) & (vv >= -RAY_TOLERANCE) & (uu + vv <= 1.0 + RAY_TOLERANCE) & (t > 0.0) & (t <= thickness[r])
             if hit.any():
                 thickness[r] = t[hit].min()
-    band = np.clip(0.5 * thickness, SDF_CELL, max_units)
+                solid[r] = True
+    band = np.where(solid, np.clip(0.5 * thickness, SDF_CELL, max_units), 0.0)
     quantised = np.minimum(np.round(band / SDF_CELL * SDF_BAND_STEPS), 255)
     return quantised / SDF_BAND_STEPS  # cells
 
@@ -265,14 +272,22 @@ CORNERS = np.array([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)])
 class BodySdf:
     """The body's narrow-band signed distance field, as BodySdf.cs.hlsl builds it: per cell the nearest
     triangle (by quantised distance, then index) of those reaching it (in front, out to the outside
-    band; behind, out to the triangle's inside band); then the distance to it, signed by its vertex
-    normals at the closest point (cells nearly level with the surface outside), the outward normal,
-    and the closest point. Built once in the body's own frame: the bodies here move rigidly, so the
-    field the GPU builds every frame on the actor's axes is this one, carried along."""
+    band; behind, out to the triangle's inside band, or the outside band where nothing is solid
+    behind it); then the distance to it, signed by its vertex normals at the closest point (cells
+    nearly level with the surface outside, and every cell of a triangle with nothing solid behind
+    it), the outward normal, and the closest point. Built once in the body's own frame: the bodies
+    here move rigidly, so the field the GPU builds every frame on the actor's axes is this one,
+    carried along."""
 
-    def __init__(self, vertices, normals, triangles):
+    def __init__(self, vertices, normals, triangles, sources=None):
+        """sources: each triangle's source mesh (BodySdf.cpp finds each one's inside bands in its own
+        mesh); one source without."""
         self.vertices, self.normals, self.triangles = np.asarray(vertices, float), np.asarray(normals, float), np.asarray(triangles)
-        bands = inside_bands(self.vertices, self.triangles)
+        sources = np.zeros(len(self.triangles), int) if sources is None else np.asarray(sources)
+        bands = np.zeros(len(self.triangles))
+        for source in np.unique(sources):
+            mine = sources == source
+            bands[mine] = inside_bands(self.vertices, self.triangles[mine])
         margin = (SDF_MAX_INSIDE + SDF_OUTSIDE + 1.0) * SDF_CELL
         self.origin = np.floor((self.vertices.min(axis=0) - margin) / SDF_CELL) * SDF_CELL
         self.size = np.ceil((self.vertices.max(axis=0) + margin - self.origin) / SDF_CELL).astype(int)
@@ -284,10 +299,12 @@ class BodySdf:
             n = np.cross(b - a, c - a)
             n /= np.linalg.norm(n)
             inside = bands[t]
+            # A triangle with nothing solid behind it reaches the outside band on both sides.
+            reach = inside if inside > 0.0 else SDF_OUTSIDE
             low = np.minimum(np.minimum(a, b), c)
             high = np.maximum(np.maximum(a, b), c)
-            low = np.minimum(low, low - n * inside) - SDF_OUTSIDE
-            high = np.maximum(high, high - n * inside) + SDF_OUTSIDE
+            low = np.minimum(low, low - n * reach) - SDF_OUTSIDE
+            high = np.maximum(high, high - n * reach) + SDF_OUTSIDE
             first = np.maximum(np.ceil(low - 0.5), 0).astype(int)
             last = np.minimum(np.floor(high - 0.5), self.size - 1).astype(int)
             if np.any(first > last):
@@ -296,14 +313,14 @@ class BodySdf:
             index = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
             centre = index + 0.5
             side = (centre - a) @ n
-            keep = (side <= SDF_OUTSIDE) & (side >= -inside)
+            keep = (side <= SDF_OUTSIDE) & (side >= -reach)
             index, centre, side = index[keep], centre[keep], side[keep]
             closest, w = closest_on_triangles(centre, a, b, c)
             offset = centre - closest
             distance = np.linalg.norm(offset, axis=1)
             # The inside band only for cells Finalize would put inside; beside it, the outside band.
             vertex_normal = w[:, :1] * self.normals[i0] + w[:, 1:2] * self.normals[i1] + w[:, 2:] * self.normals[i2]
-            behind = dot(offset, vertex_normal) < SDF_INSIDE_BAND_COS * distance * np.linalg.norm(vertex_normal, axis=1)
+            behind = (inside > 0.0) & (dot(offset, vertex_normal) < SDF_INSIDE_BAND_COS * distance * np.linalg.norm(vertex_normal, axis=1))
             keep = distance <= np.where(behind, inside, SDF_OUTSIDE)
             key = (np.floor(np.clip(distance[keep] / max_band, 0.0, 1.0) * SDF_STEPS).astype(np.uint64) << np.uint64(20)) | np.uint64(t)
             flat = (index[keep] * [self.size[1] * self.size[2], self.size[2], 1]).sum(axis=1)
@@ -316,7 +333,8 @@ class BodySdf:
         self.normal = np.zeros((*self.size, 3))
         self.closest = np.zeros((*self.size, 3))
         flat = np.nonzero(valid)[0]
-        tri = self.triangles[(cells[flat] & np.uint64(0xFFFFF)).astype(int)]
+        winner = (cells[flat] & np.uint64(0xFFFFF)).astype(int)
+        tri = self.triangles[winner]
         index = np.stack(np.unravel_index(flat, self.size), axis=-1)
         centre = index + 0.5
         a, b, c = (grid(self.vertices[tri[:, k]]) for k in range(3))
@@ -328,7 +346,7 @@ class BodySdf:
         vertex_normal = sum(weights[:, k:k + 1] * self.normals[tri[:, k]] for k in range(3))
         vertex_normal = np.where(np.linalg.norm(vertex_normal, axis=1)[:, None] > 1e-6, vertex_normal, face)
         vertex_normal /= np.linalg.norm(vertex_normal, axis=1)[:, None]
-        inside = (length > 1e-4) & (dot(offset, vertex_normal) < SDF_INSIDE_COS * length)
+        inside = (bands[winner] > 0.0) & (length > 1e-4) & (dot(offset, vertex_normal) < SDF_INSIDE_COS * length)
         gradient = np.where((length > 1e-3)[:, None], offset * (np.where(inside, -1.0, 1.0) / np.maximum(length, 1e-12))[:, None], vertex_normal)
         i, j, k = index.T
         self.distance[i, j, k] = np.where(inside, -length, length) * SDF_CELL
@@ -634,15 +652,54 @@ def armoured(shield=False):
     return Scene([NECK, *SHOULDERS, *ARMS] + ([SHIELD] if shield else []), CUIRASS, cut=lambda p: CUIRASS_BOTTOM <= p[2] <= CUIRASS_TOP)
 
 
+def collar_mesh(segments=24):
+    """An open, single-sided collar standing off the back of the neck, as on an iron cuirass: a band
+    flaring from 6.5 units off the neck's axis to 8.5 as it rises from z 96 to 102, then a lip out to
+    10 facing down (its upper face, under 0.6 units away, is the one BodySdf.cpp's sheet rule drops).
+    Both face out, and neither has a face behind it: no ray from them leaves through anything."""
+    axis = lambda z: np.array([0.0, -1.5 + 0.5 * (z - 88.0) / 15.0, z])  # noqa: E731  NECK's axis
+    rings = [(96.0, 6.5), (98.0, 7.17), (100.0, 7.83), (102.0, 8.5), (102.0, 9.25), (102.0, 10.0)]
+    angles = np.linspace(math.pi * 1.05, math.pi * 1.95, segments + 1)  # the back half (-Y)
+    vertices = np.array([axis(z) + [r * math.cos(a), r * math.sin(a), 0.0] for z, r in rings for a in angles])
+    triangles = []
+    for i in range(len(rings) - 1):
+        for j in range(segments):
+            p, q = i * (segments + 1) + j, i * (segments + 1) + j + 1
+            triangles += [(p, q, p + segments + 1), (q, q + segments + 1, p + segments + 1)]
+    triangles = np.array(triangles)
+    # Vertex normals: out and down on the band (its slope), straight down on the lip.
+    normals = []
+    for i, (z, r) in enumerate(rings):
+        for a in angles:
+            radial = np.array([math.cos(a), math.sin(a), 0.0])
+            n = np.array([0.0, 0.0, -1.0]) if i >= 3 else radial - np.array([0.0, 0.0, 1.0]) * (2.0 / 6.0)
+            normals.append(n / np.linalg.norm(n))
+    normals = np.array(normals)
+    face = np.cross(vertices[triangles[:, 1]] - vertices[triangles[:, 0]], vertices[triangles[:, 2]] - vertices[triangles[:, 0]])
+    flip = np.einsum("ij,ij->i", face, normals[triangles].sum(axis=1)) < 0.0
+    triangles[flip] = triangles[flip][:, [0, 2, 1]]
+    return vertices, normals, triangles
+
+
+def collared():
+    """The bare body with the open collar, a source of its own."""
+    made = body()
+    v, n, t = collar_mesh()
+    made.sources = np.r_[np.zeros(len(made.triangles), int), np.ones(len(t), int)]
+    made.triangles = np.concatenate([made.triangles, t + len(made.vertices)])
+    made.vertices, made.normals = np.concatenate([made.vertices, v]), np.concatenate([made.normals, n])
+    return made
+
+
 _SCENES = {}
-SCENE_MAKERS = {"body": body, "armour": lambda: armoured(False), "shield": lambda: armoured(True)}
+SCENE_MAKERS = {"body": body, "armour": lambda: armoured(False), "shield": lambda: armoured(True), "collar": collared}
 
 
 def scene(name):
     """A body and its distance field (built once per process; main builds them before forking)."""
     if name not in _SCENES:
         made = SCENE_MAKERS[name]()
-        made.sdf = BodySdf(made.vertices, made.normals, made.triangles)
+        made.sdf = BodySdf(made.vertices, made.normals, made.triangles, getattr(made, "sources", None))
         _SCENES[name] = made
     return _SCENES[name]
 
@@ -1158,6 +1215,12 @@ def to_the_waist(points=32):
     return on_the_back(points, 45.0, x=3.0)
 
 
+def above_collar(points=12):
+    """A short lock at the nape, hanging behind the neck to 1.5 units above the collar's lip: hair
+    that never reaches the collar."""
+    return np.c_[np.zeros(points), np.full(points, -8.0), np.linspace(109.0, 103.5, points)]
+
+
 def body_depth(p, pose, name):
     """How far world point p lies inside the true body (or the cuirass's inside) on pose (0 outside)."""
     return scene(name).depth(np.linalg.solve(pose[:, :3], p - pose[:, 3]))
@@ -1253,6 +1316,15 @@ def check_body_collision():
     depth, moving = deepest(drawn_on_body(log, "armour"), log, "armour"), settled_motion(log)
     results.append((f"the same lock in a cuirass {ARMOUR} units off the body lies on the cuirass", depth <= 0.3 and moving < 0.005 and deviation(log[-1]) >= ARMOUR,
                     f"{depth:.2f} into the cuirass at most, {deviation(log[-1]):.2f} off its style, moving {moving:.4f}/frame"))
+
+    rest = above_collar()
+    sdf, pose = scene("collar").sdf, head_transform()
+    deepest_read = min((hit[0] for p in rest if (hit := sdf.sample(p, pose, pose)) is not None), default=np.inf)
+    free = deviation(run(rest, style, 60, idle, 4.0)[-1])
+    log = run(rest, style, 60, idle, 4.0, body_motion=body_idle, body_scene="collar")
+    shake = vibration([r[1] for r in log], 60)
+    results.append(("a lock above an open collar is not taken for its inside: it rests as styled", deepest_read > 0.0 and deviation(log[-1]) <= free + 0.1 and shake <= 0.05,
+                    f"reads {deepest_read:+.2f} at its deepest, {deviation(log[-1]):.2f} off target (without the body {free:.2f}), shakes up to {shake:.3f}"))
 
     for label, rest, motion in (("turning", down_the_back(), turn), ("tilting", through_shoulder(), head_tilt)):
         log = run(rest, style, 60, motion, 4.0, body_motion=body_still)

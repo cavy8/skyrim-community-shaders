@@ -16,7 +16,9 @@
 //    outside, so hair passing an edge is not pulled round it.
 //  - A triangle reaches OutsideBand round it and, for cells well behind it, its own inside band
 //    (half the mesh's thickness there): a point deep in a thick piece of armour is still pushed
-//    out, and one beside a forearm is not taken for the inside of its far side.
+//    out, and one beside a forearm is not taken for the inside of its far side. A triangle with
+//    nothing solid behind it (band 0: an open shell's edge, a sheet) has no inside: it reaches
+//    OutsideBand on both sides and the field is the distance either side of it.
 //  - Each cell also stores the surface's move over the frame at its closest point, for the steps
 //    between frames and for contact, and a weight: 1 where the field has a value, 0 elsewhere, so
 //    linear filtering averages only cells with values.
@@ -73,7 +75,8 @@ StructuredBuffer<CollisionVertex> Vertices : register(t0);
 // EntryCount 3x4 skin-to-camera rows this frame, then EntryCount last frame's, also relative to
 // this frame's camera. Entries of a source not drawn this frame are scaled to nothing far away.
 StructuredBuffer<float4> Palette : register(t1);
-// Three vertices and flags: bits 0-7 the triangle's inside band, in steps of InsideScale cells.
+// Three vertices and flags: bits 0-7 the triangle's inside band, in steps of InsideScale cells (0:
+// nothing solid behind it).
 StructuredBuffer<uint4> Triangles : register(t2);
 StructuredBuffer<SkinnedCollisionVertex> SkinnedIn : register(t3);
 
@@ -219,7 +222,8 @@ namespace HairStrandsBody
 };
 
 // Per triangle, every cell within its bands: in front out to OutsideBand, behind out to its inside
-// band. A cell keeps its nearest triangle (ties: the lowest index).
+// band (with nothing solid behind it, OutsideBand). A cell keeps its nearest triangle (ties: the
+// lowest index).
 [numthreads(64, 1, 1)] void Splat(uint3 dispatchID : SV_DispatchThreadID) {
 	const uint id = dispatchID.x;
 	if (id >= TriangleCount)
@@ -240,11 +244,13 @@ namespace HairStrandsBody
 		return;
 	const float3 normal = cross0 / twiceArea;
 	const float insideBand = HairStrandsBody::InsideBand(corners.w);
+	const bool solid = insideBand > 0.0;
+	const float behindReach = solid ? insideBand : OutsideBand;
 
 	// The box round the triangle and the prism behind it, out to the outside band.
 	float3 low = min(min(a, b), c);
 	float3 high = max(max(a, b), c);
-	const float3 back = -normal * insideBand;
+	const float3 back = -normal * behindReach;
 	low = min(low, low + back) - OutsideBand;
 	high = max(high, high + back) + OutsideBand;
 	if (any(high - low > MaxExtent) || any(high < 0.0) || any(low > (float3)GridSize))
@@ -264,7 +270,7 @@ namespace HairStrandsBody
 			{
 				const float3 centre = float3(x, y, z) + 0.5;
 				const float side = dot(centre - a, normal);
-				if (side > OutsideBand || side < -insideBand)
+				if (side > OutsideBand || side < -behindReach)
 					continue;
 				float3 weights;
 				const float3 offset = centre - HairStrandsBody::ClosestOnTriangle(centre, a, b, c, weights);
@@ -274,7 +280,7 @@ namespace HairStrandsBody
 				// past a convex surface, gets the outside band, or a triangle out of the outside
 				// band's reach could not win it back.
 				const float3 vertexNormal = weights.x * va.Normal + weights.y * vb.Normal + weights.z * vc.Normal;
-				const bool behind = dot(offset, vertexNormal) < InsideBandCos * distance * length(vertexNormal);
+				const bool behind = solid && dot(offset, vertexNormal) < InsideBandCos * distance * length(vertexNormal);
 				if (distance > (behind ? insideBand : OutsideBand))
 					continue;
 				const uint key = ((uint)(saturate(distance / maxBand) * BODY_SDF_DISTANCE_STEPS) << BODY_SDF_TRIANGLE_BITS) | id;
@@ -304,7 +310,8 @@ namespace HairStrandsBody
 		const float distance = length(offset);
 		const float3 faceNormal = HairStrandsBody::SafeNormalize(cross(b.Position - a.Position, c.Position - a.Position), float3(0.0, 0.0, 1.0));
 		const float3 vertexNormal = HairStrandsBody::SafeNormalize(weights.x * a.Normal + weights.y * b.Normal + weights.z * c.Normal, faceNormal);
-		const bool inside = distance > 1e-4 && dot(offset, vertexNormal) < InsideCos * distance;
+		const bool solid = HairStrandsBody::InsideBand(corners.w) > 0.0;
+		const bool inside = solid && distance > 1e-4 && dot(offset, vertexNormal) < InsideCos * distance;
 		// The gradient of the signed distance: away from the surface outside, towards it inside.
 		const float3 gradient = distance > 1e-3 ? offset * ((inside ? -1.0 : 1.0) / distance) : vertexNormal;
 

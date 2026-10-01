@@ -235,6 +235,27 @@ body at a sprint. The shaders compile with DXC (all five entry points), the cons
 match DXC's reflection, and the C++ passes a clang syntax check against CommonLib. It has not been
 built with MSVC, fxc has not compiled the new kernels, and none of it has run in game.
 
+`0-5-1` (2026-09-30) fixes the first in-game run of `0-5-0` in iron armour. Short hair snapped
+onto the cuirass's collar, and collision made hair shake. The cause was the inside band. A
+thickness ray that found no face to leave through counted as 15 units of solid. Behind every
+open edge (a collar's rim, a hem, a pauldron's edge) and every sheet, the field then called up
+to 7.5 units of open air "inside". The iron collar's rim faces down, so the air above it, where
+nape hair hangs, read up to 7.5 units deep, and hair there was thrown out across the collar. A
+NumPy port of the collision mesh and field, run on the real iron cuirass and body with vanilla
+`hair01`'s strands, shows it. 1,826 strand points read inside, and 31 of 52 strands near the
+field ended over 1 unit off their style (up to 8.8). Breathing, 29 of 52 shook, by up to 10.5
+units. Now a ray counts only if it leaves through a face, however far, before it leaves the
+mesh's box. A triangle none of whose rays counts, or a sheet, has no inside at all: the field is
+the distance either side of it. In the same port no strand point reads inside, hair rests
+exactly as it does with no body, and
+nothing shakes. Points inside the armour's thick plates read inside as before (183/594 pauldron
+points, 80 of 170 cuirass points against 82). Also: the split length now grows with the merge
+cell. At a fixed 2.5 units the splits undid the coarser merges, so a busy outfit stayed over the
+65,536-triangle budget, and whole meshes were left out. The log showed it as `6.33-unit cells`,
+one retry more than was used. Triangles on vertices with no bone weight (they skin to the
+camera) are left out. It builds with MSVC, fxc compiles the kernels, and the sim check passes.
+It has not run in game.
+
 Earlier builds are build-verified, and the generator fixes are checked on real meshes (see
 [Verifying changes](#verifying-changes)). Work through
 [Unverified assumptions](#unverified-assumptions) first.
@@ -585,9 +606,13 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
         thin plate, or a surface with its back faces modelled) the one facing away from the
         body's long axis stays: across such a pair the field would flip sign from cell to cell,
         and a plate thinner than a cell slips between them. A two-sided material is one sheet,
-        turned to face out as most of its area does. Triangles longer than 2.5 units are split.
-        Each triangle gets an inside band (below). Past 65,536 triangles the vertices are merged
-        further apart.
+        turned to face out as most of its area does. Triangles with edges longer than two merge
+        cells (2.5 units at first) are split. Each triangle gets an inside band (below).
+        Triangles on a vertex with no bone weight are left out: the GPU would skin it to the
+        camera. Past 65,536 triangles the vertices are merged 1.5 times further apart, up to
+        three times. The split length grows with the merge cell; at a fixed length the splits
+        brought the triangles back. Still over the budget, the meshes last in the list lose
+        their triangles, and the log says how many.
     -   *Field.* For every simulated actor, every frame, three dispatches: the collision mesh
         skinned with its sources' bones this frame and last; each triangle splatted into the
         cells within 2 cells of it, and into the cells up to its inside band straight behind it
@@ -599,21 +624,33 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
     -   *Sign.* From the nearest triangle's vertex normals at the closest point, not its face
         normal: the mesh is decimated, and its small triangles turn every way. A cell more than
         75° from that normal is inside. One nearly level with the surface (beside an open edge: a
-        collar, a hem) counts as outside, so hair passing an edge is not pulled round it.
+        collar, a hem) counts as outside, so hair passing an edge is not pulled round it. A
+        triangle with nothing solid behind it (below) has no inside: every cell it is nearest to
+        is outside, on whichever side, and hair there is kept off it on its own side.
     -   *Inside band.* How deep the field reaches behind a surface: half how thick the mesh is
         there (the shortest of five rays, straight in and four tilted 40°, to the face each
-        leaves through), at least a cell, at most 7.5 units. Hair styled into thick armour (a
-        cuirass standing off the body, big pauldrons) lies deep inside it and must still be
-        found. A band reaching past the middle of a limb would take a point just past its far
-        side, out of that side's outside band, for the inside, and a band across a wide cone of
-        directions would do the same past a shoulder: hence half the thickness, and 45°.
+        leaves through, however far), at least a cell, at most 7.5 units. Hair styled into
+        thick armour (a cuirass standing off the body, big pauldrons) lies deep inside it and
+        must still be found. A band reaching past the middle of a limb would take a point just
+        past its far side, out of that side's outside band, for the inside, and a band across a
+        wide cone of directions would do the same past a shoulder: hence half the thickness, and
+        45°. A ray that leaves the mesh's box through no face is open (past a rim, a hem, an
+        edge) and does not count. Rays stop at the box's edge. If none of the five closes, or the triangle is a sheet (one face of a thin pair,
+        a two-sided material), nothing is solid behind it, and its band is 0. Before `0-5-1` an
+        open ray counted as 15 units of solid, and the air above the iron cuirass's
+        downward-facing collar rim read 7.5 units inside it.
     -   *Collision.* As TressFX's: a point nearer the surface than its clearance (or inside) is
         put back along the normal. The clearance is how far its target lies, between 0.15 and
         0.35 units, so a styled shape resting on the body rests as styled, and one styled into
-        armour lies on the armour. A point more than 2.5 units deeper than its target (or the
-        surface) is left alone: the field is more often wrong there (past a thin part, beyond its
-        near side's reach) than the point is that deep, and pushing it out would throw it
-        through the part.
+        armour lies on the armour, however deep its target lies. Limiting that by the target's
+        depth, so that hair styled deep into odd armour stays in it, was tried in `0-5-1` and
+        dropped: legitimate targets lie as deep as the field reaches. A lock styled through the
+        shoulder lies 4.4 units in and 5.8 while the head nods, and the head turned into a
+        shoulder carries hair 4 in. A flat 3-unit cap left those 0.3 to 1.6 units inside the
+        shoulder; a fade from 5 to 7.5 units, 0.41. A point more than 2.5 units deeper than its
+        target (or the surface) is left alone: the
+        field is more often wrong there (past a thin part, beyond its near side's reach) than
+        the point is that deep, and pushing it out would throw it through the part.
     -   *Steps between frames.* The field is the body at the frame's end. A step part-way through
         the frame takes the point ahead by the surface's move over the rest of the frame,
         collides it there, and takes it back. The actor's root carries the point first (its move
@@ -860,8 +897,13 @@ permutation bit.
     (1st and 99th percentiles), if more than 1% of points up to 3 units outside read inside, or if
     more than 6% of points up to 6 units inside do not. It also fails if hair styled through the
     shoulder does not come to rest over it, if hair styled on the back does not rest as styled,
-    or if the same hair in the cuirass (2.5 units inside it) does not come to rest on it. Turning
-    or tipping the head into the shoulder must leave hair out of it and at rest. Breathing,
+    or if the same hair in the cuirass (2.5 units inside it) does not come to rest on it. A fourth
+    body has an open, single-sided collar standing off the back of the neck, its own source mesh:
+    a band flaring out as it rises and a lip facing down at the top, as the iron cuirass's is
+    after the sheet rule. A short lock hanging 1.5 to 7 units above the lip must read outside
+    everywhere, rest as it does with no body (within 0.1 units) and not shake while the body
+    breathes. Under `0-5-0`'s rules it read 6.3 units inside and ended 6.0 units off its style.
+    Turning or tipping the head into the shoulder must leave hair out of it and at rest. Breathing,
     walking, running and turning at 30, 60 and 144 fps must leave drawn hair no more than 0.35
     units deep, on the bare body and, for a 45-unit lock down to the waist, in the cuirass with
     the shield, and it must not shake: three or more frames running whose accelerations each
@@ -964,7 +1006,8 @@ Check these first in game:
     tip), not at the pass.
 -   Body collision (`0-5-0`): the player's log should say `body collision from N meshes: V
     vertices, T triangles (… cells)` a moment after loading and after every change of what is
-    worn (debug level for other actors). `no body collision (…)` names why the bone capsules are
+    worn (debug level for other actors). Cells over 1.25 units mean the outfit was over the
+    triangle budget; `K over the budget left out` means it still was, and meshes are missing. `no body collision (…)` names why the bone capsules are
     used instead, and `body collision skips …` (debug) a mesh that could not be read. The
     statistics show `Body collision: N characters, T triangles, F fields a frame`, and RenderDoc a
     `Hair Strands Body Field` event (three dispatches) before each simulated actor's hair.
@@ -1016,7 +1059,13 @@ Check these first in game:
 -   Hair-hair collision.
 -   The body field reaches 2.5 units in front of a surface and up to 7.5 behind it. Hair whose
     styled place lies deeper inside armour than that, or that gets deeper than 2.5 units below
-    its target in one step, is not pushed out.
+    its target in one step, is not pushed out. Just inside that reach a target is pushed all
+    the way out; just past it, not at all.
+-   A surface with nothing solid behind it (an open shell, a sheet, a two-sided material) has
+    no inside: hair that crosses it in one step stays on the far side. Hair styled through such
+    a surface is not lifted onto it. A one-sided cuirass is solid only where one of the five
+    rays meets its far side; near its neck, arm and waist openings all five can escape, and it
+    has no inside there.
 -   Layers worn over each other: the field takes the nearest surface's side. Between a cloak
     and the cuirass under it, a point nearer the cuirass is outside: hair styled on the body
     there stays under the cloak where the gap is wider than its clearance.

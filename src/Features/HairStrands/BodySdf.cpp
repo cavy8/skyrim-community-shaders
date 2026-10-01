@@ -33,7 +33,7 @@ namespace Strands
 		constexpr float kClusterSize = 1.25f;       // vertices within a cell this size are merged
 		constexpr uint32_t kMaxClusterRetries = 3;  // each 1.5x coarser, while over the triangle budget
 		constexpr uint32_t kMaxTriangles = 65536;
-		constexpr float kMaxEdge = 2.5f;  // longer triangle edges are split
+		constexpr float kMaxEdge = 2.0f;  // cluster cells: longer triangle edges are split
 		constexpr uint32_t kMaxSplitDepth = 5;
 		constexpr float kThinSheet = 0.6f;      // opposite faces closer than this are one sheet
 		constexpr float kHeadWeight = 0.5f;     // a vertex this much on the head (or bones under it) is the head field's
@@ -445,6 +445,12 @@ namespace Strands
 				}
 			}
 
+			// How far a ray can go through the mesh's cells.
+			float Extent() const
+			{
+				return cell * std::sqrt(static_cast<float>(dims[0] * dims[0] + dims[1] * dims[1] + dims[2] * dims[2]));
+			}
+
 			// The nearest hit within a_maxT on a triangle a_accept takes; -1 if none.
 			template <class Accept>
 			int32_t Cast(const float3& a_origin, const float3& a_direction, float a_maxT, Accept&& a_accept, float& o_t) const
@@ -452,6 +458,7 @@ namespace Strands
 				int32_t best = -1;
 				o_t = a_maxT;
 				size_t lastCell = std::numeric_limits<size_t>::max();
+				bool entered = false;
 				const float step = cell * 0.5f;
 				for (float s = 0.0f; s <= a_maxT + step && s <= o_t + cell; s += step) {
 					const float3 p = a_origin + a_direction * s;
@@ -461,8 +468,12 @@ namespace Strands
 						c[a] = static_cast<int32_t>(std::floor((Axis(p, a) - Axis(origin, a)) / cell));
 						inside = inside && c[a] >= 0 && c[a] < dims[a];
 					}
-					if (!inside)
+					if (!inside) {
+						if (entered)
+							break;  // out of the grid's box, which it cannot enter again
 						continue;
+					}
+					entered = true;
 					const size_t index = Index(c[0], c[1], c[2]);
 					if (index == lastCell)
 						continue;
@@ -523,17 +534,22 @@ namespace Strands
 			const size_t vertexCount = a_mesh.positions.size();
 			const auto& indices = a_mesh.indices;
 
-			// The head's vertices (and the triangles wholly on it) are the head field's.
+			// The head's vertices (and the triangles wholly on it) are the head field's. A vertex on no
+			// bone would be skinned to the camera: no triangle of it is kept.
 			std::vector<uint8_t> onHead(vertexCount, 0);
+			std::vector<uint8_t> unskinned(vertexCount, 0);
 			if (!a_source.rigid) {
 				for (size_t v = 0; v < vertexCount; ++v) {
 					float weight = 0.0f;
+					float total = 0.0f;
 					for (int i = 0; i < 4; ++i) {
 						const uint16_t bone = a_mesh.boneIndices[v][i];
+						total += a_mesh.boneWeights[v][i];
 						if (bone < a_source.headBones.size() && a_source.headBones[bone])
 							weight += a_mesh.boneWeights[v][i];
 					}
 					onHead[v] = weight >= kHeadWeight;
+					unskinned[v] = !(total > 1e-3f);
 				}
 			}
 			std::vector<Triangle> kept;
@@ -543,6 +559,8 @@ namespace Strands
 				if (triangle[0] >= vertexCount || triangle[1] >= vertexCount || triangle[2] >= vertexCount)
 					continue;
 				if (onHead[triangle[0]] && onHead[triangle[1]] && onHead[triangle[2]])
+					continue;
+				if (unskinned[triangle[0]] || unskinned[triangle[1]] || unskinned[triangle[2]])
 					continue;
 				kept.push_back(triangle);
 			}
@@ -666,6 +684,7 @@ namespace Strands
 			// with its back faces modelled), the one facing out stays. Across a sheet the field would
 			// flip sign from cell to cell, and a plate thinner than a cell slips between them.
 			std::vector<uint8_t> dropped(triangleCount, 0);
+			std::vector<uint8_t> sheet(triangleCount, 0);
 			{
 				const TriangleGrid grid(o_mesh, dropped);
 				for (uint32_t t = 0; t < triangleCount; ++t) {
@@ -676,6 +695,7 @@ namespace Strands
 					float hit;
 					const int32_t partner = grid.Cast(
 						centroid + n * lift, -n, kThinSheet + lift, [&](uint32_t a_other) { return a_other != t && faceNormals[a_other].Dot(n) < -0.5f; }, hit);
+					sheet[t] = partner >= 0;
 					if (partner >= 0 && (outward[t] < outward[partner] || (outward[t] == outward[partner] && t > static_cast<uint32_t>(partner))))
 						dropped[t] = 1;
 				}
@@ -703,7 +723,13 @@ namespace Strands
 			// in and four tilted) to the face each leaves through: no further than the middle of a limb,
 			// so a point just past a forearm, out of its near side's outside band, is never taken for the
 			// inside of its far side. At least a cell (the cells just behind every surface filter with
-			// those in front), at most kMaxInsideBand.
+			// those in front), at most kMaxInsideBand. A ray that leaves the mesh's box through no face
+			// is open (past a collar's rim, a hem, a pauldron's edge) and does not count; however far
+			// away, a face it leaves through closes it. Behind a triangle none of whose rays closes, or
+			// a sheet (one face of a thin pair, a two-sided material), nothing is solid: its band is 0,
+			// no inside, and the field is the distance either side of it. An inside there is the open
+			// air behind the surface (above a collar's rim, between a collar and the neck), and hair in
+			// it was thrown out across the surface.
 			const float maxInsideUnits = kMaxInsideBand * kCellSize;
 			std::vector<uint8_t> bands(triangleCount, 0);
 			{
@@ -720,18 +746,25 @@ namespace Strands
 					const float3 v = n.Cross(u);
 					const float3 directions[5] = { -n, -n * tiltCos + u * tiltSin, -n * tiltCos - u * tiltSin, -n * tiltCos + v * tiltSin, -n * tiltCos - v * tiltSin };
 					constexpr float lift = 0.01f;
-					float thickness = 2.0f * maxInsideUnits;
-					for (const auto& direction : directions) {
-						float hit;
-						if (grid.Cast(centroid - n * lift, direction, thickness, [&](uint32_t a_other) { return a_other != t && !dropped[a_other] && faceNormals[a_other].Dot(direction) > 0.1f; }, hit) >= 0)
-							thickness = std::min(thickness, hit);
+					float thickness = grid.Extent();
+					bool solid = false;
+					if (!sheet[t] && !a_source.twoSided) {
+						for (const auto& direction : directions) {
+							float hit;
+							if (grid.Cast(centroid - n * lift, direction, thickness, [&](uint32_t a_other) { return a_other != t && !dropped[a_other] && faceNormals[a_other].Dot(direction) > 0.1f; }, hit) >= 0) {
+								thickness = std::min(thickness, hit);
+								solid = true;
+							}
+						}
 					}
 					const float band = std::clamp(0.5f * thickness, kCellSize, maxInsideUnits);
-					bands[t] = static_cast<uint8_t>(std::min(std::lround(band / kCellSize * kInsideBandSteps), 255l));
+					bands[t] = solid ? static_cast<uint8_t>(std::min(std::lround(band / kCellSize * kInsideBandSteps), 255l)) : 0;
 				}
 			}
 
-			// Long triangles are split (shared midpoints), so each one's cells stay few.
+			// Long triangles are split (shared midpoints), so each one's cells stay few. How long is in
+			// cluster cells: at a fixed length, the splits of a coarser merge brought its triangles back.
+			const float maxEdge = kMaxEdge * a_clusterSize;
 			std::vector<Triangle> split;
 			std::unordered_map<uint64_t, uint32_t> midpoints;
 			const auto midpoint = [&](uint32_t a_a, uint32_t a_b) {
@@ -763,7 +796,7 @@ namespace Strands
 					const float3& b = o_mesh.positions[triangle[1]];
 					const float3& c = o_mesh.positions[triangle[2]];
 					const float longest = std::max({ (b - a).LengthSquared(), (c - b).LengthSquared(), (a - c).LengthSquared() });
-					if (depth >= kMaxSplitDepth || !(longest > kMaxEdge * kMaxEdge)) {
+					if (depth >= kMaxSplitDepth || !(longest > maxEdge * maxEdge)) {
 						split.push_back(triangle);
 						o_mesh.bands.push_back(bands[t]);
 						continue;
@@ -800,7 +833,7 @@ namespace Strands
 			std::vector<SourceMesh> meshes(a_input.sources.size());
 			float clusterSize = kClusterSize;
 			size_t triangles = 0;
-			for (uint32_t attempt = 0; attempt <= kMaxClusterRetries; ++attempt, clusterSize *= 1.5f) {
+			for (uint32_t attempt = 0;; ++attempt) {
 				triangles = 0;
 				for (size_t s = 0; s < meshes.size(); ++s) {
 					if (decoded[s].positions.empty())
@@ -808,8 +841,9 @@ namespace Strands
 					BuildSourceMesh(a_input.sources[s], decoded[s], a_input, clusterSize, meshes[s]);
 					triangles += meshes[s].triangles.size();
 				}
-				if (triangles <= kMaxTriangles)
+				if (triangles <= kMaxTriangles || attempt >= kMaxClusterRetries)
 					break;
+				clusterSize *= 1.5f;
 			}
 			if (triangles == 0) {
 				o_data.error = unreadable ? std::format("none of its {} meshes could be read ({} without vertex data or in an unknown layout)", a_input.sources.size() + a_input.unreadable, unreadable) :
@@ -871,8 +905,9 @@ namespace Strands
 				});
 			}
 
-			o_data.summary = std::format("{} meshes{}: {} vertices, {} triangles ({:.2f}-unit cells)", sources,
-				unreadable ? std::format(" ({} unreadable)", unreadable) : std::string(), o_data.vertices.size(), o_data.triangles.size(), clusterSize);
+			o_data.summary = std::format("{} meshes{}: {} vertices, {} triangles ({:.2f}-unit cells{})", sources,
+				unreadable ? std::format(" ({} unreadable)", unreadable) : std::string(), o_data.vertices.size(), o_data.triangles.size(), clusterSize,
+				triangles > kMaxTriangles ? std::format("; {} over the budget left out", triangles - kMaxTriangles) : std::string());
 		}
 	}
 
