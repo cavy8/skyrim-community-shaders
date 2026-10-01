@@ -105,6 +105,9 @@ namespace Strands
 		Hash(hash, seed);
 		for (const auto& rect : excludeUV)
 			Hash(hash, rect);
+		Hash(hash, keepWoven);
+		for (const auto& rect : chainUV)
+			Hash(hash, rect);
 		return hash;
 	}
 
@@ -148,14 +151,20 @@ namespace Strands
 		a_style.clampPositionDelta = std::clamp(a_style.clampPositionDelta, StyleLimits::kMinClampPositionDelta, StyleLimits::kMaxClampPositionDelta);
 		a_style.windResponse = std::clamp(a_style.windResponse, 0.0f, StyleLimits::kMaxWindResponse);
 
-		// Malformed or absurd rectangles would only waste time; keep a bounded, ordered list.
-		if (a_style.excludeUV.size() > StyleLimits::kMaxExcludeRects)
-			a_style.excludeUV.resize(StyleLimits::kMaxExcludeRects);
-		for (auto& rect : a_style.excludeUV) {
-			if (rect.minU > rect.maxU)
-				std::swap(rect.minU, rect.maxU);
-			if (rect.minV > rect.maxV)
-				std::swap(rect.minV, rect.maxV);
+		a_style.chainStiffness = std::clamp(a_style.chainStiffness, 0.0f, 1.0f);
+		a_style.chainDamping = std::clamp(a_style.chainDamping, 0.0f, 1.0f);
+		a_style.chainGravity = std::clamp(a_style.chainGravity, 0.0f, StyleLimits::kMaxChainGravity);
+
+		// Malformed or absurd rectangles would only waste time; keep bounded, ordered lists.
+		for (auto* rects : { &a_style.excludeUV, &a_style.chainUV }) {
+			if (rects->size() > StyleLimits::kMaxExcludeRects)
+				rects->resize(StyleLimits::kMaxExcludeRects);
+			for (auto& rect : *rects) {
+				if (rect.minU > rect.maxU)
+					std::swap(rect.minU, rect.maxU);
+				if (rect.minV > rect.maxV)
+					std::swap(rect.minV, rect.maxV);
+			}
 		}
 	}
 
@@ -312,10 +321,18 @@ namespace Strands
 		o_json["tipSeparation"] = a_style.tipSeparation;
 		o_json["clampPositionDelta"] = a_style.clampPositionDelta;
 		o_json["windResponse"] = a_style.windResponse;
-		json rects = json::array();
-		for (const auto& rect : a_style.excludeUV)
-			rects.push_back({ rect.minU, rect.minV, rect.maxU, rect.maxV });
-		o_json["excludeUV"] = rects;
+		o_json["chainStiffness"] = a_style.chainStiffness;
+		o_json["chainDamping"] = a_style.chainDamping;
+		o_json["chainGravity"] = a_style.chainGravity;
+		o_json["keepWoven"] = a_style.keepWoven;
+		const auto rects = [](const std::vector<UVRect>& a_rects) {
+			json array = json::array();
+			for (const auto& rect : a_rects)
+				array.push_back({ rect.minU, rect.minV, rect.maxU, rect.maxV });
+			return array;
+		};
+		o_json["excludeUV"] = rects(a_style.excludeUV);
+		o_json["chainUV"] = rects(a_style.chainUV);
 	}
 
 	StrandStyle StyleFromJson(const json& a_json, HairPreset a_autoPreset)
@@ -370,16 +387,26 @@ namespace Strands
 		ReadFloat(a_json, "tipSeparation", style.tipSeparation);
 		ReadFloat(a_json, "clampPositionDelta", style.clampPositionDelta);
 		ReadFloat(a_json, "windResponse", style.windResponse);
+		ReadFloat(a_json, "chainStiffness", style.chainStiffness);
+		ReadFloat(a_json, "chainDamping", style.chainDamping);
+		ReadFloat(a_json, "chainGravity", style.chainGravity);
 
-		if (auto it = a_json.find("excludeUV"); it != a_json.end() && it->is_array()) {
+		if (auto it = a_json.find("keepWoven"); it != a_json.end() && it->is_boolean())
+			style.keepWoven = it->get<bool>();
+		const auto readRects = [&](const char* a_key, std::vector<UVRect>& o_rects) {
+			auto it = a_json.find(a_key);
+			if (it == a_json.end() || !it->is_array())
+				return;
 			for (const auto& rect : *it) {
 				if (!rect.is_array() || rect.size() != 4 || !std::ranges::all_of(rect, [](const json& v) { return v.is_number(); })) {
-					logger::warn("[HairStrands] Skipping an excludeUV rectangle that is not [minU, minV, maxU, maxV]");
+					logger::warn("[HairStrands] Skipping a {} rectangle that is not [minU, minV, maxU, maxV]", a_key);
 					continue;
 				}
-				style.excludeUV.push_back({ rect[0].get<float>(), rect[1].get<float>(), rect[2].get<float>(), rect[3].get<float>() });
+				o_rects.push_back({ rect[0].get<float>(), rect[1].get<float>(), rect[2].get<float>(), rect[3].get<float>() });
 			}
-		}
+		};
+		readRects("excludeUV", style.excludeUV);
+		readRects("chainUV", style.chainUV);
 
 		Sanitize(style);
 		return style;

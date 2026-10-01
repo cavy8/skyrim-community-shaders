@@ -10,19 +10,28 @@ CTSM (a hair-card mesh), little-endian:
     u32 width, u32 height, u8 alpha[w*h], u8 shade[w*h]             (coverage; 0x0 for none)
     u32 width, u32 height, u8 rg[w*h*2]                             (flow map; 0x0 for none)
 
-CTSR (the converted strands):
-    u32 magic "CTSR", u32 version 1, u32 pointsPerStrand, u32 strandCount, u32 guideCount
+CTSR (the converted strands), version 2 (version 1 lacks the parts marked v2):
+    u32 magic "CTSR", u32 version, u32 pointsPerStrand, u32 strandCount, u32 guideCount
     per point: f32[3] position, f32[3] normal, f32[2] uv, f32 t, u16[4] bones, f32[4] weights
     per strand: f32 length, f32 random, u32 guide, f32 clumpRandom, u32 cardGuide, u32 scalpRooted
     i32 headBone, f32[3] headCentre, f32 headRadius
     f32[3] scalpCentre, f32 scalpSphereRadius, u32 scalpFitted, f32[24*12] scalpRadii
     u32 totalTriangles, convertedTriangles, cardGuides, redundantGuides, rootedGuides,
         continuedGuides, mergedGuides, bridgedGuides, droppedGuides, seedingUsed; f32 flowMapShare
+    v2: u32 gatheredGuides, tiedGuides, cardTriangles, chainTriangles, wovenPieces
     u32 cardGuideCount; per card guide: u32 kind (CardsToStrands::GuideKind), u32 strands,
-        u32 pointCount, f32[3] path[pointCount]                     (optional: may be absent)
+        v2: i32 tie, u32 pointCount, f32[3] path[pointCount]       (version 1: optional)
+    v2: u32 triangleCount, u8 region[triangleCount] (CardsToStrands::Region)
+    v2: u32 chainCount; per chain: u32 jointCount, u32 pinnedJoints, f32 radius, i32 parentBone,
+        u32 firstBone, u32 triangles, f32[3] joints[jointCount]
+    v2: u32 tieCount; per tie: f32[3] centre, f32 radius, i32 chain, u32 gathered, u32 tails
+    v2: u32 chainBoneBase, u32 chainBoneCount
+    v2: u32 cardVertexCount; per vertex: f32[3] position, normal, tangent, bitangent, f32[2] uv,
+        u16[4] bones, f32[4] weights, u32 source; u32 cardIndexCount, u32 indices[]
 """
 
-GUIDE_KINDS = ("free", "rooted", "merged", "bridged", "continued", "dropped")
+GUIDE_KINDS = ("free", "rooted", "merged", "bridged", "continued", "dropped", "gathered", "tied")
+REGIONS = ("strands", "cards", "chain")
 
 import struct
 
@@ -71,7 +80,7 @@ def read_result(path):
     with open(path, "rb") as f:
         data = f.read()
     magic, version, points, strands, guides = struct.unpack_from("<5I", data, 0)
-    assert magic == 0x52535443 and version == 1
+    assert magic == 0x52535443 and version in (1, 2)
     off = 20
     point_dtype = np.dtype([("position", "<f4", 3), ("normal", "<f4", 3), ("uv", "<f4", 2), ("t", "<f4"),
                             ("bones", "<u2", 4), ("weights", "<f4", 4)])
@@ -92,18 +101,63 @@ def read_result(path):
     off += radii.nbytes
     stats = struct.unpack_from("<10If", data, off)
     off += 44
+    names = ("totalTriangles", "convertedTriangles", "cardGuides", "redundantGuides", "rootedGuides",
+             "continuedGuides", "mergedGuides", "bridgedGuides", "droppedGuides", "seedingUsed", "flowMapShare")
+    if version >= 2:
+        stats += struct.unpack_from("<5I", data, off)
+        off += 20
+        names += ("gatheredGuides", "tiedGuides", "cardTriangles", "chainTriangles", "wovenPieces")
     card_guides = []
     if off + 4 <= len(data):
         count, = struct.unpack_from("<I", data, off)
         off += 4
         for _ in range(count):
-            kind, grown, n = struct.unpack_from("<3I", data, off)
-            off += 12
+            if version >= 2:
+                kind, grown, tie, n = struct.unpack_from("<IIiI", data, off)
+                off += 16
+            else:
+                (kind, grown, n), tie = struct.unpack_from("<3I", data, off), -1
+                off += 12
             path = np.frombuffer(data, "<f4", n * 3, off).reshape(n, 3)
             off += path.nbytes
-            card_guides.append({"kind": GUIDE_KINDS[kind], "strands": grown, "path": path})
-    names = ("totalTriangles", "convertedTriangles", "cardGuides", "redundantGuides", "rootedGuides",
-             "continuedGuides", "mergedGuides", "bridgedGuides", "droppedGuides", "seedingUsed", "flowMapShare")
+            card_guides.append({"kind": GUIDE_KINDS[kind], "strands": grown, "tie": tie, "path": path})
+    regions, chains, ties, cards = None, [], [], None
+    chain_bone_base = chain_bone_count = 0
+    if version >= 2:
+        count, = struct.unpack_from("<I", data, off)
+        off += 4
+        regions = np.frombuffer(data, "u1", count, off)
+        off += count
+        count, = struct.unpack_from("<I", data, off)
+        off += 4
+        for _ in range(count):
+            n, pinned, radius, parent, first, tris = struct.unpack_from("<IIfiII", data, off)
+            off += 24
+            joints = np.frombuffer(data, "<f4", n * 3, off).reshape(n, 3)
+            off += joints.nbytes
+            chains.append({"joints": joints, "pinnedJoints": pinned, "radius": radius, "parentBone": parent,
+                           "firstBone": first, "triangles": tris})
+        count, = struct.unpack_from("<I", data, off)
+        off += 4
+        for _ in range(count):
+            cx, cy, cz, radius, chain, gathered, tails = struct.unpack_from("<4fiII", data, off)
+            off += 28
+            ties.append({"centre": np.array([cx, cy, cz]), "radius": radius, "chain": chain, "gathered": gathered,
+                         "tails": tails})
+        chain_bone_base, chain_bone_count = struct.unpack_from("<2I", data, off)
+        off += 8
+        count, = struct.unpack_from("<I", data, off)
+        off += 4
+        vertex_dtype = np.dtype([("position", "<f4", 3), ("normal", "<f4", 3), ("tangent", "<f4", 3),
+                                 ("bitangent", "<f4", 3), ("uv", "<f4", 2), ("bones", "<u2", 4),
+                                 ("weights", "<f4", 4), ("source", "<u4")])
+        vertices = np.frombuffer(data, vertex_dtype, count, off)
+        off += vertices.nbytes
+        count, = struct.unpack_from("<I", data, off)
+        off += 4
+        indices = np.frombuffer(data, "<u4", count, off)
+        off += indices.nbytes
+        cards = {"vertices": vertices, "indices": indices}
     return {
         "pointsPerStrand": points,
         "positions": pts["position"].reshape(strands, points, 3),
@@ -118,4 +172,10 @@ def read_result(path):
         "scalpRadii": radii,
         "stats": dict(zip(names, stats)),
         "cardGuides": card_guides,
+        "triangleRegions": regions,
+        "chains": chains,
+        "ties": ties,
+        "chainBoneBase": chain_bone_base,
+        "chainBoneCount": chain_bone_count,
+        "cards": cards,
     }

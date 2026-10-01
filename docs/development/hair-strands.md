@@ -336,6 +336,25 @@ Shaders are in `features/Hair Strands/Shaders/HairStrands/`.
     The strands are drawn with the card's own viewport. It is read back from the one the game
     applied, so a dynamic resolution scale applied there is kept. If the hidden viewport never
     reaches the draw, the log says `Hiding the cards did not reach the draw` once.
+-   **Kept cards are drawn by the strands, not by the game.** Hiding is all or nothing per
+    draw, so the triangles a hair keeps as cards (braids, ties, gathered hair) are drawn again
+    right after the strands, in the same hooks, from the asset's own copy of them
+    (`CardVertex`, an index buffer): `HairStrands/CardLighting.hlsl`, compiled with the hair's
+    permutation defines like `StrandLighting.hlsl` but without `HAIR_STRANDS`, so its pixel
+    shader is `Lighting.hlsl`'s as the game uses it, with the card texture, alpha test and
+    normal map the pass bound. Its vertex shader skins the cards with the strands' bone palette
+    (the chain joints included) and the mesh's own tangent frame (`MeshExtract` reads it as the
+    Lighting VS does: row one from the position's, normal's and tangent's fourth components, row
+    two from the tangent). UVs use the material's offset and scale from the draw's constant
+    buffer, because the prepass's Utility shader binds another `b1`. The depth prepass draws
+    them with `CardDepth.hlsl`, which alpha-tests the texture the Utility pass bound at `t0`
+    against that pass's threshold (`AlphaTestRef.x` in its `b2`), as `Utility.hlsl` does: depth
+    written through transparent card parts would cut holes in whatever lies behind. A Utility
+    pass without `ALPHA_TEST` draws them with no pixel shader. The lighting pass widens the equal test as the
+    strands do but keeps the pass's depth writes (off for blended hair) and its rasterizer and
+    blend state, so the cards cull and blend as authored. A hair kept wholly as cards (a braid
+    on its own) has no strands and draws only its cards. Shadow maps still use the game's cards,
+    so a swinging braid's shadow stays where it was styled.
 -   **The depth prepass gets the strands' depth, not the cards'.** Alpha-tested hair writes
     its depth in a Utility shader prepass (`RenderDepth`) before the lighting pass. The
     screen-space shadow mask (sun and shadow lights) and other screen-space passes are
@@ -406,6 +425,14 @@ part's passes draw the strands. Otherwise it keeps its cards: a hairline is a sc
 under the strands, where it covers the gaps between them. Two Hair shapes of one actor with
 identical counts are handled the same way: the first seen becomes strands, the other is
 hidden.
+
+Within a converted hair, since `0-7-0`, only loose hair becomes strands. Braids, twists, ties,
+buns and the hair pulled tight into them keep their cards, and braids hanging free swing on
+chains of their own; loose hair below a ponytail's tie or a braid's end grows strands from there
+(see [Hair cards to strands, Hair that is not loose](hair-cards-to-strands.md#hair-that-is-not-loose)).
+The strands draw those kept cards themselves (see [Why it is built this way](#why-it-is-built-this-way)).
+The style's **Keep Braids and Ties as Cards** turns this off, and its UV rectangles keep parts
+as cards or as swinging cards by hand.
 
 ## Conversion algorithm (`StrandGenerator.cpp`)
 
@@ -737,6 +764,25 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
 -   **Not simulated:** style `simulate` off, area-seeded (short) hair, or past the physics
     distance (the motion fades out over its last quarter). Such hair is plain skinning.
 
+### Chains (hanging braids)
+
+A braid hanging free is kept as cards and skinned to a chain of joints
+(`CardsToStrands::ChainCurve`, at most 16 joints, 16 chains per hair), simulated on the CPU by
+`CardsToStrands::ChainSimulator` in `StrandRenderer::SimulateChains`: on the strands' clock (the
+same fixed 1/60 s steps), each step with the parent bone (the head) where it is at the step's
+end between last frame's pose and this frame's. Joints lying on the head are pinned to it; the
+others are Verlet points pulled towards the styled shape (`chainStiffness`, 0.2 per step), damped
+(`chainDamping`, 0.08) and falling (`chainGravity`, 400 units/s²), kept at their segment lengths
+from the root down, and pushed out of the head sphere and the body's bone capsules by the
+braid's thickness (never further than the styled braid lies, never less than half). The joints
+become bones appended to the palette after the skin instance's, so the same compute and vertex
+shaders skin the braid's cards and any strands growing from its end: those strands' points are
+skinned to the chain, and `TargetSkin` takes their full skinning at any guidance, so the strand
+simulation's targets ride the braid. State is camera-relative, shifted when the camera moves,
+and restarts with the asset, after a gap of more than two frames, or when the root jumps further
+than a strand's teleport distance. Physics off or out of its distance: the braid hangs as
+styled. The body field (GPU) is not used: braids collide with capsules only.
+
 ### Followers (`StrandSkin.cs.hlsl`)
 
 TressFX's follow hairs sit at their guide's position plus their root offset from it
@@ -838,8 +884,10 @@ with no `match` applies to all hair.
     `curl`/`ringlet` → curly, `wave`/`wavy` → wavy, anything else → straight.
 -   Fields: generation (`seeding`, `flowAxis`, `density`, `segmentLength`, `lengthScale`,
     `volume`, `layerJitter`, `clumpStrength`, `clumpSize`, `clumpTwist`, `shortLength`,
-    `coverageThreshold`, `seed`, `excludeUV`), render (`rootWidth`, `tipWidth`, `waveAmplitude`, `waveLength`,
-    `curlRadius`, `curlLength`, `curlStart`, `frizz`, `flyaways`) and motion (`simulate`,
+    `coverageThreshold`, `seed`, `excludeUV`, `keepWoven`, `chainUV`), render (`rootWidth`,
+    `tipWidth`, `waveAmplitude`, `waveLength`, `curlRadius`, `curlLength`, `curlStart`, `frizz`,
+    `flyaways`) and motion (`chainStiffness`, `chainDamping` and `chainGravity` for hanging
+    braids, and `simulate`,
     TressFX's `vspCoeff`, `vspAccelThreshold`, `localConstraintStiffness`,
     `localConstraintsIterations`, `globalConstraintStiffness`, `globalConstraintsRange`,
     `lengthConstraintsIterations`, `dampingCoeff` (TressFX's `damping`), `gravityMagnitude`,
@@ -891,7 +939,9 @@ permutation bit.
 -   Shaders: `StrandLighting.hlsl` is not in `.github/configs/shader-validation.yaml`, so
     compile it by hand with fxc as VS and PS. Use `-D HAIR -D DO_ALPHA_TEST` plus the
     Lighting feature defines, with and without `DEFERRED`/`SKINNED`. The strand VS output
-    signature must match the strand PS input signature. Compile `StrandSkin.cs.hlsl`,
+    signature must match the strand PS input signature. Compile `CardLighting.hlsl` the same
+    way (VS and PS, without `HAIR_STRANDS`), and `CardDepth.hlsl` as `ps_5_0`; its input is the
+    first two outputs of the card VS. Compile `StrandSkin.cs.hlsl`,
     `StrandSim.cs.hlsl` and `BodySdf.cs.hlsl` (entry points `SkinVertices`, `Splat` and
     `Finalize`) as `cs_5_0` with `-I package/Shaders -I "features/Hair Strands/Shaders"`.
     `triangle` is a reserved word too.
@@ -1069,24 +1119,18 @@ Check these first in game:
 
 ## Not done (candidates)
 
--   Hair gathered into a tie. Since `0-6-0` a tail continues the scalp hair that ends at its
-    tie (see [Hair cards to strands](hair-cards-to-strands.md)), but only if that hair's flow
-    runs into the tie. A high ponytail's nape hair runs down from the tie, not up into
-    it (Apachii hair 79; the flow before `0-3-0` had the same fault). Tried during `0-3-0`:
-    scalp hair runs towards where the hanging pieces start. That turned hair 79's nape
-    towards the tie, but made a side card of KS WindyCity grow from the ear, because loose
-    hair's crown roots look the same as a tie. It needs a tie detector (a compact cluster of
-    hanging roots) and more tied hairstyles to check it against.
--   Braids and long hair built from separate segments. Before `0-6-0` strands started again at
-    every segment, rooted in mid-air and pinned to the head, so the segments did not hang from
-    one another (KS TombRaider's braid: 18% of strand length; vanilla hair 13's braid: 5%).
-    `0-6-0` continues a segment from the hair ending where it starts, or merges it onto the
-    hair it starts on; that is untested on these meshes. The notes below are from before it.
-    Joining strands to "a card just ahead that runs the same way" does not work: 93-100% of
-    ordinary strand tips have one within 0.75 units (a longer neighbouring layer). A root
-    clear of the scalp is always a segment start, though. Candidates: join backwards from
-    such roots only (the coverage trim must skip the join), or root those strands on the
-    strand that feeds them in the simulation.
+-   Hair gathered into a tie, and braids. Since `0-7-0` gathered hair, ties and braids keep
+    their cards and hanging braids swing on chains (see [What converts](#what-converts)); a
+    ponytail's tail grows from its tie. Untested in game. Apachii hair 79's nape hair, which runs
+    down from its tie, is kept as cards with the tie's band. Misses on the real meshes and their
+    causes are in [Hair cards to strands, Limits](hair-cards-to-strands.md#limits).
+-   Long loose hair built from separate segments. `0-6-0` continues a segment from the hair
+    ending where it starts, or merges it onto the hair it starts on; untested in game. Joining
+    strands to "a card just ahead that runs the same way" does not work: 93-100% of ordinary
+    strand tips have one within 0.75 units (a longer neighbouring layer).
+-   Braids twisting about their own length, chains colliding with the body field (they use the
+    bone capsules), and swinging braids' shadows (cast by the game's cards where they were
+    styled).
 -   Strand shadow maps and self-shadowing beyond Hair Specular's, and deep opacity maps.
     Cards cast the shadows.
 -   Hair-hair collision.

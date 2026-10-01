@@ -9,8 +9,9 @@
 //   cards_to_strands <mesh.ctsm> <out.ctsr> [key=value ...]
 //
 // Settings keys match CardsToStrands::Settings (density, segmentLength, clumpSize, ...), plus
-// seeding=auto|scalp|area and flowAxis=auto|v|-v|u|-u. The file formats are written and read by
-// tools/hair_cards_to_strands/ctsio.py; see that file for the layout.
+// seeding=auto|scalp|area, flowAxis=auto|v|-v|u|-u, keepWoven=0|1, and excludeUV / chainUV
+// rectangles as minU,minV,maxU,maxV (each may be given more than once). The file formats are
+// written and read by tools/hair_cards_to_strands/ctsio.py; see that file for the layout.
 
 #include "CardsToStrands.h"
 
@@ -130,7 +131,20 @@ namespace
 			io_settings.tipVariation = number();
 		else if (a_key == "seed")
 			io_settings.seed = static_cast<uint32_t>(std::stoul(a_value));
-		else
+		else if (a_key == "keepWoven")
+			io_settings.keepWoven = a_value != "0";
+		else if (a_key == "excludeUV" || a_key == "chainUV") {
+			float values[4]{};
+			size_t at = 0;
+			for (float& value : values) {
+				if (at > a_value.size())
+					throw std::runtime_error(a_key + " takes minU,minV,maxU,maxV");
+				const size_t comma = a_value.find(',', at);
+				value = std::stof(a_value.substr(at, comma - at));
+				at = comma == std::string::npos ? a_value.size() + 1 : comma + 1;
+			}
+			(a_key == "chainUV" ? io_settings.chainUV : io_settings.excludeUV).push_back({ values[0], values[1], values[2], values[3] });
+		} else
 			throw std::runtime_error("unknown setting " + a_key);
 	}
 
@@ -146,7 +160,7 @@ namespace
 		if (!out)
 			throw std::runtime_error(std::string("cannot write ") + a_path);
 		Put(out, 0x52535443u);  // "CTSR"
-		Put(out, 1u);
+		Put(out, 2u);
 		Put(out, a_result.pointsPerStrand);
 		Put(out, a_result.StrandCount());
 		Put(out, a_result.guideCount);
@@ -177,14 +191,55 @@ namespace
 		for (uint32_t v : { st.totalTriangles, st.convertedTriangles, st.cardGuides, st.redundantGuides, st.rootedGuides, st.continuedGuides, st.mergedGuides, st.bridgedGuides, st.droppedGuides, static_cast<uint32_t>(st.seedingUsed) })
 			Put(out, v);
 		Put(out, st.flowMapShare);
+		for (uint32_t v : { st.gatheredGuides, st.tiedGuides, st.cardTriangles, st.chainTriangles, st.wovenPieces })
+			Put(out, v);
 		Put(out, static_cast<uint32_t>(a_result.guides.size()));
 		for (const auto& guide : a_result.guides) {
 			Put(out, static_cast<uint32_t>(guide.kind));
 			Put(out, guide.strands);
+			Put(out, guide.tie);
 			Put(out, static_cast<uint32_t>(guide.path.size()));
 			for (const auto& p : guide.path)
 				Put(out, p);
 		}
+		Put(out, static_cast<uint32_t>(a_result.triangleRegions.size()));
+		for (const Region region : a_result.triangleRegions)
+			Put(out, static_cast<uint8_t>(region));
+		Put(out, static_cast<uint32_t>(a_result.chains.size()));
+		for (const auto& chain : a_result.chains) {
+			Put(out, static_cast<uint32_t>(chain.joints.size()));
+			Put(out, chain.pinnedJoints);
+			Put(out, chain.radius);
+			Put(out, chain.parentBone);
+			Put(out, chain.firstBone);
+			Put(out, chain.triangles);
+			for (const auto& p : chain.joints)
+				Put(out, p);
+		}
+		Put(out, static_cast<uint32_t>(a_result.ties.size()));
+		for (const auto& tie : a_result.ties) {
+			Put(out, tie.centre);
+			Put(out, tie.radius);
+			Put(out, tie.chain);
+			Put(out, tie.gathered);
+			Put(out, tie.tails);
+		}
+		Put(out, a_result.chainBoneBase);
+		Put(out, a_result.chainBoneCount);
+		Put(out, static_cast<uint32_t>(a_result.cardVertices.size()));
+		for (const auto& v : a_result.cardVertices) {
+			Put(out, v.position);
+			Put(out, v.normal);
+			Put(out, v.tangent);
+			Put(out, v.bitangent);
+			Put(out, v.uv);
+			Put(out, v.bones);
+			Put(out, v.weights);
+			Put(out, v.source);
+		}
+		Put(out, static_cast<uint32_t>(a_result.cardIndices.size()));
+		for (uint32_t i : a_result.cardIndices)
+			Put(out, i);
 	}
 }
 
@@ -213,8 +268,9 @@ int main(int argc, char** argv)
 		const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 		WriteResult(argv[2], result);
 		const auto& st = result.stats;
-		std::printf("%u strands x %u points, avg length %.1f, %u card guides (%u redundant, %u rooted, %u continued, %u merged, %u bridged, %u dropped), %.0f ms\n",
-			result.StrandCount(), result.pointsPerStrand, result.averageLength, st.cardGuides, st.redundantGuides, st.rootedGuides, st.continuedGuides, st.mergedGuides, st.bridgedGuides, st.droppedGuides, ms);
+		std::printf("%u strands x %u points, avg length %.1f, %u card guides (%u redundant, %u rooted, %u continued, %u merged, %u bridged, %u dropped, %u gathered, %u tied); %u woven pieces, %zu chains, %zu ties; kept as cards: %u + %u on chains of %u triangles; %.0f ms\n",
+			result.StrandCount(), result.pointsPerStrand, result.averageLength, st.cardGuides, st.redundantGuides, st.rootedGuides, st.continuedGuides, st.mergedGuides, st.bridgedGuides, st.droppedGuides,
+			st.gatheredGuides, st.tiedGuides, st.wovenPieces, result.chains.size(), result.ties.size(), st.cardTriangles, st.chainTriangles, st.totalTriangles, ms);
 	} catch (const std::exception& e) {
 		std::cerr << e.what() << "\n";
 		return 1;

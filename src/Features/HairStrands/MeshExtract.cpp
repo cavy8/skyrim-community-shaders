@@ -150,8 +150,10 @@ namespace Strands
 		if (a_desc.HasFlag(Vertex::VF_NORMAL)) {
 			layout.normal = static_cast<int32_t>(offset);
 			offset += 4;
-			if (a_desc.HasFlag(Vertex::VF_TANGENT))
+			if (a_desc.HasFlag(Vertex::VF_TANGENT)) {
+				layout.tangent = static_cast<int32_t>(offset);
 				offset += 4;
+			}
 		}
 		if (a_desc.HasFlag(Vertex::VF_COLORS))
 			offset += 4;
@@ -287,8 +289,11 @@ namespace Strands
 			}
 			const auto* positions = static_cast<const float4*>(dynamicData.dynamicData);
 			o_copy.dynamicPositions.resize(vertexCount);
-			for (uint32_t v = 0; v < vertexCount; ++v)
+			o_copy.dynamicBitangentX.resize(vertexCount);
+			for (uint32_t v = 0; v < vertexCount; ++v) {
 				o_copy.dynamicPositions[v] = { positions[v].x, positions[v].y, positions[v].z };
+				o_copy.dynamicBitangentX[v] = positions[v].w;
+			}
 		}
 
 		// Triangles, and each vertex's partition (its bone indices are partition-local).
@@ -353,6 +358,11 @@ namespace Strands
 			o_error = "dynamic positions missing";
 			return false;
 		}
+		const bool frame = layout.normal >= 0 && layout.tangent >= 0 && (layout.position >= 0 || a_copy.dynamicBitangentX.size() >= vertexCount);
+		if (frame) {
+			o_mesh.tangents.resize(vertexCount);
+			o_mesh.bitangents.resize(vertexCount);
+		}
 
 		o_mesh.positions.resize(vertexCount);
 		if (layout.uv >= 0)
@@ -380,6 +390,15 @@ namespace Strands
 				float3 normal{ UnpackByte(n[0]), UnpackByte(n[1]), UnpackByte(n[2]) };
 				normal.Normalize();
 				o_mesh.normals[v] = normal;
+			}
+			if (frame) {
+				// As Lighting.hlsl's vertex shader reads them: TBN rows (position.w, normal.w,
+				// tangent.w) and the tangent's xyz.
+				const uint8_t* n = vertex + layout.normal;
+				const uint8_t* t = vertex + layout.tangent;
+				const float x = layout.position >= 0 ? reinterpret_cast<const float*>(vertex + layout.position)[3] : a_copy.dynamicBitangentX[v];
+				o_mesh.tangents[v] = { x, UnpackByte(n[3]), UnpackByte(t[3]) };
+				o_mesh.bitangents[v] = { UnpackByte(t[0]), UnpackByte(t[1]), UnpackByte(t[2]) };
 			}
 
 			// Weights over the bones of the vertex's partition, as skin-instance bones.

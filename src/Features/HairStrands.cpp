@@ -319,6 +319,7 @@ void HairStrands::DrawStatistics()
 	ImGui::Text(T(TKEY("stats_assets"), "Generated hairstyles: %u (%u generating), GPU memory: %.1f MB"), stats.assets, stats.pendingJobs, stats.gpuBytes / (1024.0 * 1024.0));
 	ImGui::Text(T(TKEY("stats_physics"), "Simulated hair: %u, guide strands: %llu"), stats.simulatedHair, static_cast<unsigned long long>(stats.guidesSimulated));
 	ImGui::Text(T(TKEY("stats_body"), "Body collision: %u characters, %u triangles, %u fields a frame"), stats.bodyActors, stats.bodyTriangles, stats.bodyFields);
+	ImGui::Text(T(TKEY("stats_kept_cards"), "Braids and ties kept as cards: %llu triangles drawn, %u chains swinging"), static_cast<unsigned long long>(stats.cardTrianglesDrawn), stats.chainsSimulated);
 }
 
 bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regenerate)
@@ -352,6 +353,8 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		preset.flowAxis = a_style.flowAxis;
 		preset.coverageThreshold = a_style.coverageThreshold;
 		preset.excludeUV = a_style.excludeUV;
+		preset.keepWoven = a_style.keepWoven;
+		preset.chainUV = a_style.chainUV;
 		preset.simulate = a_style.simulate;
 		a_style = preset;
 		changed = true;
@@ -416,6 +419,14 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		tooltip(T(TKEY("style_clamp_position_delta_tooltip"), "Largest move of a strand point in a step, in units: a safety limit. TressFX uses 20."));
 		changed |= ImGui::SliderFloat(T(TKEY("style_wind"), "Wind Response"), &a_style.windResponse, 0.0f, L::kMaxWindResponse, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("style_wind_tooltip"), "How much the weather's wind moves this hairstyle."));
+
+		ImGui::SeparatorText(T(TKEY("style_chain_motion"), "Hanging Braids"));
+		changed |= ImGui::SliderFloat(T(TKEY("style_chain_stiffness"), "Braid Stiffness"), &a_style.chainStiffness, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("style_chain_stiffness_tooltip"), "Braids hanging free swing as chains of rigid segments. This is how firmly each step\npulls them back towards their styled shape: 0 hangs limp, 1 holds the shape rigidly."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_chain_damping"), "Braid Damping"), &a_style.chainDamping, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+		tooltip(T(TKEY("style_chain_damping_tooltip"), "Velocity a braid loses each step. Low values swing longer."));
+		changed |= ImGui::SliderFloat(T(TKEY("style_chain_gravity"), "Braid Gravity"), &a_style.chainGravity, 0.0f, L::kMaxChainGravity, "%.0f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+		tooltip(T(TKEY("style_chain_gravity_tooltip"), "Gravity on hanging braids, in units/s^2 (Earth's is about 687). A braid is heavier\nthan loose hair: it falls back faster as the head tilts."));
 		ImGui::TreePop();
 	}
 
@@ -451,7 +462,7 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 
 		if (EnumCombo(T(TKEY("style_seeding"), "Strand Roots"), a_style.seeding, { T(TKEY("seeding_auto"), "Auto"), T(TKEY("seeding_roots"), "Scalp"), T(TKEY("seeding_area"), "Whole surface (short hair)") }))
 			changed = o_regenerate = true;
-		tooltip(T(TKEY("style_seeding_tooltip"), "Scalp: every strand grows from the scalp. Cards that start away from it (lower\nlayers, a ponytail below its tie) continue the hair they lie on; pieces far from\nany hair from the head get none.\nWhole surface: short strands scattered over the cards near the scalp, for buzz\ncuts and fuzz.\nAuto picks the surface when the traced strands come out very short."));
+		tooltip(T(TKEY("style_seeding_tooltip"), "Scalp: every strand grows from the scalp, or from a ponytail's tie or a braid's end.\nCards that start away from it (lower layers) continue the hair they lie on; pieces\nfar from any hair from the head stay cards.\nWhole surface: short strands scattered over the cards near the scalp, for buzz\ncuts and fuzz.\nAuto picks the surface when the traced strands come out very short."));
 		ImGui::SliderFloat(T(TKEY("style_short_length"), "Short Hair Length"), &a_style.shortLength, 0.1f, L::kMaxShortLength, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		generationEdited();
 		tooltip(T(TKEY("style_short_length_tooltip"), "Strand length, in units, when roots cover the whole surface."));
@@ -465,28 +476,41 @@ bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regener
 		generationEdited();
 		tooltip(T(TKEY("style_seed_tooltip"), "Another seed gives another, equally likely, placement of the strands."));
 
-		ImGui::TextUnformatted(T(TKEY("style_exclude"), "Keep as cards (UV rectangles):"));
-		tooltip(T(TKEY("style_exclude_tooltip"), "Triangles whose texture coordinates fall inside a rectangle keep their cards and\nget no strands: scalp caps, hairlines, ribbons, beads. Values: min U, min V, max U, max V."));
-		for (size_t i = 0; i < a_style.excludeUV.size(); ++i) {
-			ImGui::PushID(static_cast<int>(i));
-			auto& rect = a_style.excludeUV[i];
-			float values[4] = { rect.minU, rect.minV, rect.maxU, rect.maxV };
-			if (ImGui::DragFloat4("##rect", values, 0.005f, -2.0f, 3.0f, "%.3f"))
-				rect = { values[0], values[1], values[2], values[3] };
-			generationEdited();
-			ImGui::SameLine();
-			if (ImGui::Button(T(TKEY("style_exclude_remove"), "Remove"))) {
-				a_style.excludeUV.erase(a_style.excludeUV.begin() + i);
-				changed = o_regenerate = true;
+		if (ImGui::Checkbox(T(TKEY("style_keep_woven"), "Keep Braids and Ties as Cards"), &a_style.keepWoven))
+			changed = o_regenerate = true;
+		tooltip(T(TKEY("style_keep_woven_tooltip"), "Finds the parts that are not loose hair and keeps their cards: braids and twists, a\nponytail's tie and the hair pulled tight into it, buns. Braids hanging free swing on\nchains of their own; hair below a tie or a braid's end grows strands from there.\nOff, everything becomes strands."));
+
+		// UV rectangle lists: triangles kept as cards, and triangles kept as cards on a chain.
+		const auto rectangles = [&](const char* a_id, const char* a_label, const char* a_tooltip, std::vector<UVRect>& io_rects) {
+			ImGui::PushID(a_id);
+			ImGui::TextUnformatted(a_label);
+			tooltip(a_tooltip);
+			for (size_t i = 0; i < io_rects.size(); ++i) {
+				ImGui::PushID(static_cast<int>(i));
+				auto& rect = io_rects[i];
+				float values[4] = { rect.minU, rect.minV, rect.maxU, rect.maxV };
+				if (ImGui::DragFloat4("##rect", values, 0.005f, -2.0f, 3.0f, "%.3f"))
+					rect = { values[0], values[1], values[2], values[3] };
+				generationEdited();
+				ImGui::SameLine();
+				if (ImGui::Button(T(TKEY("style_exclude_remove"), "Remove"))) {
+					io_rects.erase(io_rects.begin() + i);
+					changed = o_regenerate = true;
+					ImGui::PopID();
+					break;
+				}
 				ImGui::PopID();
-				break;
+			}
+			if (io_rects.size() < L::kMaxExcludeRects && ImGui::Button(T(TKEY("style_exclude_add"), "Add Rectangle"))) {
+				io_rects.push_back({ 0.0f, 0.0f, 0.1f, 0.1f });
+				changed = o_regenerate = true;
 			}
 			ImGui::PopID();
-		}
-		if (a_style.excludeUV.size() < L::kMaxExcludeRects && ImGui::Button(T(TKEY("style_exclude_add"), "Add Rectangle"))) {
-			a_style.excludeUV.push_back({ 0.0f, 0.0f, 0.1f, 0.1f });
-			changed = o_regenerate = true;
-		}
+		};
+		rectangles("exclude", T(TKEY("style_exclude"), "Keep as cards (UV rectangles):"),
+			T(TKEY("style_exclude_tooltip"), "Triangles whose texture coordinates fall inside a rectangle keep their cards and\nget no strands: scalp caps, hairlines, ribbons, beads. Values: min U, min V, max U, max V."), a_style.excludeUV);
+		rectangles("chain", T(TKEY("style_chain_uv"), "Keep as swinging cards (UV rectangles):"),
+			T(TKEY("style_chain_uv_tooltip"), "Triangles whose texture coordinates fall inside a rectangle keep their cards and\nswing on a chain, as a braid hanging free does: for a braid, tail or charm the\nconversion did not find. Values: min U, min V, max U, max V."), a_style.chainUV);
 		ImGui::TreePop();
 	}
 

@@ -267,7 +267,7 @@ namespace HairStrandsSim
 		const HairStrands::RestPoint rest = RestPoints[base + i];
 		float3x4 current, previousFrame, targetCurrent, targetPrevious;
 		HairStrandsSkin::Skin(rest, current, previousFrame);
-		HairStrandsSkin::TargetSkin(current, previousFrame, targetCurrent, targetPrevious);
+		HairStrandsSkin::TargetSkin(rest, current, previousFrame, targetCurrent, targetPrevious);
 		const float4 restPosition = float4(rest.Position, 1.0);
 		targetEnd[i] = mul(targetCurrent, restPosition);
 		targetStart[i] = mul(targetPrevious, restPosition) + PreviousToCurrent;

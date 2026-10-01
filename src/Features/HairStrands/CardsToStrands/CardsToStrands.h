@@ -151,6 +151,10 @@ namespace CardsToStrands
 	{
 		std::vector<Vec3> positions;
 		std::vector<Vec3> normals;  // empty if the mesh has none
+		// The tangent frame the normal map is read in (Skyrim's per-vertex bitangent and tangent: the
+		// first and second rows of its TBN); empty if the mesh has none. Only the cards kept as cards use them.
+		std::vector<Vec3> tangents;
+		std::vector<Vec3> bitangents;
 		std::vector<Vec2> uvs;
 		std::vector<std::array<uint16_t, 4>> boneIndices;  // may be empty: every point on bone 0
 		std::vector<std::array<float, 4>> boneWeights;
@@ -193,6 +197,23 @@ namespace CardsToStrands
 		bool Contains(float a_u, float a_v) const { return a_u >= minU && a_u <= maxU && a_v >= minV && a_v <= maxV; }
 	};
 
+	/** @brief What a triangle of the cards becomes. */
+	enum class Region : uint8_t
+	{
+		Strands,  // loose hair: its cards are replaced by strands
+		Cards,    // stays a card, skinned as authored: hair gathered into a tie or a braid, braids lying on the head, ties, buns
+		Chain     // stays a card, swinging on a simulated chain: a braid or twist hanging free
+	};
+
+	/** @brief A triangle's region as chosen by hand (a designer, a style), or Auto to let the conversion decide. */
+	enum class RegionChoice : uint8_t
+	{
+		Auto,
+		Strands,
+		Cards,
+		Chain
+	};
+
 	struct Settings
 	{
 		Seeding seeding = Seeding::Auto;
@@ -209,7 +230,14 @@ namespace CardsToStrands
 		float coverageThreshold = 0.3f;  // texture alpha below this has no hair (0: ignore the texture)
 		float tipVariation = 0.15f;      // strands end up to this fraction short of their card guide's tip
 		uint32_t seed = 1;
-		std::vector<UVRect> excludeUV;  // triangles whose UV centre lies in one stay cards
+		std::vector<UVRect> excludeUV;  // triangles whose UV centre lies in one stay cards (Region::Cards)
+		std::vector<UVRect> chainUV;    // triangles whose UV centre lies in one hang on a chain (Region::Chain)
+		// Find the parts that are not loose hair (braids, twists, ties, buns, the hair gathered into
+		// them) and keep them as cards; off, every triangle not chosen by hand becomes strands.
+		bool keepWoven = true;
+		// Per mesh triangle, a region chosen by hand; empty, or Auto, lets the conversion decide.
+		// Wins over excludeUV and chainUV.
+		std::vector<RegionChoice> triangleRegions;
 	};
 
 	namespace Limits
@@ -223,6 +251,8 @@ namespace CardsToStrands
 		inline constexpr uint32_t kStrandsPerGuide = 8;  // simulated guides: one per this many strands
 		inline constexpr uint32_t kMinGuides = 64;
 		inline constexpr uint32_t kMaxGuides = 4096;
+		inline constexpr uint32_t kMaxChains = 16;
+		inline constexpr uint32_t kMaxChainJoints = 16;  // per chain
 	}
 
 	/** @brief One strand control point in the bind pose. */
@@ -275,16 +305,57 @@ namespace CardsToStrands
 		Rooted,     // starts on the scalp
 		Merged,     // started away from it; continues the hair rooted on the scalp that it lies on
 		Bridged,    // started a little off the scalp; joined to it directly
-		Continued,  // started where rooted hair ends, which carries on into it (a ponytail below its tie); grows no clump of its own
-		Dropped     // started far from the scalp and from any hair rooted on it
+		Continued,  // started where rooted hair ends, which carries on into it (a layer starting mid-length); grows no clump of its own
+		Dropped,    // started far from the scalp and from any hair rooted on it
+		Gathered,   // hair gathered into a tie or a braid (pulled tight to the head): stays cards, grows no strands
+		Tied        // starts at a tie or at the end of a braid: its strands grow from there (a ponytail's tail, a braid's tuft)
 	};
 
 	/** @brief A card guide as bound: the centre line of one clump of strands. */
 	struct GuideCurve
 	{
-		std::vector<Vec3> path;  // root to tip; for a bound guide, the root is on the scalp
+		std::vector<Vec3> path;  // root to tip; for a bound guide, the root is on the scalp (or on its tie)
 		GuideKind kind = GuideKind::Free;
 		uint32_t strands = 0;  // strands grown round it
+		int32_t tie = -1;      // Tied: the tie it grows from (Result::ties)
+	};
+
+	/**
+	 * A braid or twist hanging free, simulated as a chain of rigid segments. Its cards are skinned
+	 * to the chain's joints: joint j is bone firstBone + j, numbered after the mesh's own bones.
+	 * Joints from the root up to pinnedJoints - 1 lie on the head and move with parentBone.
+	 */
+	struct ChainCurve
+	{
+		std::vector<Vec3> joints;  // bind pose, root first
+		uint32_t pinnedJoints = 1;
+		float radius = 0.0f;  // the braid's thickness round its joints, for collision
+		int32_t parentBone = -1;
+		uint32_t firstBone = 0;
+		uint32_t triangles = 0;  // mesh triangles skinned to it
+	};
+
+	/** @brief Where hair is gathered: a ponytail's tie, or a braid's end. Tied card guides grow strands from it. */
+	struct Tie
+	{
+		Vec3 centre;
+		float radius = 0.0f;
+		int32_t chain = -1;     // the chain whose end it is; -1: on the head
+		uint32_t gathered = 0;  // card guides gathered into it
+		uint32_t tails = 0;     // card guides growing from it
+	};
+
+	/** @brief A vertex of the cards kept as cards (Region::Cards and Chain), skinned for drawing. */
+	struct CardVertex
+	{
+		Vec3 position;  // bind pose
+		Vec3 normal;
+		Vec3 tangent;    // CardMesh::tangents, else along U
+		Vec3 bitangent;  // CardMesh::bitangents, else along V
+		Vec2 uv;
+		std::array<uint16_t, 4> bones{};  // mesh bones, or chain joints from Result::chainBoneBase
+		std::array<float, 4> weights{};
+		uint32_t source = 0;  // the mesh vertex it copies
 	};
 
 	struct Stats
@@ -299,6 +370,11 @@ namespace CardsToStrands
 		uint32_t continuedGuides = 0;  // starting where rooted hair ends, which carries on into them
 		uint32_t bridgedGuides = 0;    // starting a little off the scalp, joined to it directly
 		uint32_t droppedGuides = 0;    // starting far from the scalp and from any hair rooted on it
+		uint32_t gatheredGuides = 0;   // gathered into a tie or a braid, kept as cards
+		uint32_t tiedGuides = 0;       // growing from a tie or a braid's end
+		uint32_t cardTriangles = 0;    // kept as cards on their own bones (Region::Cards)
+		uint32_t chainTriangles = 0;   // kept as cards on a chain (Region::Chain)
+		uint32_t wovenPieces = 0;      // braids, twists, ties and buns found
 		Seeding seedingUsed = Seeding::Scalp;
 	};
 
@@ -315,6 +391,19 @@ namespace CardsToStrands
 		float averageLength = 0.0f;
 		Scalp scalp;
 		std::vector<GuideCurve> guides;  // the card guides left after dropping repeats; Strand::cardGuide indexes these
+
+		// What each mesh triangle became. Strand points grown from a chain's end are skinned to its
+		// joints, so with chains the bone palette runs past the mesh's bones: bones chainBoneBase to
+		// chainBoneBase + chainBoneCount - 1 are chain joints.
+		std::vector<Region> triangleRegions;
+		std::vector<ChainCurve> chains;
+		std::vector<Tie> ties;
+		uint32_t chainBoneBase = 0;
+		uint32_t chainBoneCount = 0;
+		// The triangles kept as cards (Cards and Chain), as a mesh to draw: Chain vertices skinned to
+		// their chain's joints, the rest as authored.
+		std::vector<CardVertex> cardVertices;
+		std::vector<uint32_t> cardIndices;
 		Stats stats;
 
 		uint32_t StrandCount() const { return static_cast<uint32_t>(strands.size()); }
@@ -322,7 +411,73 @@ namespace CardsToStrands
 
 	/**
 	 * @brief Converts a hair-card mesh into strands. Pure CPU, no global state; safe on any thread.
-	 * @return false with o_error set if the mesh has no usable flow or no strand could be traced.
+	 * @return false with o_error set if the mesh has no usable flow, or nothing could be traced or kept.
 	 */
 	bool Convert(const CardMesh& a_mesh, const Settings& a_settings, Result& o_result, std::string& o_error);
+
+	/**
+	 * An affine transform as the three rows of its 3x4 matrix: a point maps to
+	 * (rows[0] . (p, 1), rows[1] . (p, 1), rows[2] . (p, 1)). A skinning palette's layout.
+	 */
+	struct Affine
+	{
+		std::array<std::array<float, 4>, 3> rows{ { { 1.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f, 0.0f } } };
+
+		Vec3 Apply(const Vec3& a_p) const { return ApplyLinear(a_p) + Vec3(rows[0][3], rows[1][3], rows[2][3]); }
+		Vec3 ApplyLinear(const Vec3& a_v) const
+		{
+			return { rows[0][0] * a_v.x + rows[0][1] * a_v.y + rows[0][2] * a_v.z, rows[1][0] * a_v.x + rows[1][1] * a_v.y + rows[1][2] * a_v.z,
+				rows[2][0] * a_v.x + rows[2][1] * a_v.y + rows[2][2] * a_v.z };
+		}
+	};
+
+	/** @brief How a chain (ChainCurve) moves. Units and seconds; per-step values are for steps of 1/60 s. */
+	struct ChainSettings
+	{
+		float gravity = 400.0f;   // units/s^2, down (-Z)
+		float damping = 0.08f;    // share of its velocity a joint loses per step
+		float stiffness = 0.2f;   // pull back towards the braid's styled shape per step: 0 limp, 1 rigid
+		uint32_t iterations = 4;  // constraint passes per step
+	};
+
+	/** @brief A capsule a chain keeps out of (a sphere when a == b), in the chain's space. */
+	struct ChainCollider
+	{
+		Vec3 a;
+		Vec3 b;
+		float radius = 0.0f;
+	};
+
+	/**
+	 * Simulates one ChainCurve: Verlet points at its joints, the pinned ones carried by the parent
+	 * bone, each other pulled towards the styled shape as its parent segment carries it, segments
+	 * kept at their length from the root down (follow the leader), and pushed out of colliders.
+	 * Each joint becomes a bone the braid's cards are skinned to. Works in whatever space the
+	 * parent transforms are given in (the game: camera-relative, shifted with Translate).
+	 */
+	class ChainSimulator
+	{
+	public:
+		/** @brief Puts the chain at rest in its styled shape; a_parent is the parent bone's skin-to-world transform. */
+		void Reset(const ChainCurve& a_chain, const Affine& a_parent);
+		/** @brief One step of a_dt seconds; a_parent is the parent bone's transform at the step's end. Resets if never set. */
+		void Step(const ChainCurve& a_chain, const Affine& a_parent, float a_dt, const ChainSettings& a_settings, const ChainCollider* a_colliders, size_t a_colliderCount);
+		/** @brief Moves the whole state, for a change of the space it is kept in (a camera-relative origin moving). */
+		void Translate(const Vec3& a_delta);
+		/**
+		 * @brief Each joint's bone: the skin-to-world transform taking the bind pose to the chain
+		 * as drawn, a_alpha of the way from the step before the last to the last, carried by the
+		 * parent bone as it is now (a_parent), so the chain follows the head between steps.
+		 */
+		void Bones(const ChainCurve& a_chain, const Affine& a_parent, float a_alpha, std::vector<Affine>& o_bones) const;
+		bool Started() const { return !position.empty(); }
+		/** @brief The joints at the last step. */
+		const std::vector<Vec3>& Joints() const { return position; }
+
+	private:
+		std::vector<Vec3> position;
+		std::vector<Vec3> previous;
+		std::vector<Vec3> offset;  // from where the parent bone alone would carry each joint, at the last step
+		std::vector<Vec3> previousOffset;
+	};
 }

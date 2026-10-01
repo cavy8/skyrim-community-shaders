@@ -116,6 +116,11 @@ namespace Strands
 	{
 		std::vector<float3> positions;
 		std::vector<float3> normals;  // empty if the shape has none
+		// The tangent frame the normal map is read in, as the Lighting vertex shader builds it: the
+		// first row of its TBN (the bitangent spread over the position's, normal's and tangent's
+		// fourth components) and the second (the tangent's xyz). Empty if the shape has none.
+		std::vector<float3> tangents;
+		std::vector<float3> bitangents;
 		std::vector<float2> uvs;
 		std::vector<std::array<uint16_t, 4>> boneIndices;
 		std::vector<std::array<float, 4>> boneWeights;
@@ -148,6 +153,7 @@ namespace Strands
 		int32_t position = -1;  // three floats (and the bitangent's x); -1: kept elsewhere (dynamic shapes)
 		int32_t uv = -1;        // two halves
 		int32_t normal = -1;    // three unorm8 in [-1, 1]
+		int32_t tangent = -1;   // three unorm8 in [-1, 1] (with a normal only)
 		int32_t skinning = -1;  // four half weights, four bone bytes
 		uint32_t stride = 0;
 	};
@@ -185,6 +191,7 @@ namespace Strands
 		std::vector<uint8_t> vertices;                      // vertexCount x the layout's stride
 		BufferReadback vertexReadback;                      // in flight in their place when no partition kept a CPU copy
 		std::vector<float3> dynamicPositions;               // a dynamic shape's (head parts): kept outside the vertex data
+		std::vector<float> dynamicBitangentX;               // and the fourth component kept with each
 		std::vector<uint32_t> indices;                      // triangle list, shape vertex indices
 		std::vector<int32_t> vertexPartition;               // the partition whose bone table a vertex uses; -1: in no triangle
 		std::vector<std::vector<uint16_t>> partitionBones;  // per partition: its bones as skin-instance bones

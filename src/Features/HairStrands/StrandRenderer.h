@@ -55,6 +55,18 @@ namespace Strands
 	STATIC_ASSERT_ALIGNAS_16(StrandDrawCB);
 	static_assert(sizeof(StrandDrawCB) == 80);
 
+	/** @brief Mirrors cbuffer CardDraw (b7) in HairStrands/CardLighting.hlsl. */
+	struct alignas(16) CardDrawCB
+	{
+		float3 eyeDelta;  // skinning camera to this pass's camera
+		uint32_t boneCount;
+		float3 previousEyeDelta;
+		float pad0;
+		float4 texcoordOffset;  // the material's UV offset (xy) and scale (zw)
+	};
+	STATIC_ASSERT_ALIGNAS_16(CardDrawCB);
+	static_assert(sizeof(CardDrawCB) == 48);
+
 	/** @brief Mirrors GuidePoint in HairStrands/Common.hlsli: one simulated guide point (GPU only). */
 	struct GuidePoint
 	{
@@ -139,9 +151,12 @@ namespace Strands
 		float3 bodyTexel;
 		float bodyTrust;         // units
 		float4 bodyRootMove[3];  // a camera-relative point's move with the actor's root over the frame
+
+		uint32_t chainBoneBase;  // palette bones from here on are chain joints (hanging braids)
+		uint32_t pad[3];
 	};
 	STATIC_ASSERT_ALIGNAS_16(SkinCB);
-	static_assert(sizeof(SkinCB) == 208 + kMaxColliders * 32 + 128);
+	static_assert(sizeof(SkinCB) == 208 + kMaxColliders * 32 + 144);
 
 	/** @brief Global options the renderer reads every frame (owned by the HairStrands feature). */
 	struct RenderSettings
@@ -203,9 +218,11 @@ namespace Strands
 		uint64_t gpuBytes = 0;
 		uint32_t simulatedHair = 0;
 		uint64_t guidesSimulated = 0;
-		uint32_t bodyActors = 0;     // characters with a collision mesh
-		uint32_t bodyTriangles = 0;  // in their collision meshes
-		uint32_t bodyFields = 0;     // distance fields built
+		uint32_t bodyActors = 0;          // characters with a collision mesh
+		uint32_t bodyTriangles = 0;       // in their collision meshes
+		uint32_t bodyFields = 0;          // distance fields built
+		uint64_t cardTrianglesDrawn = 0;  // kept as cards (braids, ties, gathered hair), drawn in place of the hidden cards
+		uint32_t chainsSimulated = 0;     // hanging braids swinging on chains
 	};
 
 	/**
@@ -297,6 +314,22 @@ namespace Strands
 		ShaderVariant* GetVariant(uint32_t a_pixelDescriptor);
 		/** @brief The strand shaders for a lighting permutation if already compiled, without requesting them. */
 		ShaderVariant* FindVariant(uint32_t a_pixelDescriptor);
+		/**
+		 * @brief The shaders that draw the cards a hair keeps (CardLighting.hlsl) in a lighting
+		 * permutation, compiling them on first request; null until ready.
+		 */
+		ShaderVariant* GetCardVariant(uint32_t a_pixelDescriptor);
+		/** @brief The kept cards' depth prepass pixel shader (CardDepth.hlsl), compiling it on first request; null until ready. */
+		ID3D11PixelShader* GetCardDepthShader();
+		/**
+		 * @brief Steps the chains a hair's hanging braids swing on, on the strands' clock, and
+		 * appends their joints to this frame's palette rows as bones after the skin instance's.
+		 * @param io_palette This frame's skin-to-world rows (absolute translations), a_bones bones.
+		 * @return The palette's bone count with the chains.
+		 */
+		uint32_t SimulateChains(Instance& a_instance, RE::NiSkinInstance* a_skin, std::vector<float4>& io_palette, uint32_t a_bones, const float3& a_eye);
+		/** @brief Draws the cards a hair keeps, with the pass's state; a_depthOnly: their alpha-tested depth only. */
+		void DrawCards(Instance& a_instance, const D3D11_VIEWPORT* a_viewport, bool a_depthOnly);
 		/** @brief The shader once compiled (null until then); requests the compile on first call. a_failure is logged if it fails. */
 		winrt::com_ptr<ID3D11ComputeShader> EnsureComputeShader(ComputeShader& a_slot, const wchar_t* a_path, const char* a_entry, const char* a_failure);
 		bool EnsureSkinShader();
@@ -344,6 +377,8 @@ namespace Strands
 		ID3D11RasterizerState* GetNoCullState(ID3D11RasterizerState* a_current);
 		/** @brief The pass's depth state with writes on and an equal test widened to less/greater-equal. */
 		ID3D11DepthStencilState* GetStrandDepthState(ID3D11DepthStencilState* a_current, bool a_reversedDepth);
+		/** @brief The pass's depth state with an equal test widened to less/greater-equal, writes as the pass has them. */
+		ID3D11DepthStencilState* GetCardDepthState(ID3D11DepthStencilState* a_current, bool a_reversedDepth);
 		void RestoreHiddenViewport();
 
 		StyleLibrary& library;
@@ -358,6 +393,8 @@ namespace Strands
 
 		std::mutex variantMutex;
 		std::unordered_map<uint32_t, std::shared_ptr<ShaderVariant>> variants;
+		std::unordered_map<uint32_t, std::shared_ptr<ShaderVariant>> cardVariants;
+		std::shared_ptr<ShaderVariant> cardDepth;  // pixel shader only
 
 		std::mutex computeShaderMutex;
 		ComputeShader skinShader;
@@ -382,8 +419,10 @@ namespace Strands
 
 		std::unique_ptr<ConstantBuffer> drawCB;
 		std::unique_ptr<ConstantBuffer> skinCB;
+		std::unique_ptr<ConstantBuffer> cardCB;
 		std::unordered_map<ID3D11RasterizerState*, winrt::com_ptr<ID3D11RasterizerState>> noCullStates;
 		std::unordered_map<ID3D11DepthStencilState*, winrt::com_ptr<ID3D11DepthStencilState>> strandDepthStates[2];  // by reversed depth
+		std::unordered_map<ID3D11DepthStencilState*, winrt::com_ptr<ID3D11DepthStencilState>> cardDepthStates[2];
 
 		// The pass between OnSetupGeometry and OnRestoreGeometry.
 		RE::BSRenderPass* currentPass = nullptr;
@@ -400,5 +439,7 @@ namespace Strands
 		uint32_t drawnThisFrame = 0;
 		uint32_t simulatedThisFrame = 0;
 		uint64_t guidesThisFrame = 0;
+		uint64_t cardTrianglesThisFrame = 0;
+		uint32_t chainsThisFrame = 0;
 	};
 }

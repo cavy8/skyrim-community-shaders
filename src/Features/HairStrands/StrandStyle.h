@@ -48,7 +48,7 @@ namespace Strands
 		Count
 	};
 
-	/** @brief A UV rectangle whose triangles are left as cards (scalp caps, hairlines, ribbons). */
+	/** @brief A UV rectangle of the hair texture: its triangles are left as cards, or hang on a chain. */
 	struct UVRect
 	{
 		float minU = 0.0f;
@@ -80,7 +80,11 @@ namespace Strands
 		float shortLength = 1.2f;        // strand length when seeding by area
 		float coverageThreshold = 0.3f;  // card texture alpha below this has no hair (0: ignore the texture)
 		uint32_t seed = 1;
-		std::vector<UVRect> excludeUV;
+		std::vector<UVRect> excludeUV;  // triangles kept as cards (scalp caps, hairlines, ribbons, beads)
+		// Hair that is not loose stays cards: braids, twists, ties, buns and the hair gathered into
+		// them. Braids hanging free swing on chains of their own.
+		bool keepWoven = true;
+		std::vector<UVRect> chainUV;  // triangles kept as cards that hang on a chain
 
 		// Render: the vertex shader applies these every frame.
 		float rootWidth = 0.06f;
@@ -109,6 +113,11 @@ namespace Strands
 		float tipSeparation = 0.0f;        // how far strands spread from their guide towards the tip
 		float clampPositionDelta = 20.0f;  // largest move of a point in a step, in units
 		float windResponse = 1.0f;         // how much the weather's wind moves the hair
+
+		// Motion of braids hanging on chains (CardsToStrands::ChainSettings), per 1/60 s step.
+		float chainStiffness = 0.2f;  // pull back towards the styled shape: 0 limp, 1 rigid
+		float chainDamping = 0.08f;   // velocity lost
+		float chainGravity = 400.0f;  // units/s^2
 
 		bool operator==(const StrandStyle&) const = default;
 
@@ -144,6 +153,7 @@ namespace Strands
 		inline constexpr float kMaxClampPositionDelta = 200.0f;
 		inline constexpr float kMaxWindResponse = 3.0f;
 		inline constexpr size_t kMaxExcludeRects = 32;
+		inline constexpr float kMaxChainGravity = 1400.0f;
 	}
 
 	/** @brief Clamps every field to StyleLimits so a malformed style file cannot break generation. */

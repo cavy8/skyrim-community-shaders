@@ -1,9 +1,9 @@
 #ifndef __HAIR_STRANDS_COMMON_HLSLI__
 #define __HAIR_STRANDS_COMMON_HLSLI__
 
-// Buffer layouts shared by the strand compute shaders and the strand vertex shader.
-// Mirror Strands::RestPoint / StrandInfo (StrandGenerator.h) and Strands::SkinnedPoint /
-// GuidePoint (StrandRenderer.h).
+// Buffer layouts shared by the strand compute shaders and the strand and card vertex shaders.
+// Mirror Strands::RestPoint / StrandInfo / CardVertex (StrandGenerator.h) and
+// Strands::SkinnedPoint / GuidePoint (StrandRenderer.h).
 namespace HairStrands
 {
 	struct RestPoint
@@ -16,6 +16,21 @@ namespace HairStrands
 		uint Bones23;
 		uint Weights;  // four unorm8 weights
 		float T;       // arclength fraction, 0 at the root
+	};
+
+	// A vertex of the cards kept as cards (braids, ties, the hair gathered into them).
+	struct CardVertex
+	{
+		float3 Position;  // bind pose, skin space
+		float U;
+		float3 Normal;
+		float V;
+		float3 Tangent;    // the first row of Lighting.hlsl's TBN
+		uint Bones01;      // palette bones, 16 bits each: skin-instance bones, then chain joints
+		float3 Bitangent;  // the second row
+		uint Bones23;
+		uint Weights;  // four unorm8 weights
+		uint3 Pad;
 	};
 
 	struct StrandInfo

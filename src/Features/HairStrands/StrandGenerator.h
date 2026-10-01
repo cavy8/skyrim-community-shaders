@@ -33,6 +33,24 @@ namespace Strands
 	};
 	static_assert(sizeof(StrandInfo) == 16);
 
+	/** @brief Mirrors CardVertex in HairStrands/Common.hlsli: a vertex of the cards kept as cards (braids, ties, gathered hair). */
+	struct CardVertex
+	{
+		float3 position;  // bind pose, skin space
+		float u;
+		float3 normal;
+		float v;
+		float3 tangent;    // the first row of the Lighting shader's TBN
+		uint32_t bones01;  // palette bones 0 and 1 (16 bits each): skin-instance bones, then chain joints
+		float3 bitangent;  // the second row
+		uint32_t bones23;
+		uint32_t weights;  // four unorm8 weights
+		uint32_t pad0;
+		uint32_t pad1;
+		uint32_t pad2;
+	};
+	static_assert(sizeof(CardVertex) == 80);
+
 	/** @brief A generated strand asset: strandCount strands of pointsPerStrand points each. */
 	struct StrandAssetData
 	{
@@ -54,6 +72,15 @@ namespace Strands
 		uint32_t convertedTriangles = 0;
 		uint32_t totalTriangles = 0;
 		CardsToStrands::Stats conversion;  // how the card guides were bound to the scalp
+
+		// The cards kept as cards (braids, ties, buns, the hair gathered into them), drawn in place
+		// of their part of the hair; and the chains the hanging braids among them swing on. A
+		// chain's joints are palette bones from chainBoneBase on, after the skin instance's.
+		std::vector<CardVertex> cardVertices;
+		std::vector<uint32_t> cardIndices;
+		std::vector<CardsToStrands::ChainCurve> chains;
+		uint32_t chainBoneBase = 0;
+		uint32_t chainBoneCount = 0;
 
 		uint32_t StrandCount() const { return static_cast<uint32_t>(strands.size()); }
 	};

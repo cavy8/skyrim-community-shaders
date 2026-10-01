@@ -16,6 +16,10 @@ namespace Strands
 			mesh.normals.reserve(a_mesh.normals.size());
 			for (const auto& n : a_mesh.normals)
 				mesh.normals.push_back(ToVec3(n));
+			for (const auto& t : a_mesh.tangents)
+				mesh.tangents.push_back(ToVec3(t));
+			for (const auto& b : a_mesh.bitangents)
+				mesh.bitangents.push_back(ToVec3(b));
 			mesh.uvs.reserve(a_mesh.uvs.size());
 			for (const auto& uv : a_mesh.uvs)
 				mesh.uvs.push_back({ uv.x, uv.y });
@@ -69,7 +73,23 @@ namespace Strands
 			settings.seed = a_style.seed;
 			for (const auto& r : a_style.excludeUV)
 				settings.excludeUV.push_back({ r.minU, r.minV, r.maxU, r.maxV });
+			for (const auto& r : a_style.chainUV)
+				settings.chainUV.push_back({ r.minU, r.minV, r.maxU, r.maxV });
+			settings.keepWoven = a_style.keepWoven;
 			return settings;
+		}
+
+		/** Unorm8 weights summing to 255, the rounding error on the strongest bone. */
+		uint32_t PackWeights(const std::array<float, 4>& a_weights)
+		{
+			std::array<uint32_t, 4> packed{};
+			uint32_t packedTotal = 0;
+			for (size_t i = 0; i < 4; ++i) {
+				packed[i] = static_cast<uint32_t>(std::lround(std::clamp(a_weights[i], 0.0f, 1.0f) * 255.0f));
+				packedTotal += packed[i];
+			}
+			packed[0] = static_cast<uint32_t>(std::clamp<int>(static_cast<int>(packed[0]) + 255 - static_cast<int>(packedTotal), 0, 255));
+			return packed[0] | (packed[1] << 8) | (packed[2] << 16) | (packed[3] << 24);
 		}
 
 		RestPoint Pack(const CardsToStrands::StrandPoint& a_point)
@@ -80,19 +100,25 @@ namespace Strands
 			point.u = a_point.uv.x;
 			point.v = a_point.uv.y;
 			point.t = a_point.t;
-
-			// Unorm8 weights summing to 255, the rounding error on the strongest bone.
-			std::array<uint32_t, 4> packed{};
-			uint32_t packedTotal = 0;
-			for (size_t i = 0; i < 4; ++i) {
-				packed[i] = static_cast<uint32_t>(std::lround(std::clamp(a_point.weights[i], 0.0f, 1.0f) * 255.0f));
-				packedTotal += packed[i];
-			}
-			packed[0] = static_cast<uint32_t>(std::clamp<int>(static_cast<int>(packed[0]) + 255 - static_cast<int>(packedTotal), 0, 255));
 			point.bones01 = a_point.bones[0] | (static_cast<uint32_t>(a_point.bones[1]) << 16);
 			point.bones23 = a_point.bones[2] | (static_cast<uint32_t>(a_point.bones[3]) << 16);
-			point.weights = packed[0] | (packed[1] << 8) | (packed[2] << 16) | (packed[3] << 24);
+			point.weights = PackWeights(a_point.weights);
 			return point;
+		}
+
+		CardVertex Pack(const CardsToStrands::CardVertex& a_vertex)
+		{
+			CardVertex vertex{};
+			vertex.position = ToFloat3(a_vertex.position);
+			vertex.normal = ToFloat3(a_vertex.normal);
+			vertex.tangent = ToFloat3(a_vertex.tangent);
+			vertex.bitangent = ToFloat3(a_vertex.bitangent);
+			vertex.u = a_vertex.uv.x;
+			vertex.v = a_vertex.uv.y;
+			vertex.bones01 = a_vertex.bones[0] | (static_cast<uint32_t>(a_vertex.bones[1]) << 16);
+			vertex.bones23 = a_vertex.bones[2] | (static_cast<uint32_t>(a_vertex.bones[3]) << 16);
+			vertex.weights = PackWeights(a_vertex.weights);
+			return vertex;
 		}
 	}
 
@@ -120,6 +146,13 @@ namespace Strands
 		o_asset.convertedTriangles = result.stats.convertedTriangles;
 		o_asset.totalTriangles = result.stats.totalTriangles;
 		o_asset.conversion = result.stats;
+		o_asset.cardVertices.reserve(result.cardVertices.size());
+		for (const auto& vertex : result.cardVertices)
+			o_asset.cardVertices.push_back(Pack(vertex));
+		o_asset.cardIndices = std::move(result.cardIndices);
+		o_asset.chains = std::move(result.chains);
+		o_asset.chainBoneBase = result.chainBoneBase;
+		o_asset.chainBoneCount = result.chainBoneCount;
 		return true;
 	}
 }

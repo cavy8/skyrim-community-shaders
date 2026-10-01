@@ -58,6 +58,8 @@ namespace Strands
 		constexpr float kReachMargin = 2.0f;   // and these units more
 
 		const wchar_t* kLightingShaderPath = L"Data\\Shaders\\HairStrands\\StrandLighting.hlsl";
+		const wchar_t* kCardShaderPath = L"Data\\Shaders\\HairStrands\\CardLighting.hlsl";
+		const wchar_t* kCardDepthShaderPath = L"Data\\Shaders\\HairStrands\\CardDepth.hlsl";
 		const wchar_t* kSkinShaderPath = L"Data\\Shaders\\HairStrands\\StrandSkin.cs.hlsl";
 		const wchar_t* kSimShaderPath = L"Data\\Shaders\\HairStrands\\StrandSim.cs.hlsl";
 		const wchar_t* kBodySdfShaderPath = L"Data\\Shaders\\HairStrands\\BodySdf.cs.hlsl";
@@ -73,6 +75,18 @@ namespace Strands
 			std::string result{ a_text };
 			std::ranges::transform(result, result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 			return result;
+		}
+
+		// The Lighting shader's TexcoordOffset for a pass: its material's UV offset and scale.
+		float4 MaterialTexcoordOffset(const RE::BSRenderPass* a_pass)
+		{
+			const auto* property = a_pass->shaderProperty;
+			if (!property || property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
+				return { 0.0f, 0.0f, 1.0f, 1.0f };
+			const auto* material = static_cast<const RE::BSLightingShaderProperty*>(property)->material;
+			if (!material)
+				return { 0.0f, 0.0f, 1.0f, 1.0f };
+			return { material->texCoordOffset[0].x, material->texCoordOffset[0].y, material->texCoordScale[0].x, material->texCoordScale[0].y };
 		}
 
 		// --- Hair classification ---
@@ -389,7 +403,21 @@ namespace Strands
 		uint64_t colourBytes = 0;
 		uint32_t lastUsedFrame = 0;
 
-		uint64_t GpuBytes() const { return static_cast<uint64_t>(strandCount) * (pointsPerStrand * sizeof(RestPoint) + sizeof(StrandInfo)) + colourBytes; }
+		// The cards the hair keeps (braids, ties, the hair gathered into them), and the chains the
+		// hanging braids among them swing on: palette bones from chainBoneBase on.
+		std::unique_ptr<Buffer> cardVertices;
+		winrt::com_ptr<ID3D11Buffer> cardIndices;
+		uint32_t cardVertexCount = 0;
+		uint32_t cardIndexCount = 0;
+		std::vector<CardsToStrands::ChainCurve> chains;
+		uint32_t chainBoneBase = 0;
+		uint32_t chainBoneCount = 0;
+
+		uint64_t GpuBytes() const
+		{
+			return static_cast<uint64_t>(strandCount) * (pointsPerStrand * sizeof(RestPoint) + sizeof(StrandInfo)) + colourBytes +
+			       static_cast<uint64_t>(cardVertexCount) * sizeof(CardVertex) + static_cast<uint64_t>(cardIndexCount) * sizeof(uint32_t);
+		}
 	};
 
 	struct StrandRenderer::Instance
@@ -450,6 +478,13 @@ namespace Strands
 		uint32_t simAssetSerial = 0;            // the asset the stored guide state belongs to
 		std::unique_ptr<Buffer> headField;      // the actor's head surface; null: the head sphere
 		uint32_t headFieldSerial = UINT32_MAX;  // the asset the head field was built (or tried) for
+
+		// Chains of hanging braids, on the CPU: state relative to chainEye, restarted with the asset.
+		std::vector<CardsToStrands::ChainSimulator> chainSims;
+		float3 chainEye;
+		uint32_t chainSerial = 0;
+		uint32_t lastChainFrame = UINT32_MAX;
+		float4 texcoordOffset{ 0.0f, 0.0f, 1.0f, 1.0f };  // the material's UV offset and scale, for the kept cards
 	};
 
 	struct StrandRenderer::ShaderVariant
@@ -505,6 +540,8 @@ namespace Strands
 			// A compile still running holds its variant through the callback's shared state;
 			// dropping the map entry only stops new draws from using it.
 			variants.clear();
+			cardVariants.clear();
+			cardDepth.reset();
 		}
 		std::scoped_lock lock(computeShaderMutex);
 		for (auto* slot : { &skinShader, &simShader, &bodySkinShader, &bodySplatShader, &bodyFinalizeShader }) {
@@ -678,22 +715,50 @@ namespace Strands
 			asset->reach = 0.0f;
 			for (const auto& point : data->points)
 				asset->reach = std::max(asset->reach, (point.position - data->headCentre).Length());
-			D3D11_SUBRESOURCE_DATA pointsInit{ data->points.data(), 0, 0 };
-			D3D11_SUBRESOURCE_DATA strandsInit{ data->strands.data(), 0, 0 };
+			asset->cardVertexCount = static_cast<uint32_t>(data->cardVertices.size());
+			asset->cardIndexCount = static_cast<uint32_t>(data->cardIndices.size());
+			asset->chains = std::move(data->chains);
+			asset->chainBoneBase = data->chainBoneBase;
+			asset->chainBoneCount = data->chainBoneCount;
 			try {
-				asset->restPoints = std::make_unique<Buffer>(StructuredDesc(sizeof(RestPoint), static_cast<uint32_t>(data->points.size()), D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0), &pointsInit, "HairStrands::RestPoints");
-				asset->restPoints->CreateSRV(BufferSRVDesc(static_cast<uint32_t>(data->points.size())));
-				asset->strandInfo = std::make_unique<Buffer>(StructuredDesc(sizeof(StrandInfo), asset->strandCount, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0), &strandsInit, "HairStrands::StrandInfo");
-				asset->strandInfo->CreateSRV(BufferSRVDesc(asset->strandCount));
-				if (!colourImage.Empty())
+				// A hair kept wholly as cards (a braid on its own) has no strands.
+				if (asset->strandCount > 0) {
+					D3D11_SUBRESOURCE_DATA pointsInit{ data->points.data(), 0, 0 };
+					D3D11_SUBRESOURCE_DATA strandsInit{ data->strands.data(), 0, 0 };
+					asset->restPoints = std::make_unique<Buffer>(StructuredDesc(sizeof(RestPoint), static_cast<uint32_t>(data->points.size()), D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0), &pointsInit, "HairStrands::RestPoints");
+					asset->restPoints->CreateSRV(BufferSRVDesc(static_cast<uint32_t>(data->points.size())));
+					asset->strandInfo = std::make_unique<Buffer>(StructuredDesc(sizeof(StrandInfo), asset->strandCount, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0), &strandsInit, "HairStrands::StrandInfo");
+					asset->strandInfo->CreateSRV(BufferSRVDesc(asset->strandCount));
+				}
+				if (asset->cardIndexCount > 0 && asset->cardVertexCount > 0) {
+					D3D11_SUBRESOURCE_DATA verticesInit{ data->cardVertices.data(), 0, 0 };
+					asset->cardVertices = std::make_unique<Buffer>(StructuredDesc(sizeof(CardVertex), asset->cardVertexCount, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0), &verticesInit, "HairStrands::CardVertices");
+					asset->cardVertices->CreateSRV(BufferSRVDesc(asset->cardVertexCount));
+					D3D11_BUFFER_DESC indexDesc{};
+					indexDesc.ByteWidth = asset->cardIndexCount * sizeof(uint32_t);
+					indexDesc.Usage = D3D11_USAGE_IMMUTABLE;
+					indexDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+					D3D11_SUBRESOURCE_DATA indicesInit{ data->cardIndices.data(), 0, 0 };
+					if (FAILED(globals::d3d::device->CreateBuffer(&indexDesc, &indicesInit, asset->cardIndices.put())))
+						throw std::runtime_error("cannot create the card index buffer");
+					Util::SetResourceName(asset->cardIndices.get(), "HairStrands::CardIndices");
+				} else {
+					asset->cardIndexCount = 0;
+					asset->cardVertexCount = 0;
+				}
+				if (!colourImage.Empty() && asset->strandCount > 0)
 					asset->colour = CreateColourTexture(colourImage, asset->colourBytes);
 				asset->state = Asset::State::Ready;
 				const auto& conversion = data->conversion;
-				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}{}; card guides: {} traced, {} repeats dropped, {} on the scalp, {} carrying on from rooted hair, {} following rooted hair, {} bridged to the scalp, {} too far from it", asset->key, asset->strandCount,
+				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}{}; card guides: {} traced, {} repeats dropped, {} on the scalp, {} carrying on from rooted hair, {} following rooted hair, {} bridged to the scalp, {} too far from it, {} gathered into braids or ties, {} growing from them", asset->key, asset->strandCount,
 					asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "scalp", asset->guideCount, asset->headRadius,
 					asset->colour ? std::format("{}x{} strand colour", colourImage.width, colourImage.height) : std::string("card colour"),
 					data->flowMapShare > 0.0f ? std::format(", flow map on {:.0f}% of the hair", data->flowMapShare * 100.0f) : std::string(),
-					conversion.cardGuides, conversion.redundantGuides, conversion.rootedGuides, conversion.continuedGuides, conversion.mergedGuides, conversion.bridgedGuides, conversion.droppedGuides);
+					conversion.cardGuides, conversion.redundantGuides, conversion.rootedGuides, conversion.continuedGuides, conversion.mergedGuides, conversion.bridgedGuides, conversion.droppedGuides,
+					conversion.gatheredGuides, conversion.tiedGuides);
+				if (asset->cardIndexCount > 0)
+					logger::info("[HairStrands] {}: {} of {} triangles kept as cards ({} braids, ties or buns), {} of them on {} chains ({} joints)", asset->key, conversion.cardTriangles + conversion.chainTriangles,
+						conversion.totalTriangles, conversion.wovenPieces, conversion.chainTriangles, asset->chains.size(), asset->chainBoneCount);
 			} catch (const std::exception& e) {
 				asset->state = Asset::State::Failed;
 				asset->error = "GPU upload failed";
@@ -800,10 +865,14 @@ namespace Strands
 		stats.drawnHair = drawnThisFrame;
 		stats.simulatedHair = simulatedThisFrame;
 		stats.guidesSimulated = guidesThisFrame;
+		stats.cardTrianglesDrawn = cardTrianglesThisFrame;
+		stats.chainsSimulated = chainsThisFrame;
 		strandsThisFrame = 0;
 		drawnThisFrame = 0;
 		simulatedThisFrame = 0;
 		guidesThisFrame = 0;
+		cardTrianglesThisFrame = 0;
+		chainsThisFrame = 0;
 	}
 
 	void StrandRenderer::Classify(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry)
@@ -1011,6 +1080,57 @@ namespace Strands
 		return nullptr;
 	}
 
+	StrandRenderer::ShaderVariant* StrandRenderer::GetCardVariant(uint32_t a_pixelDescriptor)
+	{
+		std::scoped_lock lock(variantMutex);
+		if (auto it = cardVariants.find(a_pixelDescriptor); it != cardVariants.end())
+			return it->second->Ready() ? it->second.get() : nullptr;
+
+		auto* shader = globals::state->currentShader;
+		if (!shader)
+			return nullptr;
+
+		// The hair's own permutation, as the strands' (GetVariant): Lighting.hlsl's pixel shader
+		// unchanged, so the kept cards shade as the game shades them.
+		auto variant = std::make_shared<ShaderVariant>();
+		cardVariants.emplace(a_pixelDescriptor, variant);
+		auto defines = ParseDefines(SIE::ShaderCache::GetDefinesString(*shader, a_pixelDescriptor));
+		std::vector<std::pair<const char*, const char*>> macros;
+		for (const auto& [name, value] : *defines)
+			macros.emplace_back(name.c_str(), value.c_str());
+		globals::shaderCache->EnqueueStandaloneShaderCompile(kCardShaderPath, "main", macros, SIE::ShaderCache::StandaloneShaderClass::Vertex,
+			[variant, defines](ID3D11DeviceChild* a_shader) {
+				variant->vs.attach(static_cast<ID3D11VertexShader*>(a_shader));
+				variant->vsDone = true;
+				if (!a_shader)
+					logger::error("[HairStrands] Kept-card vertex shader failed to compile; braids and ties of this permutation are not drawn");
+			});
+		globals::shaderCache->EnqueueStandaloneShaderCompile(kCardShaderPath, "main", macros, SIE::ShaderCache::StandaloneShaderClass::Pixel,
+			[variant, defines](ID3D11DeviceChild* a_shader) {
+				variant->ps.attach(static_cast<ID3D11PixelShader*>(a_shader));
+				variant->psDone = true;
+				if (!a_shader)
+					logger::error("[HairStrands] Kept-card pixel shader failed to compile; braids and ties of this permutation are not drawn");
+			});
+		return nullptr;
+	}
+
+	ID3D11PixelShader* StrandRenderer::GetCardDepthShader()
+	{
+		std::scoped_lock lock(variantMutex);
+		if (cardDepth)
+			return cardDepth->psDone && cardDepth->ps ? cardDepth->ps.get() : nullptr;
+		cardDepth = std::make_shared<ShaderVariant>();
+		globals::shaderCache->EnqueueStandaloneShaderCompile(kCardDepthShaderPath, "main", {}, SIE::ShaderCache::StandaloneShaderClass::Pixel,
+			[variant = cardDepth](ID3D11DeviceChild* a_shader) {
+				variant->ps.attach(static_cast<ID3D11PixelShader*>(a_shader));
+				variant->psDone = true;
+				if (!a_shader)
+					logger::error("[HairStrands] Kept-card depth shader failed to compile; braids and ties are missing from the depth prepass");
+			});
+		return nullptr;
+	}
+
 	winrt::com_ptr<ID3D11ComputeShader> StrandRenderer::EnsureComputeShader(ComputeShader& a_slot, const wchar_t* a_path, const char* a_entry, const char* a_failure)
 	{
 		std::scoped_lock lock(computeShaderMutex);
@@ -1051,16 +1171,21 @@ namespace Strands
 	bool StrandRenderer::EnsureInstanceBuffers(Instance& a_instance)
 	{
 		const uint32_t points = a_instance.asset->strandCount * a_instance.asset->pointsPerStrand;
-		if (a_instance.skinned && a_instance.skinnedCapacity == points)
+		if ((a_instance.skinned || points == 0) && a_instance.skinnedCapacity == points && drawCB)
 			return true;
 		a_instance.skinned.reset();
 		a_instance.skinnedCapacity = 0;
 		a_instance.previousAbsolute.clear();
 		try {
-			a_instance.skinned = std::make_unique<Buffer>(StructuredDesc(sizeof(SkinnedPoint), points, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, 0), nullptr, "HairStrands::SkinnedPoints");
-			a_instance.skinned->CreateSRV(BufferSRVDesc(points));
-			a_instance.skinned->CreateUAV(BufferUAVDesc(points));
+			// A hair kept wholly as cards has no strands to skin.
+			if (points > 0) {
+				a_instance.skinned = std::make_unique<Buffer>(StructuredDesc(sizeof(SkinnedPoint), points, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, 0), nullptr, "HairStrands::SkinnedPoints");
+				a_instance.skinned->CreateSRV(BufferSRVDesc(points));
+				a_instance.skinned->CreateUAV(BufferUAVDesc(points));
+			}
 			a_instance.skinnedCapacity = points;
+			if (!cardCB)
+				cardCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<CardDrawCB>(), "HairStrands::CardDrawCB");
 			if (!drawCB)
 				drawCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<StrandDrawCB>(), "HairStrands::StrandDrawCB");
 			if (!skinCB)
@@ -1147,29 +1272,33 @@ namespace Strands
 				absolute[b * 3 + r] = { m.rotate.entry[r][0] * m.scale, m.rotate.entry[r][1] * m.scale, m.rotate.entry[r][2] * m.scale, translate[r] };
 		}
 
+		// Hanging braids: their chains' joints join the palette as bones after the skin instance's.
+		const uint32_t paletteBones = SimulateChains(a_instance, a_skin, absolute, bones, eye);
+
 		// Last frame's palette gives the motion vectors; without one (first frame, or a gap)
 		// the hair moves only with the camera this frame.
 		const bool havePrevious = a_instance.previousAbsolute.size() == absolute.size() && a_instance.previousFrame + 1 == RenderFrame();
 		const auto& previous = havePrevious ? a_instance.previousAbsolute : absolute;
 		const float eyeRows[3] = { eye.x, eye.y, eye.z };
 		const float previousEyeRows[3] = { previousEye.x, previousEye.y, previousEye.z };
-		a_instance.paletteData.resize(bones * 6);
-		for (uint32_t i = 0; i < bones * 3; ++i) {
+		a_instance.paletteData.resize(paletteBones * 6);
+		for (uint32_t i = 0; i < paletteBones * 3; ++i) {
 			a_instance.paletteData[i] = absolute[i];
 			a_instance.paletteData[i].w -= eyeRows[i % 3];
-			a_instance.paletteData[bones * 3 + i] = previous[i];
-			a_instance.paletteData[bones * 3 + i].w -= previousEyeRows[i % 3];
+			a_instance.paletteData[paletteBones * 3 + i] = previous[i];
+			a_instance.paletteData[paletteBones * 3 + i].w -= previousEyeRows[i % 3];
 		}
 		const auto skinProgram = EnsureComputeShader(skinShader, kSkinShaderPath, "main", kSkinShaderFailure);
 		if (!skinProgram)
 			return false;
+		const bool haveStrands = a_instance.skinned && a_instance.asset->restPoints && a_instance.asset->strandInfo;
 
 		auto* context = globals::d3d::context;
 		try {
-			if (!a_instance.palette || a_instance.paletteBones != bones) {
-				a_instance.palette = std::make_unique<Buffer>(StructuredDesc(sizeof(float4), bones * 6, D3D11_USAGE_DYNAMIC, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE), nullptr, "HairStrands::BonePalette");
-				a_instance.palette->CreateSRV(BufferSRVDesc(bones * 6));
-				a_instance.paletteBones = bones;
+			if (!a_instance.palette || a_instance.paletteBones != paletteBones) {
+				a_instance.palette = std::make_unique<Buffer>(StructuredDesc(sizeof(float4), paletteBones * 6, D3D11_USAGE_DYNAMIC, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE), nullptr, "HairStrands::BonePalette");
+				a_instance.palette->CreateSRV(BufferSRVDesc(paletteBones * 6));
+				a_instance.paletteBones = paletteBones;
 			}
 		} catch (const std::exception& e) {
 			a_instance.palette.reset();
@@ -1185,10 +1314,11 @@ namespace Strands
 		// The palette is on the GPU: from here on the frame is skinned (and simulated).
 		SkinCB cb{};
 		cb.pointCount = a_instance.activeStrands * a_instance.asset->pointsPerStrand;
-		cb.boneCount = bones;
+		cb.boneCount = paletteBones;
+		cb.chainBoneBase = a_instance.asset->chainBoneCount > 0 ? paletteBones - a_instance.asset->chainBoneCount : paletteBones;
 		cb.pointsPerStrand = a_instance.asset->pointsPerStrand;
 		cb.guideCount = a_instance.asset->guideCount;
-		const auto simProgram = settings.physics ? EnsureComputeShader(simShader, kSimShaderPath, "main", kSimShaderFailure) : nullptr;
+		const auto simProgram = settings.physics && cb.pointCount > 0 ? EnsureComputeShader(simShader, kSimShaderPath, "main", kSimShaderFailure) : nullptr;
 		BodyRequest bodyRequest;
 		const bool simulate = simProgram && PrepareSimulation(a_instance, a_skin, absolute, eye, previousEye, cb, bodyRequest);
 		if (!simulate) {
@@ -1201,6 +1331,11 @@ namespace Strands
 		}
 		a_instance.previousAbsolute = std::move(absolute);
 		a_instance.previousFrame = RenderFrame();
+
+		a_instance.skinEye = eye;
+		a_instance.skinPreviousEye = previousEye;
+		if (!haveStrands || cb.pointCount == 0)
+			return true;  // the kept cards read the palette alone
 
 		// Mid-pass dispatches: put back every compute binding they touch.
 		constexpr UINT kSRVs = 7;
@@ -1270,10 +1405,115 @@ namespace Strands
 			oldSampler->Release();
 		if (oldCB)
 			oldCB->Release();
-
-		a_instance.skinEye = eye;
-		a_instance.skinPreviousEye = previousEye;
 		return true;
+	}
+
+	uint32_t StrandRenderer::SimulateChains(Instance& a_instance, RE::NiSkinInstance* a_skin, std::vector<float4>& io_palette, uint32_t a_bones, const float3& a_eye)
+	{
+		const auto& asset = *a_instance.asset;
+		if (asset.chainBoneCount == 0 || asset.chains.empty())
+			return a_bones;
+		// The chains' bones follow the skin instance's (generation numbered them after the mesh's
+		// bones, which are the skin instance's).
+		const uint32_t base = std::max(a_bones, asset.chainBoneBase);
+		const uint32_t total = base + asset.chainBoneCount;
+		io_palette.resize(static_cast<size_t>(total) * 3);
+		for (uint32_t b = a_bones; b < base; ++b)
+			for (int r = 0; r < 3; ++r)
+				io_palette[b * 3 + r] = io_palette[r];
+
+		const auto parentRows = [&](const std::vector<float4>& a_rows, int32_t a_bone, const float3& a_origin) {
+			CardsToStrands::Affine affine;
+			const uint32_t bone = a_bone >= 0 && static_cast<uint32_t>(a_bone) < a_bones ? static_cast<uint32_t>(a_bone) : 0;
+			const float origin[3] = { a_origin.x, a_origin.y, a_origin.z };
+			for (int r = 0; r < 3; ++r) {
+				const float4& row = a_rows[bone * 3 + r];
+				affine.rows[r] = { row.x, row.y, row.z, row.w - origin[r] };
+			}
+			return affine;
+		};
+		const auto toRows = [&](const CardsToStrands::Affine& a_bone, uint32_t a_index) {
+			const float origin[3] = { a_eye.x, a_eye.y, a_eye.z };
+			for (int r = 0; r < 3; ++r)
+				io_palette[a_index * 3 + r] = { a_bone.rows[r][0], a_bone.rows[r][1], a_bone.rows[r][2], a_bone.rows[r][3] + origin[r] };
+		};
+
+		// Restart with the asset, after a gap, or on a teleport; the state is kept relative to the
+		// camera it was stepped with.
+		const bool reset = a_instance.chainSims.size() != asset.chains.size() || a_instance.chainSerial != asset.serial || a_instance.lastChainFrame == UINT32_MAX ||
+		                   RenderFrame() - a_instance.lastChainFrame > kMaxSimGapFrames;
+		if (reset) {
+			a_instance.chainSims.assign(asset.chains.size(), {});
+			a_instance.chainSerial = asset.serial;
+			for (size_t c = 0; c < asset.chains.size(); ++c)
+				a_instance.chainSims[c].Reset(asset.chains[c], parentRows(io_palette, asset.chains[c].parentBone, a_eye));
+		} else {
+			const float3 shift = a_instance.chainEye - a_eye;
+			for (auto& sim : a_instance.chainSims)
+				sim.Translate({ shift.x, shift.y, shift.z });
+		}
+		a_instance.chainEye = a_eye;
+		a_instance.lastChainFrame = RenderFrame();
+
+		// The strands' clock: this frame's steps, each with the parent bone where it is at the step's
+		// end (between last frame's pose and this frame's). Physics off or out of range: at rest.
+		const bool simulate = settings.physics && a_instance.style.simulate && a_instance.simWeight > 0.0f;
+		const bool havePrevious = a_instance.previousAbsolute.size() >= static_cast<size_t>(a_bones) * 3 && a_instance.previousFrame + 1 == RenderFrame();
+		CardsToStrands::ChainSettings chainSettings;
+		chainSettings.gravity = a_instance.style.chainGravity;
+		chainSettings.damping = a_instance.style.chainDamping;
+		chainSettings.stiffness = a_instance.style.chainStiffness;
+		std::vector<CardsToStrands::ChainCollider> colliders;
+		if (simulate && frameSteps > 0 && settings.collision) {
+			// The head (a sphere) and the body's bone capsules, camera-relative.
+			const bool haveHead = asset.headBone >= 0 && static_cast<uint32_t>(asset.headBone) < a_bones;
+			const uint32_t frameBone = haveHead ? static_cast<uint32_t>(asset.headBone) : 0;
+			const float4* rows = &io_palette[frameBone * 3];
+			const float4 centre(asset.headCentre.x, asset.headCentre.y, asset.headCentre.z, 1.0f);
+			const float3 head = float3(rows[0].Dot(centre), rows[1].Dot(centre), rows[2].Dot(centre)) - a_eye;
+			colliders.push_back({ { head.x, head.y, head.z }, { head.x, head.y, head.z }, asset.headRadius * float3(rows[0].x, rows[1].x, rows[2].x).Length() });
+			const BodySkeleton skeleton = FindBodySkeleton(haveHead && a_skin->bones ? a_skin->bones[asset.headBone] : nullptr);
+			std::array<float4, kMaxColliders * 2> capsules{};
+			const uint32_t count = GatherColliders(a_instance, skeleton, io_palette, frameBone, a_eye, true, capsules.data());
+			for (uint32_t k = 0; k < count; ++k) {
+				const float4& a = capsules[k * 2];
+				const float4& b = capsules[k * 2 + 1];
+				if (a.w > 0.0f && !(a_instance.headField == nullptr && k == 0))  // without the head field, the first is the head sphere, already in
+					colliders.push_back({ { a.x, a.y, a.z }, { b.x, b.y, b.z }, a.w });
+			}
+		}
+		std::vector<CardsToStrands::Affine> jointBones;
+		uint32_t next = base;
+		for (size_t c = 0; c < asset.chains.size(); ++c) {
+			const auto& chain = asset.chains[c];
+			const CardsToStrands::Affine parent = parentRows(io_palette, chain.parentBone, a_eye);
+			auto& sim = a_instance.chainSims[c];
+			// A root that jumps (a teleport, a loading screen) restarts its chain.
+			if (sim.Started() && (sim.Joints()[0] - parent.Apply(chain.joints[0])).Length() > std::max(kTeleportDistance, kTeleportSpeed * frameDeltaTime))
+				sim.Reset(chain, parent);
+			if (simulate) {
+				for (uint32_t step = 0; step < frameSteps; ++step) {
+					// Where the parent bone is at the step's end: last frame's pose blended to this frame's.
+					const float f = std::clamp(firstStepFraction + step * stepFraction, 0.0f, 1.0f);
+					CardsToStrands::Affine stepParent = parent;
+					if (havePrevious) {
+						const CardsToStrands::Affine before = parentRows(a_instance.previousAbsolute, chain.parentBone, a_eye);
+						for (int r = 0; r < 3; ++r)
+							for (int k = 0; k < 4; ++k)
+								stepParent.rows[r][k] = std::lerp(before.rows[r][k], parent.rows[r][k], f);
+					}
+					sim.Step(chain, stepParent, kSimStep, chainSettings, colliders.data(), colliders.size());
+				}
+			} else {
+				sim.Reset(chain, parent);
+			}
+			sim.Bones(chain, parent, simulate ? displayAlpha : 1.0f, jointBones);
+			for (const auto& bone : jointBones)
+				toRows(bone, next++);
+		}
+		if (simulate)
+			chainsThisFrame += static_cast<uint32_t>(asset.chains.size());
+		return total;
 	}
 
 	bool StrandRenderer::PrepareSimulation(Instance& a_instance, RE::NiSkinInstance* a_skin, const std::vector<float4>& a_palette, const float3& a_eye, const float3& a_previousEye, SkinCB& o_cb, BodyRequest& o_body)
@@ -1599,6 +1839,26 @@ namespace Strands
 		return slot.get();
 	}
 
+	ID3D11DepthStencilState* StrandRenderer::GetCardDepthState(ID3D11DepthStencilState* a_current, bool a_reversedDepth)
+	{
+		auto& slot = cardDepthStates[a_reversedDepth ? 1 : 0][a_current];
+		if (slot)
+			return slot.get();
+		D3D11_DEPTH_STENCIL_DESC desc{};
+		if (!a_current)
+			return a_current;
+		a_current->GetDesc(&desc);
+		// The kept cards were drawn in the prepass by the same vertex shader, so an equal test
+		// passes; widened, they still show if that draw was missed. Writes stay as the pass has
+		// them (off for blended hair).
+		if (desc.DepthFunc == D3D11_COMPARISON_EQUAL)
+			desc.DepthFunc = a_reversedDepth ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_LESS_EQUAL;
+		if (FAILED(globals::d3d::device->CreateDepthStencilState(&desc, slot.put())))
+			return a_current;
+		Util::SetResourceName(slot.get(), "HairStrands::CardDepthState");
+		return slot.get();
+	}
+
 	void StrandRenderer::Draw(Instance& a_instance, ShaderVariant& a_variant, const D3D11_VIEWPORT* a_viewport, bool a_depthOnly)
 	{
 		auto* context = globals::d3d::context;
@@ -1640,6 +1900,12 @@ namespace Strands
 		cb.flyaways = style.flyaways;
 		cb.curlCoherence = style.clumpStrength;
 		drawCB->Update(cb);
+
+		// A hair kept wholly as cards: only its cards.
+		if (asset.strandCount == 0 || a_instance.activeStrands == 0 || !a_instance.skinned) {
+			DrawCards(a_instance, a_viewport, a_depthOnly);
+			return;
+		}
 
 		const bool annotate = globals::state->frameAnnotations;
 		if (annotate)
@@ -1720,6 +1986,110 @@ namespace Strands
 
 		if (annotate)
 			globals::state->EndPerfEvent();
+
+		DrawCards(a_instance, a_viewport, a_depthOnly);
+	}
+
+	void StrandRenderer::DrawCards(Instance& a_instance, const D3D11_VIEWPORT* a_viewport, bool a_depthOnly)
+	{
+		const auto& asset = *a_instance.asset;
+		if (asset.cardIndexCount == 0 || !asset.cardVertices || !asset.cardIndices || !a_instance.palette || !cardCB)
+			return;
+		// The card shaders of the lighting permutation that drew the hair (requested in its lighting
+		// pass); in the depth prepass, its vertex shader with the alpha-testing depth shader, or with
+		// none when the pass does not alpha-test (depth alone, as the game writes it).
+		ShaderVariant* variant = nullptr;
+		{
+			std::scoped_lock lock(variantMutex);
+			if (auto it = cardVariants.find(a_instance.strandDescriptor); it != cardVariants.end() && it->second->Ready())
+				variant = it->second.get();
+		}
+		if (!variant)
+			return;
+		ID3D11PixelShader* pixelShader = variant->ps.get();
+		if (a_depthOnly) {
+			const bool alphaTest = globals::state->currentPixelDescriptor & static_cast<uint32_t>(UtilityFlags::AlphaTest);
+			pixelShader = alphaTest ? GetCardDepthShader() : nullptr;
+			if (alphaTest && !pixelShader)
+				return;
+		}
+		auto* context = globals::d3d::context;
+		auto& shadowState = globals::game::shadowState->GetRuntimeData();
+
+		CardDrawCB cb{};
+		cb.eyeDelta = a_instance.skinEye - ToFloat3(shadowState.posAdjust.getEye());
+		cb.previousEyeDelta = a_instance.skinPreviousEye - ToFloat3(shadowState.previousPosAdjust.getEye());
+		cb.boneCount = a_instance.paletteBones;
+		cb.texcoordOffset = a_instance.texcoordOffset;
+		cardCB->Update(cb);
+
+		const bool annotate = globals::state->frameAnnotations;
+		if (annotate)
+			globals::state->BeginPerfEvent(a_depthOnly ? "Hair Kept Cards Depth" : "Hair Kept Cards");
+
+		// As Draw: everything is put back exactly, read and set raw under ReverseZ's passthrough. The
+		// cards keep the pass's rasterizer state (culling as authored), blend state and textures.
+		ReverseZ::SetHookPassthrough(true);
+		winrt::com_ptr<ID3D11VertexShader> oldVS;
+		context->VSGetShader(oldVS.put(), nullptr, nullptr);
+		winrt::com_ptr<ID3D11PixelShader> oldPS;
+		context->PSGetShader(oldPS.put(), nullptr, nullptr);
+		winrt::com_ptr<ID3D11InputLayout> oldLayout;
+		context->IAGetInputLayout(oldLayout.put());
+		D3D11_PRIMITIVE_TOPOLOGY oldTopology{};
+		context->IAGetPrimitiveTopology(&oldTopology);
+		winrt::com_ptr<ID3D11Buffer> oldIndexBuffer;
+		DXGI_FORMAT oldIndexFormat{};
+		UINT oldIndexOffset = 0;
+		context->IAGetIndexBuffer(oldIndexBuffer.put(), &oldIndexFormat, &oldIndexOffset);
+		ID3D11Buffer* oldCB = nullptr;
+		context->VSGetConstantBuffers(7, 1, &oldCB);
+		ID3D11ShaderResourceView* oldSRVs[2]{};
+		context->VSGetShaderResources(0, 2, oldSRVs);
+		winrt::com_ptr<ID3D11DepthStencilState> oldDepthState;
+		UINT stencilRef = 0;
+		context->OMGetDepthStencilState(oldDepthState.put(), &stencilRef);
+		D3D11_VIEWPORT oldViewport{};
+		UINT viewports = 1;
+		context->RSGetViewports(&viewports, &oldViewport);
+		const bool reversedDepth = std::abs(shadowState.cameraData.getEye().projMat.m[2][2]) < 0.5f;
+
+		ID3D11Buffer* drawBuffer = cardCB->CB();
+		ID3D11ShaderResourceView* srvs[2] = { asset.cardVertices->srv.get(), a_instance.palette->srv.get() };
+		context->IASetInputLayout(nullptr);
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		context->IASetIndexBuffer(asset.cardIndices.get(), DXGI_FORMAT_R32_UINT, 0);
+		context->VSSetShader(variant->vs.get(), nullptr, 0);
+		context->PSSetShader(pixelShader, nullptr, 0);
+		context->VSSetConstantBuffers(7, 1, &drawBuffer);
+		context->VSSetShaderResources(0, 2, srvs);
+		context->OMSetDepthStencilState(GetCardDepthState(oldDepthState.get(), reversedDepth), stencilRef);
+		if (a_viewport)
+			context->RSSetViewports(1, a_viewport);
+
+		context->DrawIndexed(asset.cardIndexCount, 0, 0);
+		cardTrianglesThisFrame += asset.cardIndexCount / 3;
+
+		if (viewports > 0)
+			context->RSSetViewports(1, &oldViewport);
+		context->OMSetDepthStencilState(oldDepthState.get(), stencilRef);
+		context->VSSetShaderResources(0, 2, oldSRVs);
+		context->VSSetConstantBuffers(7, 1, &oldCB);
+		context->PSSetShader(oldPS.get(), nullptr, 0);
+		context->VSSetShader(oldVS.get(), nullptr, 0);
+		context->IASetIndexBuffer(oldIndexBuffer.get(), oldIndexFormat, oldIndexOffset);
+		context->IASetPrimitiveTopology(oldTopology);
+		context->IASetInputLayout(oldLayout.get());
+		for (auto* srv : oldSRVs) {
+			if (srv)
+				srv->Release();
+		}
+		if (oldCB)
+			oldCB->Release();
+		ReverseZ::SetHookPassthrough(false);
+
+		if (annotate)
+			globals::state->EndPerfEvent();
 	}
 
 	void StrandRenderer::OnSetupGeometry(RE::BSRenderPass* a_pass)
@@ -1755,6 +2125,10 @@ namespace Strands
 				return;
 			auto* twinSkin = LiveTwinSkin(geometry, twinGeometry, twin->skinInstance, twin->vertexCount);
 			auto* variant = GetVariant(descriptor);
+			if (twin->asset && twin->asset->cardIndexCount > 0) {
+				GetCardVariant(descriptor);
+				twin->texcoordOffset = MaterialTexcoordOffset(a_pass);
+			}
 			if (!twinSkin || !variant || !EnsureSkinShader() || !PrepareStrands(*twin, twinGeometry, twinSkin))
 				return;
 			twin->strandDescriptor = descriptor;
@@ -1798,6 +2172,10 @@ namespace Strands
 		}
 
 		auto* variant = GetVariant(descriptor);
+		if (instance->asset->cardIndexCount > 0) {
+			GetCardVariant(descriptor);
+			instance->texcoordOffset = MaterialTexcoordOffset(a_pass);
+		}
 		if (variant) {
 			instance->strandDescriptor = descriptor;
 		} else if (instance->lastPrepassFrame == RenderFrame()) {

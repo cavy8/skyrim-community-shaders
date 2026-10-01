@@ -4,11 +4,14 @@ Builds the converter (convert.cpp + CardsToStrands.cpp) with the host C++ compil
 each style and measures the strands against the known skull and the cards:
 
 - roots: share of strands rooted on the skull (within 1 unit above it, or tucked up to 0.5 under),
-  and share rooted more than 2 units off it ("floating" roots, the fault this module fixes);
+  and share rooted more than 2 units off it ("floating" roots, the fault this module fixes), of
+  the strands that grow from the scalp; strands growing from a tie must root within its reach;
+- kept: share of the triangles kept as cards (braids, ties, the hair gathered into them; none in
+  loose styles but the stray piece), chains and ties found;
 - length: median strand length, share of stubs under 2 units;
 - head: share of strand points more than 0.3 units inside the skull;
 - fidelity: distance from strand points to the nearest card (median, 95th percentile);
-- coverage: share of the painted card surface within 0.75 units of a strand;
+- coverage: share of the painted card surface converted to strands within 0.75 units of a strand;
 - stray: strands grown on the detached piece of layered_long (must be none).
 
 Fails (exit 1) if a limit is missed. With --render DIR it also draws each style from the side,
@@ -46,7 +49,14 @@ LIMITS = {
     "fidelity95": 2.0,     # 95% of points within this of a card
     "coverage": 0.85,      # at least this share of the painted cards near a strand
     "stray": 0,
+    "kept": 0.01,          # at most this share of a loose style's triangles kept as cards
+    "tie_roots": 1.5,      # tied strands root within their tie's radius and this much more
 }
+
+# Styles whose cards gather into a tie: the tie found, its tail growing from it. With the texture
+# the cap's painted hair stops too far short of the tail (more than 2.5 units) to find it: the tail
+# carries on from the cap as before.
+TIED = {("ponytail", "no texture")}
 
 
 def build(out_dir):
@@ -58,7 +68,7 @@ def build(out_dir):
 
 
 def card_samples(builder, alpha):
-    """Points over the painted cards, from the mesh's triangles and the atlas alpha."""
+    """Points over the painted cards, from the mesh's triangles and the atlas alpha, and their triangles."""
     pos, uv, idx, _ = builder.arrays()
     tri = idx.reshape(-1, 3)
     rng = np.random.default_rng(0)
@@ -69,33 +79,50 @@ def card_samples(builder, alpha):
     t = np.einsum("tsk,tkd->tsd", w, uv[tri]).reshape(-1, 2)
     h, wd = alpha.shape
     a = alpha[np.clip((t[:, 1] * h).astype(int), 0, h - 1), np.clip((t[:, 0] * wd).astype(int), 0, wd - 1)] / 255.0
-    return p, a
+    return p, a, np.repeat(np.arange(len(tri)), 12)
 
 
 def measure(result, builder, alpha, lift=0.0):
     pos = result["positions"]
-    roots = pos[:, 0]
+    scalp = result["strands"]["scalpRooted"] == 1
+    roots = pos[scalp, 0]
     root_height = synth.skull_height(roots)
     lengths = result["strands"]["length"]
-    surface, painted = card_samples(builder, alpha)
+    surface, painted, owner = card_samples(builder, alpha)
     tree = cKDTree(surface)
     pts = pos.reshape(-1, 3)
     dist, _ = tree.query(pts)
-    painted_pts = surface[painted >= 0.3]
+    # Coverage of the cards converted to strands; the ones kept as cards show themselves.
+    regions = result.get("triangleRegions")
+    converted = regions[owner] == 0 if regions is not None else np.ones(len(owner), bool)
+    painted_pts = surface[(painted >= 0.3) & converted]
     near, _ = cKDTree(pts).query(painted_pts, distance_upper_bound=0.75 + lift)
     stray = [c for name, c in builder.cards if name == "stray"]
     stray_count = 0
     if stray:
         d, _ = cKDTree(stray[0]).query(pts)
         stray_count = int(np.any((d < 1.5).reshape(pos.shape[:2]), axis=1).sum())
+    # Strands growing from a tie root round it: within its radius and a margin.
+    ties = result.get("ties", [])
+    tie_roots = 0.0
+    tied = result["strands"]["cardGuide"][~scalp]
+    for s, g in zip(np.nonzero(~scalp)[0], tied):
+        tie = result["cardGuides"][g]["tie"] if g < len(result["cardGuides"]) else -1
+        if 0 <= tie < len(ties):
+            tie_roots = max(tie_roots, float(np.linalg.norm(pos[s, 0] - ties[tie]["centre"]) - ties[tie]["radius"]))
     return {
         "strands": len(lengths),
         "points": result["pointsPerStrand"],
         "median_length": float(np.median(lengths)),
         "stubs": float(np.mean(lengths < 2.0)),
-        "rooted": float(np.mean((root_height < 1.0) & (root_height > -0.5))),
-        "rooted_loose": float(np.mean((root_height < 1.5) & (root_height > -0.5))),
-        "floating": float(np.mean(root_height > 2.0)),
+        "rooted": float(np.mean((root_height < 1.0) & (root_height > -0.5))) if len(roots) else 1.0,
+        "rooted_loose": float(np.mean((root_height < 1.5) & (root_height > -0.5))) if len(roots) else 1.0,
+        "floating": float(np.mean(root_height > 2.0)) if len(roots) else 0.0,
+        "tied": float(np.mean(~scalp)),
+        "tie_roots": tie_roots,
+        "kept": float(np.mean(regions != 0)) if regions is not None else 0.0,
+        "chains": len(result.get("chains", [])),
+        "ties": len(ties),
         "inside": float(np.mean(synth.skull_height(pts) < -0.3)),
         "fidelity50": float(np.median(dist)),
         "fidelity95": float(np.percentile(dist, 95)),
@@ -156,8 +183,15 @@ CASES = [(name, "default", [], True, True) for name in synth.STYLES] + [
 ]
 
 
-def check(m, label):
+def check(m, name, label):
     problems = []
+    if (name, label) in TIED:
+        if m["ties"] < 1:
+            problems.append("no tie found")
+        if m["tie_roots"] > LIMITS["tie_roots"]:
+            problems.append(f"tie roots {m['tie_roots']:.2f} past the tie > {LIMITS['tie_roots']}")
+    elif m["kept"] > LIMITS["kept"] or m["chains"] or m["ties"]:
+        problems.append(f"loose hair kept as cards {m['kept']:.3f} (chains {m['chains']}, ties {m['ties']})")
     # Area seeding grows short fuzz on purpose; only the roots matter there.
     stubs_limit = 1.01 if label == "area seeding" or m.get("seeding") == 2 else LIMITS["stubs"]
     coverage_limit = 0.0 if label == "area seeding" or m.get("seeding") == 2 else LIMITS["coverage"]
@@ -223,7 +257,7 @@ def main():
             print("    " + ", ".join(f"{k} {v:.3f}" if isinstance(v, float) else f"{k} {v}" for k, v in m.items()))
             if which != "new":
                 continue
-            problems = check(m, label)
+            problems = check(m, name, label)
             if problems:
                 failed = True
                 print("    FAIL: " + "; ".join(problems))

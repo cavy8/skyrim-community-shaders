@@ -43,7 +43,7 @@ RWStructuredBuffer<HairStrands::SkinnedPoint> Skinned : register(u0);
 
 	if ((Flags & HAIR_STRANDS_FLAG_FOLLOW) && SimWeight > 0.0 && PointsPerStrand > 1) {
 		float3x4 targetCurrent, targetPrevious;
-		HairStrandsSkin::TargetSkin(current, previous, targetCurrent, targetPrevious);
+		HairStrandsSkin::TargetSkin(rest, current, previous, targetCurrent, targetPrevious);
 		const float3 target = mul(targetCurrent, position);
 		const float3 previousTarget = mul(targetPrevious, position);
 		const float3 normal = normalize(mul((float3x3)targetCurrent, rest.Normal));
@@ -66,11 +66,11 @@ RWStructuredBuffer<HairStrands::SkinnedPoint> Skinned : register(u0);
 			const HairStrands::RestPoint restA = RestPoints[guide * PointsPerStrand + j];
 			const HairStrands::RestPoint restB = RestPoints[guide * PointsPerStrand + j + 1];
 			HairStrandsSkin::Skin(restA, guideCurrent, guidePrevious);
-			HairStrandsSkin::TargetSkin(guideCurrent, guidePrevious, guideTargetCurrent, guideTargetPrevious);
+			HairStrandsSkin::TargetSkin(restA, guideCurrent, guidePrevious, guideTargetCurrent, guideTargetPrevious);
 			float3 guideTarget = mul(guideTargetCurrent, float4(restA.Position, 1.0));
 			float3 guidePreviousTarget = mul(guideTargetPrevious, float4(restA.Position, 1.0));
 			HairStrandsSkin::Skin(restB, guideCurrent, guidePrevious);
-			HairStrandsSkin::TargetSkin(guideCurrent, guidePrevious, guideTargetCurrent, guideTargetPrevious);
+			HairStrandsSkin::TargetSkin(restB, guideCurrent, guidePrevious, guideTargetCurrent, guideTargetPrevious);
 			guideTarget = lerp(guideTarget, mul(guideTargetCurrent, float4(restB.Position, 1.0)), w);
 			guidePreviousTarget = lerp(guidePreviousTarget, mul(guideTargetPrevious, float4(restB.Position, 1.0)), w);
 			const float separation = TipSeparation * rest.T * (PointsPerStrand - 1) / PointsPerStrand;

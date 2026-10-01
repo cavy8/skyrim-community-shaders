@@ -74,11 +74,15 @@ cbuffer SkinCB : register(b0)
 	// A camera-relative point's move with the actor's root over the frame (last frame's root pose to
 	// this frame's); 0 without last frame's.
 	float4 BodyRootMove[3];
+
+	uint ChainBoneBase;  // palette bones from here on are the joints of chains (hanging braids)
+	uint3 SkinPad;
 };
 
 StructuredBuffer<HairStrands::RestPoint> RestPoints : register(t0);
 // BoneCount 3x4 skin-to-world rows (translation relative to this frame's camera),
-// then BoneCount rows for the previous frame (relative to the previous frame's camera).
+// then BoneCount rows for the previous frame (relative to the previous frame's camera). The
+// skin instance's bones come first, then the joints of any chains (from ChainBoneBase).
 StructuredBuffer<float4> Palette : register(t1);
 StructuredBuffer<HairStrands::StrandInfo> Strands : register(t2);
 // The actor's head mesh, rigid on the head bone: per direction from HeadFieldCentre (an
@@ -133,11 +137,16 @@ namespace HairStrandsSkin
 
 	// The simulation's target: the styled shape carried by the head alone, moved towards the
 	// full skinning (SMP and any other bones) by Guidance. Hair skinned to the head only gets
-	// its full skinning either way.
-	void TargetSkin(float3x4 a_current, float3x4 a_previous, out float3x4 o_current, out float3x4 o_previous)
+	// its full skinning either way. Hair growing from a hanging braid rides on its chain: by its
+	// weight on chain joints, the target is the full skinning whatever Guidance is.
+	void TargetSkin(HairStrands::RestPoint a_rest, float3x4 a_current, float3x4 a_previous, out float3x4 o_current, out float3x4 o_previous)
 	{
-		o_current = lerp(LoadBone(HeadBone, 0), a_current, Guidance);
-		o_previous = lerp(LoadBone(HeadBone, BoneCount * 3), a_previous, Guidance);
+		const uint4 bones = uint4(a_rest.Bones01 & 0xFFFF, a_rest.Bones01 >> 16, a_rest.Bones23 & 0xFFFF, a_rest.Bones23 >> 16);
+		const float4 weights = float4(a_rest.Weights & 0xFF, (a_rest.Weights >> 8) & 0xFF, (a_rest.Weights >> 16) & 0xFF, a_rest.Weights >> 24) / 255.0;
+		const float chain = dot(weights, bones >= ChainBoneBase.xxxx ? 1.0 : 0.0);
+		const float follow = lerp(Guidance, 1.0, saturate(chain));
+		o_current = lerp(LoadBone(HeadBone, 0), a_current, follow);
+		o_previous = lerp(LoadBone(HeadBone, BoneCount * 3), a_previous, follow);
 	}
 
 	float3 Rotate(float4 a_q, float3 a_v)

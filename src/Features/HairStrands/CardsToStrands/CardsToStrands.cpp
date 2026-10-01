@@ -3,6 +3,7 @@
 #include <cfloat>
 #include <functional>
 #include <numeric>
+#include <queue>
 #include <random>
 #include <tuple>
 #include <unordered_map>
@@ -151,6 +152,45 @@ namespace CardsToStrands
 		constexpr float kFragmentRadius = 1.0f;   // ...running within this x spacing of a longer one...
 		constexpr float kFragmentShare = 0.5f;    // ...over this share of its length is a fragment of it
 
+		// Hair that is not loose (FindWoven, BindToScalp, LabelTriangles). Spreads are twice the
+		// standard deviation along a piece's principal axes.
+		constexpr float kContactRadius = 0.75f;     // sheets this close touch
+		constexpr uint32_t kSideBins = 6;           // directions a piece's surface faces round an axis, folded over (a card's two faces are one)
+		constexpr float kSideShare = 0.08f;         // of its area, facing one way, for that way to count
+		constexpr uint32_t kTubeSides = 5;          // a braid or twist built as a tube faces every way round its length...
+		constexpr float kTubeMaxWidth = 2.75f;      // ...is this thin (a ponytail rolled into one sheet is thicker)...
+		constexpr float kTubeElongation = 1.5f;     // ...this much longer than thick...
+		constexpr float kTubeAlignment = 0.6f;      // ...and its hair runs along it (a curl's spiral runs round it)
+		constexpr float kTubeClosed = 0.75f;        // a tube surrounds its axis: of its cross-sections' directions, this share holds hair
+		constexpr float kPlaitStreaks = 0.4f;       // a texture whose painted streaks agree less than this shows a plait...
+		constexpr float kPlaitTubeMaxWidth = 4.5f;  // ...and a tube textured so may be this thick
+		constexpr float kSliceLength = 1.5f;        // cross-sections, this thick
+		constexpr uint32_t kSliceBins = 12;         // directions round the axis in a cross-section
+		constexpr float kLobeMaxLength = 4.0f;      // a plait's lobes are short, curved pieces...
+		constexpr uint32_t kLobeSides = 3;
+		constexpr uint32_t kMinLobes = 4;        // ...several of them...
+		constexpr float kLocalRadius = 3.0f;     // the hair round a point, for how wide a bundle is there...
+		constexpr float kBraidWidth = 2.0f;      // ...a braid or plait this narrow (a sheaf of cards, a mass of curls, is wider)
+		constexpr float kPlaitHanging = 0.3f;    // lobes make a plait if this share of them hangs free
+		constexpr float kRingMaxWidth = 4.0f;    // a tie or band is a short ring round a tail
+		constexpr float kRingFlatness = 0.6f;    // its height, at most this share of its width
+		constexpr float kRingFacing = 0.4f;      // its surface faces out round its axis (a flat card faces along it)
+		constexpr float kAbsorbShare = 0.6f;     // a small piece this much in contact with a braid is part of it
+		constexpr float kHangingHeight = 2.0f;   // woven hair this far off the scalp hangs free (pinned up to half of it)...
+		constexpr float kBelowHead = -0.6f;      // ...and so does any below the skull, down the neck and back (direction z from its centre)
+		constexpr float kMinChainLength = 3.0f;  // shorter hanging braids stay with the head
+		constexpr float kChainSegment = 2.0f;    // a chain's joint spacing, at least
+		constexpr float kChainBin = 1.0f;        // arclength per centre-line sample
+		constexpr float kGatherReach = 1.5f;     // hair ending this close to a braid on the head, or a chain's root, is gathered into it
+		constexpr float kTuftStart = 0.7f;       // hair starting past this share of a chain's length grows from it
+		constexpr float kTieRadius = 2.5f;       // tails starting this close together share a tie
+		constexpr float kTieReach = 2.5f;        // rooted hair ending this close to where tails start runs into their tie
+		constexpr uint32_t kMinTieFeeders = 4;   // card guides gathered into a tie, at least...
+		constexpr uint32_t kMinTieTails = 6;     // a tie holds a tail of this many card guides at least (a few carrying on below others are a layer)
+		constexpr float kMinTieSpread = 4.0f;    // ...coming from roots this far apart...
+		constexpr float kTieConvergence = 2.0f;  // ...converging from roots this many times further apart than their tips...
+		constexpr float kMaxTieHeight = 3.0f;    // ...at a tie this close to the scalp
+
 		struct Triangle
 		{
 			std::array<uint32_t, 3> v{};                    // source vertex indices
@@ -163,8 +203,19 @@ namespace CardsToStrands
 			float area = 0.0f;
 			uint64_t positionKey = 0;  // the same for a triangle and its back face
 			int32_t component = -1;
+			int32_t sameAs = -1;   // an earlier triangle on the same welded vertices (dropped as its copy)
+			float streaks = 1.0f;  // how clearly the painted strands its UV island samples run one way (PaintedAxes coherence)
 			bool fromFlowMap = false;
-			bool valid = false;
+			bool valid = false;  // converted: flow, tracing, strands
+		};
+
+		/** A braid, twist, tie or bun: woven hair that stays cards, swinging on a chain when it hangs free. */
+		struct WovenPiece
+		{
+			std::vector<uint32_t> tris;
+			Region region = Region::Cards;  // Cards or Chain
+			int32_t chain = -1;
+			bool forced = false;  // chosen by hand
 		};
 
 		struct TraceSample
@@ -190,6 +241,7 @@ namespace CardsToStrands
 			int32_t component = -1;
 			GuideKind kind = GuideKind::Free;
 			int32_t ancestor = -1;  // the rooted guide whose scalp root it shares
+			int32_t tie = -1;       // Tied: the tie it grows from
 		};
 
 		struct PointAttributes
@@ -273,6 +325,79 @@ namespace CardsToStrands
 
 			float cell;
 			std::unordered_map<uint64_t, std::vector<T>> cells;
+		};
+
+		/** Eigenvalues (largest first) and unit eigenvectors of a symmetric 3x3 matrix, by Jacobi rotations. */
+		void SymmetricEigen(std::array<std::array<double, 3>, 3> a_m, std::array<double, 3>& o_values, std::array<Vec3, 3>& o_vectors)
+		{
+			std::array<std::array<double, 3>, 3> v{ { { 1.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } } };
+			for (int sweep = 0; sweep < 32; ++sweep) {
+				if (std::abs(a_m[0][1]) + std::abs(a_m[0][2]) + std::abs(a_m[1][2]) < 1e-14)
+					break;
+				for (int p = 0; p < 2; ++p) {
+					for (int q = p + 1; q < 3; ++q) {
+						if (std::abs(a_m[p][q]) < 1e-18)
+							continue;
+						// Numerical Recipes' rotation: A' = J^T A J zeroes A'[p][q].
+						const double theta = (a_m[q][q] - a_m[p][p]) / (2.0 * a_m[p][q]);
+						const double t = (theta >= 0.0 ? 1.0 : -1.0) / (std::abs(theta) + std::sqrt(theta * theta + 1.0));
+						const double c = 1.0 / std::sqrt(t * t + 1.0), s = t * c;
+						for (int k = 0; k < 3; ++k) {
+							const double kp = a_m[k][p], kq = a_m[k][q];
+							a_m[k][p] = c * kp - s * kq;
+							a_m[k][q] = s * kp + c * kq;
+						}
+						for (int k = 0; k < 3; ++k) {
+							const double pk = a_m[p][k], qk = a_m[q][k];
+							a_m[p][k] = c * pk - s * qk;
+							a_m[q][k] = s * pk + c * qk;
+						}
+						for (int k = 0; k < 3; ++k) {
+							const double kp = v[k][p], kq = v[k][q];
+							v[k][p] = c * kp - s * kq;
+							v[k][q] = s * kp + c * kq;
+						}
+					}
+				}
+			}
+			std::array<int, 3> order{ 0, 1, 2 };
+			std::ranges::sort(order, [&](int a, int b) { return a_m[a][a] > a_m[b][b]; });
+			for (int i = 0; i < 3; ++i) {
+				const int k = order[i];
+				o_values[i] = a_m[k][k];
+				o_vectors[i] = Vec3(static_cast<float>(v[0][k]), static_cast<float>(v[1][k]), static_cast<float>(v[2][k])).Normalized();
+			}
+		}
+
+		/** True where hair hangs free of the head: well off the scalp, or below the skull (down the neck and back). */
+		bool Hangs(const Scalp& a_scalp, const Vec3& a_p)
+		{
+			if (a_scalp.Height(a_p) >= kHangingHeight)
+				return true;
+			const Vec3 d = a_p - a_scalp.centre;
+			const float length = d.Length();
+			return length > 1e-6f && d.z / length < kBelowHead;
+		}
+
+		/** Union-find over indices. */
+		class DisjointSets
+		{
+		public:
+			explicit DisjointSets(size_t a_count) :
+				parent(a_count)
+			{
+				std::iota(parent.begin(), parent.end(), 0u);
+			}
+			uint32_t Find(uint32_t a_x)
+			{
+				while (parent[a_x] != a_x)
+					a_x = parent[a_x] = parent[parent[a_x]];
+				return a_x;
+			}
+			void Unite(uint32_t a_a, uint32_t a_b) { parent[Find(a_a)] = Find(a_b); }
+
+		private:
+			std::vector<uint32_t> parent;
 		};
 
 		/** Solves a small dense linear system in place (Gaussian elimination, partial pivoting). */
@@ -463,6 +588,40 @@ namespace CardsToStrands
 			// The scalp, and binding card guides to it.
 			void FitScalp(Scalp& o_scalp) const;
 			void BindToScalp(const Scalp& a_scalp, Stats& o_stats);
+			/**
+			 * Before binding: card guides ending at woven hair on the head (or at a chain's root) are
+			 * gathered into it, and floating guides starting at woven hair grow from it (a braid's tuft).
+			 */
+			void BindToWoven(const Scalp& a_scalp, std::vector<uint32_t>& io_floating);
+			/**
+			 * Finds ponytail ties: a floating card guide that bound hair from across the scalp ends
+			 * at, close to the scalp. That hair is gathered into the tie and stays cards; the tail
+			 * grows strands from the tie.
+			 */
+			void FindTies(const Scalp& a_scalp, std::vector<uint32_t>& io_floating);
+
+			// Hair that is not loose.
+			/** @brief Each triangle's region as chosen by hand: Settings::triangleRegions, excludeUV, chainUV. */
+			void ResolveChoices();
+			/**
+			 * Finds woven hair: braids and twists built as tubes or as stacked lobes, ties and bands,
+			 * buns, and the triangles chosen by hand. Each connected piece of it stays cards, on a
+			 * chain when it hangs free of the scalp. Its triangles take no further part in the
+			 * conversion (no flow tracing, no strands).
+			 */
+			void FindWoven(const Scalp& a_scalp);
+			/** @brief A hanging piece's centre line as a chain; false if it is too short to swing. */
+			bool BuildChain(const WovenPiece& a_piece, const Scalp& a_scalp, ChainCurve& o_chain) const;
+			/** @brief Arclength from a chain's root to its point nearest a_p; o_length is the chain's length, o_pinned its pinned part's. */
+			float ChainPosition(uint32_t a_chain, const Vec3& a_p, float& o_length, float& o_pinned) const;
+			/** @brief The bones (chain joints, by bone number) and weights a point hanging from a chain follows. */
+			void ChainSkin(uint32_t a_chain, const Vec3& a_p, std::array<uint16_t, 4>& o_bones, std::array<float, 4>& o_weights) const;
+			/** @brief Each mesh triangle's region, from the woven pieces and the card guides as bound. */
+			void LabelTriangles(Result& o_result);
+			/** @brief The triangles kept as cards, as a mesh to draw. */
+			void BuildCards(Result& o_result) const;
+			uint16_t DominantBone(uint32_t a_tri) const;
+			bool IsWoven(uint32_t a_tri) const { return a_tri < wovenOf.size() && wovenOf[a_tri] >= 0; }
 			Vec3 InitialTangent(const CardGuide& a_guide) const;
 			void Recompute(std::vector<PathSample>& io_path) const;
 
@@ -503,6 +662,20 @@ namespace CardsToStrands
 
 			std::vector<CardGuide> guides;
 			uint32_t guideBudget = Limits::kMaxCardGuides;
+
+			// Hair that is not loose.
+			std::vector<RegionChoice> choice;  // per triangle
+			std::vector<Vec3> triCentre;
+			std::vector<float> triHeight;  // above the scalp
+			std::vector<bool> triHangs;    // hangs free of the head (Hangs)
+			std::vector<int32_t> wovenOf;  // per triangle: its woven piece, -1 for none
+			std::vector<WovenPiece> woven;
+			std::vector<ChainCurve> chains;
+			std::vector<Tie> ties;
+			uint32_t chainBoneBase = 0;
+			std::vector<std::vector<PathSample>> ownPaths;  // each card guide's own path, before binding extends it
+			std::vector<Region> regionOf;                   // per triangle (LabelTriangles)
+			std::vector<int32_t> chainOf;
 		};
 
 		void Generator::Weld()
@@ -545,7 +718,7 @@ namespace CardsToStrands
 		{
 			const uint32_t triCount = mesh.TriangleCount();
 			tris.resize(triCount);
-			std::unordered_set<uint64_t> seen;
+			std::unordered_map<uint64_t, uint32_t> seen;
 			seen.reserve(triCount);
 
 			for (uint32_t t = 0; t < triCount; ++t) {
@@ -574,16 +747,15 @@ namespace CardsToStrands
 					std::ranges::sort(a_ids);
 					return (static_cast<uint64_t>(a_ids[0]) * 0x9E3779B97F4A7C15ull) ^ (static_cast<uint64_t>(a_ids[1]) * 0xC2B2AE3D27D4EB4Full) ^ (static_cast<uint64_t>(a_ids[2]) * 0x165667B19E3779F9ull);
 				};
-				if (!seen.insert(tripleKey(tri.w)).second)
-					continue;
 				tri.positionKey = tripleKey({ positionId[tri.v[0]], positionId[tri.v[1]], positionId[tri.v[2]] });
+				if (const auto [it, inserted] = seen.try_emplace(tripleKey(tri.w), t); !inserted) {
+					tri.sameAs = static_cast<int32_t>(it->second);
+					continue;
+				}
 
 				const auto& ua = mesh.uvs[tri.v[0]];
 				const auto& ub = mesh.uvs[tri.v[1]];
 				const auto& uc = mesh.uvs[tri.v[2]];
-				const Vec2 uvCentre = (ua + ub + uc) / 3.0f;
-				if (std::ranges::any_of(settings.excludeUV, [&](const UVRect& r) { return r.Contains(uvCentre.x, uvCentre.y); }))
-					continue;
 
 				// Solve dP = dPdu du + dPdv dv over the triangle's two edges.
 				const Vec3 e1 = b - a, e2 = c - a;
@@ -699,6 +871,7 @@ namespace CardsToStrands
 				float uMin = FLT_MAX, uMax = -FLT_MAX, vMin = FLT_MAX, vMax = -FLT_MAX;
 				Vec3 tensor;  // the painted streaks it samples, area weighted
 				Vec2 axis;    // root to tip in texture space, once chosen
+				float streaks = 1.0f;
 			};
 			std::unordered_map<uint32_t, uint32_t> islandIds;
 			std::vector<Island> islands;
@@ -732,6 +905,7 @@ namespace CardsToStrands
 			for (auto& island : islands) {
 				float coherence = 0.0f;
 				const Vec2 axis = painted.Empty() ? Vec2{} : painted.Axis(island.tensor, coherence);
+				island.streaks = painted.Empty() ? 1.0f : coherence;
 				if (coherence >= kPaintedAxisCoherence) {
 					island.axis = axis;
 				} else {
@@ -888,7 +1062,10 @@ namespace CardsToStrands
 
 			for (uint32_t t = 0; t < tris.size(); ++t) {
 				auto& tri = tris[t];
-				if (!tri.valid || tri.fromFlowMap)
+				if (!tri.valid)
+					continue;
+				tri.streaks = islands[islandOf[t]].streaks;
+				if (tri.fromFlowMap)
 					continue;
 				if (const Vec3 dir = SurfaceDirection(tri, islands[islandOf[t]].axis); dir != kZero)
 					tri.flow = dir;
@@ -1587,11 +1764,13 @@ namespace CardsToStrands
 		void Generator::BindToScalp(const Scalp& a_scalp, Stats& o_stats)
 		{
 			// HairCS (2026) binds each card's guide to a root on the scalp. Here a card guide that
-			// starts on the scalp grows from it. One that starts away from it (a lower layer, a
-			// ponytail below its tie) continues the rooted hair it starts on: the nearest hair
-			// running the same way, already bound, within kMergeRadius. Chains bind over several
-			// passes (a layer under a layer). What is left joins the scalp directly if close,
-			// and is dropped if not: hair has to come from the head.
+			// starts on the scalp grows from it. Hair gathered into woven hair (a braid, a tie) or
+			// into a ponytail's tie is pulled tight to the head and stays cards; hair starting at
+			// either grows from there. Any other guide that starts away from the scalp (a lower
+			// layer) continues the rooted hair it starts on: the nearest hair running the same way,
+			// already bound, within kMergeRadius. Chains bind over several passes (a layer under a
+			// layer). What is left joins the scalp directly if close, and is dropped if not: hair
+			// has to come from the head (or a tie).
 			std::vector<uint32_t> floating;
 			for (uint32_t g = 0; g < guides.size(); ++g) {
 				auto& guide = guides[g];
@@ -1610,6 +1789,9 @@ namespace CardsToStrands
 					Recompute(guide.path);
 				}
 			}
+			BindToWoven(a_scalp, floating);
+			if (settings.keepWoven)
+				FindTies(a_scalp, floating);
 
 			struct Anchor
 			{
@@ -1637,8 +1819,10 @@ namespace CardsToStrands
 				for (auto& sample : io_path)
 					sample.position += blend > 1e-4f ? offset * Smoothstep((sample.s - (endS - blend)) / blend) : offset;
 			};
+			// Gathered hair is bound too: a layer under it is gathered with it.
+			const auto anchors = [&](const CardGuide& a_guide) { return bound(a_guide) || a_guide.kind == GuideKind::Gathered; };
 			for (uint32_t g = 0; g < guides.size(); ++g)
-				if (guides[g].kind == GuideKind::Rooted)
+				if (anchors(guides[g]))
 					insert(g, 0);
 
 			for (uint32_t pass = 0; pass < kMergePasses && !floating.empty(); ++pass) {
@@ -1688,7 +1872,7 @@ namespace CardsToStrands
 					Anchor best{};
 					grid.Query(p0, kMergeRadius, [&](const Anchor& a_anchor) {
 						const auto& other = guides[a_anchor.guide];
-						if (!bound(other) || a_anchor.sample >= other.path.size())
+						if (!anchors(other) || a_anchor.sample >= other.path.size())
 							return;
 						const Vec3 q = other.path[a_anchor.sample].position;
 						const Vec3 tq = tangentAt(other, a_anchor.sample);
@@ -1714,9 +1898,9 @@ namespace CardsToStrands
 					path.pop_back();  // now at p0, which the guide's own path starts with
 					path.insert(path.end(), guide.path.begin(), guide.path.end());
 					Recompute(path);
-					guide.path = std::move(path);
-					guide.kind = GuideKind::Merged;
+					guide.kind = upstream.kind == GuideKind::Gathered ? GuideKind::Gathered : GuideKind::Merged;
 					guide.ancestor = upstream.ancestor;
+					guide.path = std::move(path);
 					boundNow.push_back(g);
 				}
 				for (uint32_t g : boundNow)
@@ -1764,6 +1948,1075 @@ namespace CardsToStrands
 				o_stats.bridgedGuides += guide.kind == GuideKind::Bridged;
 				o_stats.continuedGuides += guide.kind == GuideKind::Continued;
 				o_stats.droppedGuides += guide.kind == GuideKind::Dropped;
+				o_stats.gatheredGuides += guide.kind == GuideKind::Gathered;
+				o_stats.tiedGuides += guide.kind == GuideKind::Tied;
+			}
+		}
+
+		void Generator::ResolveChoices()
+		{
+			choice.assign(tris.size(), RegionChoice::Auto);
+			for (uint32_t t = 0; t < tris.size(); ++t) {
+				if (t < settings.triangleRegions.size() && settings.triangleRegions[t] != RegionChoice::Auto) {
+					choice[t] = settings.triangleRegions[t];
+					continue;
+				}
+				if (settings.excludeUV.empty() && settings.chainUV.empty())
+					continue;
+				const auto& v = tris[t].v;
+				if (v[0] >= mesh.uvs.size() || v[1] >= mesh.uvs.size() || v[2] >= mesh.uvs.size())
+					continue;
+				const Vec2 uv = (mesh.uvs[v[0]] + mesh.uvs[v[1]] + mesh.uvs[v[2]]) / 3.0f;
+				const auto inside = [&](const std::vector<UVRect>& a_rects) { return std::ranges::any_of(a_rects, [&](const UVRect& r) { return r.Contains(uv.x, uv.y); }); };
+				if (inside(settings.chainUV))
+					choice[t] = RegionChoice::Chain;
+				else if (inside(settings.excludeUV))
+					choice[t] = RegionChoice::Cards;
+			}
+		}
+
+		uint16_t Generator::DominantBone(uint32_t a_tri) const
+		{
+			const bool skinned = mesh.boneIndices.size() == mesh.positions.size() && mesh.boneWeights.size() == mesh.positions.size();
+			const int32_t head = FindHeadBone();
+			if (!skinned)
+				return static_cast<uint16_t>(std::max(head, 0));
+			std::array<std::pair<uint16_t, float>, 12> influences{};
+			size_t count = 0;
+			for (uint32_t v : tris[a_tri].v) {
+				for (int j = 0; j < 4; ++j) {
+					const float w = mesh.boneWeights[v][j];
+					if (!(w > 0.0f))
+						continue;
+					const uint16_t bone = mesh.boneIndices[v][j];
+					auto it = std::find_if(influences.begin(), influences.begin() + count, [&](const auto& e) { return e.first == bone; });
+					if (it != influences.begin() + count)
+						it->second += w;
+					else
+						influences[count++] = { bone, w };
+				}
+			}
+			if (count == 0)
+				return static_cast<uint16_t>(std::max(head, 0));
+			return std::max_element(influences.begin(), influences.begin() + count, [](const auto& l, const auto& r) { return l.second < r.second; })->first;
+		}
+
+		void Generator::FindWoven(const Scalp& a_scalp)
+		{
+			const auto triCount = static_cast<uint32_t>(tris.size());
+			wovenOf.assign(triCount, -1);
+			woven.clear();
+			chains.clear();
+			triCentre.assign(triCount, kZero);
+			triHeight.assign(triCount, 0.0f);
+			triHangs.assign(triCount, false);
+			std::vector<bool> inMesh(triCount, false);
+			for (uint32_t t = 0; t < triCount; ++t) {
+				const auto& v = tris[t].v;
+				if (v[0] >= mesh.positions.size() || v[1] >= mesh.positions.size() || v[2] >= mesh.positions.size())
+					continue;
+				inMesh[t] = true;
+				triCentre[t] = (Position(v[0]) + Position(v[1]) + Position(v[2])) / 3.0f;
+				triHeight[t] = a_scalp.Height(triCentre[t]);
+				triHangs[t] = Hangs(a_scalp, triCentre[t]);
+			}
+			const bool anyForced = std::ranges::any_of(choice, [](RegionChoice c) { return c == RegionChoice::Cards || c == RegionChoice::Chain; });
+			if (!settings.keepWoven && !anyForced)
+				return;
+
+			// Points for contact tests: a triangle's centre and corners.
+			struct Sample
+			{
+				Vec3 p;
+				uint32_t id;
+			};
+			const auto forSamples = [&](uint32_t a_tri, auto&& a_f) {
+				a_f(triCentre[a_tri]);
+				for (uint32_t v : tris[a_tri].v)
+					a_f(Position(v));
+			};
+
+			int32_t componentCount = 0;
+			for (const auto& tri : tris)
+				componentCount = std::max(componentCount, tri.component + 1);
+			std::vector<std::vector<uint32_t>> members(componentCount);
+			for (uint32_t t = 0; t < triCount; ++t) {
+				if (tris[t].valid && choice[t] == RegionChoice::Auto)
+					members[tris[t].component].push_back(t);
+			}
+
+			// Each sheet's shape, from its painted part: its principal axes (spreads along them), which
+			// ways its surface faces round them, and how its hair runs.
+			enum class Shape : uint8_t
+			{
+				Loose,
+				Tube,   // a braid or twist built as a tube
+				Twist,  // a strip rolled or twisted round its length: a plait's strand, or a curl
+				Ring,   // a tie or band round a tail
+				Lobe    // a short curved piece: one of a plait's lobes, or of a bun
+			};
+			std::vector<Shape> shape(componentCount, Shape::Loose);
+			std::vector<float> paintedArea(componentCount, 0.0f);
+			std::vector<float> spreadAlong(componentCount, 0.0f);
+			if (settings.keepWoven) {
+				std::vector<uint32_t> painted;
+				for (int32_t k = 0; k < componentCount; ++k) {
+					painted.clear();
+					double weight = 0.0;
+					std::array<double, 3> mean{};
+					for (uint32_t t : members[k]) {
+						if (!HasCoverage(t))
+							continue;
+						painted.push_back(t);
+						weight += tris[t].area;
+						for (int i = 0; i < 3; ++i)
+							mean[i] += tris[t].area * static_cast<double>(triCentre[t][i]);
+					}
+					paintedArea[k] = static_cast<float>(weight);
+					if (painted.size() < 3 || !(weight > 0.0))
+						continue;
+					for (auto& m : mean)
+						m /= weight;
+					std::array<std::array<double, 3>, 3> covariance{};
+					for (uint32_t t : painted) {
+						const double d[3] = { triCentre[t].x - mean[0], triCentre[t].y - mean[1], triCentre[t].z - mean[2] };
+						for (int r = 0; r < 3; ++r)
+							for (int c = 0; c < 3; ++c)
+								covariance[r][c] += tris[t].area * d[r] * d[c] / weight;
+					}
+					std::array<double, 3> values{};
+					std::array<Vec3, 3> axes{};
+					SymmetricEigen(covariance, values, axes);
+					std::array<float, 3> spread{};
+					for (int i = 0; i < 3; ++i)
+						spread[i] = 2.0f * std::sqrt(static_cast<float>(std::max(values[i], 0.0)));
+					spreadAlong[k] = spread[0];
+
+					// Of kSideBins directions round an axis, how many the surface faces (n and -n alike).
+					const auto sides = [&](const Vec3& a_axis) {
+						const Vec3 a = a_axis.Cross(std::abs(a_axis.z) < 0.9f ? kUnitZ : Vec3(1.0f, 0.0f, 0.0f)).Normalized();
+						const Vec3 b = a_axis.Cross(a);
+						std::array<float, kSideBins> bins{};
+						float total = 0.0f;
+						for (uint32_t t : painted) {
+							const float x = tris[t].normal.Dot(a), y = tris[t].normal.Dot(b);
+							float angle = std::atan2(y, x);
+							if (angle < 0.0f)
+								angle += kPi;
+							const float w = tris[t].area * std::sqrt(x * x + y * y);
+							bins[std::min(static_cast<uint32_t>(angle / kPi * kSideBins), kSideBins - 1)] += w;
+							total += w;
+						}
+						return static_cast<uint32_t>(std::ranges::count_if(bins, [&](float w) { return w > kSideShare * total; }));
+					};
+					// A ring faces out round its axis; a flat card faces along it.
+					float ringFacing = 0.0f;
+					for (uint32_t t : painted)
+						ringFacing += tris[t].area * std::abs(tris[t].normal.Dot(axes[2]));
+					ringFacing /= static_cast<float>(weight);
+					float alignment = 0.0f;
+					for (uint32_t t : painted)
+						alignment += tris[t].area * std::abs(tris[t].flow.Dot(axes[0]));
+					alignment /= static_cast<float>(weight);
+
+					// How much of each cross-section's circle round the axis holds hair: a tube's all of it, a
+					// rolled strip's or a curl's ribbon only an arc.
+					const auto closed = [&](int a_axis) {
+						const Vec3 axis = axes[a_axis], a = axes[(a_axis + 1) % 3], b = axes[(a_axis + 2) % 3];
+						std::unordered_map<int32_t, std::vector<uint32_t>> slices;
+						const Vec3 origin(static_cast<float>(mean[0]), static_cast<float>(mean[1]), static_cast<float>(mean[2]));
+						for (uint32_t t : painted)
+							slices[static_cast<int32_t>(std::floor((triCentre[t] - origin).Dot(axis) / kSliceLength))].push_back(t);
+						float covered = 0.0f, total = 0.0f;
+						for (const auto& [index, slice] : slices) {
+							Vec3 centre;
+							float area = 0.0f;
+							for (uint32_t t : slice) {
+								centre += triCentre[t] * tris[t].area;
+								area += tris[t].area;
+							}
+							centre = centre / area;
+							std::array<float, kSliceBins> bins{};
+							for (uint32_t t : slice) {
+								const Vec3 d = triCentre[t] - centre;
+								const float angle = std::atan2(d.Dot(b), d.Dot(a)) + kPi;
+								bins[std::min(static_cast<uint32_t>(angle / (2.0f * kPi) * kSliceBins), kSliceBins - 1)] += tris[t].area;
+							}
+							const auto filled = std::ranges::count_if(bins, [&](float w) { return w > 0.03f * area; });
+							covered += area * static_cast<float>(filled) / kSliceBins;
+							total += area;
+						}
+						return total > 0.0f ? covered / total : 0.0f;
+					};
+
+					// A thicker tube is a braid only if its texture shows a plait (crossing streaks, not
+					// strands running one way): a ponytail rolled into one sheet looks the same otherwise.
+					float streaks = 0.0f;
+					for (uint32_t t : painted)
+						streaks += tris[t].streaks * tris[t].area;
+					streaks /= static_cast<float>(weight);
+					const bool thin = spread[1] < kTubeMaxWidth;
+					const bool plaitWidth = streaks < kPlaitStreaks && spread[1] < kPlaitTubeMaxWidth;
+					if ((thin || plaitWidth) && spread[0] >= kTubeElongation * spread[1] && alignment >= kTubeAlignment && sides(axes[0]) >= kTubeSides) {
+						if (closed(0) >= kTubeClosed)
+							shape[k] = Shape::Tube;
+						else if (thin)
+							shape[k] = Shape::Twist;
+					} else if (spread[0] < kRingMaxWidth && spread[2] < kRingFlatness * spread[1] && ringFacing < kRingFacing && closed(2) >= kTubeClosed)
+						shape[k] = Shape::Ring;  // closed round its axis: an arc of a layered cut is not
+					else if (spread[0] < kLobeMaxLength && sides(axes[0]) >= kLobeSides)
+						shape[k] = Shape::Lobe;
+				}
+			}
+
+			// Woven sheets in contact form groups. A group with a tube is a braid; enough lobes in a slim
+			// bundle are a plait or a bun; twisted strips (a plait's strands) go with either, but alone
+			// are curls, which stay loose hair. A ring near the scalp is a tie in any case.
+			PointGrid<Sample> candidates(kContactRadius);
+			for (int32_t k = 0; k < componentCount; ++k) {
+				if (shape[k] != Shape::Loose) {
+					for (uint32_t t : members[k])
+						forSamples(t, [&](const Vec3& a_p) { candidates.Insert(a_p, { a_p, static_cast<uint32_t>(k) }); });
+				}
+			}
+			DisjointSets groups(componentCount);
+			for (int32_t k = 0; k < componentCount; ++k) {
+				if (shape[k] == Shape::Loose)
+					continue;
+				for (uint32_t t : members[k]) {
+					forSamples(t, [&](const Vec3& a_p) {
+						candidates.Query(a_p, kContactRadius, [&](const Sample& a_q) {
+							if (a_q.id != static_cast<uint32_t>(k) && (a_q.p - a_p).LengthSquared() <= kContactRadius * kContactRadius)
+								groups.Unite(static_cast<uint32_t>(k), a_q.id);
+						});
+					});
+				}
+			}
+			struct Group
+			{
+				uint32_t tubes = 0, lobes = 0;
+				std::vector<int32_t> components;
+				double weight = 0.0;
+			};
+			std::unordered_map<uint32_t, Group> found;
+			for (int32_t k = 0; k < componentCount; ++k) {
+				if (shape[k] == Shape::Loose)
+					continue;
+				auto& group = found[groups.Find(static_cast<uint32_t>(k))];
+				group.components.push_back(k);
+				group.tubes += shape[k] == Shape::Tube;
+				group.lobes += shape[k] == Shape::Lobe;
+				for (uint32_t t : members[k])
+					group.weight += tris[t].area;
+			}
+			std::vector<int32_t> groupOf(componentCount, -1);  // accepted groups only
+			std::vector<float> groupArea;
+			// A braid, a plait or a bun is slim wherever you look at it, even curving round the head: the
+			// hair within kLocalRadius of a point spreads along it, not across. A sheaf of short cards
+			// across the head, or a curtain of dreadlocks, is wide.
+			const auto slim = [&](const std::vector<uint32_t>& groupTris) {
+				PointGrid<uint32_t> grid(kLocalRadius);
+				for (uint32_t t : groupTris)
+					grid.Insert(triCentre[t], t);
+				std::vector<float> widths;
+				const size_t stride = std::max<size_t>(1, groupTris.size() / 256);
+				for (size_t i = 0; i < groupTris.size(); i += stride) {
+					const Vec3& p = triCentre[groupTris[i]];
+					double weight = 0.0;
+					std::array<double, 3> mean{};
+					std::array<std::array<double, 3>, 3> moment{};
+					uint32_t count = 0;
+					grid.Query(p, kLocalRadius, [&](const uint32_t& a_t) {
+						if ((triCentre[a_t] - p).LengthSquared() > kLocalRadius * kLocalRadius)
+							return;
+						const double w = tris[a_t].area;
+						++count;
+						weight += w;
+						for (int r = 0; r < 3; ++r) {
+							mean[r] += w * triCentre[a_t][r];
+							for (int col = 0; col < 3; ++col)
+								moment[r][col] += w * triCentre[a_t][r] * triCentre[a_t][col];
+						}
+					});
+					if (count < 4 || !(weight > 0.0))
+						continue;
+					std::array<std::array<double, 3>, 3> covariance{};
+					for (int r = 0; r < 3; ++r)
+						for (int col = 0; col < 3; ++col)
+							covariance[r][col] = moment[r][col] / weight - (mean[r] / weight) * (mean[col] / weight);
+					std::array<double, 3> values{};
+					std::array<Vec3, 3> axes{};
+					SymmetricEigen(covariance, values, axes);
+					widths.push_back(2.0f * std::sqrt(static_cast<float>(std::max(values[1], 0.0))));
+				}
+				if (widths.empty())
+					return false;
+				std::nth_element(widths.begin(), widths.begin() + widths.size() / 2, widths.end());
+				return widths[widths.size() / 2] < kBraidWidth;
+			};
+			for (auto& [root, group] : found) {
+				// Short curved cards lying on the head are as often a layered cut as a braid, and
+				// keeping a layered cut as cards would lose all its strands: lobes make a plait only
+				// where it hangs. Tubes are braids anywhere; twisted strips go with either.
+				float hangingArea = 0.0f;
+				for (int32_t k : group.components)
+					for (uint32_t t : members[k])
+						hangingArea += triHangs[t] ? tris[t].area : 0.0f;
+				const bool plait = group.lobes >= kMinLobes && hangingArea >= kPlaitHanging * static_cast<float>(group.weight);
+				std::vector<uint32_t> groupTris;
+				for (int32_t k : group.components)
+					groupTris.insert(groupTris.end(), members[k].begin(), members[k].end());
+				if ((group.tubes > 0 || plait) && slim(groupTris)) {
+					for (int32_t k : group.components)
+						groupOf[k] = static_cast<int32_t>(groupArea.size());
+					groupArea.push_back(static_cast<float>(group.weight));
+					continue;
+				}
+				for (int32_t k : group.components) {
+					// In a wide group, a tube on its own is a braid or a dreadlock only if it is long and
+					// hangs: short rolled clumps fill a mass of curls.
+					float hanging = 0.0f, area = 0.0f;
+					for (uint32_t t : members[k]) {
+						area += tris[t].area;
+						hanging += triHangs[t] ? tris[t].area : 0.0f;
+					}
+					if (shape[k] == Shape::Tube && spreadAlong[k] >= kMinChainLength && hanging >= kPlaitHanging * area) {
+						groupOf[k] = static_cast<int32_t>(groupArea.size());
+						groupArea.push_back(paintedArea[k]);
+						continue;
+					}
+					if (shape[k] != Shape::Ring || std::ranges::none_of(members[k], [&](uint32_t t) { return triHeight[t] < kMaxTieHeight; }))
+						continue;
+					groupOf[k] = static_cast<int32_t>(groupArea.size());
+					groupArea.push_back(paintedArea[k]);
+				}
+			}
+
+			// Small sheets held in a group (a plait's lobes built as flat strips, the knot of a tie) are part of it.
+			PointGrid<Sample> held(kContactRadius);
+			for (int32_t k = 0; k < componentCount; ++k) {
+				if (groupOf[k] >= 0) {
+					for (uint32_t t : members[k])
+						forSamples(t, [&](const Vec3& a_p) { held.Insert(a_p, { a_p, static_cast<uint32_t>(groupOf[k]) }); });
+				}
+			}
+			std::vector<int32_t> absorbed(componentCount, -1);
+			for (int32_t k = 0; k < componentCount; ++k) {
+				if (groupOf[k] >= 0 || members[k].empty())
+					continue;
+				std::unordered_map<uint32_t, uint32_t> touching;
+				uint32_t total = 0;
+				for (uint32_t t : members[k]) {
+					forSamples(t, [&](const Vec3& a_p) {
+						++total;
+						int32_t nearest = -1;
+						held.Query(a_p, kContactRadius, [&](const Sample& a_q) {
+							if ((a_q.p - a_p).LengthSquared() <= kContactRadius * kContactRadius)
+								nearest = static_cast<int32_t>(a_q.id);
+						});
+						if (nearest >= 0)
+							++touching[static_cast<uint32_t>(nearest)];
+					});
+				}
+				for (const auto& [group, count] : touching) {
+					if (count >= kAbsorbShare * total && paintedArea[k] < 0.5f * groupArea[group])
+						absorbed[k] = static_cast<int32_t>(group);
+				}
+			}
+			for (int32_t k = 0; k < componentCount; ++k) {
+				if (absorbed[k] >= 0)
+					groupOf[k] = absorbed[k];
+			}
+			woven.resize(groupArea.size());
+			for (int32_t k = 0; k < componentCount; ++k) {
+				if (groupOf[k] >= 0)
+					woven[groupOf[k]].tris.insert(woven[groupOf[k]].tris.end(), members[k].begin(), members[k].end());
+			}
+
+			// Triangles chosen by hand as cards or chains: each connected set is a piece of its own.
+			for (const RegionChoice forced : { RegionChoice::Cards, RegionChoice::Chain }) {
+				std::vector<uint32_t> chosen;
+				for (uint32_t t = 0; t < triCount; ++t) {
+					if (inMesh[t] && choice[t] == forced)
+						chosen.push_back(t);
+				}
+				if (chosen.empty())
+					continue;
+				PointGrid<Sample> grid(kContactRadius);
+				for (uint32_t i = 0; i < chosen.size(); ++i)
+					forSamples(chosen[i], [&](const Vec3& a_p) { grid.Insert(a_p, { a_p, i }); });
+				DisjointSets sets(chosen.size());
+				for (uint32_t i = 0; i < chosen.size(); ++i) {
+					forSamples(chosen[i], [&](const Vec3& a_p) {
+						grid.Query(a_p, kContactRadius, [&](const Sample& a_q) {
+							if ((a_q.p - a_p).LengthSquared() <= kContactRadius * kContactRadius)
+								sets.Unite(i, a_q.id);
+						});
+					});
+				}
+				std::unordered_map<uint32_t, uint32_t> pieceOfSet;
+				for (uint32_t i = 0; i < chosen.size(); ++i) {
+					const auto [it, inserted] = pieceOfSet.try_emplace(sets.Find(i), static_cast<uint32_t>(woven.size()));
+					if (inserted) {
+						woven.emplace_back();
+						woven.back().forced = true;
+						woven.back().region = forced == RegionChoice::Chain ? Region::Chain : Region::Cards;
+					}
+					woven[it->second].tris.push_back(chosen[i]);
+				}
+			}
+
+			// Woven hair lying on the head stays with it. Where it hangs free (off the scalp, or
+			// below the skull), each connected hanging part swings on a chain: a braid below a crown of braids,
+			// or below a French braid, each on its own. A piece chosen by hand as a chain is one whole.
+			std::vector<WovenPiece> parts;
+			for (auto& piece : woven) {
+				if (piece.forced) {
+					parts.push_back(std::move(piece));
+					continue;
+				}
+				WovenPiece onHead;
+				std::vector<uint32_t> hanging;
+				for (uint32_t t : piece.tris)
+					(triHangs[t] ? hanging : onHead.tris).push_back(t);
+				if (!onHead.tris.empty())
+					parts.push_back(std::move(onHead));
+				PointGrid<Sample> grid(kContactRadius);
+				for (uint32_t i = 0; i < hanging.size(); ++i)
+					forSamples(hanging[i], [&](const Vec3& a_p) { grid.Insert(a_p, { a_p, i }); });
+				DisjointSets sets(hanging.size());
+				for (uint32_t i = 0; i < hanging.size(); ++i) {
+					forSamples(hanging[i], [&](const Vec3& a_p) {
+						grid.Query(a_p, kContactRadius, [&](const Sample& a_q) {
+							if ((a_q.p - a_p).LengthSquared() <= kContactRadius * kContactRadius)
+								sets.Unite(i, a_q.id);
+						});
+					});
+				}
+				std::unordered_map<uint32_t, std::vector<uint32_t>> hangingSets;
+				for (uint32_t i = 0; i < hanging.size(); ++i)
+					hangingSets[sets.Find(i)].push_back(hanging[i]);
+				for (auto& [root, set] : hangingSets) {
+					if (slim(set)) {
+						parts.emplace_back();
+						parts.back().region = Region::Chain;
+						parts.back().tris = std::move(set);
+						continue;
+					}
+					// Braids or dreadlocks hanging side by side, touching: each sheet swings on its own.
+					std::unordered_map<int32_t, size_t> byComponent;
+					for (uint32_t t : set) {
+						const auto [it, inserted] = byComponent.try_emplace(tris[t].component, parts.size());
+						if (inserted) {
+							parts.emplace_back();
+							parts.back().region = Region::Chain;
+						}
+						parts[it->second].tris.push_back(t);
+					}
+				}
+			}
+			woven = std::move(parts);
+
+			// The biggest hanging parts first, while chains are left; any other stays with the head.
+			std::vector<uint32_t> order(woven.size());
+			std::iota(order.begin(), order.end(), 0u);
+			std::ranges::stable_sort(order, [&](uint32_t a, uint32_t b) { return woven[a].tris.size() > woven[b].tris.size(); });
+			uint32_t bones = 0;
+			for (uint32_t i : order) {
+				auto& piece = woven[i];
+				const bool wanted = piece.region == Region::Chain;
+				piece.region = Region::Cards;
+				ChainCurve chain;
+				if (wanted && chains.size() < Limits::kMaxChains && BuildChain(piece, a_scalp, chain)) {
+					chain.firstBone = chainBoneBase + bones;
+					bones += static_cast<uint32_t>(chain.joints.size());
+					piece.region = Region::Chain;
+					piece.chain = static_cast<int32_t>(chains.size());
+					chains.push_back(std::move(chain));
+				}
+				for (uint32_t t : piece.tris) {
+					wovenOf[t] = static_cast<int32_t>(i);
+					tris[t].valid = false;  // no flow tracing, no strands
+				}
+			}
+		}
+
+		bool Generator::BuildChain(const WovenPiece& a_piece, const Scalp& a_scalp, ChainCurve& o_chain) const
+		{
+			// The centre line runs from the piece's end nearest the scalp: the centre of its hair at
+			// each distance from there, measured through the piece.
+			constexpr float kLink = 1.5f;  // triangle centres this close are neighbours along the piece
+			const auto& pieceTris = a_piece.tris;
+			const auto count = static_cast<uint32_t>(pieceTris.size());
+			if (count < 4)
+				return false;
+			float lowest = FLT_MAX;
+			for (uint32_t t : pieceTris)
+				lowest = std::min(lowest, triHeight[t]);
+			PointGrid<uint32_t> grid(kLink);
+			for (uint32_t i = 0; i < count; ++i)
+				grid.Insert(triCentre[pieceTris[i]], i);
+			std::vector<float> distance(count, FLT_MAX);
+			using Entry = std::pair<float, uint32_t>;
+			std::priority_queue<Entry, std::vector<Entry>, std::greater<>> queue;
+			uint32_t rootTri = pieceTris[0];
+			for (uint32_t i = 0; i < count; ++i) {
+				if (triHeight[pieceTris[i]] <= lowest + 0.5f) {
+					distance[i] = 0.0f;
+					queue.push({ 0.0f, i });
+					if (triHeight[pieceTris[i]] == lowest)
+						rootTri = pieceTris[i];
+				}
+			}
+			while (!queue.empty()) {
+				const auto [d, i] = queue.top();
+				queue.pop();
+				if (d > distance[i])
+					continue;
+				const Vec3& p = triCentre[pieceTris[i]];
+				grid.Query(p, kLink, [&](const uint32_t& a_j) {
+					const float step = (triCentre[pieceTris[a_j]] - p).Length();
+					if (step <= kLink && d + step < distance[a_j]) {
+						distance[a_j] = d + step;
+						queue.push({ distance[a_j], a_j });
+					}
+				});
+			}
+			float furthest = 0.0f;
+			for (float d : distance)
+				furthest = d < FLT_MAX ? std::max(furthest, d) : furthest;
+			const auto bins = static_cast<uint32_t>(furthest / kChainBin) + 1;
+			std::vector<Vec3> sums(bins);
+			std::vector<float> weights(bins, 0.0f);
+			for (uint32_t i = 0; i < count; ++i) {
+				if (distance[i] == FLT_MAX)
+					continue;
+				const auto bin = std::min(static_cast<uint32_t>(distance[i] / kChainBin), bins - 1);
+				sums[bin] += triCentre[pieceTris[i]] * tris[pieceTris[i]].area;
+				weights[bin] += tris[pieceTris[i]].area;
+			}
+			std::vector<Vec3> line;
+			for (uint32_t b = 0; b < bins; ++b) {
+				if (weights[b] > 0.0f)
+					line.push_back(sums[b] / weights[b]);
+			}
+			if (line.size() < 2)
+				return false;
+			for (int pass = 0; pass < 2; ++pass) {
+				auto smoothed = line;
+				for (size_t i = 1; i + 1 < line.size(); ++i)
+					smoothed[i] = line[i] * 0.5f + (line[i - 1] + line[i + 1]) * 0.25f;
+				line = std::move(smoothed);
+			}
+			std::vector<float> along(line.size(), 0.0f);
+			for (size_t i = 1; i < line.size(); ++i)
+				along[i] = along[i - 1] + (line[i] - line[i - 1]).Length();
+			const float length = along.back();
+			// A chain hangs: its end lies below its root (a bun or a braid lying over the head does not swing).
+			if (length < kMinChainLength || line.back().z > line.front().z - 0.5f * kMinChainLength)
+				return false;
+
+			const auto joints = std::clamp(static_cast<uint32_t>(std::ceil(length / kChainSegment)) + 1, 2u, Limits::kMaxChainJoints);
+			o_chain = {};
+			o_chain.joints.resize(joints);
+			size_t at = 0;
+			for (uint32_t j = 0; j < joints; ++j) {
+				const float s = length * static_cast<float>(j) / static_cast<float>(joints - 1);
+				while (at + 2 < line.size() && along[at + 1] < s)
+					++at;
+				const float span = along[at + 1] - along[at];
+				o_chain.joints[j] = Vec3::Lerp(line[at], line[at + 1], span > 1e-6f ? std::clamp((s - along[at]) / span, 0.0f, 1.0f) : 0.0f);
+			}
+			// Joints lying on the head move with it; the chain needs some length past them to swing.
+			uint32_t pinned = 1;
+			while (pinned < joints && !Hangs(a_scalp, o_chain.joints[pinned]) && a_scalp.Height(o_chain.joints[pinned]) < 0.5f * kHangingHeight)
+				++pinned;
+			if (static_cast<float>(joints - pinned) * length / static_cast<float>(joints - 1) < kMinChainLength)
+				return false;
+			o_chain.pinnedJoints = pinned;
+
+			std::vector<float> offsets;
+			offsets.reserve(count);
+			for (uint32_t t : pieceTris) {
+				float best = FLT_MAX;
+				const Vec3& p = triCentre[t];
+				for (uint32_t j = 0; j + 1 < joints; ++j) {
+					const Vec3 a = o_chain.joints[j], d = o_chain.joints[j + 1] - a;
+					const float s = std::clamp((p - a).Dot(d) / std::max(d.LengthSquared(), 1e-12f), 0.0f, 1.0f);
+					best = std::min(best, (a + d * s - p).Length());
+				}
+				offsets.push_back(best);
+			}
+			std::nth_element(offsets.begin(), offsets.begin() + offsets.size() / 2, offsets.end());
+			o_chain.radius = std::max(offsets[offsets.size() / 2], 0.25f);
+			o_chain.parentBone = DominantBone(rootTri);
+			o_chain.triangles = count;
+			return true;
+		}
+
+		float Generator::ChainPosition(uint32_t a_chain, const Vec3& a_p, float& o_length, float& o_pinned) const
+		{
+			const auto& chain = chains[a_chain];
+			float best = FLT_MAX, at = 0.0f;
+			o_length = 0.0f;
+			o_pinned = 0.0f;
+			for (uint32_t j = 0; j + 1 < chain.joints.size(); ++j) {
+				const Vec3 d = chain.joints[j + 1] - chain.joints[j];
+				const float length = d.Length();
+				const float s = std::clamp((a_p - chain.joints[j]).Dot(d) / std::max(length * length, 1e-12f), 0.0f, 1.0f);
+				if (const float distance = (chain.joints[j] + d * s - a_p).LengthSquared(); distance < best) {
+					best = distance;
+					at = o_length + s * length;
+				}
+				o_length += length;
+				if (j + 1 < chain.pinnedJoints)
+					o_pinned = o_length;
+			}
+			return at;
+		}
+
+		void Generator::ChainSkin(uint32_t a_chain, const Vec3& a_p, std::array<uint16_t, 4>& o_bones, std::array<float, 4>& o_weights) const
+		{
+			// The nearest segment's two joints, blended along it, so the cards bend smoothly at each joint.
+			const auto& chain = chains[a_chain];
+			float best = FLT_MAX, f = 0.0f;
+			uint32_t k = 0;
+			for (uint32_t j = 0; j + 1 < chain.joints.size(); ++j) {
+				const Vec3 a = chain.joints[j], d = chain.joints[j + 1] - a;
+				const float s = std::clamp((a_p - a).Dot(d) / std::max(d.LengthSquared(), 1e-12f), 0.0f, 1.0f);
+				const float distance = (a + d * s - a_p).LengthSquared();
+				if (distance < best) {
+					best = distance;
+					k = j;
+					f = s;
+				}
+			}
+			const auto first = static_cast<uint16_t>(chain.firstBone + k);
+			o_bones = { first, static_cast<uint16_t>(first + 1), 0, 0 };
+			o_weights = { 1.0f - f, f, 0.0f, 0.0f };
+			if (f > 0.5f) {
+				std::swap(o_bones[0], o_bones[1]);
+				std::swap(o_weights[0], o_weights[1]);
+			}
+		}
+
+		void Generator::BindToWoven(const Scalp& a_scalp, std::vector<uint32_t>& io_floating)
+		{
+			if (woven.empty())
+				return;
+			struct Sample
+			{
+				Vec3 p;
+				uint32_t piece;
+				bool onHead;
+			};
+			// Woven hair on the head: lying on it, or where a chain leaves it (up to a segment past its pinned joints).
+			const auto atHead = [&](uint32_t a_piece, const Vec3& a_p, bool a_hangs) {
+				const int32_t chain = woven[a_piece].chain;
+				if (!a_hangs || chain < 0)
+					return !a_hangs;
+				float length = 0.0f, pinned = 0.0f;
+				return ChainPosition(static_cast<uint32_t>(chain), a_p, length, pinned) <= pinned + kChainSegment;
+			};
+			PointGrid<Sample> grid(kGatherReach);
+			for (uint32_t i = 0; i < woven.size(); ++i) {
+				for (uint32_t t : woven[i].tris) {
+					const bool onHead = atHead(i, triCentre[t], triHangs[t]);
+					grid.Insert(triCentre[t], { triCentre[t], i, onHead });
+					for (uint32_t v : tris[t].v)
+						grid.Insert(Position(v), { Position(v), i, onHead });
+				}
+			}
+			const auto nearest = [&](const Vec3& a_p, bool a_onHead) {
+				int32_t piece = -1;
+				float best = kGatherReach * kGatherReach;
+				grid.Query(a_p, kGatherReach, [&](const Sample& a_s) {
+					const float d = (a_s.p - a_p).LengthSquared();
+					if ((!a_onHead || a_s.onHead) && d <= best) {
+						best = d;
+						piece = static_cast<int32_t>(a_s.piece);
+					}
+				});
+				return piece;
+			};
+
+			// Inside a hanging braid: within its thickness (and a little) of its centre line.
+			const auto insideChain = [&](uint32_t a_chain, const Vec3& a_p) {
+				const auto& joints = chains[a_chain].joints;
+				float best = FLT_MAX;
+				for (uint32_t j = 0; j + 1 < joints.size(); ++j) {
+					const Vec3 d = joints[j + 1] - joints[j];
+					const float s = std::clamp((a_p - joints[j]).Dot(d) / std::max(d.LengthSquared(), 1e-12f), 0.0f, 1.0f);
+					best = std::min(best, (joints[j] + d * s - a_p).LengthSquared());
+				}
+				return std::sqrt(best) <= 1.5f * chains[a_chain].radius + 0.5f;
+			};
+			const auto staysOnHead = [&](const CardGuide& a_guide) {
+				return std::ranges::none_of(a_guide.path, [&](const PathSample& a_s) { return Hangs(a_scalp, a_s.position); });
+			};
+
+			// Hair ending at woven hair on the head (a braid along the scalp, a tie, where a braid
+			// leaves the head), or inside a hanging braid, is gathered into it: pulled tight, it
+			// stays cards. So is hair starting there that stays on the head: on a tight cap the
+			// cards run either way, into the tie or out from it.
+			for (auto& guide : guides) {
+				if (guide.kind != GuideKind::Rooted)
+					continue;
+				const Vec3 tip = guide.path.back().position;
+				const int32_t piece = nearest(tip, false);
+				bool gathered = piece >= 0 && (nearest(tip, true) >= 0 || (woven[piece].chain >= 0 && insideChain(static_cast<uint32_t>(woven[piece].chain), tip)));
+				// The first sample may be a root added on the scalp below where the card starts.
+				const Vec3 start = guide.path[std::min<size_t>(1, guide.path.size() - 1)].position;
+				gathered = gathered || ((nearest(start, true) >= 0 || nearest(guide.path[0].position, true) >= 0) && staysOnHead(guide));
+				if (gathered)
+					guide.kind = GuideKind::Gathered;
+			}
+
+			// Hair starting at woven hair grows from it (a braid's tuft below its end, a tail below a
+			// tie), unless it runs back onto the head: then it is the hair gathered into it.
+			std::vector<uint32_t> left;
+			std::unordered_map<uint64_t, int32_t> tieOf;  // by piece and joint
+			for (uint32_t g : io_floating) {
+				auto& guide = guides[g];
+				const Vec3 start = guide.path[0].position;
+				const int32_t piece = nearest(start, false);
+				if (piece < 0) {
+					left.push_back(g);
+					continue;
+				}
+				const float tipHeight = a_scalp.Height(guide.path.back().position);
+				if (tipHeight < kAttachHeight || tipHeight < a_scalp.Height(start) - 0.5f) {
+					guide.kind = GuideKind::Gathered;
+					continue;
+				}
+				const int32_t chain = woven[piece].chain;
+				if (chain >= 0) {
+					// Only the hair below a braid's end grows from it; a stray piece beside it binds as any other.
+					float length = 0.0f, pinned = 0.0f;
+					if (ChainPosition(static_cast<uint32_t>(chain), start, length, pinned) < kTuftStart * length) {
+						left.push_back(g);
+						continue;
+					}
+				}
+				uint32_t joint = 0;
+				if (chain >= 0) {
+					std::array<uint16_t, 4> bones{};
+					std::array<float, 4> weights{};
+					ChainSkin(static_cast<uint32_t>(chain), start, bones, weights);
+					joint = bones[0];
+				}
+				const uint64_t key = (static_cast<uint64_t>(piece) << 32) | joint;
+				const auto [it, inserted] = tieOf.try_emplace(key, static_cast<int32_t>(ties.size()));
+				if (inserted) {
+					ties.emplace_back();
+					ties.back().chain = chain;
+				}
+				auto& tie = ties[it->second];
+				tie.centre += start;  // a sum until every tail is in
+				++tie.tails;
+				guide.kind = GuideKind::Tied;
+				guide.tie = it->second;
+				guide.ancestor = static_cast<int32_t>(g);
+			}
+			for (const auto& [key, index] : tieOf) {
+				auto& tie = ties[index];
+				tie.centre = tie.centre / static_cast<float>(tie.tails);
+			}
+			for (const auto& guide : guides) {
+				if (guide.kind == GuideKind::Tied && guide.tie >= 0)
+					ties[guide.tie].radius = std::max(ties[guide.tie].radius, (guide.path[0].position - ties[guide.tie].centre).Length());
+			}
+			io_floating = std::move(left);
+		}
+
+		void Generator::FindTies(const Scalp& a_scalp, std::vector<uint32_t>& io_floating)
+		{
+			// Rooted hair ending where a floating card guide starts, running into it (as BindToScalp's
+			// continuation, but further: a cap's painted hair may stop short of the tie).
+			PointGrid<uint32_t> tips(kTieReach);
+			for (uint32_t g = 0; g < guides.size(); ++g) {
+				if (guides[g].kind == GuideKind::Rooted)
+					tips.Insert(guides[g].path.back().position, g);
+			}
+			struct Tail
+			{
+				uint32_t guide;
+				std::vector<uint32_t> feeders;
+			};
+			std::vector<Tail> tails;
+			for (uint32_t g : io_floating) {
+				const auto& guide = guides[g];
+				const Vec3 p0 = guide.path[0].position;
+				const Vec3 t0 = InitialTangent(guide);
+				Tail tail{ g, {} };
+				tips.Query(p0, kTieReach, [&](const uint32_t& a_h) {
+					const auto& path = guides[a_h].path;
+					const Vec3 tip = path.back().position;
+					const Vec3 d = path.size() > 1 ? tip - path[path.size() - 2].position : kZero;
+					const Vec3 tq = d.LengthSquared() > 1e-12f ? d.Normalized() : kZero;
+					if ((p0 - tip).Length() <= kTieReach && tq.Dot(t0) >= kMergeAlignment && (p0 - tip).Dot(tq) >= -1.0f)
+						tail.feeders.push_back(a_h);
+				});
+				if (!tail.feeders.empty())
+					tails.push_back(std::move(tail));
+			}
+			if (tails.empty())
+				return;
+
+			// Tails starting close together share a tie. It is one if hair from across the scalp
+			// gathers into it, close to the head: a layer carrying on from the one above it, lower
+			// down, is not.
+			DisjointSets sets(tails.size());
+			for (uint32_t i = 0; i < tails.size(); ++i)
+				for (uint32_t j = i + 1; j < tails.size(); ++j)
+					if ((guides[tails[i].guide].path[0].position - guides[tails[j].guide].path[0].position).Length() <= kTieRadius)
+						sets.Unite(i, j);
+			std::unordered_map<uint32_t, std::vector<uint32_t>> clusters;
+			for (uint32_t i = 0; i < tails.size(); ++i)
+				clusters[sets.Find(i)].push_back(i);
+			std::vector<bool> tied(guides.size(), false);
+			for (const auto& [root, members] : clusters) {
+				std::vector<uint32_t> feeders;
+				Vec3 centre;
+				for (uint32_t i : members) {
+					feeders.insert(feeders.end(), tails[i].feeders.begin(), tails[i].feeders.end());
+					centre += guides[tails[i].guide].path[0].position;
+				}
+				std::ranges::sort(feeders);
+				feeders.erase(std::unique(feeders.begin(), feeders.end()), feeders.end());
+				centre = centre / static_cast<float>(members.size());
+				if (feeders.size() < kMinTieFeeders || a_scalp.Height(centre) > kMaxTieHeight)
+					continue;
+				// A tie is compact, and the hair converges on it: from roots spread across the
+				// scalp to tips close together. Layers carrying on from the ones above them form a
+				// row along the head instead, and their hair runs side by side.
+				bool compact = true;
+				for (uint32_t i : members)
+					compact = compact && (guides[tails[i].guide].path[0].position - centre).Length() <= kTieRadius;
+				Vec3 rootLo(FLT_MAX), rootHi(-FLT_MAX), tipLo(FLT_MAX), tipHi(-FLT_MAX);
+				for (uint32_t h : feeders) {
+					rootLo = Vec3::Min(rootLo, guides[h].path[0].position);
+					rootHi = Vec3::Max(rootHi, guides[h].path[0].position);
+					tipLo = Vec3::Min(tipLo, guides[h].path.back().position);
+					tipHi = Vec3::Max(tipHi, guides[h].path.back().position);
+				}
+				const float rootSpread = (rootHi - rootLo).Length(), tipSpread = (tipHi - tipLo).Length();
+				if (!compact || rootSpread < kMinTieSpread || rootSpread < kTieConvergence * tipSpread)
+					continue;
+
+				// The tail: the guides the gathered hair runs into, and any other starting at the tie.
+				// A ponytail's tail is several cards; one card carrying on below others is a layer.
+				std::vector<uint32_t> tail;
+				for (uint32_t g : io_floating) {
+					const Vec3 start = guides[g].path[0].position;
+					const bool member = std::ranges::any_of(members, [&](uint32_t i) { return tails[i].guide == g; });
+					if (!tied[g] && (member || (start - centre).Length() <= kTieRadius))
+						tail.push_back(g);
+				}
+				if (tail.size() < kMinTieTails)
+					continue;
+
+				const auto index = static_cast<int32_t>(ties.size());
+				Tie tie;
+				tie.centre = centre;
+				tie.gathered = static_cast<uint32_t>(feeders.size());
+				for (uint32_t h : feeders)
+					guides[h].kind = GuideKind::Gathered;
+				for (uint32_t g : tail) {
+					const Vec3 start = guides[g].path[0].position;
+					guides[g].kind = GuideKind::Tied;
+					guides[g].tie = index;
+					guides[g].ancestor = static_cast<int32_t>(g);
+					tied[g] = true;
+					++tie.tails;
+					tie.radius = std::max(tie.radius, (start - centre).Length());
+				}
+				ties.push_back(tie);
+			}
+			std::erase_if(io_floating, [&](uint32_t g) { return tied[g]; });
+
+			// With a ponytail, all the hair lying on the head that runs to its tie is pulled into it,
+			// not only the cards reaching it: a cap's front row stops short of the tie, and on a
+			// tight cap the cards run either way. Hair leaving the head (a fringe, side locks) or
+			// running elsewhere stays loose.
+			for (const auto& tie : ties) {
+				if (tie.chain >= 0)
+					continue;
+				const float reach = tie.radius + kTieRadius;
+				for (auto& guide : guides) {
+					if (guide.kind != GuideKind::Rooted)
+						continue;
+					const Vec3 start = guide.path[0].position, tip = guide.path.back().position;
+					const auto n = static_cast<uint32_t>(guide.path.size());
+					const Vec3 end = n > 1 ? tip - guide.path[n - 2].position : kZero;
+					const Vec3 toTie = tie.centre - tip;
+					const bool runsToTie = (tip - tie.centre).Length() <= reach || (start - tie.centre).Length() <= reach ||
+					                       (end.LengthSquared() > 1e-12f && end.Normalized().Dot(toTie.Normalized()) >= 0.7f);
+					if (runsToTie && std::ranges::none_of(guide.path, [&](const PathSample& a_s) { return Hangs(a_scalp, a_s.position); }))
+						guide.kind = GuideKind::Gathered;
+				}
+			}
+		}
+
+		void Generator::LabelTriangles(Result& o_result)
+		{
+			const auto triCount = static_cast<uint32_t>(tris.size());
+			regionOf.assign(triCount, Region::Strands);
+			chainOf.assign(triCount, -1);
+			std::vector<bool> labelled(triCount, false);
+			for (const auto& piece : woven) {
+				for (uint32_t t : piece.tris) {
+					regionOf[t] = piece.region;
+					chainOf[t] = piece.chain;
+					labelled[t] = true;
+				}
+			}
+
+			// Converted triangles go with the card guide nearest them on their sheet: hair gathered
+			// into a tie or a braid stays cards, and so does hair too far from the head to grow from it.
+			struct GuideSample
+			{
+				Vec3 p;
+				uint32_t guide;
+				int32_t component;
+			};
+			PointGrid<GuideSample> grid(spacing);
+			for (uint32_t g = 0; g < ownPaths.size(); ++g)
+				for (const auto& sample : ownPaths[g])
+					grid.Insert(sample.position, { sample.position, g, tris[sample.tri].component });
+			const float reach = 2.0f * spacing;
+			for (uint32_t t = 0; t < triCount; ++t) {
+				if (labelled[t] || !tris[t].valid)
+					continue;
+				float best = reach * reach;
+				int32_t guide = -1;
+				grid.Query(triCentre[t], reach, [&](const GuideSample& a_s) {
+					const float d = (a_s.p - triCentre[t]).LengthSquared();
+					if (a_s.component == tris[t].component && d <= best) {
+						best = d;
+						guide = static_cast<int32_t>(a_s.guide);
+					}
+				});
+				const GuideKind kind = guide >= 0 ? guides[guide].kind : GuideKind::Free;
+				regionOf[t] = kind == GuideKind::Gathered || kind == GuideKind::Dropped ? Region::Cards : Region::Strands;
+				labelled[t] = true;
+			}
+
+			// Triangles the conversion skipped: a copy on the same vertices, or the back face of a
+			// kept sheet, goes with that; any other with the nearest labelled triangle.
+			std::unordered_map<uint64_t, uint32_t> byPosition;
+			for (uint32_t t = 0; t < triCount; ++t)
+				if (labelled[t] && tris[t].positionKey != 0)
+					byPosition.try_emplace(tris[t].positionKey, t);
+			PointGrid<uint32_t> labelledGrid(kContactRadius);
+			for (uint32_t t = 0; t < triCount; ++t)
+				if (labelled[t])
+					labelledGrid.Insert(triCentre[t], t);
+			for (uint32_t t = 0; t < triCount; ++t) {
+				if (labelled[t])
+					continue;
+				int32_t from = -1;
+				if (tris[t].sameAs >= 0 && labelled[tris[t].sameAs])
+					from = tris[t].sameAs;
+				else if (const auto it = byPosition.find(tris[t].positionKey); tris[t].positionKey != 0 && it != byPosition.end())
+					from = static_cast<int32_t>(it->second);
+				else {
+					float best = 4.0f * kContactRadius * kContactRadius;
+					labelledGrid.Query(triCentre[t], 2.0f * kContactRadius, [&](const uint32_t& a_q) {
+						const float d = (triCentre[a_q] - triCentre[t]).LengthSquared();
+						if (d <= best) {
+							best = d;
+							from = static_cast<int32_t>(a_q);
+						}
+					});
+				}
+				if (from >= 0) {
+					regionOf[t] = regionOf[from];
+					chainOf[t] = chainOf[from];
+				}
+			}
+
+			o_result.triangleRegions = regionOf;
+			for (uint32_t t = 0; t < triCount; ++t) {
+				o_result.stats.cardTriangles += regionOf[t] == Region::Cards;
+				o_result.stats.chainTriangles += regionOf[t] == Region::Chain;
+			}
+			for (auto& chain : chains)
+				chain.triangles = 0;
+			for (uint32_t t = 0; t < triCount; ++t)
+				if (chainOf[t] >= 0)
+					++chains[chainOf[t]].triangles;
+		}
+
+		void Generator::BuildCards(Result& o_result) const
+		{
+			const bool skinned = mesh.boneIndices.size() == mesh.positions.size() && mesh.boneWeights.size() == mesh.positions.size();
+			const bool haveFrame = mesh.tangents.size() == mesh.positions.size() && mesh.bitangents.size() == mesh.positions.size();
+			const bool haveNormals = mesh.normals.size() == mesh.positions.size();
+
+			// Without the mesh's own tangent frame, the texture's U and V directions on the surface.
+			std::vector<Vec3> alongU, alongV, normals;
+			if (!haveFrame || !haveNormals) {
+				alongU.assign(mesh.positions.size(), kZero);
+				alongV.assign(mesh.positions.size(), kZero);
+				normals.assign(mesh.positions.size(), kZero);
+				for (uint32_t t = 0; t < tris.size(); ++t) {
+					if (regionOf[t] == Region::Strands)
+						continue;
+					const auto& v = tris[t].v;
+					const Vec3 a = Position(v[0]), b = Position(v[1]), c = Position(v[2]);
+					const Vec3 e1 = b - a, e2 = c - a;
+					const Vec3 n = e1.Cross(e2);
+					const float du1 = mesh.uvs[v[1]].x - mesh.uvs[v[0]].x, dv1 = mesh.uvs[v[1]].y - mesh.uvs[v[0]].y;
+					const float du2 = mesh.uvs[v[2]].x - mesh.uvs[v[0]].x, dv2 = mesh.uvs[v[2]].y - mesh.uvs[v[0]].y;
+					const float det = du1 * dv2 - du2 * dv1;
+					for (uint32_t i : v) {
+						normals[i] += n;
+						if (std::abs(det) > 1e-10f) {
+							alongU[i] += (e1 * dv2 - e2 * dv1) / det * (0.5f * n.Length());
+							alongV[i] += (e2 * du1 - e1 * du2) / det * (0.5f * n.Length());
+						}
+					}
+				}
+			}
+
+			std::unordered_map<uint64_t, uint32_t> remap;
+			for (uint32_t t = 0; t < tris.size(); ++t) {
+				if (regionOf[t] == Region::Strands)
+					continue;
+				const auto& v = tris[t].v;
+				if (v[0] >= mesh.positions.size() || v[1] >= mesh.positions.size() || v[2] >= mesh.positions.size())
+					continue;
+				const int32_t chain = regionOf[t] == Region::Chain ? chainOf[t] : -1;
+				for (uint32_t i : v) {
+					const uint64_t key = (static_cast<uint64_t>(i) << 8) | static_cast<uint64_t>(chain + 1);
+					const auto [it, inserted] = remap.try_emplace(key, static_cast<uint32_t>(o_result.cardVertices.size()));
+					if (inserted) {
+						CardVertex vertex;
+						vertex.position = Position(i);
+						vertex.uv = mesh.uvs[i];
+						vertex.source = i;
+						vertex.normal = haveNormals ? mesh.normals[i] : normals[i].Normalized();
+						if (haveFrame) {
+							vertex.tangent = mesh.tangents[i];
+							vertex.bitangent = mesh.bitangents[i];
+						} else {
+							const Vec3 n = vertex.normal;
+							vertex.tangent = (alongU[i] - n * alongU[i].Dot(n)).Normalized();
+							vertex.bitangent = (alongV[i] - n * alongV[i].Dot(n)).Normalized();
+						}
+						if (chain >= 0) {
+							ChainSkin(static_cast<uint32_t>(chain), vertex.position, vertex.bones, vertex.weights);
+						} else if (skinned) {
+							vertex.bones = mesh.boneIndices[i];
+							vertex.weights = mesh.boneWeights[i];
+						} else {
+							vertex.weights[0] = 1.0f;
+						}
+						o_result.cardVertices.push_back(vertex);
+					}
+					o_result.cardIndices.push_back(it->second);
+				}
 			}
 		}
 
@@ -1833,7 +3086,7 @@ namespace CardsToStrands
 			// drawn towards the guide by `clumpStrength` towards the tip.
 			std::vector<uint32_t> kept;
 			for (uint32_t g = 0; g < guides.size(); ++g)
-				if (guides[g].kind != GuideKind::Dropped && guides[g].kind != GuideKind::Continued && guides[g].path.size() >= 2 && guides[g].path.back().s >= Limits::kMinStrandLength)
+				if (guides[g].kind != GuideKind::Dropped && guides[g].kind != GuideKind::Continued && guides[g].kind != GuideKind::Gathered && guides[g].path.size() >= 2 && guides[g].path.back().s >= Limits::kMinStrandLength)
 					kept.push_back(g);
 			if (kept.empty())
 				return;
@@ -1922,13 +3175,20 @@ namespace CardsToStrands
 				float scalpRun = 0.0f;
 				for (uint32_t k = 0; k < n && a_scalp.Height(path[k].position) <= kAttachHeight; ++k)
 					scalpRun = path[k].s;
-				const float maxAlong = area || guides[g].kind == GuideKind::Free ? 0.0f : std::min(scalpRun, kMaxRootAlong * guideLength);
+				const bool tied = guides[g].kind == GuideKind::Tied;
+				const float maxAlong = area || tied || guides[g].kind == GuideKind::Free ? 0.0f : std::min(scalpRun, kMaxRootAlong * guideLength);
 
 				// Roots spread over a guide's share of the card width, wider where several card
 				// guides share one scalp root.
 				const float shared = static_cast<float>(sharing[guides[g].ancestor]);
 				const float rootSpread = area ? 0.0f : 0.5f * spacing * std::min(std::sqrt(shared), 4.0f);
 				const float clumpRandom = Hash01(g * 2654435761u + settings.seed);
+				// Hair growing from a chain's end rides on it: every point skinned to the joints at its root.
+				const int32_t tieChain = tied && guides[g].tie >= 0 ? ties[guides[g].tie].chain : -1;
+				std::array<uint16_t, 4> chainBones{};
+				std::array<float, 4> chainWeights{};
+				if (tieChain >= 0)
+					ChainSkin(static_cast<uint32_t>(tieChain), path[0].position, chainBones, chainWeights);
 
 				for (uint32_t j = 0; j < counts[g]; ++j) {
 					// Stratified across the card, so strands keep their order from root to tip.
@@ -1949,7 +3209,10 @@ namespace CardsToStrands
 					scalpAlong = scalpAlong.LengthSquared() > 1e-6f ? scalpAlong.Normalized() : across[i].Cross(radial).Normalized();
 					const Vec3 scalpAcross = radial.Cross(scalpAlong);
 					Vec3 strandRoot = a_scalp.centre + radial * rootRadius;
-					if (!area) {
+					if (tied) {
+						// Round where it starts at its tie, across the card and off it.
+						strandRoot = path[0].position + (across[0] * (2.0f * b) + lift[0] * a) * rootSpread;
+					} else if (!area) {
 						// Along the guide the start already spreads the roots; at the guide's own
 						// root they spread both ways, and only over scalp under rooted hair, so
 						// none crosses a hairline.
@@ -1996,8 +3259,8 @@ namespace CardsToStrands
 						point.position = centre + offset + rootCorrection * (1.0f - Smoothstep(blend > 1e-4f ? (s - start) / blend : 1.0f));
 						point.t = t;
 						const auto& nearest = attributes[f < 0.5f ? i : i + 1];
-						point.bones = nearest.bones;
-						point.weights = nearest.weights;
+						point.bones = tieChain >= 0 ? chainBones : nearest.bones;
+						point.weights = tieChain >= 0 ? chainWeights : nearest.weights;
 						point.normal = Vec3::Lerp(attributes[i].normal, attributes[i + 1].normal, f).Normalized();
 						if (point.normal == kZero)
 							point.normal = nearest.normal;
@@ -2018,7 +3281,7 @@ namespace CardsToStrands
 					strand.random = Random();
 					strand.clumpRandom = clumpRandom;
 					strand.cardGuide = g;
-					strand.scalpRooted = guides[g].kind != GuideKind::Free;
+					strand.scalpRooted = guides[g].kind != GuideKind::Free && !tied;
 					o_result.strands.push_back(strand);
 					lengthSum += length;
 				}
@@ -2156,8 +3419,7 @@ namespace CardsToStrands
 			o_result.stats.flowMapShare = ChooseFlow();
 			BuildVertexFields();
 
-			o_result.stats.convertedTriangles = static_cast<uint32_t>(std::ranges::count_if(tris, [](const Triangle& t) { return t.valid; }));
-			if (o_result.stats.convertedTriangles == 0) {
+			if (std::ranges::none_of(tris, [](const Triangle& t) { return t.valid; })) {
 				o_error = "no triangle has a usable texture flow";
 				return false;
 			}
@@ -2168,8 +3430,18 @@ namespace CardsToStrands
 
 			FitScalp(o_result.scalp);
 
+			// Chain joints are bones numbered after the mesh's own.
+			chainBoneBase = static_cast<uint32_t>(mesh.boneNames.size());
+			for (const auto& bones : mesh.boneIndices)
+				for (uint16_t bone : bones)
+					chainBoneBase = std::max<uint32_t>(chainBoneBase, bone + 1u);
+			// Braids, ties and buns stay cards: what is left of the cards becomes strands.
+			ResolveChoices();
+			FindWoven(o_result.scalp);
+			o_result.stats.convertedTriangles = static_cast<uint32_t>(std::ranges::count_if(tris, [](const Triangle& t) { return t.valid; }));
+
 			Seeding mode = settings.seeding;
-			if (mode != Seeding::Area) {
+			if (mode != Seeding::Area && o_result.stats.convertedTriangles > 0) {
 				SeedRoots();
 				SeedFill();
 				if (mode == Seeding::Auto) {
@@ -2199,24 +3471,37 @@ namespace CardsToStrands
 			if (mode == Seeding::Area) {
 				guides.clear();
 				SeedArea(o_result.scalp);
+				for (const auto& guide : guides)
+					ownPaths.push_back(guide.path);
 			} else {
 				PruneRedundant(o_result.stats);
+				for (const auto& guide : guides)
+					ownPaths.push_back(guide.path);
 				BindToScalp(o_result.scalp, o_result.stats);
 			}
 			o_result.stats.seedingUsed = mode;
+			LabelTriangles(o_result);
 
 			// The card guides as bound, for tools that show or edit them (Strand::cardGuide indexes these).
 			o_result.guides.resize(guides.size());
 			for (uint32_t g = 0; g < guides.size(); ++g) {
 				auto& out = o_result.guides[g];
 				out.kind = guides[g].kind;
+				out.tie = guides[g].tie;
 				out.path.reserve(guides[g].path.size());
 				for (const auto& sample : guides[g].path)
 					out.path.push_back(sample.position);
 			}
 
 			BuildStrands(o_result.scalp, o_result);
-			if (o_result.strands.empty()) {
+			BuildCards(o_result);
+			o_result.chains = chains;
+			o_result.ties = ties;
+			o_result.chainBoneBase = chainBoneBase;
+			for (const auto& chain : chains)
+				o_result.chainBoneCount += static_cast<uint32_t>(chain.joints.size());
+			o_result.stats.wovenPieces = static_cast<uint32_t>(woven.size());
+			if (o_result.strands.empty() && o_result.cardIndices.empty()) {
 				o_error = "no strand could be traced";
 				return false;
 			}
@@ -2231,5 +3516,179 @@ namespace CardsToStrands
 	{
 		Generator generator(a_mesh, a_settings);
 		return generator.Run(o_result, o_error);
+	}
+
+	namespace
+	{
+		/** A unit quaternion. */
+		struct Quat
+		{
+			float x = 0.0f;
+			float y = 0.0f;
+			float z = 0.0f;
+			float w = 1.0f;
+
+			Vec3 Rotate(const Vec3& a_v) const
+			{
+				const Vec3 q(x, y, z);
+				const Vec3 t = q.Cross(a_v) * 2.0f;
+				return a_v + t * w + q.Cross(t);
+			}
+			/** @brief This rotation after a_o. */
+			Quat operator*(const Quat& a_o) const
+			{
+				return { w * a_o.x + x * a_o.w + y * a_o.z - z * a_o.y, w * a_o.y - x * a_o.z + y * a_o.w + z * a_o.x,
+					w * a_o.z + x * a_o.y - y * a_o.x + z * a_o.w, w * a_o.w - x * a_o.x - y * a_o.y - z * a_o.z };
+			}
+			/** @brief The shortest rotation taking unit vector a_from to unit vector a_to. */
+			static Quat Arc(const Vec3& a_from, const Vec3& a_to)
+			{
+				const float d = a_from.Dot(a_to);
+				if (d < -0.9999f) {
+					const Vec3 axis = a_from.Cross(std::abs(a_from.x) < 0.9f ? Vec3(1.0f, 0.0f, 0.0f) : Vec3(0.0f, 1.0f, 0.0f)).Normalized();
+					return { axis.x, axis.y, axis.z, 0.0f };
+				}
+				const Vec3 c = a_from.Cross(a_to);
+				const float w = 1.0f + d;
+				const float n = std::sqrt(c.LengthSquared() + w * w);
+				return { c.x / n, c.y / n, c.z / n, w / n };
+			}
+		};
+
+		/** @brief Carries a running turn on from one segment to the next: the shortest arc from where it points a_rest to a_now, after it. */
+		Quat Transport(const Quat& a_turn, const Vec3& a_rest, const Vec3& a_now)
+		{
+			if (a_rest.LengthSquared() < 1e-12f || a_now.LengthSquared() < 1e-12f)
+				return a_turn;
+			return Quat::Arc(a_turn.Rotate(a_rest).Normalized(), a_now.Normalized()) * a_turn;
+		}
+
+		Vec3 ClosestOnSegment(const Vec3& a_p, const Vec3& a_a, const Vec3& a_b)
+		{
+			const Vec3 d = a_b - a_a;
+			const float length = d.LengthSquared();
+			return length > 1e-12f ? a_a + d * std::clamp((a_p - a_a).Dot(d) / length, 0.0f, 1.0f) : a_a;
+		}
+	}
+
+	void ChainSimulator::Reset(const ChainCurve& a_chain, const Affine& a_parent)
+	{
+		const size_t n = a_chain.joints.size();
+		position.resize(n);
+		for (size_t j = 0; j < n; ++j)
+			position[j] = a_parent.Apply(a_chain.joints[j]);
+		previous = position;
+		offset.assign(n, Vec3{});
+		previousOffset = offset;
+	}
+
+	void ChainSimulator::Translate(const Vec3& a_delta)
+	{
+		for (auto* points : { &position, &previous })
+			for (auto& p : *points)
+				p += a_delta;
+	}
+
+	void ChainSimulator::Step(const ChainCurve& a_chain, const Affine& a_parent, float a_dt, const ChainSettings& a_settings, const ChainCollider* a_colliders, size_t a_colliderCount)
+	{
+		const auto n = static_cast<uint32_t>(a_chain.joints.size());
+		if (n < 2 || !(a_dt > 0.0f))
+			return;
+		if (position.size() != n) {
+			Reset(a_chain, a_parent);
+			return;
+		}
+		const uint32_t pinned = std::clamp<uint32_t>(a_chain.pinnedJoints, 1, n);
+		const uint32_t iterations = std::max(a_settings.iterations, 1u);
+		// The settings are per 1/60 s step; the pull is spread over the passes.
+		const float steps = a_dt * 60.0f;
+		const float keep = std::pow(std::clamp(1.0f - a_settings.damping, 0.0f, 1.0f), steps);
+		const float pull = 1.0f - std::pow(1.0f - std::clamp(a_settings.stiffness, 0.0f, 1.0f), steps / static_cast<float>(iterations));
+
+		// Where the parent bone alone carries each joint, and each styled segment.
+		std::vector<Vec3> target(n), rest(n - 1);
+		for (uint32_t j = 0; j < n; ++j)
+			target[j] = a_parent.Apply(a_chain.joints[j]);
+		for (uint32_t j = 0; j + 1 < n; ++j)
+			rest[j] = a_parent.ApplyLinear(a_chain.joints[j + 1] - a_chain.joints[j]);
+
+		// Verlet; the pinned joints go where the parent bone puts them.
+		const Vec3 fall(0.0f, 0.0f, -a_settings.gravity * a_dt * a_dt);
+		for (uint32_t j = 0; j < n; ++j) {
+			if (j < pinned) {
+				previous[j] = position[j];
+				position[j] = target[j];
+				continue;
+			}
+			const Vec3 velocity = (position[j] - previous[j]) * keep;
+			previous[j] = position[j];
+			position[j] += velocity + fall;
+		}
+
+		for (uint32_t pass = 0; pass < iterations; ++pass) {
+			Quat turn;  // how far the segments so far have turned from their styled directions
+			for (uint32_t j = 0; j + 1 < n; ++j) {
+				const uint32_t c = j + 1;
+				if (c >= pinned) {
+					// Towards the styled shape, as the segment before carries it.
+					position[c] += (position[j] + turn.Rotate(rest[j]) - position[c]) * pull;
+					// The segment keeps its length: only the joint further from the root moves.
+					const Vec3 d = position[c] - position[j];
+					const float length = d.Length();
+					if (length > 1e-6f)
+						position[c] = position[j] + d * (rest[j].Length() / length);
+					// Out of the colliders, the braid's thickness off them, but never further out than
+					// its styled place lies (a braid styled against the neck stays there), and never
+					// less than half of it (the strands' simulation keeps the same margin).
+					for (size_t k = 0; k < a_colliderCount; ++k) {
+						const auto& collider = a_colliders[k];
+						const Vec3 nearest = ClosestOnSegment(position[c], collider.a, collider.b);
+						const float full = collider.radius + a_chain.radius;
+						const float styled = (target[c] - ClosestOnSegment(target[c], collider.a, collider.b)).Length();
+						const float clearance = std::max(std::min(full, styled), 0.5f * full);
+						Vec3 away = position[c] - nearest;
+						const float distance = away.Length();
+						if (distance >= clearance)
+							continue;
+						away = distance > 1e-6f ? away / distance : Vec3(0.0f, 0.0f, 1.0f);
+						position[c] = nearest + away * clearance;
+					}
+				}
+				turn = Transport(turn, rest[j], position[c] - position[j]);
+			}
+		}
+
+		previousOffset = offset;
+		for (uint32_t j = 0; j < n; ++j)
+			offset[j] = position[j] - target[j];
+	}
+
+	void ChainSimulator::Bones(const ChainCurve& a_chain, const Affine& a_parent, float a_alpha, std::vector<Affine>& o_bones) const
+	{
+		const size_t n = a_chain.joints.size();
+		o_bones.assign(n, a_parent);
+		if (position.size() != n || n < 2)
+			return;
+		// The joints as drawn: carried by the parent bone as it is now, offset as simulated.
+		std::vector<Vec3> drawn(n);
+		for (size_t j = 0; j < n; ++j)
+			drawn[j] = a_parent.Apply(a_chain.joints[j]) + Vec3::Lerp(previousOffset[j], offset[j], std::clamp(a_alpha, 0.0f, 1.0f));
+		// Each joint turns with the segment leaving it (the last with the one reaching it), twisting no more than the bends need.
+		Quat turn;
+		for (size_t j = 0; j < n; ++j) {
+			if (j + 1 < n)
+				turn = Transport(turn, a_parent.ApplyLinear(a_chain.joints[j + 1] - a_chain.joints[j]), drawn[j + 1] - drawn[j]);
+			auto& bone = o_bones[j];
+			for (int column = 0; column < 3; ++column) {
+				const Vec3 axis(column == 0 ? 1.0f : 0.0f, column == 1 ? 1.0f : 0.0f, column == 2 ? 1.0f : 0.0f);
+				const Vec3 turned = turn.Rotate(a_parent.ApplyLinear(axis));
+				for (int row = 0; row < 3; ++row)
+					bone.rows[row][column] = turned[row];
+			}
+			// The bind pose's joint lands on the joint as drawn.
+			const Vec3 translation = drawn[j] - bone.ApplyLinear(a_chain.joints[j]);
+			for (int row = 0; row < 3; ++row)
+				bone.rows[row][3] = translation[row];
+		}
 	}
 }
