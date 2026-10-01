@@ -33,12 +33,9 @@ struct ScreenshotFeature : public Feature
 
 	/**
 	 * @brief Captures a screenshot from the current back buffer and enqueues it for async encoding and save.
-	 * @param overridePath When non-empty, the screenshot is saved here (extension chosen from the
-	 *        capture format) instead of the configured Screenshots folder. Used by the Neural
-	 *        Rendering comparison capture to redirect its pair into Data/DLSS 5 Screenshots/.
-	 * @param forceCleanNoUI When true, the capture source is the post-processed frame with no UI of
-	 *        any kind (no game HUD, no CS menu) and no crop. The caller must invoke this before the
-	 *        game UI is drawn for the frame - only the Neural Rendering comparison capture does.
+	 * @param overridePath Optional path for Neural Rendering comparison captures; extension follows the format.
+	 * @param forceCleanNoUI Capture the uncropped post-processed frame before HUD/menu drawing.
+	 *        The caller must invoke this before the game UI renders.
 	 */
 	void Capture(std::filesystem::path overridePath = {}, bool forceCleanNoUI = false);
 	/**

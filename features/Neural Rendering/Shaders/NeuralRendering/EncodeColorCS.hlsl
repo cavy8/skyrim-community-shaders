@@ -25,21 +25,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	if (any(dispatchThreadID.xy >= work) || any(active == 0))
 		return;
 
-	// Each destination texel is an unjittered model pixel covering scene position
-	// (id + 0.5) * active / work on the source grid. The raster holds that scene
-	// position at + JitterOffset, so resample it from there. At native scale with
-	// a zero offset this is exactly the source texel itself.
-	//
-	// footprint is the source-texel extent, per axis, that one destination texel
-	// represents. An axis at source resolution (footprint 1: native scale, the
-	// maximum) keeps the Catmull-Rom reconstruction the jitter compensation
-	// already needed. An axis below
-	// source resolution (footprint > 1) switches to an exact-area box average
-	// instead, because reconstructing a single point there leaves source
-	// frequencies above the model's new Nyquist limit free to alias into the
-	// proxy as neural shimmer - see SampleNeuralSourceAreaMinify. Filtering is
-	// per axis so an anisotropic scale (e.g. 0.65 x 0.85) only boxes the axis
-	// that is actually shrinking.
+	// Map unjittered model pixels into the source raster. Use area filtering on minified axes and Catmull-
+	// Rom on native axes to suppress aliasing.
 	float2 footprint = float2(active) / float2(work);
 	float2 scenePosition = (float2(dispatchThreadID.xy) + 0.5) * footprint;
 	float2 position = scenePosition + JitterOffset;
@@ -47,11 +34,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	uint2 nearest = min(uint2(scenePosition), active - 1);
 	float alpha = SourceColor[nearest].a;
 
-	// The display transform the frame will go through after this placement, so
-	// the scene-linear proxy the model sees is exposed and graded like the frame
-	// the user will see (see ApplyNeuralDisplayTransform). The adaptation values
-	// are uniform, so the texture centre stands for the whole target; an unbound
-	// input reads zero and drops out of the transform.
+	// Adaptation textures are uniform; sample their centers. Unbound inputs read zero and disable their
+	// contribution.
 	NeuralDisplayTransform display = MakeNeuralDisplayTransform(DisplayParam, DisplayCinematic, DisplayTint, DisplayExposure,
 		VanillaAdaptation.SampleLevel(LinearClampSampler, float2(0.5, 0.5), 0), PostProcessAdaptation[0], HighlightWhite,
 		ProxyCurve);

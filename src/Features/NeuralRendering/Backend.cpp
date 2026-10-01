@@ -48,9 +48,7 @@ namespace
 		float displayCinematic[4]{ 1.0f, 0.0f, 1.0f, 1.0f };  ///< ISHDR Cinematic.
 		float displayTint[4]{ 1.0f, 1.0f, 1.0f, 0.0f };       ///< ISHDR Tint.
 		float displayExposure[4]{ 0.0f, 0.18f, 0.0f, 1.0f };  ///< x Post Processing exposure on/off, y scale, zw range.
-		/// Multiplier on the smooth half of the model's luminance change. This is the slot the
-		/// single Luminosity Strength used to occupy, and with Detail equal to it the maths is
-		/// identical, so an upgraded config resolves to exactly the same edit.
+		/// Multiplier on the smooth luminance band.
 		float broadLuminosity = 1.0f;
 		std::uint32_t debugCategoryView = 0;  ///< Non-zero: the decode renders the classified category, not the model's edit.
 		float maxRatio = 2.0f;                ///< Two-sided guard on the model/proxy luminance ratio (1/maxRatio..maxRatio).
@@ -79,34 +77,21 @@ namespace
 	constexpr std::size_t kDebugReadbackFrames = 3;
 
 	constexpr float kMinimumResolutionScale = 0.25f;
-	/// Native. Supersampling the model (scale above one) was removed: it cost the
-	/// square of the scale for no visible gain once the edit is applied as a ratio
-	/// to the untouched full-resolution frame.
+	/// Native resolution is the maximum model scale.
 	constexpr float kMaximumResolutionScale = 1.0f;
 	/// Feature 18 is not created below this per-axis extent.
 	constexpr std::uint32_t kMinimumModelExtent = 64;
-	/// Frames a changed model raster must stay stable before the shared textures
-	/// and the NGX feature are rebuilt for it. Rebuilding drains the interop queue,
-	/// so applying every intermediate value of a slider drag would hitch per frame.
+	/// Stable frames required before rebuilding the model raster; avoids draining the queue on each slider
+	/// step.
 	constexpr std::uint32_t kModelRasterDebounceFrames = 12;
-	/// Frames a changed tuning value must stay stable before Feature 18 is torn
-	/// down and recreated for it (see SettleTuning). Rebuilding drains the interop
-	/// queue, so latching every intermediate value of a slider drag would hitch
-	/// per frame; matches kModelRasterDebounceFrames's reasoning exactly.
+	/// Stable frames required before recreating the feature for changed tuning.
 	constexpr std::uint32_t kTuningDebounceFrames = 12;
-	/// Sent to the shader in place of a real Max Ratio when the ratio guard is
-	/// off (NeuralRendering::Options::ratioGuardEnabled false). ResolveNeuralColor
-	/// only ever uses this as clamp(ratio, 1/x, x); a value this large makes that
-	/// clamp a no-op for any luminance ratio the model could plausibly produce,
-	/// without the shader needing a separate enabled flag.
+	/// Effectively disables the shader ratio clamp without a separate enabled flag.
 	constexpr float kNeuralRatioGuardDisabledValue = 1.0e6f;
 
 	/**
-	 * @brief Model raster extent for one axis.
-	 *
-	 * Scale one is exact so the native path is untouched. Otherwise the active
-	 * extent is scaled, rounded to an even texel count and floored at
-	 * kMinimumModelExtent, matching the raster the DLSSNR-Cost-Scaler proxy builds.
+	 * @brief Scaled model extent, rounded to even texels and floored at kMinimumModelExtent. Scale one
+	 * preserves the active extent.
 	 */
 	std::uint32_t ScaledExtent(std::uint32_t active, float scale)
 	{
@@ -135,11 +120,8 @@ namespace
 	}
 
 	/**
-	 * @brief Builds a single-mip, single-sample shared-texture description from a game resource.
-	 *
-	 * The supplied active extent deliberately replaces the source allocation
-	 * extent. Feature 18 builds internal history for its creation dimensions, so
-	 * a render-resolution frame must not masquerade as a padded native frame.
+	 * @brief Build a single-mip shared texture at the active extent, excluding padded source margins from
+	 * model history.
 	 */
 	D3D11_TEXTURE2D_DESC MakeSharedDesc(const D3D11_TEXTURE2D_DESC& source, DXGI_FORMAT format, UINT bindFlags,
 		UINT width, UINT height)
@@ -200,11 +182,8 @@ struct NeuralRenderingBackend::State
 	bool filterToneDataVerticalAttempted = false;
 
 	/**
-	 * Band split scratch, at the model raster and private to D3D11 (never shared with D3D12).
-	 * `toneData` holds (log2 proxy luminance, the edit in stops) from PrepareToneDataCS; the
-	 * horizontal filter writes `toneScratch` and the vertical one writes back into `toneData`,
-	 * which is what the decode then samples. Two textures are enough because no pass ever
-	 * reads the target it is writing.
+	 * D3D11 band scratch: toneData stores log proxy luminance and edit stops; horizontal filtering writes
+	 * toneScratch, vertical filtering writes back to toneData.
 	 */
 	winrt::com_ptr<ID3D11Texture2D> toneData;
 	winrt::com_ptr<ID3D11ShaderResourceView> toneDataSRV;
@@ -220,9 +199,7 @@ struct NeuralRenderingBackend::State
 	bool loggedToneFailure = false;
 
 	/**
-	 * Debug readback: DecodeColorCS accumulates a clamp count, a sample
-	 * count and a peak into `debugStats`, which is copied into a small ring of staging buffers
-	 * and mapped kDebugReadbackFrames later, so the CPU never waits on the GPU.
+	 * Staged statistics ring read kDebugReadbackFrames later without blocking the GPU.
 	 */
 	winrt::com_ptr<ID3D11Buffer> debugStats;
 	winrt::com_ptr<ID3D11UnorderedAccessView> debugStatsUAV;
@@ -267,10 +244,7 @@ struct NeuralRenderingBackend::State
 	std::uint32_t separateQualityMode = UINT_MAX;
 	std::uint32_t separatePreset = UINT_MAX;
 
-	/// Colour/output and guide (depth+motion) regions NGX last saw. A change in
-	/// either (dynamic resolution, or the Before/After placement toggle switching
-	/// the colour input between render- and display-res) invalidates temporal
-	/// history rather than smearing it into the new domain.
+	/// Last color and guide extents; changes invalidate temporal history.
 	std::uint32_t lastActiveWidth = 0;
 	std::uint32_t lastActiveHeight = 0;
 	std::uint32_t lastGuideWidth = 0;
@@ -284,12 +258,7 @@ struct NeuralRenderingBackend::State
 	std::uint32_t requestedModelHeight = 0;
 	std::uint32_t requestedModelStableFrames = 0;
 
-	/// Tuning last requested and how many consecutive frames it has been asked
-	/// for (see SettleTuning), versus the tuning actually latched into the live
-	/// Feature 18 handle. DLSSNR.Intensity/Style/LocalToneStrength/
-	/// LocalStructureStrength/SkinStructureStrength/UseAutoMask only take effect
-	/// at feature creation (see Runtime::Execute), so a settled change here has
-	/// to force a recreate rather than just flow through to the next Execute().
+	/// Requested tuning and debounce count versus tuning latched into the live feature.
 	NeuralRenderingNGX::Tuning requestedTuning{};
 	NeuralRenderingNGX::Tuning appliedTuning{};
 	std::uint32_t requestedTuningStableFrames = 0;
@@ -309,10 +278,8 @@ struct NeuralRenderingBackend::State
 
 	~State()
 	{
-		// Deliberately does not go through Destroy(): the Runtime singleton is a
-		// function-local static first touched during gameplay, so at process exit it
-		// is destroyed before this object and calling Instance() here would
-		// resurrect it. The interop device tears itself down in its own destructor.
+		// Do not call Destroy(): the Runtime singleton is already destroyed at process exit. Interop releases
+		// its own device.
 		interop.WaitForIdle();
 		ReleaseGpuResources();
 	}
@@ -383,12 +350,8 @@ struct NeuralRenderingBackend::State
 	}
 
 	/**
-	 * @brief Debounces model-raster changes so a slider drag does not rebuild Feature 18 every frame.
-	 *
-	 * A new raster is adopted immediately when nothing is allocated yet or the
-	 * colour active region itself changed (EnsureResources rebuilds then anyway).
-	 * Otherwise the current allocation is kept until the request has been stable
-	 * for kModelRasterDebounceFrames.
+	 * @brief Debounce model-raster changes. Adopt immediately before allocation or when the active color
+	 * extent changes; otherwise wait kModelRasterDebounceFrames.
 	 *
 	 * @return The model raster to run this frame.
 	 */
@@ -410,16 +373,8 @@ struct NeuralRenderingBackend::State
 	}
 
 	/**
-	 * @brief Debounces a Feature-18 tuning change and reports when it should be latched in.
-	 *
-	 * DLSSNR.Intensity/Style/LocalToneStrength/LocalStructureStrength/
-	 * SkinStructureStrength/UseAutoMask only take effect when Feature 18 is
-	 * (re)created (see Runtime::Execute), so applying every intermediate value of
-	 * a slider drag would tear the feature down and rebuild it - and drain the
-	 * interop queue to do it safely - every frame. Instead the request is tracked
-	 * the same way SettleModelRaster tracks a resolution-scale drag: once it has
-	 * been stable for kTuningDebounceFrames and actually differs from what is
-	 * latched into the live handle, the caller is told to recreate.
+	 * @brief Report a settled tuning change once. The caller must drain the interop queue, reset the
+	 * feature, and update appliedTuning before recreation.
 	 *
 	 * @return True exactly once per settled change; the caller must then drain
 	 *         the interop queue, call Runtime::ResetFeature(), and update
@@ -564,12 +519,8 @@ struct NeuralRenderingBackend::State
 	}
 
 	/**
-	 * @brief Allocates the two band-split scratch textures at the model raster.
-	 *
-	 * Private to D3D11: nothing here is shared with D3D12, so these are ordinary textures
-	 * rather than interop allocations. A failure is logged once and turns the split off for
-	 * the session rather than failing the frame - the resolve falls back to the unsplit edit,
-	 * which is what equal Broad/Detail values produce anyway.
+	 * @brief Allocate private D3D11 band scratch. On failure, disable the split for this session and
+	 * resolve without band data.
 	 *
 	 * @return False when the textures are unavailable; the caller must then leave the band
 	 *         data flagged absent.
@@ -696,11 +647,8 @@ struct NeuralRenderingBackend::State
 	}
 
 	/**
-	 * @brief Reads the oldest queued statistics copy and queues this frame's.
-	 *
-	 * The ring is kDebugReadbackFrames deep, so the slot being mapped was written that many
-	 * frames ago and the map never blocks; D3D11_MAP_FLAG_DO_NOT_WAIT covers the case where it
-	 * would anyway. The counters are cleared afterwards, before the decode that fills them.
+	 * @brief Read the oldest staging slot without waiting, queue current statistics, then clear counters
+	 * for the next decode.
 	 */
 	void ServiceDebugReadback(ID3D11DeviceContext* context, bool enabled)
 	{
@@ -916,11 +864,7 @@ struct NeuralRenderingBackend::State
 	}
 
 	/**
-	 * @brief Encodes the frame and guides into the shared textures and runs Feature 18 on them.
-	 *
-	 * Everything the model needs for one evaluation: the colour encode at the
-	 * model raster, the depth-guide copy, the motion-vector copy, and the D3D12
-	 * submission. Failures latch. The caller decodes the answer afterwards.
+	 * @brief Encode color and guides and submit Feature 18; failures latch. The caller decodes the result.
 	 *
 	 * @param motionFrames Frames elapsed since the model's previous evaluation; the
 	 *        one-frame game motion vectors are scaled by it (see Run).
@@ -930,12 +874,8 @@ struct NeuralRenderingBackend::State
 		std::uint32_t modelWidth, std::uint32_t modelHeight, std::uint32_t guideWidth, std::uint32_t guideHeight,
 		float motionFrames)
 	{
-		// (b) Colour moves through compute passes rather than CopyResource. The
-		// encode resamples the frame onto the unjittered pixel grid at the model
-		// raster so the model sees a stable framing; the decode later samples its
-		// answer back at each original pixel's jittered position at the active
-		// extent (see ColorTransfer.hlsli).
-		// The two adaptation inputs drive the proxy's display transform; either may be null.
+		// Encode onto the unjittered model grid; decode maps the edit back to the source raster. Adaptation
+		// inputs may be null.
 		DispatchTransfer(context, encodeShader,
 			{ colorInView, inputs.display.vanillaAdaptationSRV, inputs.display.postProcessAdaptationSRV },
 			color.uav11.Get(), transferParamsCB.get(), linearClampSampler.get(), modelWidth, modelHeight);
@@ -953,9 +893,7 @@ struct NeuralRenderingBackend::State
 			context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
 		}
 
-		// Run() has already settled and (if it changed) recreated the feature for this
-		// frame's tuning via SettleTuning; appliedTuning is exactly what should be
-		// latched into a create and restated into an evaluate, per Runtime::Execute.
+		// Run() has settled tuning and reset the feature if recreation is needed.
 		const NeuralRenderingNGX::Tuning& tuning = appliedTuning;
 
 		ID3D12GraphicsCommandList* commandList = nullptr;
@@ -977,16 +915,8 @@ struct NeuralRenderingBackend::State
 		}
 		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
 
-		// Feature/output extents match the compact model raster. A raster change
-		// rebuilds only after EnsureResources drains the interop queue. The
-		// motion-vector scale is the guide resolution because Skyrim stores vectors
-		// as normalized UV displacement; the NGX scale converts them to guide pixels
-		// and the model bridges guide and colour rasters from the subrects, so the
-		// model scale is deliberately not folded in (see neural-rendering.md). The
-		// game's vectors describe one frame of motion, but the model's history is
-		// from its previous evaluation, which alternating-frame mode leaves two frames
-		// back, so the scale also carries the frames elapsed (constant-velocity
-		// extrapolation of this frame's motion).
+		// Convert normalized motion to guide pixels, scaled by frames since evaluation. Resource subrects
+		// already account for model/guide resolution differences.
 		const bool executed = NeuralRenderingNGX::Runtime::Instance().Execute(commandList,
 			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
 			modelWidth, modelHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
@@ -1012,12 +942,8 @@ struct NeuralRenderingBackend::State
 		if (NeuralRenderingNGX::Runtime::Instance().Status() != NeuralRenderingNGX::RuntimeStatus::Initialized &&
 			!InitializeRuntime())
 			return false;
-		// The colour/output region is the caller's active extent: dynamic resolution
-		// renders into the top-left of natively sized game targets, and both colour
-		// passes clamp against the real allocation. The model raster is that extent
-		// scaled per axis; the shared colour/output textures are compact at the
-		// model raster, the depth+motion guides at the guide extent. The two stay
-		// independent because post-upscale colour is display sized.
+		// Allocate shared color at the scaled active extent and guides at their own extent; exclude padded
+		// game-target margins.
 		const std::uint32_t colorWidth = inputs.width;
 		const std::uint32_t colorHeight = inputs.height;
 		const std::uint32_t desiredModelWidth = ScaledExtent(colorWidth, inputs.resolutionScaleX);
@@ -1050,13 +976,8 @@ struct NeuralRenderingBackend::State
 			lastColorInput = inputs.colorIn;
 		}
 
-		// DLSSNR.Intensity/Style/LocalToneStrength/LocalStructureStrength/
-		// SkinStructureStrength/UseAutoMask are latched at Feature 18 creation and
-		// do nothing written at evaluate (see Runtime::Execute). SettleTuning
-		// debounces a changed value the same way SettleModelRaster debounces a
-		// resolution-scale drag, then this forces a recreate through the same
-		// GPU-idle path EnsureResources uses for a raster change - never a bare
-		// release() while the interop queue might still reference the handle.
+		// Tuning is latched at creation. Drain the GPU queue before resetting the feature for a settled
+		// change.
 		NeuralRenderingNGX::Tuning desiredTuning;
 		desiredTuning.intensity = inputs.intensity;
 		desiredTuning.localToneStrength = inputs.localToneStrength;
@@ -1074,14 +995,8 @@ struct NeuralRenderingBackend::State
 			resetPending = true;
 		}
 
-		// Alternating frames (the proxy's experimental "VRNR"): run the model every
-		// other frame and, in between, re-apply its previous answer to the fresh
-		// frame through the decode alone, reprojected through the game's motion
-		// vectors. The shared colour/output textures keep the previous proxy/answer
-		// pair, which D3D11 already waited on when that frame's D3D12 work was
-		// submitted. The first frame after a history reset, a raster change or a
-		// failure always evaluates, and so does every frame when there is no
-		// motion-vector view to reproject through.
+		// Skipped frames reuse the previous proxy/answer pair through motion reprojection. Always evaluate
+		// after resets, raster changes, failures, or without motion guides.
 		const bool skipFrame = inputs.alternateFrames && inputs.motionVectorsSRV && !inputs.staticMotion &&
 		                       featureAvailable && !resetPending && !inputs.reset && (evaluateFrameIndex % 2) == 1;
 
@@ -1115,17 +1030,11 @@ struct NeuralRenderingBackend::State
 				return LatchFailure("transfer sampler creation", result);
 			Util::SetResourceName(linearClampSampler.get(), "NeuralRendering::LinearClampSampler");
 		}
-		// The jitter offset is only meaningful when the colour raster is the game's
-		// jittered render; the caller passes zero for the unjittered upscaled frame.
-		// Anything beyond a pixel is not a TAA jitter and is treated as none.
+		// Color jitter is zero after upscaling; reject offsets beyond one pixel.
 		TransferParams transferParams;
 		transferParams.jitterOffset[0] = std::abs(inputs.jitterOffsetX) <= 1.0f ? inputs.jitterOffsetX : 0.0f;
 		transferParams.jitterOffset[1] = std::abs(inputs.jitterOffsetY) <= 1.0f ? inputs.jitterOffsetY : 0.0f;
-		// The guides are the game's jittered render targets whatever the colour
-		// raster is, so the decode offsets its guide lookups by this before
-		// reading them. Zero (the colour is jittered alike) everywhere but after
-		// the upscaler. The same one-pixel sanity bound applies; it also rejects
-		// a NaN, which fails the comparison.
+		// Guide jitter is relative to color. Reject non-finite offsets and offsets beyond one guide texel.
 		transferParams.guideJitterOffset[0] = std::abs(inputs.guideJitterOffsetX) <= 1.0f ? inputs.guideJitterOffsetX : 0.0f;
 		transferParams.guideJitterOffset[1] = std::abs(inputs.guideJitterOffsetY) <= 1.0f ? inputs.guideJitterOffsetY : 0.0f;
 		transferParams.colorStrength = std::clamp(inputs.colorStrength, 0.0f, 2.0f);
@@ -1159,9 +1068,7 @@ struct NeuralRenderingBackend::State
 		transferParams.displayExposure[1] = display.postProcessExposureScale;
 		transferParams.displayExposure[2] = display.postProcessAdaptationRange[0];
 		transferParams.displayExposure[3] = display.postProcessAdaptationRange[1];
-		// The band split only exists while some category's effective Broad (global x category)
-		// differs from its effective Detail; otherwise every pixel takes the single-exponent
-		// path in the resolve, so the extra passes and textures are skipped.
+		// Skip band textures and passes when every category has equal effective Broad and Detail strengths.
 		transferParams.broadLuminosity = std::clamp(inputs.broadLuminosity, 0.0f, 2.0f);
 		transferParams.bandParams[0] = std::clamp(inputs.detailLuminosity, 0.0f, 2.0f);
 		transferParams.bandParams[1] = std::clamp(inputs.bandRadius, 2.0f, 32.0f);
@@ -1197,12 +1104,7 @@ struct NeuralRenderingBackend::State
 		if (collectStats && debugStatsUAV)
 			debugFlags |= kDebugFlagStats;
 		transferParams.debugFlags = debugFlags;
-		// The guard is two-sided (1/maxRatio..maxRatio) and only meaningful at or
-		// above one; a stale or misconfigured value below that would otherwise
-		// invert into a guard tighter than the floor it is supposed to raise.
-		// Disabled (the default - see NeuralRendering::Options::ratioGuardEnabled):
-		// send a value large enough that the shader's clamp never actually binds,
-		// so a correct large light/dark swing (e.g. a shadow edit) is never capped.
+		// Clamp enabled ratio limits to at least one; otherwise send an effectively unbounded limit.
 		transferParams.maxRatio = inputs.ratioGuardEnabled ? std::clamp(inputs.maxRatio, 1.0f, 8.0f) : kNeuralRatioGuardDisabledValue;
 		std::uint32_t hueGuardMask = 0;
 		for (std::size_t index = 0; index < inputs.categoryColorStrengths.size(); ++index) {
@@ -1221,10 +1123,7 @@ struct NeuralRenderingBackend::State
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		if (!skipFrame) {
-			// Only alternating-frame mode leaves a gap between evaluations; a reset
-			// discards the history the scale would describe, so it keeps one frame.
-			// Anything past two frames (Run not called while a menu paused the
-			// game) is not a skip and is not extrapolated.
+			// Extrapolate motion only across a single alternating-frame skip, never across resets or longer gaps.
 			const bool historyValid = !resetPending && !inputs.reset && lastEvaluatedFrameIndex != 0;
 			const bool bridgedSkip = inputs.alternateFrames && historyValid &&
 			                         evaluateFrameIndex - lastEvaluatedFrameIndex == 2;
@@ -1233,11 +1132,8 @@ struct NeuralRenderingBackend::State
 				return false;
 			lastEvaluatedFrameIndex = evaluateFrameIndex;
 
-			// Split the answer's luminance edit into its smooth and detail halves, once per
-			// evaluation and at the model raster, while the proxy and the answer are the pair
-			// the resolve is about to use. PrepareToneDataCS writes (log proxy luminance,
-			// edit); the two filter passes blur only the edit, along one axis each, and the
-			// vertical one lands back in toneData for the decode to sample.
+			// Prepare log luminance and edit stops once per evaluation, then filter the edit horizontally and
+			// vertically.
 			if (transferParams.bandParams[2] > 0.5f) {
 				globals::state->BeginPerfEvent("NeuralRendering::ToneBands");
 				DispatchTransfer(context, prepareToneDataCS.get(), { colorSRV.get(), outputSRV.get() },
@@ -1251,13 +1147,8 @@ struct NeuralRenderingBackend::State
 			}
 		}
 
-		// Re-anchor the model's bounded luminance to the untouched source, then
-		// restore its chromaticity through the independently controlled colour pass.
-		// The edit is measured against the exact proxy the model received, sampled
-		// at the same (jitter-compensated) position. No inverse tonemap or temporal
-		// colour accumulator is involved. The game depth rides along as the
-		// silhouette guide for the depth-aware resolve, and the motion vectors
-		// reproject a stale answer.
+		// Apply the model/proxy edit to the untouched source. Depth guides silhouette fading; motion
+		// reprojects stale answers.
 		DispatchTransfer(context, decodeShader,
 			{ outputSRV.get(), colorInView, colorSRV.get(), inputs.depthSRV, inputs.materialCategoriesSRV,
 				inputs.display.vanillaAdaptationSRV, inputs.display.postProcessAdaptationSRV, inputs.motionVectorsSRV,
@@ -1277,9 +1168,7 @@ struct NeuralRenderingBackend::State
 			inputs.outputHeight < inputs.height || !inputs.superResolutionMotionVectors)
 			return false;
 
-		// First produce the normal matched-residual NR result at render resolution.
-		// This writes only the caller-owned scratch texture; the game's main colour
-		// remains untouched and is therefore what its regular DLSS history sees.
+		// Write render-resolution NR to scratch, leaving the main DLSS input unchanged.
 		if (!Evaluate(inputs))
 			return false;
 
@@ -1335,9 +1224,7 @@ struct NeuralRenderingBackend::State
 		DispatchTransfer(context, encodeShader, { originalView, editedView },
 			residualInput.uav11.Get(), nullptr, nullptr, inputs.width, inputs.height);
 
-		// Feature 18 intentionally used the raw Skyrim vectors above. The private SR
-		// history instead mirrors the game's DLSS contract: the depth-dilated motion
-		// field produced by EncodeTexturesCS, expressed with an NGX scale of one.
+		// Private SR uses depth-dilated DLSS motion with unit scale; Feature 18 uses raw game vectors.
 		const D3D11_BOX motionBox{ 0, 0, 0, inputs.guideWidth, inputs.guideHeight, 1 };
 		context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0,
 			inputs.superResolutionMotionVectors, 0, &motionBox);
@@ -1554,11 +1441,8 @@ struct NeuralRenderingBackend::State
 	void Destroy()
 	{
 		interop.WaitForIdle();
-		// Placement/upscaler changes happen while Streamline's process-wide NGX core
-		// is live. Shutting down our D3D12 NGX instance here can enter the shared
-		// core while the game is rendering (and has been observed to fault inside
-		// NVSDK_NGX_D3D12_Shutdown1). Retire only the two private feature histories;
-		// the runtime and interop device remain valid for the next placement.
+		// Retire private histories only. Shutting down the shared NGX core during rendering can fault in
+		// NVSDK_NGX_D3D12_Shutdown1.
 		NeuralRenderingNGX::Runtime::Instance().ResetFeature();
 		ReleaseGpuResources();
 	}

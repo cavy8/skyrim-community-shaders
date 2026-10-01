@@ -1,7 +1,5 @@
-// Encodes the render-resolution Neural Rendering contribution into a signed,
-// bounded carrier suitable for an independent DLSS Super Resolution history.
-// Neutral grey is an exact zero edit. Skyrim's scene colour is not pre-exposed,
-// so the reference pipeline's pre-exposure divisor is one here.
+// Encode signed scene-linear NR residuals around neutral gray for private DLSS-SR. Skyrim uses unit
+// pre-exposure.
 
 Texture2D<float4> OriginalColor : register(t0);
 Texture2D<float4> EditedColor : register(t1);

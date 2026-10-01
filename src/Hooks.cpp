@@ -385,17 +385,12 @@ namespace PostProcessingExtensions
 
 			func(a1, a2, a3, a4, a5);
 
-			// Record the exposure and grading the vanilla pass just applied (a no-op unless the
-			// vanilla tonemap owns the frame) so next frame's pre-tonemap Neural Rendering
-			// placements can show the model the frame the way it will be displayed.
+			// Capture vanilla grading for next frame's Neural Rendering proxy.
 			auto& neuralRendering = globals::features::neuralRendering;
 			if (neuralRendering.loaded)
 				neuralRendering.CaptureDisplayTransform(a5);
 
-			// `output` now holds the frame's finished, tonemapped colour regardless of who did
-			// the tonemapping - Post Processing (the vanilla call above just took its passthrough
-			// branch) or vanilla ISHDR itself. Unlike the Before/After/Separate Upscaling
-			// placements, Finished Image does not depend on any one feature owning the tonemap.
+			// Neural Rendering consumes the finished output after either vanilla or Post Processing tone mapping.
 			if (neuralRendering.loaded)
 				neuralRendering.ApplyFinishedImage(output);
 		}

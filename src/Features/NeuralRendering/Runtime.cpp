@@ -34,9 +34,7 @@ namespace NeuralRenderingNGX
 	{
 		constexpr wchar_t kRuntimeName[] = L"nvngx_dlssnr.dll";
 		constexpr auto kFeatureDlssNr = static_cast<NVSDK_NGX_Feature>(18);
-		// NGX project identity. Must match what Upscaling's Streamline::LoadInterposer passes
-		// (pref.projectId / pref.engineVersion): the DLSS-SR snippet this runtime initializes
-		// shares the process-wide NGX core with Streamline.
+		// NGX project identity must match Streamline::LoadInterposer; both use the process-wide core.
 		constexpr const char* kNgxProjectId = "f8776929-c969-43bd-ac2b-294b4de58aac";
 		constexpr const char* kNgxEngineVersion = "1.0.0";
 		constexpr std::array<const char*, 5> kRequiredExports{
@@ -97,12 +95,8 @@ namespace NeuralRenderingNGX
 		}
 
 		/**
-		 * @brief Logs the SHA-256 of @p path from a worker thread, once per file per session.
-		 *
-		 * Output channel order and behaviour differ between builds carrying the same 310.8
-		 * version, so the hash - not the version - is what identifies one. The DLL is well over
-		 * 100 MB and Probe() runs again on every runtime initialisation, so hashing inline would
-		 * stall the calling (render) thread each time.
+		 * @brief Log DLL SHA-256 once per file per session on a worker thread. Equal version numbers can
+		 * identify different binaries.
 		 */
 		void LogRuntimeHashAsync(const std::filesystem::path& path)
 		{
@@ -156,11 +150,8 @@ namespace NeuralRenderingNGX
 		}
 
 		/**
-		 * @brief Patches nvngx_dlssnr.dll's import of GetModuleFileNameW for the scope's lifetime.
-		 *
-		 * Feature 18 gates itself on its caller's module path and refuses to run unless that
-		 * path is NVIDIA's signed nvngx.dll. Every NGX entry point must therefore be invoked
-		 * with this scope alive; the original import is restored on destruction.
+		 * @brief Temporarily patch the DLL import of GetModuleFileNameW to satisfy its signed-caller gate. All
+		 * NGX entry points require this scope; destruction restores the import.
 		 */
 		class SignedRuntimePathScope
 		{
@@ -357,9 +348,7 @@ namespace NeuralRenderingNGX
 		applicationId_ = getAppId();
 		apiVersion_ = getApi();
 
-		// Identity of the exact DLL in use. Output channel order and behaviour differ between
-		// 310.8 builds, so a bug report is only actionable with the hash in the log; it is
-		// also what a per-build note would key off. The hash follows on its own line.
+		// Log binary identity; matching version numbers do not guarantee matching behavior.
 		logger::info("[DLSSNR] Runtime {} version={} appId=0x{:08X} api=0x{:X}",
 			path_.filename().string(), version_, applicationId_, apiVersion_);
 		LogRuntimeHashAsync(path_);
@@ -445,12 +434,8 @@ namespace NeuralRenderingNGX
 			return false;
 		}
 
-		// The NR snippet's Init_Ext accepts a parameter block, not the feature-search
-		// metadata used by the driver core. Initializing only through that entry point
-		// lets Feature 18 run but leaves this private D3D12 device unable to locate the
-		// DLSS-SR snippet. Mirror Streamline/the OptiScaler experiment: initialize the
-		// core directly with the same project identity and the directory containing
-		// nvngx_dlss.dll.
+		// Initialize the resident NGX core with Streamline identity and the DLSS-SR search path. Snippet
+		// Init_Ext alone cannot locate DLSS-SR.
 		std::error_code absoluteError;
 		auto featureDirectory = std::filesystem::absolute(path_.parent_path(), absoluteError);
 		if (absoluteError)
@@ -522,11 +507,7 @@ namespace NeuralRenderingNGX
 		if (!scope.IsInstalled())
 			return false;
 
-		// The feature is built for the active colour raster. Before-upscale operation
-		// therefore creates it at render resolution and after-upscale operation at
-		// display resolution. When that raster changes the backend has already
-		// drained the interop queue via EnsureResources(), so no in-flight command
-		// list still references the handle being released.
+		// EnsureResources() drains the queue before a raster change releases the feature handle.
 		const bool dimensionsChanged = featureOutputWidth_ != outputWidth || featureOutputHeight_ != outputHeight;
 		if (featureHandle_ && dimensionsChanged) {
 			release(static_cast<NVSDK_NGX_Handle*>(featureHandle_));
@@ -541,15 +522,8 @@ namespace NeuralRenderingNGX
 			parameters->Set("CreationNodeMask", 1u);
 			parameters->Set("VisibilityNodeMask", 1u);
 
-			// The model latches its tuning at feature-create time; the same names
-			// written only at evaluate are read by nothing. They are set again in
-			// the evaluate block below purely so a future shared-parameter-block
-			// path stays correct, but this is the write that takes effect. The
-			// caller (NeuralRenderingBackend::State::Run) is responsible for
-			// releasing featureHandle_ first when a tuning value has changed and
-			// settled, the same debounced way it already handles a model-raster
-			// change; by the time control reaches here, tuning is exactly what
-			// should be latched into a (re)created feature.
+			// Tuning is latched at creation. The backend drains and resets the feature before applying settled
+			// changes.
 			parameters->Set("DLSSNR.Hint.Render.Preset", 0u);
 			parameters->Set("DLSSNR.Intensity", tuning.intensity);
 			parameters->Set("DLSSNR.Style", tuning.style);
@@ -583,10 +557,8 @@ namespace NeuralRenderingNGX
 		// than relying on values written when the handle was created.
 		parameters->Set("DLSSNR.Width", colorWidth);
 		parameters->Set("DLSSNR.Height", colorHeight);
-		// Colour and output share the display-referred region; depth and motion vectors
-		// carry the game's render-resolution region. Each resource states its own valid
-		// extent so the model can bridge the two - this is also why the motion-vector
-		// scale below must not fold in the resolution ratio a second time.
+		// Color and guide subrects carry their own extents; do not apply their resolution ratio again to
+		// motion scale.
 		parameters->Set("DLSSNR.ColorSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.ColorSubrectBaseY", 0u);
 		parameters->Set("DLSSNR.ColorSubrectWidth", colorWidth);

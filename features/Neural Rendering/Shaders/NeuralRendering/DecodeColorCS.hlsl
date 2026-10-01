@@ -12,19 +12,14 @@ StructuredBuffer<float> PostProcessAdaptation : register(t6);  // so a stale pro
 Texture2D<float2> MotionVectors : register(t7);                // Game motion vectors at the guide resolution (current -> previous, normalised UV).
 Texture2D<float2> ToneLow : register(t8);                      // y: the edge-aware blur of the edit (FilterToneDataCS); x unused here.
 RWTexture2D<float4> DestinationColor : register(u0);
-// Debug readback, only written while kNeuralDebugStats is set: 0 clamped samples,
-// 1 samples taken, 2 peak model luminance as asuint. Sampled on an 8x8 grid, which is
-// plenty for a diagnostic and keeps the atomics off the hot path.
+// Debug statistics: clamp count, sample count, and asuint peak luminance. Sampled on an 8x8 grid when
+// enabled.
 RWStructuredBuffer<uint> DebugStats : register(u1);
 SamplerState LinearClampSampler : register(s0);
 
 /**
- * One band of the model's luminance edit, rendered on its own for tuning Band Radius.
- *
- * Mid-grey is no change; black and white are two stops down and up. In the display-gamma
- * domain that grey is simply 0.5; in a scene domain the frame still has the game's tonemap
- * ahead of it, so the value is divided back out by the exposure the proxy applied - the same
- * trick the split-screen divider uses to draw a white line.
+ * Visualize one luminance band: gray is unchanged; black/white are +/- two stops. Undo proxy exposure
+ * for scene-domain output.
  */
 float4 NeuralBandDebugColor(float band, float exposure, uint domain, float alpha)
 {
@@ -37,14 +32,8 @@ float4 NeuralBandDebugColor(float band, float exposure, uint domain, float alpha
 groupshared uint gModelFrameValid;
 
 /**
- * Whether the model's answer holds an image at all this frame (ResolveNeuralColor's
- * empty-answer guard), shared by the whole thread group.
- *
- * Each of the group's 64 threads probes one point of a fixed 8x8 grid over the answer; any
- * probe above black means the model produced a frame. Only a frame that is black at all 64
- * points is treated as empty - there, even a real answer leaves nothing visible to edit, so
- * passing the original through costs nothing. Every thread of the group must call this,
- * before any early return, for the barriers to be valid.
+ * Detect an empty model frame using 64 distributed probes per group. Every thread must call before any
+ * early return because this uses group barriers.
  */
 bool NeuralModelFrameValid(uint groupIndex, uint modelSpace)
 {
@@ -81,11 +70,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 
 	const uint modelSpace = NeuralTransferModelSpace();
 
-	// Split-screen comparison ("Compare: Split Screen", runtime only): left of the split the
-	// frame passes through exactly as it arrived - no edit, no debug view - and a two-pixel
-	// black/white divider marks the split so it reads on both bright and dark content. White
-	// is display white: 1.0 in the display-gamma domain, and in scene linear the value the
-	// display transform exposes to roughly mid-bright.
+	// Split screen: untouched input on the left, enhanced output on the right, with a two-pixel divider in
+	// display-white units.
 	if (WipePosition >= 0.0) {
 		float offset = float(dispatchThreadID.x) + 0.5 - WipePosition * float(active.x);
 		float4 passthrough = OriginalColor[dispatchThreadID.xy];
@@ -106,11 +92,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 		}
 	}
 
-	// "Show Material Categories" debug view: render the classification itself, nearest-neighbour,
-	// instead of blending the model's edit. This skips the resolve entirely rather than reusing the
-	// tent-filtered strengths below - those are resolved *strengths*, not a category id, and can't be
-	// mapped back to one; a nearest lookup also shows the raw per-pixel classification the tent filter
-	// exists to soften. Left GuideSize == 0 (guide not yet configured for this placement) as EverythingElse.
+	// Show nearest material category IDs, not filtered strengths. Missing guide extents default to
+	// EverythingElse.
 	if (DebugCategoryView != 0) {
 		uint category = NeuralRenderingCategories::EverythingElse;
 		if (all(GuideSize > 0)) {
@@ -123,23 +106,10 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 		return;
 	}
 
-	// The original pixel holds scene position (pixel - JitterOffset) on the
-	// unjittered grid the model saw. The model and proxy textures span that same
-	// active region at the model raster, so normalising by the active size lands
-	// on the matching model position whatever the scale. Sample the model's
-	// answer and the proxy it was given there so the ratio between them is the
-	// edit for this exact scene point; at native scale with a zero offset this is
-	// the texel centre.
+	// Map the source pixel to the unjittered model grid; sample proxy and answer at the same position.
 	float2 uv = (float2(dispatchThreadID.xy) + 0.5 - JitterOffset) / float2(ActiveSize);
-	// A stale answer (alternating-frame skip) was computed for the previous frame,
-	// so this scene point sat elsewhere in it. Follow the game's motion vector back
-	// to where it was - Skyrim stores current -> previous as a normalised UV offset
-	// over the active region, the same normalisation as uv - and read the answer
-	// and its proxy there. Without this the previous frame's edit lands on
-	// whatever moved under the pixel, the stale-edit guard below rejects almost
-	// the whole frame under any camera motion, and the edit strobes on and off at
-	// half the frame rate. A point that came from outside the previous frame has
-	// no answer to reuse and shows the clean frame.
+	// Reproject stale answers with current-to-previous normalized UV motion. Out-of-frame positions retain
+	// the clean input.
 	float2 answerUV = uv;
 	bool answerOnScreen = true;
 	if (StaleAnswer != 0 && all(GuideSize > 0)) {
@@ -153,13 +123,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 
 	float4 original = OriginalColor[dispatchThreadID.xy];
 
-	// Diagnostic: write Feature 18's answer straight through, preserving the
-	// renderer's alpha, bypassing ResolveNeuralColor and every strength/guard
-	// below entirely. Restricted to the display-gamma domain (Finished Image) -
-	// in the scene-linear domain this would dump a display-referred, roughly
-	// 0-1 model answer into a linear HDR buffer the game's own tonemapper still
-	// has to process, which is not a meaningful image. Not the normal path; it
-	// exists to tell apart a weak model answer from an over-conservative resolve.
+	// Display-gamma diagnostic: write raw model output with renderer alpha, bypassing the resolve.
 	if (RawModelOutput != 0 && ColorDomain == kNeuralColorDomainDisplayGamma) {
 		float3 rawLinear = NeuralModelToLinear(model.rgb, modelSpace);
 		DestinationColor[dispatchThreadID.xy] = float4(NeuralLinearToDomain(rawLinear, ColorDomain), original.a);
@@ -174,23 +138,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 	// guard everywhere rather than silently going unguarded.
 	float categoryHueGuardAmount = 1.0;
 	if (all(GuideSize > 0)) {
-		// Blend a 3x3 neighbourhood of guide texels' resolved category
-		// strengths (and hue-guard toggle) with a tent (triangular) filter
-		// instead of switching on one nearest-neighbour category. A hard
-		// switch flips discretely right at a material boundary; under TAA
-		// jitter the boundary pixel picks a different neighbour every frame,
-		// and wherever the two categories' sliders differ that reads as
-		// shimmer. A 2-texel-wide (radius ~1 texel) bilinear blend still
-		// wasn't enough for very thin, high-frequency edges like individual
-		// hair strands, which can be only 1-2 guide texels wide and so sit
-		// "near a boundary" on both sides at almost every texel along their
-		// length; widen the radius to smooth those out too. The blend is
-		// done on the resolved strength/toggle values, not the category id
-		// itself - an id is a discrete index and can't be meaningfully
-		// interpolated; a hue-guard toggle blends into a fractional "amount"
-		// the same way, softening the boundary instead of a hard flip.
-		// Texel-index space (integer = texel centre) for the tent weights; the
-		// jitter the guides carry is already folded in by NeuralGuidePosition.
+		// Tent-filter resolved category strengths and guard amounts across 3x3 guide texels to reduce jitter
+		// at thin boundaries. Never interpolate category IDs. NeuralGuidePosition already accounts for guide
+		// jitter.
 		float2 guideCoord = NeuralGuidePosition(dispatchThreadID.xy, GuideSize, ActiveSize, GuideJitterOffset) - 0.5;
 		int2 guideCenter = (int2)round(guideCoord);
 		int2 guideMax = int2(GuideSize) - 1;
@@ -230,13 +180,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 	// Category controls shape the local result first. The existing global sliders
 	// remain a final multiplier over every category.
 	float editWeight = categoryTransferStrength * TransferStrength;
-	// A stale answer has been reprojected above; fade it out wherever the content
-	// under the pixel still differs from what the model saw (disocclusion, a light
-	// switching, an animated surface). The fresh frame is encoded with the same
-	// display transform the stale proxy received, so only genuine content changes
-	// register.
-	// The debug views below draw in frame units, so in a scene domain they need the exposure
-	// the proxy applied to divide back out; the stale-edit guard needs the whole transform.
+	// Fade stale edits where reprojected content differs. Match proxy exposure for comparison; undo it for
+	// scene-domain debug views.
 	float displayExposure = 1.0;
 	if (StaleAnswer != 0 ||
 		(DebugFlags & (kNeuralDebugBroadBand | kNeuralDebugDetailBand | kNeuralDebugGuardClamp)) != 0) {
@@ -276,9 +221,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 	NeuralResolveDebug resolveDebug;
 	float4 result = ResolveNeuralColor(resolveInputs, resolveDebug);
 
-	// Sparse readback for the settings UI: how often the ratio guard actually binds, and how
-	// far above one the model's answer reaches. One grid point per 8x8 block keeps the atomic
-	// traffic on a single address bounded while still sampling tens of thousands of pixels.
+	// Sample debug statistics once per 8x8 block to limit atomic contention.
 	if ((DebugFlags & kNeuralDebugStats) != 0 && (dispatchThreadID.x & 7u) == 0u && (dispatchThreadID.y & 7u) == 0u) {
 		uint previous;
 		InterlockedAdd(DebugStats[1], 1u, previous);

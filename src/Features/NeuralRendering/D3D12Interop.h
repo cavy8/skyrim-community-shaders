@@ -11,11 +11,7 @@
 namespace NeuralRenderingNGX
 {
 	/**
-	 * @brief A texture created on D3D11 and opened as a shared D3D12 resource.
-	 *
-	 * The D3D11 side owns the allocation (created with a shared NT handle) so the
-	 * game's existing D3D11 copies can read and write it; the D3D12 alias is what
-	 * gets handed to NGX Feature 18.
+	 * @brief D3D11-owned texture opened through a shared NT handle as a D3D12 resource.
 	 */
 	struct SharedTexture
 	{
@@ -26,14 +22,8 @@ namespace NeuralRenderingNGX
 	};
 
 	/**
-	 * @brief D3D11 <-> D3D12 bridge used to run the D3D12-only DLSS NR runtime.
-	 *
-	 * Owns a private D3D12 device, direct queue and a small ring of command
-	 * contexts, plus a fence shared with the game's D3D11 device. Work is ordered
-	 * entirely on the GPU: BeginD3D12() signals the shared fence from D3D11 and
-	 * makes the D3D12 queue wait on it, EndD3D12() signals it from D3D12 and makes
-	 * the D3D11 context wait. The CPU only blocks when every command context is
-	 * still in flight.
+	 * @brief Private D3D12 device, queue, command ring, and shared D3D11 fence. GPU waits order work; CPU
+	 * waits only when the command ring is full.
 	 */
 	class D3D12Interop
 	{
@@ -110,9 +100,7 @@ namespace NeuralRenderingNGX
 		};
 
 		bool RecordFailure(HRESULT result);
-		/// @param timeoutMs CPU wait budget. The per-frame backpressure path keeps the
-		///        short default; WaitForIdle() passes a longer budget because a feature
-		///        rebuild it is fencing against can legitimately take longer than a frame.
+		/// @param timeoutMs CPU wait budget; rebuilds allow longer waits than per-frame backpressure.
 		bool WaitForFence(std::uint64_t value, std::uint32_t timeoutMs = 250);
 
 		Microsoft::WRL::ComPtr<ID3D11Device5> device11_;

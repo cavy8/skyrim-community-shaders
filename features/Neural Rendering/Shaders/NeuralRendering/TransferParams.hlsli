@@ -1,14 +1,8 @@
 #ifndef UPSCALING_NEURALRENDERING_TRANSFERPARAMS
 #define UPSCALING_NEURALRENDERING_TRANSFERPARAMS
 
-// The constant buffer every Neural Rendering transfer pass shares (register b0), written once
-// per evaluation by NeuralRenderingBackend. EncodeColorCS, DecodeColorCS, PrepareToneDataCS and
-// FilterToneDataCS all bind the same buffer, so the layout lives here rather than being copied
-// into each of them; it must stay in step with `TransferParams` in Backend.cpp, which carries a
-// static_assert on its size.
-//
-// Fields a given pass does not read are still part of the layout. Nothing is reordered without
-// changing the C++ struct in the same edit.
+// Shared b0 layout for transfer passes. Must match TransferParams in Backend.cpp, including fields
+// unused by individual passes.
 
 cbuffer TransferParams : register(b0)
 {

@@ -33,10 +33,7 @@ namespace NeuralRenderingCategories
 	}
 
 	/**
-	 * Fixed, maximally-distinguishable colour for each category, used by the Neural Rendering
-	 * "Show Material Categories" debug view (DecodeColorCS) to render the classification itself
-	 * rather than its resolved per-category strengths. Categories 7 (never written by Pack, which
-	 * clamps to CategoryMask) and above fall back to EverythingElse.
+	 * Fixed debug colors for material categories; invalid IDs fall back to EverythingElse.
 	 */
 	float3 DebugColor(uint category)
 	{

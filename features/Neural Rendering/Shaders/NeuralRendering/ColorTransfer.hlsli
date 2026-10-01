@@ -1,87 +1,18 @@
 #ifndef UPSCALING_NEURALRENDERING_COLORTRANSFER
 #define UPSCALING_NEURALRENDERING_COLORTRANSFER
 
-// Colour transfer used to move scene colour into and out of the DLSS Neural
-// Rendering (NGX Feature 18) shared textures.
-//
-// The Before/After/Separate Upscaling placements run Neural Rendering *before*
-// the game's tonemapper, so the colour handed in is linear and open-ended -
-// routinely well above 1.0 on skies, speculars and emissives. Feature 18 is
-// created without an HDR flag and was trained on ordinary display-referred
-// (tone-mapped, sRGB) SDR frames. Handing it raw linear HDR leaves it re-deciding
-// those out-of-range pixels every frame with nothing anchoring them, which reads
-// as shimmer and flicker on exactly the bright regions.
-//
-// EncodeNeuralColor brings the frame into that display-referred domain, and it
-// does so through the display transform the frame is actually about to receive
-// (NeuralDisplayTransform): the game's eye adaptation (and Post Processing's auto
-// exposure when active) and, under the vanilla tonemap, ISHDR's own white point,
-// saturation, tint, brightness and contrast stages. A plain unexposed Reinhard of
-// the linear scene - what an earlier version handed over - showed the model a
-// frame that was far darker (interiors) or flatter (exteriors) than the one the
-// user sees, so it pushed local tone and contrast hard to "fix" it, and the
-// game's adaptation and contrast then amplified that edit again on the way to
-// the screen: neural shading stacked on top of game shading. Matching the proxy
-// to the display transform means the model asks for the same edit it would ask
-// for on the finished frame. Only the *view* changes: the edit is still a ratio
-// against the proxy and is still applied to the untouched linear colour. The
-// model's answer is deliberately not inverse-tonemapped.  The derivative of
-// inverse Reinhard is 1 / (1 - x)^2, so tiny frame-to-frame changes near white
-// used to become enormous scene-linear shading changes.  Instead the resolve
-// measures the model's bounded luminance change in proxy space, then carries its
-// chroma change - relative to the proxy, and hue-guarded on near-neutral pixels
-// so a model colour cast cannot tint renderer-neutral shading - onto that guarded
-// scene luminance. The proxy compression uses one RGB scale so it does not
-// distort hue before the model sees it. HDR headroom remains renderer-owned and
-// every frame is re-anchored to deterministic scene colour rather than to model
-// history.
-//
-// Colour domain. Everything above describes kNeuralColorDomainSceneLinear, the
-// pre-tonemap placements. Finished Image runs after the tonemap instead, on a
-// frame that is already gamma-2.2 display-referred (0-1 in SDR; HDR Display's
-// redirect can carry values above one). Treating that as linear would compress
-// and re-encode an already-encoded image, handing the model a washed-out,
-// over-bright proxy. kNeuralColorDomainDisplayGamma therefore decodes the frame
-// with the same 2.2 curve HDR Display uses, brings over-range pixels back into
-// 0..1 with one hue-preserving factor, and re-encodes with that curve - an exact
-// pass-through for SDR, so the model sees the finished frame as-is. On HDR
-// Display's redirect that factor is a soft highlight shoulder
-// (NeuralHighlightRolloff) rather than a hard scale-down, so highlight structure
-// up to the display's peak survives into the proxy. The resolve decodes proxy,
-// model and original with that same curve, applies the edit in linear light and
-// re-encodes the result.
-//
-// Jitter. "Before Upscaling" runs on the raw render-resolution raster, which the
-// game rendered with the per-frame sub-pixel TAA jitter DLSS later removes. The
-// model has no jitter parameter and was trained on unjittered, resolved frames;
-// with the framing wobbling by up to a pixel each frame it re-decides its local
-// tone and structure every frame, which reads as shadows and detail drifting
-// around. The encode therefore resamples the frame onto the unjittered pixel
-// grid so the model sees a stable framing, and the resolve samples the model's
-// answer back at the jittered position of every original pixel. Only the
-// *edit* (a luminance ratio and chroma) is ever resampled - the colour DLSS
-// receives is still the original jittered sample scaled by that edit, so DLSS
-// keeps the sharp, correctly-jittered input it expects. After the upscaler the
-// offset is zero and both samples land exactly on texel centres.
-//
-// The depth, motion and material-category guides are the game's render-resolution
-// targets in every placement, so they always carry that same jitter. After the
-// upscaler that makes them jittered relative to the resolved colour, which is the
-// one case where a guide lookup needs correcting; NeuralGuidePosition applies it.
-//
-// JitterOffset follows the Streamline convention: it is the sub-pixel offset
-// (in render pixels) the projection applied, so a scene point that projects to
-// unjittered pixel position u lands in the raster at u + JitterOffset.
+// Display-referred proxy encoding and linear-light enhancement transfer. Apply model/proxy differences
+// to original color without inverse tone mapping. Encode compensates color jitter; guide lookups
+// compensate relative guide jitter. See docs/development/neural-rendering.md for the color-domain
+// contract.
 
 static const float3 kNeuralLuma = float3(0.2126, 0.7152, 0.0722);
 static const float kNeuralRatioFloor = 1.0 / 512.0;
 // Per-channel guard on the model's chroma change relative to the proxy (see ResolveNeuralColor).
 static const float kNeuralChromaRatioMin = 0.25;
 static const float kNeuralChromaRatioMax = 4.0;
-// Luma-weighted chroma magnitude of the *original* pixel below which the model may not
-// rotate its hue: a renderer-neutral pixel stays neutral, and the lock releases smoothly
-// as the original carries more chroma of its own. A bluish shadow or pale skin measures
-// ~0.1 in this metric, saturated foliage ~0.3, a pure grey exactly 0.
+// Lock near-neutral source hue, releasing smoothly as source chroma increases. Pure gray has zero
+// chroma magnitude.
 static const float kNeuralHueGuardStart = 0.03;
 static const float kNeuralHueGuardEnd = 0.2;
 // Display-gamma proxy on an HDR target: linear peak below which NeuralHighlightRolloff is
@@ -91,16 +22,13 @@ static const float kNeuralHighlightKnee = 0.8;
 // TransferParams.ColorDomain values; keep in sync with NeuralRendering::ColorDomain.
 static const uint kNeuralColorDomainSceneLinear = 0;   // Linear, open-ended HDR scene colour (pre-tonemap placements).
 static const uint kNeuralColorDomainDisplayGamma = 1;  // Finished gamma-2.2 display-referred frame (Finished Image).
-// Pre-tonemap placement with Linear Lighting off: kMAIN holds gamma-encoded values, which the
-// vanilla tonemap grades and writes straight out (ISHDR.hlsl only calls LinearToGammaSafe under
-// ENABLE_LL). Both the proxy and the resolve have to decode with kNeuralSceneGamma first.
+// With Linear Lighting off, ISHDR grades gamma-encoded kMAIN; decode proxy and resolve with
+// kNeuralSceneGamma.
 static const uint kNeuralColorDomainSceneGamma = 2;
 
 // Curve a finished display-referred frame is encoded with (HDR Display uses the same one).
 static const float kNeuralDisplayGamma = 2.2;
-// Curve this pipeline's own output carries while Linear Lighting is off. ISHDR itself
-// linearises it with 2.2 in its HDR path; Open Shaders uses Skyrim's 1.6 instead. Kept in one
-// place so the two can be A/B'd (see docs/development/neural-rendering.md).
+// Match ISHDR HDR decoding of gamma-domain color; keep the exponent shared by encode and resolve.
 static const float kNeuralSceneGamma = 2.2;
 
 // TransferParams.ProxyCurve values; keep in sync with NeuralRendering::ProxyCurve.
@@ -119,13 +47,8 @@ static const uint kNeuralDebugDetailBand = 1u << 2;  // Show the remainder.
 static const uint kNeuralDebugStats = 1u << 4;       // Accumulate the peak/clamp readback.
 
 /**
- * Model-space encoding for a given colour domain and proxy curve.
- *
- * Derived from constants alone, so both the encode and the decode reach the same answer
- * without reading the adaptation textures. Display-matched uses the plain 2.2 curve the
- * displayed frame actually carries rather than piecewise sRGB, which lifted the proxy's
- * shadows relative to the screen; Neutwo and Legacy keep sRGB, which is what the builds they
- * reproduce used.
+ * Model encoding derived from constants: display gamma and vanilla Display-matched use 2.2; other
+ * proxies use sRGB.
  *
  * @param vanillaGrading TransferParams.DisplayParam.x - the vanilla tonemap owns the frame.
  */
@@ -149,11 +72,7 @@ float3 NeuralSrgbToLinear(float3 v)
 }
 
 /**
- * Display transform the pre-tonemap placements approximate when building the
- * scene-linear proxy, so the model sees the frame the way the user will (see
- * the file comment). Built per pixel by MakeNeuralDisplayTransform from the
- * TransferParams constants and the two adaptation inputs; every field is
- * uniform over the frame.
+ * Uniform proxy display transform built from transfer constants and adaptation inputs.
  */
 struct NeuralDisplayTransform
 {
@@ -191,9 +110,8 @@ NeuralDisplayTransform NeuralIdentityDisplayTransform()
 }
 
 /**
- * Resolves the display transform from the TransferParams constants and the two
- * adaptation inputs. Either input may be unbound (reads as zero) and then drops
- * out; with neither bound and no vanilla constants this is the identity.
+ * Resolve display transform constants and adaptation inputs. Unbound adaptation inputs read zero;
+ * absent grading and exposure yield identity.
  *
  * @param displayParam x > 0.5: the vanilla tonemap owns the frame and its constants
  *                     were captured; y/z: ISHDR Param.y/.z.
@@ -280,20 +198,7 @@ float NeuralHejlBurgessDawson(float luminance, float whitePoint)
 }
 
 /**
- * Krzysztof Narkowicz's compact fit to the ACES reference tonemap curve
- * ("ACES Filmic Tone Mapping Curve", 2016), on one luminance value.
- *
- * Used as the fallback proxy tonemap below in place of a plain Reinhard
- * (`x / (1 + x)`). Reinhard compresses continuously starting at x = 0, not
- * just the highlights, so even midtones read as flatter and lower-contrast
- * to the model than any actual filmic response - vanilla's own
- * Hejl-Burgess-Dawson/Reinhard-with-white-point curve above, Post Processing's
- * selectable tonemappers (ACES/Frostbite/Melon/...), and typical ReShade-style
- * curves under Effects11 - all keep a near-linear response through shadows and
- * midtones and only roll off toward white. This is a small, widely used,
- * dependency-free approximation of that general shape; it is not an attempt to
- * match any one of those curves exactly; a mismatch there stays a residual
- * `Transfer Strength` corrects.
+ * Krzysztof Narkowicz's ACES filmic fit (2016), applied to luminance as the fallback proxy tonemap.
  */
 float NeuralAcesFilmic(float x)
 {
@@ -302,12 +207,8 @@ float NeuralAcesFilmic(float x)
 }
 
 /**
- * Open Shaders' NeutwoEncode: one hue-preserving scale driven by the peak channel.
- *
- * `c / sqrt(peak^2 + 1)` is the identity at black, rolls off smoothly and never clips, and
- * because the scale is scalar it does not distort hue before the model sees it. Offered as a
- * neutral alternative to the display-matched replica for setups whose grading cannot be
- * captured (Effects11, third-party tonemappers).
+ * Open Shaders' NeutwoEncode: c / sqrt(peak^2 + 1), a hue-preserving exposed alternative when grading
+ * cannot be captured.
  */
 float3 NeuralNeutwo(float3 c)
 {
@@ -316,16 +217,8 @@ float3 NeuralNeutwo(float3 c)
 }
 
 /**
- * Display-linear proxy of scene-linear @p linearColor under @p display.
- *
- * Without vanilla grading this is the exposed colour through NeuralAcesFilmic,
- * applied hue-preservingly on luminance and rescaled back onto colour exactly
- * like the vanilla-grading tonemap stage below. With vanilla grading it
- * instead replicates the SDR path of ISHDR.hlsl's BLEND pass stage for stage -
- * exposure, the luminance-driven Reinhard (white point) or Hejl-Burgess-Dawson
- * curve, saturation / tint / brightness, and the shadow-aware contrast around
- * the adapted luminance - omitting only bloom, the fade overlay and the HDR
- * display mapping. The output is clamped to 0..1 like the frame it stands for.
+ * Build a scene-linear proxy using captured ISHDR exposure, tonemap, and grading, or the hue-
+ * preserving ACES fallback. Excludes bloom, fade, and HDR mapping; clamps to 0..1.
  */
 float3 ApplyNeuralDisplayTransformExposed(float3 exposedColor, NeuralDisplayTransform display)
 {
@@ -360,18 +253,8 @@ float3 ApplyNeuralDisplayTransform(float3 linearColor, NeuralDisplayTransform di
 }
 
 /**
- * Soft highlight shoulder for the display-gamma proxy on an HDR target.
- *
- * Maps a linear peak (HDR Display's redirect: 1 = paper white) into 0..1 so the
- * model, which was trained on SDR frames, can see it. Below kNeuralHighlightKnee
- * it is the identity; above it an extended-Reinhard shoulder with unit slope at
- * the knee rolls off towards one and reaches it exactly at @p white, the display's
- * own peak, clamping beyond (the display clips there too). Strictly increasing up
- * to @p white, so highlights that differ on screen still differ to the model -
- * unlike the plain scale-down to a peak of one, which flattened every highlight
- * of a given hue to the same value. Adapted from the "hybrid" reversible proxy of
- * RenoDX's DLSS 5 add-on / OptiScaler's DLSSNR fork (identity midtones, unclipped
- * highlights).
+ * HDR proxy shoulder adapted from RenoDX/OptiScaler. Identity below the knee; extended Reinhard above
+ * it, reaching one at the display peak with unit slope at the knee.
  *
  * @param peak Largest linear channel of the pixel.
  * @param white Display peak in the same units; must exceed one.
@@ -389,11 +272,8 @@ float NeuralHighlightRolloff(float peak, float white)
 }
 
 /**
- * The scene-linear proxy curve @p display selects, applied to linear light.
- *
- * @p exposure is passed rather than read from @p display because the scene-gamma domain
- * applies it earlier, on the encoded buffer, where the game itself does; that path passes
- * one here so it is not applied twice.
+ * Apply the selected scene curve. Exposure is explicit because scene-gamma input applies it before
+ * decoding.
  */
 float3 EncodeNeuralSceneCurve(float3 linearColor, float exposure, NeuralDisplayTransform display)
 {
@@ -407,11 +287,8 @@ float3 EncodeNeuralSceneCurve(float3 linearColor, float exposure, NeuralDisplayT
 }
 
 /**
- * Display-linear proxy of an already finished, gamma-encoded frame.
- *
- * SDR passes through unchanged. An over-range HDR pixel is brought back inside 0-1 by one
- * hue-preserving factor: NeuralHighlightRolloff's soft shoulder where the display's peak is
- * known, a plain scale-down otherwise.
+ * Decode finished gamma color to linear proxy space. Preserve SDR; compress HDR highlights with a hue-
+ * preserving shoulder or peak normalization.
  */
 float3 EncodeNeuralDisplayProxy(float3 color, NeuralDisplayTransform display)
 {
@@ -424,29 +301,18 @@ float3 EncodeNeuralDisplayProxy(float3 color, NeuralDisplayTransform display)
 }
 
 /**
- * Linear-light proxy of @p color, with every channel at or below one.
- *
- * Display gamma: the finished frame (EncodeNeuralDisplayProxy). Scene linear: the curve
- * @p display selects (EncodeNeuralSceneCurve); Display-matched with the identity transform
- * is the hue-preserving scalar ACES-filmic curve, a single positive scale of the linear
- * light. Scene gamma: the same curves, with exposure applied to the encoded values where the
- * game applies it.
+ * Build the 0-1 linear-light proxy for the selected color domain and curve.
  */
 float3 EncodeNeuralProxy(float3 color, uint domain, NeuralDisplayTransform display)
 {
 	color = max(color, 0.0);
 
-	// One assignment per branch rather than an early return from each: fxc's
-	// uninitialised-read analysis loses track of the result across a three-way dispatch of
-	// returns and reports X4000 at the first call, which CI treats as an error.
+	// Use one return: fxc emits X4000 for branch-local returns in this dispatch.
 	float3 proxy = color;
 	if (domain == kNeuralColorDomainDisplayGamma) {
 		proxy = EncodeNeuralDisplayProxy(color, display);
 	} else if (domain == kNeuralColorDomainSceneGamma) {
-		// Linear Lighting off. The vanilla tonemap applies its exposure and its curve to the
-		// gamma-encoded buffer directly and writes the result out without re-encoding, so the
-		// replica has to work in the same place - on the encoded values - and the result it
-		// produces is display-encoded rather than display-linear.
+		// Match vanilla grading on gamma-encoded values; the result is display-encoded, not linear.
 		if (display.proxyCurve == kNeuralProxyDisplayMatched && display.vanillaGrading) {
 			proxy = pow(max(ApplyNeuralDisplayTransform(color, display), 0.0), kNeuralSceneGamma);
 		} else {
@@ -469,15 +335,8 @@ float4 EncodeNeuralColor(float4 color, uint domain, uint space, NeuralDisplayTra
 }
 
 /**
- * Catmull-Rom resample of linear scene colour at a fractional texel position.
- *
- * Nine bilinear fetches reproduce the sixteen-tap kernel. A plain bilinear
- * shift would blur by an amount that changes with the jitter phase, so the model
- * would see sharpness pulsing frame to frame; Catmull-Rom keeps that nearly
- * constant. Taps are clamped to the active region, never the allocation, because
- * the game renders into the top-left of natively sized targets and the margin
- * holds stale frames. The result is clamped to the 2x2 neighbourhood so the
- * negative lobes cannot ring on HDR speculars.
+ * Nine-fetch Catmull-Rom reconstruction. Clamp taps to the active region and the result to the 2x2
+ * neighborhood to prevent stale-margin reads and HDR ringing.
  *
  * @param position Texel-space sample position (pixel centres sit at n + 0.5).
  * @param activeSize Valid region of @p source in texels.
@@ -526,11 +385,7 @@ float3 SampleNeuralSourceCatmullRom(Texture2D<float4> source, SamplerState linea
 }
 
 /**
- * Catmull-Rom weights/indices for one axis, as four raw taps (no hardware
- * bilinear collapsing) so this axis can be combined with a differently-shaped
- * filter on the other axis. Matches the weights in SampleNeuralSourceCatmullRom
- * exactly; only the tap layout differs. Slots 4 and 5 are unused zero-weight
- * pads so the array shares a size with NeuralBoxAxis.
+ * Raw four-tap Catmull-Rom axis weights, padded to six entries for combination with NeuralBoxAxis.
  *
  * @param coord Texel-space sample position on this axis (centres at n + 0.5).
  */
@@ -556,12 +411,8 @@ void NeuralCubicAxis(float coord, out float weight[6], out int index[6])
 }
 
 /**
- * Exact-area box weights/indices for one axis: the fraction of each source
- * texel covered by the destination texel's footprint, so the axis is
- * integrated rather than reconstructed at one point. Six taps comfortably
- * covers the largest footprint the model resolution slider allows (4 source
- * texels at the 0.25x minimum) plus the fractional slop `ScaledExtent`'s
- * round-to-even can introduce.
+ * Exact-area box weights for one axis. Six taps cover the 0.25x minimum scale plus fractional extent
+ * rounding.
  *
  * @param coord Texel-space centre of the footprint on this axis.
  * @param footprint Source texels this destination texel covers on this axis (> 1).
@@ -583,30 +434,9 @@ void NeuralBoxAxis(float coord, float footprint, out float weight[6], out int in
 }
 
 /**
- * Resamples the source at a fractional position where at least one axis is
- * shrinking (a footprint of more than one source texel per destination
- * texel), integrating that axis with an exact-area box instead of
- * reconstructing it with Catmull-Rom.
- *
- * Catmull-Rom (and any other point-sample reconstruction filter) answers "what
- * is the signal at this one point", which is the right question when the
- * destination is at or above source resolution. When the destination is
- * coarser, the question a model texel actually needs answered is "what is the
- * average of the source over the region this texel represents" - the two only
- * coincide at native scale. Left unanswered, source frequencies above the
- * model's new, lower Nyquist limit alias into the proxy; as the camera moves
- * the aliasing changes phase and the resolve reads it as neural shimmer. This
- * is the box downsample OptiScaler's DLSSNR fork uses below native
- * (https://github.com/Dagherbou/OptiScaler_DLSSNR/discussions/2).
- *
- * Each axis is filtered independently: an axis whose footprint is still one
- * texel (that axis is at native scale) keeps
- * Catmull-Rom reconstruction instead, so an anisotropic scale like 0.65 x 0.85
- * only integrates the axis that is actually shrinking. The combined result is
- * clamped to the range of every texel actually sampled, which is a no-op for
- * the (always non-negative) box weights and only bites on a Catmull-Rom axis's
- * negative lobes - the same HDR ringing guard SampleNeuralSourceCatmullRom
- * applies, generalised to whichever taps this call used.
+ * Per-axis area filtering when minifying, following OptiScaler's DLSSNR fork
+ * (https://github.com/Dagherbou/OptiScaler_DLSSNR/discussions/2). Native axes retain Catmull-Rom.
+ * Clamp to the sampled range to prevent ringing.
  *
  * @param position Texel-space sample position (pixel centres sit at n + 0.5).
  * @param footprint Source texels one destination texel covers, per axis.
@@ -648,21 +478,8 @@ float3 SampleNeuralSourceAreaMinify(Texture2D<float4> source, float2 position, f
 }
 
 /**
- * Guide-raster position a colour pixel's scene point occupies.
- *
- * The depth, motion and material-category guides are always the game's render-
- * resolution targets, rendered with the frame's sub-pixel TAA jitter. Before
- * the upscaler the colour is that same jittered raster at that same resolution,
- * so the mapping is the identity and @p guideJitterOffset is zero. After the
- * upscaler the colour is display resolution and already resolved onto the
- * unjittered grid, so the pixel's scene point is first scaled into guide space
- * and then shifted by the jitter the guides still carry.
- *
- * Leaving that shift out does not blur a guide lookup, it misplaces it by up to
- * half a guide texel in a direction that changes every frame with the jitter
- * phase - so a boundary pixel reads the wrong side of the boundary on some
- * frames and the right side on others. The result is kept fractional; callers
- * filter around it rather than snapping to one texel.
+ * Map color pixels into the render-resolution guide raster and apply relative guide jitter. Keep the
+ * position fractional for filtered lookups.
  *
  * @param colorPixel Colour/output pixel index.
  * @param guideSize Valid guide region in texels.
@@ -676,36 +493,9 @@ float2 NeuralGuidePosition(uint2 colorPixel, uint2 guideSize, uint2 activeSize, 
 }
 
 /**
- * Depth-aware silhouette weight for a full-resolution pixel (from
- * DLSSNR-Cost-Scaler's "Depth-Aware Bilateral Silhouette Preservation").
- *
- * When the model runs below the colour resolution its edit is upsampled
- * bilinearly, so at a geometric silhouette the background's edit bleeds a
- * texel or two into the thin foreground and vice versa. This measures the
- * relative depth range of the five-texel cross around the pixel's guide
- * position and fades the edit towards a quarter across strong
- * discontinuities, leaving flat interiors untouched.
- *
- * The cross is bilinearly sampled rather than loaded at one nearest guide
- * texel. After the upscaler the guide is at render resolution while this
- * runs at display resolution (see DecodeColorCS.hlsl), so several adjacent
- * display pixels share the same nearest guide texel; a hard nearest lookup
- * then holds one discontinuity reading over that whole block and flips it
- * wholesale between guide texels as TAA jitter moves the silhouette, which
- * reads as chunky shimmer on thin, high-frequency edges like individual hair
- * strands - the same aliasing the per-category blend above widens a kernel
- * for. Bilinear sampling instead varies continuously across that block, and
- * lands exactly on the old nearest-texel reads when guide and colour share a
- * resolution (Before/Separate Upscaling, where this never mattered).
- *
- * The 2% threshold was tuned on conventional depth, where the far scene sits
- * near 1.0 and only large near-field discontinuities clear it. Under Reverse Z
- * (stored depth = 1 - conventional depth) the same ratio becomes roughly
- * 1 - zNear/zFar, which clears 2% at nearly every silhouette and at grazing
- * surfaces; with jittered guides the weight then swings between a quarter and
- * one each frame, flickering the edit along edges. The samples are therefore
- * mapped back to conventional depth first (the map is affine, so it commutes
- * with the bilinear filtering).
+ * DLSSNR-Cost-Scaler depth-aware silhouette weighting. Bilinear cross samples avoid guide-resolution
+ * stepping; convert Reverse Z to conventional depth before measuring relative discontinuities. Strong
+ * edges fade the edit toward one quarter.
  *
  * @param guideDepth Game depth (the guide the model received), any allocation.
  * @param linearClamp Bilinear, clamp-to-edge sampler.
@@ -754,18 +544,8 @@ float NeuralSilhouetteWeight(Texture2D<float> guideDepth, SamplerState linearCla
 }
 
 /**
- * Confidence that a model answer from the previous evaluated frame still
- * belongs to this pixel (alternating-frame mode, the proxy's "VRNR").
- *
- * @p proxyColor is the stale proxy the model actually saw, already reprojected
- * to this pixel through the game's motion vectors (DecodeColorCS). Its
- * luminance is compared against the
- * fresh frame encoded into the same domain through the same display transform
- * (a changed exposure alone would otherwise register as motion). Where they
- * differ the scene moved
- * under this pixel and the stale edit fades towards no edit, so the pixel shows
- * the clean current frame rather than a misplaced ratio. Constants match the
- * proxy's skip-frame guard.
+ * Fade stale enhancements by comparing reprojected proxy luminance with fresh color under the same
+ * display transform.
  */
 float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor, uint domain, uint space, NeuralDisplayTransform display)
 {
@@ -776,11 +556,7 @@ float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor, uint domain
 }
 
 /**
- * Luma-weighted magnitude of a chroma offset from neutral (see NeuralChromaOffset).
- *
- * The weighting uses the same Rec. 709 coefficients as the luminance, so a
- * deviation in a channel that carries little luminance (blue) is not counted as
- * a large colour just because it is numerically large once luma-normalised.
+ * Rec.709-weighted chroma magnitude; discounts offsets in low-luminance channels.
  */
 float NeuralChromaMagnitude(float3 chroma)
 {
@@ -788,9 +564,7 @@ float NeuralChromaMagnitude(float3 chroma)
 }
 
 /**
- * Chroma of @p color as an offset from neutral: the colour divided by its own
- * luminance, minus one. A grey is exactly zero, and the offset is orthogonal to
- * kNeuralLuma by construction, so adding it back to one never changes luminance.
+ * Luma-normalized color minus one. Gray is zero; adding this chroma offset preserves luminance.
  */
 float3 NeuralChromaOffset(float3 color)
 {
@@ -828,82 +602,10 @@ struct NeuralResolveDebug
 };
 
 /**
- * Compose the Feature 18 answer onto the untouched scene colour.
- *
- * @p modelColor and @p proxyColor are the model's answer and the exact proxy it
- * was handed, both in the display-referred domain and both sampled at the same
- * (possibly fractional) position. A model no-op is therefore an exact no-op: its
- * luminance matches the proxy, making the ratio one. The common floor makes the
- * ratio converge smoothly to one in deep shadow, where a tiny absolute model
- * change would otherwise become an unbounded relative change. In the display-gamma
- * domain the floor is a pedestal under the original as well (see the body), so
- * there the resolve reproduces the model exactly wherever original and proxy
- * agree, deep shadow included. A two-sided guard
- * limits both flashes and sudden collapses without clipping individual RGB
- * channels.
- *
- * Chroma is transferred the same way: as the model's change *relative to the
- * proxy*, applied to the original. Both are expressed as luma-normalised colour,
- * so the edit is a per-channel ratio (guarded to kNeuralChromaRatioMin..Max) and
- * a model no-op reproduces the original's chroma exactly whatever the proxy's
- * own colour was. While the proxy is a plain scalar multiple of the original the
- * result is the model's complete palette, as before; a proxy that carries its
- * own grading (saturation, tint) no longer has that grading read back as a model
- * edit and applied a second time.
- *
- * The transferred chroma is then hue-guarded against the original. Where the
- * original is near neutral (kNeuralHueGuardStart..End on its luma-weighted chroma
- * magnitude) any hue the model emits is arbitrary - there is no renderer hue for
- * it to be a change *of* - and a small, consistent bias there reads as a colour
- * cast over whole shaded surfaces. So on such pixels the model may only move the
- * chroma along the original's own hue axis: more or less saturated, never rotated,
- * and never past neutral onto the complementary hue. A pure grey therefore stays
- * grey however the model recolours it. Pixels with clear chroma of their own
- * take the model's full chroma change, so intentional recolouring of skin,
- * foliage and materials survives.
- *
- * @p editWeight scales the edit as a whole (the proxy's "transfer strength"):
- * the luminance ratio is raised to it, so zero is the untouched frame, one is
- * exactly the model's relative change and two doubles it in log space, and the
- * two-sided guard clamps after scaling so a weight above one cannot escape it.
- * Chroma is gated by the same weight, saturated (see @p colorStrength below for
- * how much of it is transferred in the first place).
- *
- * @p colorStrength raises the model's per-channel chroma ratio (relative to the
- * proxy, guarded to kNeuralChromaRatioMin..Max) to itself: zero collapses that
- * ratio to one in every channel, which reproduces the original's own chroma
- * exactly and so is indistinguishable from no colour transfer at all; one is
- * the model's transferred chroma unchanged; above one - up to 2 in the UI -
- * extrapolates the same relative colour change further, re-guarded to the same
- * bound afterwards so a strength above one cannot escape it either.
- *
- * The luminance edit is measured in stops and split in two before it is scaled.
- * @p toneLow is an edge-aware blur of it (FilterToneDataCS), so it carries the
- * smooth, region-level relighting; the remainder carries the model's own local
- * contrast and micro-detail. @p broadLuminosity and @p detailLuminosity (each
- * already the global value times this pixel's category value) scale the two
- * independently, on top of @p editWeight. Equal values are exactly the single
- * luminosity multiplier they replace, whatever the split is, so @p hasToneData
- * can be false and the whole band machinery skipped whenever they agree for
- * every category. Zero on both freezes luminance at the original regardless of
- * @p editWeight.
- *
- * @p hueGuardAmount blends the hue guard above in (1) or out (0); a fractional
- * value - as produced by blending several categories' toggles across a material
- * boundary - partially releases the lock rather than switching it discretely.
- *
- * @p originalColor is stored in @p domain, and so is the result: the edit itself is
- * always applied in linear light, decoded with that domain's curve.
- *
- * @p maxRatio is the two-sided guard (1/maxRatio..maxRatio) on the model/proxy
- * luminance ratio after @p editWeight and the luminosity strengths have scaled it;
- * one disables any luminance change, and the previous hardcoded behaviour is
- * exactly two. Values below one are treated as one - a guard cannot be tighter
- * than the floor it exists to raise. The guard is opt-in (see
- * NeuralRendering::Options::ratioGuardEnabled); off, the caller passes an
- * effectively unbounded value instead of a smaller one, so this clamp never
- * binds and a correct large swing - such as putting a lit surface fully into
- * shadow - reaches the frame untouched.
+ * Transfer model/proxy luminance and chroma ratios to the original in linear light. Scale broad/detail
+ * edit stops independently; equal strengths bypass band data. Clamp luminance after scaling when
+ * enabled, and bound chroma ratios before and after extrapolation. Near-neutral hue guards preserve
+ * the original hue axis. Encode the result in the original domain.
  */
 float4 ResolveNeuralColor(NeuralResolveInputs inputs, out NeuralResolveDebug o_debug)
 {
@@ -921,23 +623,13 @@ float4 ResolveNeuralColor(NeuralResolveInputs inputs, out NeuralResolveDebug o_d
 	float proxyLuma = dot(proxy, kNeuralLuma);
 	float modelLuma = dot(model, kNeuralLuma);
 	o_debug.modelLuma = modelLuma;
-	// Some incompatible model/runtime combinations, and the first evaluation after a reset,
-	// return an empty frame. Treat that as no edit rather than darkening the whole frame
-	// towards black. This is decided per frame (see NeuralModelFrameValid): per pixel, black
-	// is a legitimate answer - the model painting a deep shadow - and passing the original
-	// through there leaves its lit pixels standing as bright specks inside the shadow.
+	// Reject empty output per frame, not per pixel: black model pixels can represent valid shadows.
 	if (!inputs.modelFrameValid)
 		return float4(NeuralLinearToDomain(original, domain), inputs.originalColor.a);
 
-	// Display gamma (Finished Image): the proxy *is* the original frame, in the same units,
-	// so the ratio floor can be a pedestal under all three instead of a term in the ratio
-	// alone. The edit is then made on colour + floor and the floor taken off again, which
-	// reproduces the model's answer exactly wherever the original matches the proxy, and
-	// keeps near-black chroma well defined (it tends to neutral) without fading it out.
-	// Applied to the original only, the floor compressed every lift in the shadows and
-	// shadowConfidence below dropped their colour change - on 2.2-decoded shadowed skin,
-	// most of it. The scene domains keep the plain floor: there the original is scene
-	// light and the proxy display light, so one pedestal cannot sit under both.
+	// Display gamma uses the same floor pedestal for original, proxy, and model, reproducing the model
+	// exactly when original equals proxy. Scene domains retain a ratio floor because original and proxy
+	// have different units.
 	const float pedestal = domain == kNeuralColorDomainDisplayGamma ? kNeuralRatioFloor : 0.0;
 	const float ratioFloor = kNeuralRatioFloor - pedestal;
 	float shadowConfidence = pedestal > 0.0 ? 1.0 : smoothstep(kNeuralRatioFloor, 4.0 * kNeuralRatioFloor, min(proxyLuma, modelLuma));
@@ -948,11 +640,8 @@ float4 ResolveNeuralColor(NeuralResolveInputs inputs, out NeuralResolveDebug o_d
 	modelLuma += pedestal;
 
 	float editWeight = max(inputs.editWeight, 0.0);
-	// The edit in stops, split into the smooth part the band filter found and the
-	// remainder, each scaled on its own. With the two strengths equal this collapses to
-	// exp2(editWeight * strength * delta) - exactly the single luminosity exponent it
-	// replaces - whether or not the band data exists. The same value in either domain
-	// (and so the same as PrepareToneDataCS's): the pedestal stands in for the floor.
+	// Scale broad/detail edit stops separately. Equal strengths reduce to a single exponent without band
+	// data.
 	float delta = log2((modelLuma + ratioFloor) / (proxyLuma + ratioFloor));
 	float lowBand = inputs.hasToneData ? inputs.toneLow : delta;
 	float highBand = delta - lowBand;
@@ -972,28 +661,17 @@ float4 ResolveNeuralColor(NeuralResolveInputs inputs, out NeuralResolveDebug o_d
 	float3 normalizedProxy = 1.0 + NeuralChromaOffset(proxy);
 	float3 normalizedModel = 1.0 + NeuralChromaOffset(model);
 
-	// The model's chroma change relative to the proxy it actually saw, carried
-	// onto the original. Equal to the model's own chroma whenever the proxy is a
-	// scalar multiple of the original; a no-op reproduces the original exactly.
+	// Transfer chroma relative to the proxy so a model no-op preserves original colors.
 	float3 chromaRatio = clamp(normalizedModel / max(normalizedProxy, 1e-3), kNeuralChromaRatioMin, kNeuralChromaRatioMax);
-	// @p colorStrength raises that ratio to itself, the same log-space
-	// extrapolation @p editWeight already applies to the luminance ratio above:
-	// zero collapses it to 1 (the original's own chroma - see the @p colorStrength
-	// doc below for why that coincides exactly with leaving chroma alone), one is
-	// the model's transferred chroma unchanged, and above one extrapolates the
-	// same relative colour change further, re-guarded to kNeuralChromaRatioMin..Max
-	// afterwards so a strength above one cannot escape the per-channel bound.
+	// Exponentiate the chroma ratio by colorStrength, then re-clamp. Zero preserves original chroma; one
+	// applies the model change.
 	float3 scaledChromaRatio = clamp(pow(chromaRatio, max(colorStrength, 0.0)), kNeuralChromaRatioMin, kNeuralChromaRatioMax);
 	float3 normalizedTarget = normalizedOriginal * scaledChromaRatio;
 	normalizedTarget /= max(dot(normalizedTarget, kNeuralLuma), 1e-5);
 	float3 targetChroma = normalizedTarget - 1.0;
 
-	// Hue guard: on a near-neutral original, keep only the component of the
-	// model's chroma that lies along the original's own hue axis (a saturation
-	// change), and not past neutral. Released smoothly as the original's own
-	// chroma grows, so genuinely coloured pixels take the model's full palette.
-	// @p hueGuardAmount at 0 forces the lock fully open, applying the transferred
-	// chroma everywhere unguarded; a fractional amount partially releases it.
+	// For near-neutral sources, project model chroma onto the original hue axis without crossing neutral.
+	// Release smoothly with source chroma and hueGuardAmount.
 	float originalChromaMagnitude = NeuralChromaMagnitude(originalChroma);
 	float3 lockedChroma = 0.0;
 	if (hueGuardAmount > 0.0 && originalChromaMagnitude > 1e-4) {
@@ -1008,14 +686,8 @@ float4 ResolveNeuralColor(NeuralResolveInputs inputs, out NeuralResolveDebug o_d
 	// One positive scale brings the resolved chromaticity to the guarded scene luminance.
 	float3 fullColorResult = normalizedResult * targetLuma;
 
-	// Normalized colour is unreliable only near black. Fade the chroma there,
-	// while allowing the complete model palette everywhere with meaningful light.
-	// @p colorStrength no longer gates this blend directly - it is already baked
-	// into fullColorResult's chroma above - which is exact at zero: chromaRatio^0
-	// is 1 in every channel, so normalizedTarget reduces to normalizedOriginal and
-	// fullColorResult's chroma matches luminanceResult's chroma precisely (both
-	// are the untouched original chroma), making the two lerp endpoints coincide
-	// regardless of this weight. shadowConfidence is computed above, before the pedestal.
+	// Fade unreliable normalized chroma near black. colorStrength is already applied to the target chroma;
+	// zero makes both blend endpoints equal.
 	float resolvedColorStrength = shadowConfidence * saturate(editWeight);
 
 	// NeuralLinearToDomain clamps at zero: a darkening edit on a pixel darker than the proxy

@@ -11,12 +11,8 @@ struct ID3D12Resource;
 namespace NeuralRenderingNGX
 {
 	/**
-	 * @brief User-tunable knobs forwarded to the DLSS Neural Rendering feature.
-	 *
-	 * These map directly onto the undocumented @c DLSSNR.* NGX parameters consumed
-	 * by Feature 18. Defaults are stock (unmodified 1.0 strength), with skin
-	 * structure disabled (-1); always overwritten from Upscaling::settings
-	 * before use.
+	 * @brief Feature 18 DLSSNR.* tuning parameters, latched at creation and supplied by Neural Rendering
+	 * settings.
 	 */
 	struct Tuning
 	{
@@ -58,17 +54,8 @@ namespace NeuralRenderingNGX
 	};
 
 	/**
-	 * @brief Direct D3D12 binding to NVIDIA's DLSS Neural Rendering runtime (NGX Feature 18).
-	 *
-	 * @c nvngx_dlssnr.dll only exposes a D3D12 ABI and refuses to operate unless its
-	 * caller's module path resolves to NVIDIA's signed @c nvngx.dll. Every entry point
-	 * is therefore invoked underneath an import-address-table hook on
-	 * @c GetModuleFileNameW installed in @c nvngx_dlssnr.dll's own import table, which
-	 * reports the signed path for the duration of the call and is removed immediately
-	 * afterwards.
-	 *
-	 * This repository evaluates at most one Neural Rendering pass per frame, so a
-	 * single NGX feature handle is kept.
+	 * @brief Direct D3D12 binding to NGX Feature 18. Each entry point temporarily patches the caller-path
+	 * import to satisfy the signed nvngx.dll gate.
 	 */
 	class Runtime
 	{
@@ -80,12 +67,8 @@ namespace NeuralRenderingNGX
 		Runtime& operator=(const Runtime&) = delete;
 
 		/**
-		 * @brief Locate, version-gate and load nvngx_dlssnr.dll.
-		 *
-		 * Only the 310.8.x runtime series is accepted; other versions do not honour
-		 * the parameter contract used by Execute(). On success the signed runtime's
-		 * application id and NGX API version are read from its identity exports and
-		 * Status() becomes RuntimeStatus::Ready.
+		 * @brief Load the supported 310.8.x runtime series and its identity exports. On success Status() is
+		 * Ready.
 		 *
 		 * @param explicitPath Optional DLL path, or a directory containing the DLL.
 		 *                     When empty the Streamline plugin folders under Data are searched.
@@ -94,11 +77,8 @@ namespace NeuralRenderingNGX
 		bool Probe(const std::filesystem::path& explicitPath = {});
 
 		/**
-		 * @brief Initialize NGX against a D3D12 device and allocate the parameter block.
-		 *
-		 * Probes automatically when the runtime is not loaded yet. Re-initializes when
-		 * called with a different device. The parameter allocator is resolved from the
-		 * already-loaded NGX core module rather than from the snippet DLL.
+		 * @brief Initialize NGX and allocate parameters from the resident core. Probe if needed; reinitialize
+		 * when the device changes.
 		 *
 		 * @param device The D3D12 device the feature will be evaluated on.
 		 * @param dataPath Writable directory for NGX logs/caches; a temporary folder is used when empty.
@@ -107,14 +87,9 @@ namespace NeuralRenderingNGX
 		bool Initialize(ID3D12Device* device, const std::filesystem::path& dataPath = {});
 
 		/**
-		 * @brief Create (if needed) and evaluate the Neural Rendering feature.
-		 *
-		 * The feature handle is built for the output extents and reused across frames.
-		 * A smaller input (render) region is passed through the NGX subrects, so
-		 * dynamic resolution and the Before/After placement toggle do not recreate it;
-		 * only an output-extent change does, and the caller must have drained any
-		 * command list still referencing the handle before that happens.
-		 * All resources must be D3D12 resources visible to the device passed to Initialize().
+		 * @brief Create or reuse a feature for the output allocation and evaluate active subrects. The caller
+		 * must drain in-flight commands before a size change. All resources must belong to the initialized
+		 * D3D12 device.
 		 *
 		 * @param commandList Command list to record the evaluation into.
 		 * @param color Input colour buffer.
@@ -151,13 +126,9 @@ namespace NeuralRenderingNGX
 			bool depthInverted);
 
 		/**
-		 * @brief Create/evaluate an independent DLSS Super Resolution feature for a signed residual carrier.
-		 *
-		 * The feature and parameter block are private to this runtime and never alias the game's
-		 * Streamline DLSS feature. Creation deliberately occupies one submission without evaluation;
-		 * the first residual is produced on a later frame so NGX can finish initializing its history.
-		 * The carrier is treated as LDR data with fixed unit exposure and no sharpening.
-		 * @p depthInverted is a create-time flag; it must not change while the feature exists.
+		 * @brief Create/evaluate private DLSS-SR for the residual carrier. Creation occupies a separate
+		 * submission before evaluation. Uses LDR, unit exposure, and no sharpening; depthInverted is fixed at
+		 * creation.
 		 */
 		SuperResolutionResult ExecuteSuperResolution(ID3D12GraphicsCommandList* commandList,
 			ID3D12Resource* color, ID3D12Resource* depth, ID3D12Resource* motionVectors,
@@ -202,11 +173,8 @@ namespace NeuralRenderingNGX
 		Runtime() = default;
 
 		/**
-		 * @brief Logs Feature 18's reported requirements once, if the DLL exposes the query.
-		 *
-		 * The D3D12 form reports support, minimum GPU architecture and minimum OS version. It
-		 * does not report which creation flags the feature would accept - the NGX API has no
-		 * field for that - so this is a capability note only.
+		 * @brief Log support, minimum GPU architecture, and OS requirements once. The query does not report
+		 * accepted creation flags.
 		 */
 		void LogFeatureRequirements(ID3D12Device* device);
 		void* module_ = nullptr;
@@ -214,9 +182,7 @@ namespace NeuralRenderingNGX
 		void* featureHandle_ = nullptr;
 		void* superResolutionParameters_ = nullptr;
 		void* superResolutionFeatureHandle_ = nullptr;
-		// Output (native) extents the feature was built for. The active render
-		// region is passed per frame as an NGX subrect, not baked into the handle,
-		// so dynamic resolution and the Before/After placement toggle never rebuild.
+		// Creation extents; per-frame active regions are supplied as NGX subrects.
 		std::uint32_t featureOutputWidth_ = 0;
 		std::uint32_t featureOutputHeight_ = 0;
 		std::uint32_t superResolutionInputWidth_ = 0;

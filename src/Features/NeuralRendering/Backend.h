@@ -8,26 +8,15 @@ struct ID3D11Resource;
 struct ID3D11ShaderResourceView;
 
 /**
- * @brief D3D11-facing driver for the DLSS Neural Rendering (NGX Feature 18) transport layer.
- *
- * The Neural Rendering feature (`NeuralRendering.cpp`) talks only to this
- * façade; Backend.cpp is the only translation unit that includes the transport
- * headers (`NeuralRenderingNGX::Runtime`, `NeuralRenderingNGX::D3D12Interop`),
- * which keeps the NGX, D3D12 and interop details out of the feature.
- *
- * The backend owns the D3D11<->D3D12 shared textures, the colour transfer and
- * depth-guide compute passes, and the failure latch that keeps a broken runtime
- * from being retried every frame.
+ * @brief D3D11-facing Neural Rendering backend. Owns shared textures, transfer passes, and the failure
+ * latch; keeps NGX/D3D12 transport details private.
  */
 class NeuralRenderingBackend final
 {
 public:
 	/**
-	 * @brief Display transform the pre-tonemap placements' proxy replicates, so the model
-	 *        sees the frame the way the user will (see ColorTransfer.hlsli, NeuralDisplayTransform).
-	 *
-	 * Default-constructed it is the identity: no exposure and the plain hue-preserving Reinhard
-	 * proxy. Ignored for the display-gamma colour domain, which is already a finished frame.
+	 * @brief Display transform for pre-tonemap proxies. Defaults to no exposure or grading; ignored for
+	 * display gamma.
 	 */
 	struct DisplayTransform
 	{
@@ -45,14 +34,8 @@ public:
 	};
 
 	/**
-	 * @brief One frame of Neural Rendering work.
-	 *
-	 * @c width and @c height describe the *active* region only. The shared
-	 * colour/output textures are allocated at the model raster (the active colour
-	 * extent scaled by @c resolutionScaleX/Y) and the guides at the guide extent.
-	 * This keeps Feature 18's creation dimensions identical to the raster it
-	 * processes and prevents padded/stale source margins from becoming temporal
-	 * history.
+	 * @brief Frame inputs with active color and guide extents. Shared allocations exclude padded source
+	 * margins.
 	 */
 	struct FrameInputs
 	{
@@ -70,19 +53,11 @@ public:
 		std::uint32_t height = 0;                                ///< Colour/output active region height in pixels.
 		std::uint32_t guideWidth = 0;                            ///< Depth/motion-vector active region width (render resolution).
 		std::uint32_t guideHeight = 0;                           ///< Depth/motion-vector active region height (render resolution).
-		/// Sub-pixel projection offset of @c colorIn in render pixels (Streamline
-		/// convention: a scene point at unjittered position u lands at u + offset).
-		/// Non-zero only when @c colorIn is the game's jittered render; the
-		/// upscaled frame is unjittered and passes zero.
+		/// Color projection jitter in render pixels (raster = unjittered position + offset). Zero for resolved
+		/// color.
 		float jitterOffsetX = 0.0f;
 		float jitterOffsetY = 0.0f;
-		/// Sub-pixel projection offset of the guide rasters (@c depth,
-		/// @c motionVectors and @c materialCategoriesSRV) in guide texels, same
-		/// convention. The guides are always the game's jittered render targets,
-		/// so this is zero whenever @c colorIn is that same jittered raster. After
-		/// the upscaler the colour is the resolved, unjittered frame while the
-		/// guides still carry the frame's jitter, and the decode must undo it
-		/// before reading them.
+		/// Guide projection jitter relative to color, in guide texels. Zero when both share the same jitter.
 		float guideJitterOffsetX = 0.0f;
 		float guideJitterOffsetY = 0.0f;
 		/// Model raster relative to the colour active region, per axis (0.25..1).
@@ -98,9 +73,7 @@ public:
 		std::uint32_t proxyCurve = 0;
 		/// Display transform the scene-linear proxy replicates (identity by default).
 		DisplayTransform display{};
-		/// Display-gamma domain only: the linear peak the display can show, in the frame's
-		/// units (HDR Display's redirect: peak nits / paper white). Above one the proxy
-		/// rolls highlights off softly up to it instead of scaling them down; zero on SDR.
+		/// Display-gamma HDR peak relative to paper white; zero for SDR.
 		float highlightWhite = 0.0f;
 		/// Split-screen comparison: the decode passes the input through left of this fraction
 		/// of the width; negative disables it. See NeuralRendering::CompareView.
@@ -183,11 +156,7 @@ public:
 	bool IsFeatureAvailable() const;
 
 	/**
-	 * @brief Last diagnostics the resolve wrote back (Debug: model peak, guard clamping).
-	 *
-	 * DecodeColorCS accumulates both into one small buffer, which is staged back over a few
-	 * frames so nothing stalls the pipeline; the values therefore lag the screen slightly and
-	 * only move while their toggle is on.
+	 * @brief Delayed resolve diagnostics, updated only while measurement is enabled.
 	 */
 	struct DebugReadback
 	{
@@ -212,10 +181,8 @@ public:
 		std::uint32_t width, std::uint32_t height);
 
 	/**
-	 * @brief Releases shared GPU resources and private NGX feature histories.
-	 *
-	 * The NGX runtime and interop device remain alive because placement changes can
-	 * invoke this on the render thread. Also clears the failure latch for retries.
+	 * @brief Release shared resources and private histories; retain the runtime/device and clear the
+	 * failure latch.
 	 */
 	void DestroyResources();
 

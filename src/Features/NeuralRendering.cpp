@@ -79,14 +79,8 @@ namespace
 	constexpr NeuralRendering::CategoryStrengths kNeutralCategory{ 1.0f, 1.0f, 1.0f, 1.0f, false };
 
 	/**
-	 * The preset table (see NeuralRendering::Preset), in Preset order.
-	 *
-	 * Full is the current look and the default. Vanilla-Plus reproduces the 2026-09-09 build
-	 * (5947cf63): the Legacy proxy on a pre-tonemap placement, a luminance-only edit (Color
-	 * Strength 0 collapses the chroma ratio to the original's own chroma exactly) and that
-	 * build's always-on +-1-stop ratio guard. Its category values are neutral rather than
-	 * absent, so moving on from Vanilla-Plus starts from a clean state even though they do
-	 * nothing while Color Strength is zero.
+	 * Preset defaults in Preset order. Vanilla-Plus uses the Legacy proxy and a luminance-only edit capped
+	 * at one stop.
 	 */
 	constexpr PresetValues kPresets[NeuralRendering::kPresetCount] = {
 		// Full
@@ -120,20 +114,20 @@ namespace
 		// Vanilla-Plus
 		{
 			static_cast<uint>(NeuralRendering::Placement::kAfterUpscaling),
-			2,      // Cinematic style (the 2026-09-09 build asked for 3, which aliases 2)
+			2,      // Cinematic style
 			0.8f,   // intensity
 			0.75f,  // localToneStrength
 			0.9f,   // localStructureStrength
 			0.9f,   // skinStructureStrength
 			true,   // automaticMask
 			static_cast<uint>(ProxyCurve::kLegacy),
-			0.0f,   // colorStrength: luminance-only, as the 2026-09-09 resolve was
+			0.0f,   // colorStrength: luminance-only
 			1.0f,   // transferStrength
 			1.0f,   // broadLuminosity
 			1.0f,   // detailLuminosity
 			8.0f,   // bandRadius
 			true,   // ratioGuardEnabled
-			2.0f,   // maxRatio: the +-1 stop that build always applied
+			2.0f,   // maxRatio: +/-1 stop
 			false,  // depthAwareResolve
 			{ {
 				kNeutralCategory,
@@ -392,10 +386,7 @@ namespace
 		return false;
 	}
 
-	// Hair by shader authoring: the hair-tint material (which the HAIR technique
-	// already covers) or the hair soft-lighting property flag on any other
-	// material. This is what identifies wigs and other hair worn as equipment,
-	// which have no head part to match.
+	// Material-based hair detection also covers wigs without matching head parts.
 	bool IsHairTintShader(const RE::BSRenderPass* a_pass)
 	{
 		if (!a_pass->shaderProperty || a_pass->shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
@@ -405,12 +396,8 @@ namespace
 		       lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kHairTint);
 	}
 
-	// Head parts hang directly under the actor's skinned face node, each as a
-	// child named by the part's editor ID (what Actor::GetHeadPartObject looks
-	// up), so the head part a geometry belongs to is its ancestor sitting right
-	// under that node. Classifying hair from the NPC record rather than the
-	// material catches the hairlines, braids and loose strands that hair mods
-	// author with the default or skin-tint shader type instead of hair tint.
+	// Head parts are direct children of the skinned face node, named by editor ID. Match the geometry
+	// ancestor to catch hair authored with non-hair materials.
 	bool IsHairHeadPartGeometry(RE::Actor* a_actor, const RE::BSGeometry* a_geometry)
 	{
 		const auto* faceNode = a_actor->GetFaceNodeSkinned();
@@ -437,10 +424,7 @@ NeuralRendering::NeuralRendering() :
 {}
 
 NeuralRendering::~NeuralRendering() = default;
-
-// ---------------------------------------------------------------------------------------------
 // Backend adapter
-// ---------------------------------------------------------------------------------------------
 
 bool NeuralRendering::IsAvailable() const
 {
@@ -497,10 +481,7 @@ void NeuralRendering::DestroyModelResources()
 {
 	backend->DestroyResources();
 }
-
-// ---------------------------------------------------------------------------------------------
 // Settings
-// ---------------------------------------------------------------------------------------------
 
 std::array<NeuralRendering::CategoryStrengths*, NeuralRendering::kMaterialCategoryCount> NeuralRendering::CategorySettings()
 {
@@ -630,10 +611,7 @@ bool NeuralRendering::MatchesPresetValues(const PresetValues& a_values) const
 	}
 	return true;
 }
-
-// ---------------------------------------------------------------------------------------------
 // User presets
-// ---------------------------------------------------------------------------------------------
 
 std::filesystem::path NeuralRendering::UserPresetDirectory()
 {
@@ -801,8 +779,6 @@ void NeuralRendering::DrawSettings()
 	const bool controlsAvailable = settings.enabled && backendAvailable;
 	if (!controlsAvailable)
 		ImGui::BeginDisabled();
-
-	// --- Preset: the single control most users ever touch ---
 	DrawPresetControls();
 
 	ImGui::Checkbox(T(TKEY("show_advanced"), "Show Advanced Settings"), &settings.showAdvanced);
@@ -810,8 +786,6 @@ void NeuralRendering::DrawSettings()
 		ImGui::TextUnformatted(T(TKEY("show_advanced_tooltip"),
 			"Show model tuning, color and lighting controls, material adjustments, and diagnostic views."));
 	}
-
-	// --- Pipeline: where, and at what resolution, Neural Rendering runs ---
 	const char* placementLabels[] = {
 		T(TKEY("placement_before"), "Before Upscaling"),
 		T(TKEY("placement_after"), "After Upscaling"),
@@ -866,9 +840,7 @@ void NeuralRendering::DrawSettings()
 		ImGui::TextUnformatted(T(TKEY("intensity_tooltip"), "Adjust the overall enhancement intensity. Changes apply when the slider settles."));
 	}
 
-	// --- Compare: runtime-only aids for judging the edit (never saved) ---
-	// Split Screen stays out of Advanced: it is how anyone judges whether the edit is an
-	// improvement at all, so it has to be reachable without opening the tuning controls.
+	// Runtime-only comparison controls.
 	ImGui::Checkbox(T(TKEY("compare_wipe"), "Split Screen"), &compareView.wipe);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("compare_wipe_tooltip"),
@@ -879,7 +851,6 @@ void NeuralRendering::DrawSettings()
 		ImGui::SliderFloat(T(TKEY("compare_wipe_position"), "Split Position"), &compareView.wipePosition, 0.0f, 1.0f, "%.2f");
 
 	if (settings.showAdvanced) {
-		// --- Model tuning: information handed to the DLSS Neural Rendering model itself ---
 		ImGui::Separator();
 		ImGui::TextUnformatted(T(TKEY("model_inputs"), "Model Tuning"));
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -915,8 +886,6 @@ void NeuralRendering::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("automatic_mask_tooltip"), "Generates the skin mask automatically."));
 		}
-
-		// --- Proxy: the image the scene-linear placements build for the model ---
 		const bool finishedImage = IsPlacement(Placement::kFinishedImage);
 		const char* proxyCurveLabels[] = {
 			T(TKEY("proxy_display_matched"), "Display-matched"),
@@ -932,8 +901,6 @@ void NeuralRendering::DrawSettings()
 			ImGui::TextUnformatted(T(TKEY("proxy_curve_tooltip"),
 				"Choose the color and brightness mapping used before enhancement. Has no effect on Finished Image.\nDisplay-matched follows your tone mapping and color grading. Neutwo uses a neutral curve with exposure adjustment. Legacy uses a fixed curve without exposure adjustment."));
 		}
-
-		// --- Strengths: how much of the model's answer Cav's Unity Shaders applies ---
 		ImGui::Separator();
 		ImGui::TextUnformatted(T(TKEY("strengths"), "Strengths"));
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -980,8 +947,6 @@ void NeuralRendering::DrawSettings()
 					"Maximum brightness change in either direction. 2 allows half to twice the original brightness; 1 prevents brightness changes. Lower values provide a stricter limit."));
 			}
 		}
-
-		// --- Per-category overrides, each with its own hue guard ---
 		ImGui::Separator();
 		ImGui::TextUnformatted(T(TKEY("category_overrides"), "Per-Category Overrides"));
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -1020,8 +985,6 @@ void NeuralRendering::DrawSettings()
 			ImGui::TextUnformatted(T(TKEY("frame_hold_tooltip"),
 				"Freeze the image to compare tuning changes while the game and HUD keep running. Available with Finished Image and After Upscaling. Combine with Split Screen for an on/off comparison. Not saved."));
 		}
-
-		// --- Debug: inspect the classification, the bands, and the resolve ---
 		ImGui::Separator();
 		ImGui::TextUnformatted(T(TKEY("debug"), "Debug"));
 
@@ -1095,7 +1058,6 @@ void NeuralRendering::DrawPresetControls()
 	const auto* userPreset = settings.userPreset.empty() ? nullptr : FindUserPreset(settings.userPreset);
 	const bool userActive = userPreset != nullptr;
 	const std::string activeName = userActive ? userPreset->name : builtInNames[builtInIndex];
-	// Once per frame while the menu is open; the comparison is a handful of scalar tests.
 	const bool presetIntact = MatchesPresetValues(userActive ? userPreset->values : GetPreset(builtIn));
 	const std::string presetPreview = presetIntact ?
 	                                      activeName :
@@ -1142,7 +1104,6 @@ void NeuralRendering::DrawPresetControls()
 			ApplyPresetValues(activeValues);
 	}
 
-	// The built-in presets are read-only: Save only ever overwrites a preset the user made.
 	if (userPreset) {
 		if (Util::ButtonWithFlash(T(TKEY("preset_save"), "Save"))) {
 			presetEditor.status.clear();
@@ -1272,8 +1233,7 @@ void NeuralRendering::DrawPresetPopups()
 			if (presetEditor.action == Action::kRename) {
 				succeeded = name == presetEditor.renameFrom || RenameUserPreset(presetEditor.renameFrom, name);
 			} else if (WriteUserPreset(name, presetEditor.source)) {
-				// The new preset becomes the active label; the live values are left alone, so
-				// a copy taken while edited reads "(modified)" and Save stores the edits in it.
+				// Select the new preset without replacing unsaved live edits.
 				settings.userPreset = name;
 				succeeded = true;
 			}
@@ -1330,8 +1290,7 @@ void NeuralRendering::SaveSettings(json& o_json)
 
 void NeuralRendering::LoadSettings(json& o_json)
 {
-	// Read before the assignment below overwrites the defaults: which keys a config actually
-	// carries is what the migrations below key off, not the values they end up holding.
+	// Record key presence before deserialization for settings migration.
 	const bool hasPreset = o_json.is_object() && o_json.contains("preset");
 	const bool hasShowAdvanced = o_json.is_object() && o_json.contains("showAdvanced");
 	const bool hasBandStrengths = o_json.is_object() &&
@@ -1372,9 +1331,7 @@ void NeuralRendering::LoadSettings(json& o_json)
 		}
 	}
 
-	// A config written before the split carried one Luminosity Strength. Broad = Detail = that
-	// value is exactly the same edit, so the look does not change across the upgrade. The old
-	// key is simply not written again on the next save.
+	// Preserve legacy luminosity by assigning it to both bands; omit the old key on save.
 	if (hasLegacyLuminosity && !hasBandStrengths) {
 		settings.broadLuminosity = legacyLuminosity;
 		settings.detailLuminosity = legacyLuminosity;
@@ -1407,10 +1364,7 @@ void NeuralRendering::LoadSettings(json& o_json)
 		settings.userPreset.clear();
 	}
 
-	// Someone who tuned things before Advanced existed should still see their sliders; a
-	// config that still matches its preset exactly starts with them folded away. Every config
-	// written before the Full preset lowered Skin Color Strength to 0.6 counts as modified,
-	// which is accurate - the combo says so too.
+	// Keep Advanced visible for migrated settings that differ from Full.
 	if (!hasShowAdvanced)
 		settings.showAdvanced = !MatchesPreset(static_cast<Preset>(settings.preset));
 }
@@ -1446,10 +1400,7 @@ void NeuralRendering::MigrateLegacyUpscalingSettings(json& a_root)
 	logger::info("[NeuralRendering] Migrated {} legacy settings from the Upscaling section", migrated.size());
 	a_root[name] = std::move(migrated);
 }
-
-// ---------------------------------------------------------------------------------------------
 // Lifecycle and hooks
-// ---------------------------------------------------------------------------------------------
 
 void NeuralRendering::DataLoaded()
 {
@@ -1603,12 +1554,8 @@ ID3D11Resource* NeuralRendering::PrepareUpscaleInput(ID3D11Resource* a_color, ID
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 	// The pre-blended-decals snapshot, not the live Masks2 - see CaptureCategories.
 	auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
-	// Hand the model the game's raw motion-vector target, not the 5x5
-	// dilated ghosting-reduction copy Streamline gets. That copy tags a
-	// two-texel rim of background with foreground motion, which is a
-	// deliberate lie for DLSS's history rejection. The model feeds its own
-	// temporal state and was trained on plain per-pixel vectors, so the
-	// dilated rim reads as flicker or smear along moving edges.
+	// Use raw motion vectors: DLSS dilation assigns foreground motion to background pixels and
+	// destabilizes NR edges.
 	ID3D11Resource* upscaleInput = a_color;
 	// A perf event, not a profiler pass: this runs inside Upscaling's own "Upscaling::Upscale"
 	// profiler pass, and profiler passes do not nest.
@@ -1672,15 +1619,8 @@ void NeuralRendering::ResolveUpscaledFrame(Texture2D* a_upscaled)
 			Options options = MakeOptions();
 			options.guideWidth = static_cast<uint32_t>(guideSize.x);
 			options.guideHeight = static_cast<uint32_t>(guideSize.y);
-			// Those guides are also still jittered, while the colour here is the frame
-			// DLSS has already resolved onto the unjittered grid. Uncorrected, a guide
-			// lookup indexes the unjittered grid but reads a texel whose sample sits up
-			// to half a texel away, and that error swings coherently across the image
-			// every frame as the jitter phase advances - flickering the per-category
-			// strength and the silhouette fade along every category and depth boundary,
-			// worst where the two sides' strengths differ most (the hairline, and thin
-			// strands, which are boundary along their whole length). Before the upscaler
-			// colour and guides are jittered alike, so that path leaves this zero.
+			// Guides retain render jitter after DLSS resolves color. Offset guide lookups to align category and
+			// depth boundaries.
 			const auto& jitter = globals::features::upscaling.jitter;
 			options.guideJitterOffsetX = -jitter.x;
 			options.guideJitterOffsetY = -jitter.y;
@@ -1688,10 +1628,7 @@ void NeuralRendering::ResolveUpscaledFrame(Texture2D* a_upscaled)
 			options.display = MakeDisplayTransform();
 			options.colorDomain = SceneColorDomain(options.proxyCurve);
 
-			// Frame Hold: re-evaluate one captured upscaled frame every frame instead of the
-			// live one, so a tuning change can be judged on an identical image. The guides are
-			// held with it; the captured raster is the one the hold was taken on, so a
-			// resolution change releases it through the size check below.
+			// Hold color and guides together; release the hold if their dimensions change.
 			ID3D11Texture2D* colorIn = a_upscaled->resource.get();
 			ID3D11Texture2D* depthTexture = depth.texture;
 			ID3D11ShaderResourceView* depthSRV = depth.depthSRV;
@@ -1759,10 +1696,7 @@ void NeuralRendering::SetupGeometryCategory(RE::BSRenderPass* a_pass)
 	constexpr auto humanoidFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsHumanoidActor);
 	constexpr auto hairFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsHair);
 
-	// Every lighting draw that writes Masks2: the deferred pass and the forward
-	// draws between RestoreCategories and FinishCategoryCapture. A forward draw
-	// seen with cleared flags would land skinned armor in Skin and rigid armor in
-	// Everything Else.
+	// Set category flags for both deferred and forward lighting draws.
 	const bool writesCategories = deferred->deferredPass || forwardCaptureActive;
 
 	bool isHumanoidActor = false;
@@ -1773,10 +1707,7 @@ void NeuralRendering::SetupGeometryCategory(RE::BSRenderPass* a_pass)
 		isHair = IsHairTintShader(a_pass);
 		if (auto userData = a_pass->geometry->GetUserData()) {
 			if (auto actor = userData->As<RE::Actor>()) {
-				// Any geometry owned by a humanoid actor - skinned armor/clothing
-				// as well as rigid weapons, shields and helmets attached to its
-				// skeleton. Skin (body and face) and eyes are claimed by their own
-				// material permutations before the shader consults this flag.
+				// Humanoid equipment excludes skin, hair, and eyes, which the shader classifies first.
 				if (auto race = actor->GetRace())
 					isHumanoidActor = race->HasKeyword(actorTypeNPCKeyword);
 				isHair = isHair || IsHairHeadPartGeometry(actor, a_pass->geometry);
@@ -1811,11 +1742,8 @@ void NeuralRendering::CaptureCategories()
 	if (!masks2.texture)
 		return;
 
-	// Created lazily here: this only ever runs mid-frame (from Deferred's
-	// blended-decals hook), after Masks2 has genuinely been (re)created and
-	// rendered into. Masks2 is a repurposed native target (see MASKS2 in
-	// Deferred.h) that is not guaranteed to exist during the game's own
-	// render-target (re)creation.
+	// Allocate after opaque rendering: the repurposed Masks2 target may not exist during native target
+	// creation.
 	if (!materialCategoriesSnapshot) {
 		D3D11_TEXTURE2D_DESC texDesc{};
 		masks2.texture->GetDesc(&texDesc);
@@ -1882,10 +1810,8 @@ void NeuralRendering::BSBatchRenderer_RenderPassImmediately::thunk(RE::BSRenderP
 	auto* state = globals::state;
 	auto& runtimeData = globals::game::shadowState->GetRuntimeData();
 
-	// Only the forward lighting draws of the main world view, into the same
-	// full-resolution colour target the deferred pass restored: a cubemap
-	// face or reflection target in slot 0 would fail OMSetRenderTargets
-	// against a render-resolution Masks2.
+	// Capture only main-view lighting draws. Reflection and cubemap targets may be incompatible with
+	// Masks2.
 	const bool bindCategories = neuralRendering.forwardCaptureActive &&
 	                            !deferred->deferredPass && state->inWorld &&
 	                            a_pass && a_pass->shader &&
@@ -1907,10 +1833,7 @@ void NeuralRendering::BSBatchRenderer_RenderPassImmediately::thunk(RE::BSRenderP
 	runtimeData.renderTargets[7] = RE::RENDER_TARGET::kNONE;
 	runtimeData.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 }
-
-// ---------------------------------------------------------------------------------------------
 // Options and display transform
-// ---------------------------------------------------------------------------------------------
 
 NeuralRendering::Options NeuralRendering::MakeOptions() const
 {
@@ -2064,10 +1987,7 @@ NeuralRendering::DisplayTransform NeuralRendering::MakeDisplayTransform() const
 	}
 	return display;
 }
-
-// ---------------------------------------------------------------------------------------------
 // Finished Image
-// ---------------------------------------------------------------------------------------------
 
 bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11ShaderResourceView* a_colorInSRV,
 	ID3D11Texture2D* a_colorOut)
@@ -2075,9 +1995,7 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	if (!settings.enabled || !IsPlacement(Placement::kFinishedImage))
 		return false;
 
-	// Past this point the user has clearly opted into this placement, so every remaining
-	// early-out is logged at debug level - the fail-closed checks below are silent by design,
-	// which otherwise looks identical to "doing nothing".
+	// Log resource failures once Finished Image is active.
 	if (!IsDLSSActive()) {
 		logger::debug("[NeuralRendering] Finished Image skipped: upscale method is not DLSS");
 		return false;
@@ -2092,9 +2010,8 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	}
 
 	auto renderer = globals::game::renderer;
-	// Guides captured for this upscaled frame by CaptureFinishedImageGuides().
-	// Consuming them means a later tonemap-pass call this frame (a different colour target)
-	// cannot re-run the model, which would reset its temporal history every frame.
+	// Consume guides once per upscaled frame; repeated evaluations on different targets would reset
+	// history.
 	if (!finishedImageGuidesReady || !finishedImageDepthSnapshot) {
 		logger::debug("[NeuralRendering] Finished Image skipped: no guides captured for this frame");
 		return false;
@@ -2112,10 +2029,8 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 		return false;
 	}
 
-	// The authoritative active resolution, same as every other Neural Rendering call site
-	// (e.g. the After Upscaling placement) - not each resource's own GetDesc(), which can
-	// legitimately be a larger, differently-padded allocation than the frame's active region.
-	// This is the colour extent only; the guides' render-resolution extent was captured with them.
+	// Use active screen dimensions, not potentially padded texture allocations. Guide extents were
+	// captured separately.
 	const uint32_t nativeWidth = static_cast<uint32_t>(globals::game::graphicsState->screenWidth);
 	const uint32_t nativeHeight = static_cast<uint32_t>(globals::game::graphicsState->screenHeight);
 	if (!nativeWidth || !nativeHeight) {
@@ -2126,11 +2041,8 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	// The category snapshot (opaque categories captured before decals, forward categories added after), not the live Masks2 - see CaptureCategories.
 	auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 
-	// Same guide contract as the After Upscaling placement: the colour is display resolution and
-	// already resolved onto the unjittered grid, while depth (the pre-UpscaleDepth snapshot),
-	// motion vectors and the category snapshot are render resolution and still carry this
-	// frame's TAA jitter. Without these the model's motion vectors and every guide lookup are
-	// misscaled below native and swing with the jitter phase every frame.
+	// Color is resolved at display resolution; depth, motion, and categories remain jittered at render
+	// resolution.
 	const auto& jitter = globals::features::upscaling.jitter;
 	Options options = MakeOptions();
 	options.guideWidth = finishedImageGuideWidth;
@@ -2138,18 +2050,14 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 	options.guideJitterOffsetX = -jitter.x;
 	options.guideJitterOffsetY = -jitter.y;
 
-	// The tonemap output is gamma-encoded display colour, except when HDR Display has redirected
-	// kFRAMEBUFFER to its float16 texture and the scene arriving there is linear - the same test
-	// HDROutputCS applies (isSceneLinear || postProcessOutput). Post Processing owning the tonemap
-	// is its effective DisableVanillaTonemapping (see PostProcessing::GetCommonBufferData()).
+	// Match HDROutputCS: the HDR redirect may hold linear color when Linear Lighting or Post Processing
+	// owns the output.
 	const auto& hdrDisplay = globals::features::hdrDisplay;
 	const bool sceneLinear = hdrDisplay.loaded && hdrDisplay.framebufferRedirected &&
 	                         (IsLinearLightingActive() ||
 								 globals::state->GetTonemapOwner() == State::TonemapOwner::kPostProcessing);
 	options.colorDomain = sceneLinear ? ColorDomain::kSceneLinear : ColorDomain::kDisplayGamma;
-	// Proxy Curve belongs to the pre-tonemap placements. Even when the HDR frame arrives here
-	// scene linear, Finished Image's proxy is that finished frame through the identity
-	// transform, never a stored curve such as Vanilla-Plus's Legacy.
+	// Finished Image uses an identity display transform regardless of the stored proxy curve.
 	options.proxyCurve = ProxyCurve::kDisplayMatched;
 
 	// Frame Hold: evaluate one captured frame every frame instead of the live one. The live
@@ -2182,9 +2090,7 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 			options.staticMotion = true;
 		}
 	}
-	// A gamma-encoded frame on the HDR redirect carries highlights up to the display's peak,
-	// with 1.0 at paper white (HDROutputCS PQ-encodes it against paperWhite). Tell the proxy
-	// where that peak is so it rolls highlights off instead of flattening them.
+	// HDR gamma output uses 1.0 at paper white. Supply the display peak for highlight rolloff.
 	if (!sceneLinear && hdrDisplay.loaded && hdrDisplay.framebufferRedirected && hdrDisplay.settings.hdrPaperWhite > 0)
 		options.highlightWhite = static_cast<float>(hdrDisplay.settings.hdrPeakNits) / static_cast<float>(hdrDisplay.settings.hdrPaperWhite);
 
@@ -2210,9 +2116,7 @@ bool NeuralRendering::CaptureFrameHold(ID3D11Texture2D* a_colorIn, ID3D11Texture
 	if (!a_colorIn || !a_depth || !a_depthSRV || !materialCategoriesSnapshot || !materialCategoriesSnapshot->srv)
 		return false;
 
-	// Each copy mirrors its source's own description (bind flags included, as the depth
-	// snapshot itself does) so the whole-resource CopyResource is valid; the colour copy only
-	// needs to be readable, the backend creates its own view over it.
+	// Mirror source descriptions, including depth bind flags, to keep CopyResource valid.
 	const auto makeCopy = [](const D3D11_TEXTURE2D_DESC& a_desc, ID3D11ShaderResourceView* a_sourceSRV,
 							  const char* a_name) -> Texture2D* {
 		try {
@@ -2324,9 +2228,7 @@ Texture2D* NeuralRendering::EnsureFinishedImageTexture(const D3D11_TEXTURE2D_DES
 
 	ReleaseTexture(texture);
 
-	// The backend writes the edit through a typed UAV and the caller copies it back with
-	// CopyResource, which needs a matching single-sample texture. sRGB, typeless and
-	// multisampled targets can't do both, so fail closed rather than write wrong colours.
+	// Require a single-sample typed UAV format compatible with CopyResource.
 	auto device = globals::d3d::device;
 	D3D11_FEATURE_DATA_FORMAT_SUPPORT2 support2{ a_targetDesc.Format, 0 };
 	const bool uavCapable = SUCCEEDED(device->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &support2, sizeof(support2))) &&
@@ -2401,9 +2303,7 @@ void NeuralRendering::ApplyFinishedImage(RE::RENDER_TARGET a_target)
 		return;
 	}
 
-	// The tonemap output is kFRAMEBUFFER (or HDR Display's float16 redirect of it), whose format
-	// differs from kMAIN. CopyResource between mismatched formats is silently dropped, so the
-	// edit goes into a texture matching this target exactly rather than outputTexture.
+	// Match the tonemap target format; kMAIN may differ and cannot be copied back into it.
 	D3D11_TEXTURE2D_DESC targetDesc{};
 	targetTexture->GetDesc(&targetDesc);
 	auto* finishedImage = EnsureFinishedImageTexture(targetDesc);
@@ -2416,23 +2316,10 @@ void NeuralRendering::ApplyFinishedImage(RE::RENDER_TARGET a_target)
 	globals::d3d::context->CopyResource(targetTexture, finishedImage->resource.get());
 }
 
-// ---------------------------------------------------------------------------------------------
 // Frame bracket and comparison capture
-// ---------------------------------------------------------------------------------------------
 
-// Drives the comparison capture from the Main_PostProcessing hook. Called before Upscaling's
-// pass so the forced Neural Rendering state is in place before the frame's upscaling runs,
-// and again after compositing to queue the matching screenshot / advance the state machine.
-// Four frames, symmetric so the pair is a fair A/B:
-//
-//   step 1: Neural Rendering OFF, DLSS history reset   -> warm-up, discarded
-//   step 2: Neural Rendering OFF, converged one frame  -> queue "_NR-off"
-//   step 3: Neural Rendering ON,  DLSS history reset    -> warm-up, discarded
-//   step 4: Neural Rendering ON,  converged one frame   -> queue "_NR-on", restore setting
-//
-// The warm-up frames matter because Feature 18 needs one successful evaluation before it
-// contributes and DLSS needs a frame to settle after a reset; without them the two halves
-// would be captured at different points of convergence.
+// Four-frame comparison: reset and warm up with NR off, capture off, reset and warm up with NR on,
+// then capture on and restore settings. Both captures precede the HUD.
 void NeuralRendering::ServiceComparison(bool a_framePhaseStart)
 {
 	if (a_framePhaseStart) {
@@ -2459,16 +2346,13 @@ void NeuralRendering::ServiceComparison(bool a_framePhaseStart)
 		return;
 	}
 
-	// Frame phase end: post-processing is done and the game UI has not been drawn yet, so
-	// a capture here has no HUD and no CS menu. Grab the frame where applicable, then set
-	// up the next step.
+	// Capture before the HUD, then advance the comparison sequence.
 	switch (compareStep) {
 	case 1:
 		compareStep = 2;
 		settings.enabled = false;  // frame 2: OFF, capture
 		break;
 	case 2:
-		// Runs at the end of Main_PostProcessing, before the game UI is drawn -> no HUD, no CS menu.
 		globals::features::screenshotFeature.Capture(
 			ScreenshotFeature::NeuralRenderingComparisonPath(compareStamp, "_NR-off"), /*forceCleanNoUI=*/true);
 		compareStep = 3;

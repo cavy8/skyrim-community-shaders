@@ -1,7 +1,5 @@
-// Decodes the independently DLSS-upscaled signed residual and applies it to the
-// clean result from the game's normal DLSS history. The inverse is kept away
-// from its poles and invalid carrier samples become a no-op. Alpha remains
-// renderer-owned.
+// Decode the signed SR carrier onto the clean DLSS result. Clamp away from inverse poles; invalid
+// samples leave color unchanged. Preserve renderer alpha.
 
 Texture2D<float4> CleanColor : register(t0);
 Texture2D<float4> ResidualCarrier : register(t1);
