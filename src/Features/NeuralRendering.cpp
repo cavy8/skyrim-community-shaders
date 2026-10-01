@@ -177,7 +177,7 @@ namespace
 		if (a_values.style > 2)
 			a_values.style = 2;
 		SanitizeFloat(a_values.intensity, 0.8f, 0.0f, 2.0f);
-		SanitizeFloat(a_values.colorStrength, 1.0f, 0.0f, 1.0f);
+		SanitizeFloat(a_values.colorStrength, 1.0f, 0.0f, 2.0f);
 		SanitizeFloat(a_values.localToneStrength, 1.0f, 0.0f, 2.0f);
 		SanitizeFloat(a_values.localStructureStrength, 1.0f, 0.0f, 2.0f);
 		SanitizeFloat(a_values.skinStructureStrength, -1.0f, -1.0f, 2.0f);
@@ -191,7 +191,7 @@ namespace
 		if (a_values.proxyCurve >= static_cast<uint>(ProxyCurve::kCount))
 			a_values.proxyCurve = static_cast<uint>(ProxyCurve::kDisplayMatched);
 		for (auto& category : a_values.categories) {
-			SanitizeFloat(category.colorStrength, 1.0f, 0.0f, 1.0f);
+			SanitizeFloat(category.colorStrength, 1.0f, 0.0f, 2.0f);
 			SanitizeFloat(category.transferStrength, 1.0f, 0.0f, 2.0f);
 			SanitizeFloat(category.broadLuminosity, 1.0f, 0.0f, 2.0f);
 			SanitizeFloat(category.detailLuminosity, 1.0f, 0.0f, 2.0f);
