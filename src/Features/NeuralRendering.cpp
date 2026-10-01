@@ -766,7 +766,7 @@ void NeuralRendering::DrawSettings()
 {
 	if (!IsDLSSActive()) {
 		ImGui::TextDisabled("%s", T(TKEY("requires_dlss"),
-									  "DLSS Neural Rendering requires the DLSS upscaling method. Select DLSS in the Upscaling feature first."));
+									  "Select DLSS in Upscaling to use Neural Rendering."));
 		return;
 	}
 
@@ -774,18 +774,18 @@ void NeuralRendering::DrawSettings()
 	const bool featureAvailable = IsFeatureAvailable();
 	if (!backendAvailable) {
 		ImGui::TextDisabled("%s", T(TKEY("unavailable"),
-									  "DLSS Neural Rendering is unavailable. Install a compatible user-supplied nvngx_dlssnr.dll."));
+									  "Neural Rendering is unavailable. Install a compatible nvngx_dlssnr.dll."));
 	} else if (featureAvailable) {
 		ImGui::TextUnformatted(T(TKEY("available"), "DLSS Neural Rendering is available."));
 	} else {
 		ImGui::TextDisabled("%s", T(TKEY("backend_ready"),
-									  "NGX backend ready; feature support will be tested when enabled."));
+									  "Enable Neural Rendering to check compatibility."));
 	}
 
 	ImGui::Checkbox(T(TKEY("enabled"), "Enable Neural Rendering"), &settings.enabled);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("enabled_tooltip"),
-			"Applies DLSS 5 Neural Rendering to the upscaled image. A compatible user-supplied nvngx_dlssnr.dll is required."));
+			"Enhances lighting, color, and detail with DLSS Neural Rendering. Requires a compatible nvngx_dlssnr.dll."));
 	}
 
 	ImGui::BeginDisabled(!backendAvailable);
@@ -795,8 +795,7 @@ void NeuralRendering::DrawSettings()
 	ImGui::EndDisabled();
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("compare_screenshot_tooltip"),
-			"Renders a few extra frames to save a matched pair - one with Neural Rendering off, one on "
-			"- with no HUD or menu, into Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off."));
+			"Saves matching screenshots with Neural Rendering off and on, without the HUD or menus, in Data/DLSS 5 Screenshots/. Causes a brief hitch. Requires DLSS with Frame Generation off."));
 	}
 
 	const bool controlsAvailable = settings.enabled && backendAvailable;
@@ -809,9 +808,7 @@ void NeuralRendering::DrawSettings()
 	ImGui::Checkbox(T(TKEY("show_advanced"), "Show Advanced Settings"), &settings.showAdvanced);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("show_advanced_tooltip"),
-			"Reveals everything that shapes the edit itself - the model's own tuning, the proxy it "
-			"sees, the per-category overrides, and the debug views. The controls left visible decide "
-			"where Neural Rendering runs and how much it costs."));
+			"Show model tuning, color and lighting controls, material adjustments, and diagnostic views."));
 	}
 
 	// --- Pipeline: where, and at what resolution, Neural Rendering runs ---
@@ -826,13 +823,7 @@ void NeuralRendering::DrawSettings()
 		settings.placement = static_cast<uint>(std::clamp(placement, 0, 3));
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("placement_tooltip"),
-			"Before Upscaling lets the game's DLSS reconstruct the NR-edited scene. After Upscaling runs NR at display resolution.\n"
-			"Separate Upscaling runs NR at render resolution, sends only its signed contribution through a second private DLSS history, "
-			"then applies it to the clean main-DLSS result. This experimental mode costs another DLSS evaluation and additional VRAM.\n"
-			"Finished Image runs NR last, after the frame's tonemap - Effects11's, Post Processing's, or vanilla's, whichever owned "
-			"it - instead of the linear HDR scene the other placements approximate with a proxy. Depth of Field and Motion Blur "
-			"already ran earlier in Post Processing's own pipeline (it tonemaps last, not them), so this does not run before them. "
-			"Disabled over the main menu and loading screens."));
+			"Before Upscaling enhances the image before DLSS upscales it. After Upscaling enhances the upscaled image.\nSeparate Upscaling enhances a lower-resolution image and upscales the changes separately. Uses more GPU time and VRAM.\nFinished Image enhances the final image after tone mapping, Depth of Field, and Motion Blur. Does not run on the main menu or loading screens."));
 	}
 
 	const char* resolutionModeLabels[] = {
@@ -844,19 +835,13 @@ void NeuralRendering::DrawSettings()
 		settings.resolutionMode = static_cast<uint>(std::clamp(resolutionMode, 0, 1));
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("resolution_mode_tooltip"),
-			"Uniform runs the model at one scale of the frame it processes.\n"
-			"Per-Axis scales width and height independently (for example 0.65 x 0.85), trading a little "
-			"horizontal detail for a larger reduction of the neural workload."));
+			"Uniform scales model width and height equally. Per-Axis lets you adjust them separately to balance detail and performance."));
 	}
 	if (settings.resolutionMode == 0) {
 		ImGui::SliderFloat(T(TKEY("resolution_scale"), "Resolution Scale"), &settings.resolutionScale, 0.25f, 1.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("resolution_scale_tooltip"),
-				"Resolution the model runs at, relative to the frame it processes.\n"
-				"Below 1.0 the model works on a downsampled copy and only its lighting and colour edit is applied "
-				"to the full-resolution frame, so fine detail is kept; 0.75-0.85 cuts the neural cost by roughly a "
-				"third with little visible loss.\n"
-				"Changes apply once the slider settles."));
+				"Model resolution relative to the image it processes. Lower values improve performance while preserving original image detail, but may reduce enhancement quality. Changes apply when the slider settles."));
 		}
 	} else {
 		ImGui::SliderFloat(T(TKEY("resolution_scale_x"), "Horizontal Scale"), &settings.resolutionScaleX, 0.25f, 1.0f, "%.2f");
@@ -873,14 +858,12 @@ void NeuralRendering::DrawSettings()
 	ImGui::Checkbox(T(TKEY("alternate_frames"), "Alternate Frames (Experimental)"), &settings.alternateFrames);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("alternate_frames_tooltip"),
-			"Runs the model every other frame. In between, its previous result is moved along with the image "
-			"using the game's motion vectors and re-applied, fading only where something new came into view. "
-			"Halves the neural cost; the model's lighting and detail changes can trail fast motion by a frame."));
+			"Runs Neural Rendering every other frame to reduce GPU load. Reuses the previous enhancement between frames; changes may trail fast motion."));
 	}
 
 	ImGui::SliderFloat(T(TKEY("intensity"), "NR Intensity"), &settings.intensity, 0.0f, 2.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("intensity_tooltip"), "Adjust the overall Neural Rendering intensity."));
+		ImGui::TextUnformatted(T(TKEY("intensity_tooltip"), "Adjust the overall enhancement intensity. Changes apply when the slider settles."));
 	}
 
 	// --- Compare: runtime-only aids for judging the edit (never saved) ---
@@ -901,8 +884,7 @@ void NeuralRendering::DrawSettings()
 		ImGui::TextUnformatted(T(TKEY("model_inputs"), "Model Tuning"));
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("model_inputs_tooltip"),
-				"These are handed to the DLSS Neural Rendering model itself, guiding what it does to the frame. "
-				"The strengths further down control how much of its answer Cav's Unity Shaders actually applies."));
+				"Adjust how Neural Rendering enhances the image. Strengths below control how much of the enhancement is applied."));
 		}
 
 		const char* neuralStyles[] = {
@@ -927,7 +909,7 @@ void NeuralRendering::DrawSettings()
 		}
 		ImGui::SliderFloat(T(TKEY("skin_structure"), "Skin Structure Strength"), &settings.skinStructureStrength, -1.0f, 2.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("skin_structure_tooltip"), "Adjust skin structure detail. -1 disables this control."));
+			ImGui::TextUnformatted(T(TKEY("skin_structure_tooltip"), "Adjust skin detail. Set to -1 to use the automatic value."));
 		}
 		ImGui::Checkbox(T(TKEY("automatic_mask"), "Automatic Mask"), &settings.automaticMask);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -948,11 +930,7 @@ void NeuralRendering::DrawSettings()
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("proxy_curve_tooltip"),
-				"Changes the image the model sees on Before, After and Separate Upscaling. Finished Image "
-				"always shows the model the finished frame, so this has no effect there. On Finished Image, "
-				"Vanilla-Plus is luminance-only with its ratio guard.\n"
-				"Display-matched replicates the tonemap and grading the frame is about to receive. Neutwo is "
-				"a neutral exposed curve. Legacy is the September 2026 proxy: per-channel Reinhard, no exposure."));
+				"Choose the color and brightness mapping used before enhancement. Has no effect on Finished Image.\nDisplay-matched follows your tone mapping and color grading. Neutwo uses a neutral curve with exposure adjustment. Legacy uses a fixed curve without exposure adjustment."));
 		}
 
 		// --- Strengths: how much of the model's answer Cav's Unity Shaders applies ---
@@ -960,61 +938,46 @@ void NeuralRendering::DrawSettings()
 		ImGui::TextUnformatted(T(TKEY("strengths"), "Strengths"));
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("strengths_tooltip"),
-				"How much of the model's answer is actually applied to the frame. The per-category overrides "
-				"below multiply on top of these as a final adjustment layer."));
+				"Adjust how much of the enhancement is applied. Per-category strengths multiply these values."));
 		}
 
 		ImGui::SliderFloat(T(TKEY("transfer_strength"), "Transfer Strength"), &settings.transferStrength, 0.0f, 2.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("transfer_strength_tooltip"),
-				"How much of the model's edit is applied to the frame. 0 leaves the frame untouched, 1 applies the "
-				"model's change exactly, 2 exaggerates it. Unlike NR Intensity this takes effect immediately."));
+				"Overall enhancement strength: 0 leaves the image unchanged, 1 applies the full enhancement, and 2 exaggerates it. Applies immediately."));
 		}
 		ImGui::SliderFloat(T(TKEY("color_strength"), "Color Strength"), &settings.colorStrength, 0.0f, 2.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("color_strength_tooltip"),
-				"Blend the model's color changes independently of its bounded lighting and detail changes. 1 is the "
-				"model's own color change; above 1 extrapolates the same change further."));
+				"Adjust color changes independently of lighting and detail. 0 preserves original colors, 1 applies the full color change, and 2 exaggerates it."));
 		}
 		ImGui::SliderFloat(T(TKEY("broad_luminosity"), "Broad Luminosity"), &settings.broadLuminosity, 0.0f, 2.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("broad_luminosity_tooltip"),
-				"Scales the smooth, region-level half of the model's light/dark change - the relighting that makes a "
-				"whole wall or hillside read differently. Lower it if Neural Rendering redistributes light more than "
-				"you want while keeping its texture work."));
+				"Adjust lighting changes across large areas. Lower values preserve more of the original lighting while retaining detail enhancements."));
 		}
 		ImGui::SliderFloat(T(TKEY("detail_luminosity"), "Detail Luminosity"), &settings.detailLuminosity, 0.0f, 2.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("detail_luminosity_tooltip"),
-				"Scales the remainder: the model's own local contrast and micro-detail. Equal to Broad Luminosity "
-				"this is exactly the single Luminosity Strength these two replace, and the extra passes are skipped "
-				"unless a category below splits them."));
+				"Adjust changes to local contrast and fine detail. Match Broad Luminosity to adjust all lighting changes equally."));
 		}
 		if (BandsSeparated()) {
 			ImGui::SliderFloat(T(TKEY("band_radius"), "Band Radius"), &settings.bandRadius, 2.0f, 32.0f, "%.0f");
 			if (auto _tt = Util::HoverTooltipWrapper()) {
 				ImGui::TextUnformatted(T(TKEY("band_radius_tooltip"),
-					"Where the split between the two falls, in model pixels. Larger keeps more of the model's work in "
-					"Detail; smaller moves it into Broad. Scaled with the model resolution, so it covers the same part "
-					"of the screen at every scale. Only used while Broad and Detail differ, here or for any category."));
+					"Adjust the size of lighting changes assigned to Broad and Detail. Larger values put more changes in Detail; smaller values put more in Broad. Only used when their strengths differ."));
 			}
 		}
 		ImGui::Checkbox(T(TKEY("ratio_guard_enabled"), "Enable Ratio Guard"), &settings.ratioGuardEnabled);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("ratio_guard_enabled_tooltip"),
-				"Off by default: the model's light/dark change is applied exactly as it computed it, however far it "
-				"swings - including turning a lit surface fully into shadow. Turn this on to cap that swing with Max "
-				"Ratio below, if a specific scene flashes or flickers; capping it can also crush shadow detail the "
-				"model was correctly reproducing."));
+				"Limit brightness changes to reduce flashes or flicker. May weaken intended lighting and shadow changes. Set the limit with Max Ratio."));
 		}
 		if (settings.ratioGuardEnabled) {
 			ImGui::SliderFloat(T(TKEY("max_ratio"), "Max Ratio"), &settings.maxRatio, 1.0f, 8.0f, "%.2f");
 			if (auto _tt = Util::HoverTooltipWrapper()) {
 				ImGui::TextUnformatted(T(TKEY("max_ratio_tooltip"),
-					"How far the model's light/dark change is allowed to push a pixel, as a multiple of its original "
-					"brightness in either direction (2 means at most half as dark or twice as bright). 1 disables any "
-					"brightness change. Lower this if a specific scene flashes or flickers; raising it further "
-					"re-approaches the guard being off."));
+					"Maximum brightness change in either direction. 2 allows half to twice the original brightness; 1 prevents brightness changes. Lower values provide a stricter limit."));
 			}
 		}
 
@@ -1023,8 +986,7 @@ void NeuralRendering::DrawSettings()
 		ImGui::TextUnformatted(T(TKEY("category_overrides"), "Per-Category Overrides"));
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("category_overrides_tooltip"),
-				"Override the strengths above, and toggle hue guard, independently for each material category. "
-				"The strengths above still apply afterwards as a final multiplier over every category."));
+				"Adjust each material category independently. Category strengths multiply the global strengths. Neutral Colour Guard reduces unwanted color shifts."));
 		}
 
 		DrawCategoryStrengths("Skin", T(TKEY("category_skin"), "Skin"), settings.skinStrengths);
@@ -1038,7 +1000,7 @@ void NeuralRendering::DrawSettings()
 		DrawCategoryStrengths("EverythingElse", T(TKEY("category_everything_else"), "Everything Else"),
 			settings.everythingElseStrengths,
 			T(TKEY("category_everything_else_tooltip"),
-				"Static architecture and clutter, plus water, sky, particles, UI, and anything not covered above."));
+				"Architecture, clutter, water, sky, particles, and other unclassified areas."));
 
 		ImGui::Separator();
 		ImGui::Checkbox(T(TKEY("depth_aware_resolve"), "Depth-Aware Silhouette Preservation (Experimental)"), &settings.depthAwareResolve);
@@ -1056,10 +1018,7 @@ void NeuralRendering::DrawSettings()
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("frame_hold_tooltip"),
-				"Finished Image and After Upscaling only. Freezes the current frame and keeps running the model "
-				"on it, so strength and tuning changes can be judged on an identical image while the game keeps "
-				"running underneath (the HUD stays live). Combine with Split Screen for an on/off comparison of "
-				"the held frame. Not saved."));
+				"Freeze the image to compare tuning changes while the game and HUD keep running. Available with Finished Image and After Upscaling. Combine with Split Screen for an on/off comparison. Not saved."));
 		}
 
 		// --- Debug: inspect the classification, the bands, and the resolve ---
@@ -1069,10 +1028,7 @@ void NeuralRendering::DrawSettings()
 		ImGui::Checkbox(T(TKEY("debug_category_view"), "Show Material Categories"), &settings.debugCategoryView);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("debug_category_view_tooltip"),
-				"Replaces the frame with a flat colour per classified material category (red Skin, orange Hair, "
-				"yellow Eyes, green Foliage, cyan Landscape, purple Equipment, near-black Everything Else). Shows "
-				"the raw per-pixel classification, not the per-category strengths above. Neural Rendering still "
-				"evaluates normally underneath, so this costs the same as leaving it off."));
+				"Show material categories by color: red for Skin, orange for Hair, yellow for Eyes, green for Foliage, cyan for Landscape, purple for Equipment, and near-black for Everything Else. Neural Rendering continues running."));
 		}
 
 		ImGui::BeginDisabled(!finishedImage);
@@ -1080,9 +1036,7 @@ void NeuralRendering::DrawSettings()
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("raw_model_output_tooltip"),
-				"Finished Image only. Writes what the DLSS model actually produced straight to the screen, skipping "
-				"every strength, guard, and blend above entirely. Useful for telling apart a weak model answer from "
-				"an over-conservative resolve - not meant to be left on."));
+				"Show the enhancement before strengths, guards, and blending are applied. Available with Finished Image. Use temporarily to compare with your tuned result."));
 		}
 
 		ImGui::BeginDisabled(!BandsSeparated());
@@ -1091,23 +1045,19 @@ void NeuralRendering::DrawSettings()
 		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("debug_band_tooltip"),
-				"Renders one half of the model's light/dark edit on its own: mid-grey where it asks for no change, "
-				"black and white at two stops down and up. Use it to see what Band Radius is actually separating. "
-				"Only available while Broad and Detail Luminosity differ, globally or for any category. Not saved."));
+				"Show lighting changes in one band: gray means unchanged, black means two stops darker, and white means two stops brighter. Available when Broad and Detail strengths differ. Not saved."));
 		}
 
 		ImGui::Checkbox(T(TKEY("debug_guard_clamp"), "Show Guard Clamping"), &debugState.guardClampView);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("debug_guard_clamp_tooltip"),
-				"Tints every pixel the ratio guard actually caught: red where it stopped the model brightening a "
-				"pixel, blue where it stopped it darkening one. With the guard off nothing is marked. Not saved."));
+				"Highlight brightness changes limited by Ratio Guard: red for brightening, blue for darkening. Requires Ratio Guard. Not saved."));
 		}
 
 		ImGui::Checkbox(T(TKEY("debug_measure_peak"), "Measure Model Output Peak"), &debugState.measurePeak);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("debug_measure_peak_tooltip"),
-				"Reads the brightest luminance the model returned back from the GPU each frame. Above 1.0 means it "
-				"is answering with values outside the 0-1 range it was trained on. Costs a small readback. Not saved."));
+				"Measure the brightest value in the enhancement. Values above 1 exceed the normal 0-1 range. Adds a small performance cost. Not saved."));
 		}
 		if (debugState.measurePeak || debugState.guardClampView) {
 			const auto readback = GetDebugReadback();
@@ -1178,13 +1128,7 @@ void NeuralRendering::DrawPresetControls()
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("preset_tooltip"),
-			"Full applies the model's own answer to the finished frame: its colour work, its local "
-			"contrast, and no guard on how far it may push a pixel.\n"
-			"Vanilla-Plus reproduces the September 2026 build - a luminance-only edit on the upscaled "
-			"scene, through that build's proxy, capped at one stop in either direction.\n"
-			"Presets you save are listed below those two.\n"
-			"A preset only writes values into the settings below; every one of them still works "
-			"afterwards, and editing one marks the preset modified rather than leaving it."));
+			"Full applies color, lighting, and detail enhancements without a brightness limit.\nVanilla-Plus preserves original colors and limits brightness changes to one stop in either direction.\nSaved presets appear below the built-in presets. Adjust settings freely; changed presets are marked modified."));
 	}
 
 	// The combo may have re-read the folder or switched preset; resolve the active one again.
@@ -1218,10 +1162,7 @@ void NeuralRendering::DrawPresetControls()
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("preset_save_as_new_tooltip"),
-			"Stores the current values as a new preset. Each preset is one file in "
-			"Data/SKSE/Plugins/CommunityShaders/NeuralRendering/Presets; share it by copying that "
-			"file, and drop a shared one there to use it (under Mod Organizer 2 saved presets land "
-			"in Overwrite)."));
+			"Save current settings as a new preset in Data/SKSE/Plugins/CommunityShaders/NeuralRendering/Presets/. Copy preset files to share or import them. Mod Organizer 2 saves new files in Overwrite."));
 	}
 	ImGui::SameLine();
 	if (Util::ButtonWithFlash(T(TKEY("preset_copy"), "Copy..."))) {
@@ -1375,9 +1316,7 @@ void NeuralRendering::DrawCategoryStrengths(const char* a_id, const char* a_labe
 	ImGui::Checkbox(T(TKEY("hue_guard"), "Neutral Colour Guard"), &a_strengths.hueGuard);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("hue_guard_tooltip"),
-			"Stops the model from tinting this category's renderer-neutral shading (grey, or near-grey "
-			"shadows) with its own colour bias. Surfaces the model already recolours are unaffected. "
-			"Only Hair guards by default."));
+			"Reduce unwanted tinting of gray and near-gray shading in this category. Enabled for Hair by default."));
 	}
 	ImGui::TreePop();
 }

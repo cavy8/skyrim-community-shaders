@@ -41,10 +41,10 @@ struct NeuralRendering : Feature
 
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
-		return { T("feature.neural_rendering.description", "DLSS 5 Neural Rendering (NGX Feature 18) with a user-supplied nvngx_dlssnr.dll"),
-			{ T("feature.neural_rendering.key_feature_1", "Four pipeline placements, from before upscaling to the finished image"),
-				T("feature.neural_rendering.key_feature_2", "Per-material-category strengths and hue guards"),
-				T("feature.neural_rendering.key_feature_3", "Reduced-resolution model evaluation"),
+		return { T("feature.neural_rendering.description", "Enhance lighting, color, and detail with DLSS Neural Rendering. Requires a compatible nvngx_dlssnr.dll."),
+			{ T("feature.neural_rendering.key_feature_1", "Enhance the image before or after upscaling, or at the final image stage"),
+				T("feature.neural_rendering.key_feature_2", "Adjust enhancements and protect neutral colors by material"),
+				T("feature.neural_rendering.key_feature_3", "Adjust resolution to balance quality and performance"),
 				T("feature.neural_rendering.key_feature_4", "Matched on/off comparison screenshots") } };
 	}
 
