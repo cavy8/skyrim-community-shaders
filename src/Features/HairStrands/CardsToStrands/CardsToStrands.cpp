@@ -3838,6 +3838,7 @@ namespace CardsToStrands
 		}
 		moved = true;
 		const std::vector<Vec3> integrated = position;
+		const std::vector<Vec3> integratedVelocity = velocity;
 
 		// Towards the styled shape: each segment as the one before it carries its styled
 		// direction (the first, as the parent bone does), pulling both its ends.
@@ -3861,17 +3862,19 @@ namespace CardsToStrands
 
 		// Segments at their length, from the root down: only the joint further from it moves, and
 		// what it moved is taken back out of the joint before (DFTL), or the chain gains energy.
-		std::vector<Vec3> correction(n);
+		std::vector<Vec3> correction(n), contact(n);
 		for (uint32_t pass = 0; pass < iterations; ++pass) {
 			for (uint32_t j = 0; j + 1 < n; ++j) {
 				const uint32_t c = j + 1;
 				if (c < pinned)
 					continue;
-				const Vec3 before = position[c];
 				const Vec3 d = position[c] - position[j];
 				const float length = d.Length();
-				if (length > 1e-6f)
+				if (length > 1e-6f) {
+					const Vec3 before = position[c];
 					position[c] = position[j] + d * (rest[j].Length() / length);
+					correction[c] += position[c] - before;
+				}
 				// Out of the colliders, the braid's thickness off them, but never further out than
 				// its styled place lies (a braid styled against the neck stays there), and never
 				// less than half of it (the strands' simulation keeps the same margin).
@@ -3887,16 +3890,25 @@ namespace CardsToStrands
 						continue;
 					away = distance > 1e-6f ? away / distance : Vec3(0.0f, 0.0f, 1.0f);
 					position[c] = nearest + away * clearance;
+					contact[c] = away;
 				}
-				correction[c] += position[c] - before;
 			}
 		}
 
-		// What the constraints moved becomes velocity, as Verlet's would.
+		// What the constraints moved becomes velocity, as Verlet's would, less what the length
+		// constraints of the joint below took (DFTL). A contact only stops a joint: being pushed out
+		// of a collider (an arm swinging into a braid, a body capsule rocking against it on a run)
+		// adds no speed away from it, or every stride kicks the braid off the body.
 		for (uint32_t j = pinned; j < n; ++j) {
 			velocity[j] += position[j] - integrated[j];
 			if (j + 1 < n)
 				velocity[j] -= correction[j + 1] * dftl;
+			if (contact[j].LengthSquared() > 0.0f) {
+				const float out = velocity[j].Dot(contact[j]);
+				const float allowed = std::max(integratedVelocity[j].Dot(contact[j]), 0.0f);
+				if (out > allowed)
+					velocity[j] -= contact[j] * (out - allowed);
+			}
 		}
 
 		previousOffset = offset;

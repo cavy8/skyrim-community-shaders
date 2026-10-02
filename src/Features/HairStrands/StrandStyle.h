@@ -120,9 +120,9 @@ namespace Strands
 		float windResponse = 1.0f;         // how much the weather's wind moves the hair
 
 		// Motion of braids hanging on chains (CardsToStrands::ChainSettings), per 1/60 s step.
-		float chainStiffness = 0.2f;  // pull back towards the styled shape: 0 limp, 1 rigid
-		float chainDamping = 0.08f;   // velocity lost
-		float chainGravity = 400.0f;  // units/s^2
+		float chainStiffness = 0.4f;  // pull back towards the styled shape: 0 limp, 1 rigid
+		float chainDamping = 0.12f;   // velocity lost
+		float chainGravity = 687.0f;  // units/s^2 (Skyrim's)
 
 		bool operator==(const StrandStyle&) const = default;
 

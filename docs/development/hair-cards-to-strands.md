@@ -316,10 +316,10 @@ takes no other part in binding.
 The chain is simulated on the CPU, in the same module so a designer can preview it: points at
 the joints, the pinned ones carried by the parent bone. Each free joint moves with its target
 (where the parent bone alone carries it) plus a velocity of its own relative to it, Verlet-style:
-gravity, `inertia` (0.6) of the target's acceleration taken against it, at most `maxInertia`
-(1600 units/s²), and `damping` of it lost per 1/60 s step. Damping the velocity relative to the
+gravity (687 units/s², Skyrim's), `inertia` (0.4) of the target's acceleration taken against it,
+at most `maxInertia` (400 units/s²), and `damping` (0.12) of it lost per 1/60 s step. Damping the velocity relative to the
 head, not in the world, matters: a braid on a running actor otherwise meets a headwind of
-`damping` x speed per step, about 1400 units/s² at a run against gravity's 400, and streams up
+`damping` x speed per step, about 2000 units/s² at a run against gravity's 687, and streams up
 behind the head. Then `iterations` passes pull each segment towards its styled direction as the
 segment before it carries it (TressFX's local shape constraint: half the pull on each end, the
 pinned ones excepted); `iterations` passes keep each segment's length moving only the joint
@@ -327,16 +327,20 @@ further from the root (follow the leader) and push joints out of capsule collide
 radius, but never further than its styled place lies, and never less than half of it. What the
 constraints moved becomes velocity, less `dftlDamping` (0.9) of the length correction of the
 joint below (DFTL, Müller et al. 2012), without which follow the leader adds energy and the
-chain swings by itself. `Bones` gives each joint's skin-to-world transform: the bind pose turned
+chain swings by itself. A push out of a collider gives no speed away from it beyond what the
+joint already had: as velocity, every stride of a back or arm capsule moving into the braid
+kicked it off the body. `Bones` gives each joint's skin-to-world transform: the bind pose turned
 with its segment and carried to the joint as drawn, the parent bone as it is now plus the offset
 simulated at the last two steps blended by the frame's position between them, so a chain follows
 the head smoothly between steps.
 
 `tools/hair_cards_to_strands/chain_check.cpp` checks it against a head at rest, running,
-starting and stopping, spinning, shaking, running while bobbing, and turning (in 0.15 s, and in
-one frame). A 36-unit braid sags 2 units under gravity and holds still; no motion lifts a joint
-more than 11 units above its styled place (the 0.15 s half turn; under 1 for running, starting
-and stopping, a spin and a snap turn); segments keep their length within 0.3%; joints stay out of
+starting and stopping, spinning, shaking, running while bobbing, turning (in 0.15 s, and in
+one frame), and running with the back rocking 3 units against the braid at a stride's rate. A
+36-unit braid sags 2 units under gravity and holds still; no motion lifts a joint more than 3
+units above its styled place or strays one more than 12 from it (0-7-1's defaults, which felt
+light in game, lifted it 11 and swung it 22 on the half turn, 7 and 14 running with a bob, and
+the rocking back stretched its segments 5%); segments keep their length within 0.3%; joints stay out of
 the head and neck; the chain comes to rest within two seconds of the head stopping. The `0-7-0`
 simulator, which damped world velocity and pulled only the lower end of each segment, failed
 all but rest: braids rose up to 50 units above their styled place (above the head), stretched
