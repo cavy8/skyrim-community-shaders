@@ -214,6 +214,23 @@ namespace CardsToStrands
 		Chain
 	};
 
+	/** @brief Which way a triangle's hair runs, as chosen by hand. */
+	enum class FlowChoice : uint8_t
+	{
+		Auto,
+		Reverse  // root and tip the other way round from what the conversion found
+	};
+
+	/**
+	 * A point hair is attached to by hand (on a tie, a braid, the scalp): card guides with an end
+	 * within `radius` of it grow from it, by that end.
+	 */
+	struct AttachPoint
+	{
+		Vec3 position;
+		float radius = 1.5f;
+	};
+
 	struct Settings
 	{
 		Seeding seeding = Seeding::Auto;
@@ -238,6 +255,10 @@ namespace CardsToStrands
 		// Per mesh triangle, a region chosen by hand; empty, or Auto, lets the conversion decide.
 		// Wins over excludeUV and chainUV.
 		std::vector<RegionChoice> triangleRegions;
+		// Per mesh triangle, which way its hair runs, chosen by hand; empty, or Auto, lets the conversion decide.
+		std::vector<FlowChoice> triangleFlow;
+		// Points card guides are attached to by hand (Scalp seeding).
+		std::vector<AttachPoint> attachPoints;
 	};
 
 	namespace Limits
@@ -396,6 +417,8 @@ namespace CardsToStrands
 		// joints, so with chains the bone palette runs past the mesh's bones: bones chainBoneBase to
 		// chainBoneBase + chainBoneCount - 1 are chain joints.
 		std::vector<Region> triangleRegions;
+		// Per mesh triangle, the way its hair runs (unit, root to tip, along it); zero where it has none.
+		std::vector<Vec3> triangleDirections;
 		std::vector<ChainCurve> chains;
 		std::vector<Tie> ties;
 		uint32_t chainBoneBase = 0;

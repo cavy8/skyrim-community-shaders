@@ -68,8 +68,9 @@ milliseconds on a worker thread and give the same result every time.
 per guide, so per clump), `clumpStrength`, `clumpTwist`, `volume`, `layerJitter`, `segmentLength`,
 `lengthScale`, `tipVariation`, `coverageThreshold`, `seeding` (Auto, Scalp, Area), `flowAxis`,
 `seed`, and what stays cards (see [Hair that is not loose](#hair-that-is-not-loose)):
-`keepWoven`, `excludeUV`, `chainUV` and `triangleRegions`. Hair Strands maps its style onto these
-in `ToSettings`.
+`keepWoven`, `excludeUV`, `chainUV` and `triangleRegions`, and what was chosen by hand about
+roots (see [Choosing the root end and attach points](#choosing-the-root-end-and-attach-points)):
+`triangleFlow` and `attachPoints`. Hair Strands maps its style onto these in `ToSettings`.
 
 `CardMesh::tangents` and `bitangents` (optional) are the tangent frame the cards' normal map is
 read in, as Skyrim's Lighting vertex shader builds it; only the cards kept as cards use them.
@@ -91,6 +92,8 @@ read in, as Skyrim's Lighting vertex shader builds it; only the cards kept as ca
   and `Project(p)` work against it.
 - `headBone`, `headCentre`, `headRadius`: the head collider.
 - `triangleRegions`: what each mesh triangle became (`Region`: Strands, Cards, Chain).
+- `triangleDirections`: the way each mesh triangle's hair runs, root to tip (unit, along the
+  triangle; zero where it has no flow), after any `triangleFlow` choice: for drawing root ends.
 - `chains`: the hanging braids, each a `ChainCurve` (joints in the bind pose, how many lie
   pinned on the head, the braid's thickness, the bone it hangs from, its first bone number).
 - `ties`: where hair is gathered and tails grow from (a ponytail's tie, a braid's end).
@@ -279,6 +282,35 @@ nothing, so its chosen triangles show neither cards nor strands. A designer can 
 let the user paint `RegionChoice`s per triangle (or pick a piece and set all its triangles), and
 convert again: triangle indices do not change with the other settings.
 
+A choice changes only the triangles chosen. `FindWoven` finds braids, twists, ties and buns from
+every triangle, as if nothing were chosen, and only then takes the chosen triangles out of the
+pieces it found (`WovenPiece::chosenAway`). A braid partly chosen as cards is still a braid, its
+chain built through all of it; a braid chosen away whole keeps its centre line (`lines`) without
+a chain, so hair ending at it is still gathered and hair below its end still grows from it.
+Pieces found get chains before pieces chosen as Chain. Random numbers are drawn per root edge,
+per triangle and per card guide (`KeyedRandom`, keyed by where the guide starts), not from one
+stream for the mesh, so a choice that changes how many numbers one part of the mesh draws does
+not reseed the rest. What a choice can still change elsewhere is hair whose streamline runs
+through the chosen triangles: chosen cards are not traced, so a streamline stops there and the
+hair past them starts anew (or is gathered into them). On Apachii hair03, painting the top 30%
+of the hanging braid as Cards turned all 762 triangles of the gathered cap to strands before;
+now it changes no other triangle, nor does painting the whole braid as Cards; painting the top
+30% of the cap itself as Cards moves 40 of the other 2,500 triangles, where its streamlines ran.
+
+### Choosing the root end and attach points
+
+`Settings::triangleFlow` (`FlowChoice` per mesh triangle: Auto, Reverse) turns a triangle's flow
+round after `ChooseFlow`: its hair's root is where the conversion found its tip. For cards traced
+from the wrong end, whose hair then roots on the head or on a card at its tip.
+
+`Settings::attachPoints` (a position and a radius each) attaches hair by hand (Scalp seeding).
+Before binding, each card guide with an end within a point's radius (the nearer end, of the
+nearest point) grows from that point by that end: reversed if it was its tip, the point added
+as its first sample, `Tied` to a tie at the point (`AttachGuides`). The ties are made after
+`FindTies` (`TieAttached`), so none pulls other hair in; a point within `kGatherReach` of a
+chain's triangles puts its tie on that chain, and the hair swings with the braid. Attached hair
+takes no other part in binding.
+
 ### Chains in motion (`ChainSimulator`)
 
 The chain is simulated on the CPU, in the same module so a designer can preview it: points at
@@ -311,6 +343,12 @@ all but rest: braids rose up to 50 units above their styled place (above the hea
 segments by up to 88% on a snap turn, and were still swinging two seconds after a run stopped.
 
 ## Results
+
+The numbers below were measured before random numbers were keyed per root edge, triangle and
+card guide ([Choosing regions by hand](#choosing-regions-by-hand)). Conversions now differ draw
+for draw: on seven Apachii meshes (01, 03, 05, 09, 12, 20, 40) strand counts and median
+lengths stay within the spread the earlier generator showed across seeds 1 to 3, and the
+regions found are the same but for a few triangles. `check.py` has not been run again since.
 
 `python tools/hair_cards_to_strands/check.py` on the synthetic styles in `synth.py` (a skull
 ellipsoid of radii 6, 7.2 and 7.6 with layered cards on it), compared with the `0-5-1` generator:
@@ -365,8 +403,9 @@ ties among its curls.
 
 - `convert.cpp`: a command-line front end, `cards_to_strands <mesh.ctsm> <out.ctsr>
 [key=value ...]` (keys as in `Settings`, with `keepWoven=0|1` and `excludeUV` / `chainUV`
-rectangles as `minU,minV,maxU,maxV`, and `regions=<file>`: one `RegionChoice` byte per mesh
-triangle, as `triangleRegions`). Build:
+rectangles as `minU,minV,maxU,maxV`, `regions=<file>`: one `RegionChoice` byte per mesh
+triangle, as `triangleRegions`, `flow=<file>`: one `FlowChoice` byte per triangle, and
+`attach=x,y,z[,radius]`, more than once for more points). Build:
   `g++ -std=c++20 -O2 -I src/Features/HairStrands/CardsToStrands tools/hair_cards_to_strands/convert.cpp src/Features/HairStrands/CardsToStrands/CardsToStrands.cpp -o cards_to_strands`.
 - `ctsio.py`: writes meshes (`.ctsm`) and reads results (`.ctsr`); the formats are in its
   docstring.

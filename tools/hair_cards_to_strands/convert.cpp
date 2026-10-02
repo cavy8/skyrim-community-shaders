@@ -12,7 +12,9 @@
 // seeding=auto|scalp|area, flowAxis=auto|v|-v|u|-u, keepWoven=0|1, and excludeUV / chainUV
 // rectangles as minU,minV,maxU,maxV (each may be given more than once), and regions=<file>: one
 // byte per mesh triangle, a CardsToStrands::RegionChoice (0 Auto, 1 Strands, 2 Cards, 3 Chain),
-// as Settings::triangleRegions. The file formats are
+// as Settings::triangleRegions; flow=<file>: one byte per mesh triangle, a FlowChoice (0 Auto,
+// 1 Reverse), as Settings::triangleFlow; and attach=x,y,z[,radius] (more than once for more), as
+// Settings::attachPoints. The file formats are
 // written and read by tools/hair_cards_to_strands/ctsio.py; see that file for the layout.
 
 #include "CardsToStrands.h"
@@ -145,17 +147,30 @@ namespace
 			io_settings.triangleRegions.clear();
 			for (const char byte : bytes)
 				io_settings.triangleRegions.push_back(static_cast<RegionChoice>(std::min<uint8_t>(static_cast<uint8_t>(byte), 3)));
-		} else if (a_key == "excludeUV" || a_key == "chainUV") {
-			float values[4]{};
-			size_t at = 0;
-			for (float& value : values) {
-				if (at > a_value.size())
-					throw std::runtime_error(a_key + " takes minU,minV,maxU,maxV");
+		} else if (a_key == "flow") {
+			std::ifstream in(a_value, std::ios::binary);
+			if (!in)
+				throw std::runtime_error("cannot open " + a_value);
+			const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+			io_settings.triangleFlow.clear();
+			for (const char byte : bytes)
+				io_settings.triangleFlow.push_back(static_cast<FlowChoice>(std::min<uint8_t>(static_cast<uint8_t>(byte), 1)));
+		} else if (a_key == "excludeUV" || a_key == "chainUV" || a_key == "attach") {
+			std::vector<float> values;
+			for (size_t at = 0; at <= a_value.size();) {
 				const size_t comma = a_value.find(',', at);
-				value = std::stof(a_value.substr(at, comma - at));
+				values.push_back(std::stof(a_value.substr(at, comma - at)));
 				at = comma == std::string::npos ? a_value.size() + 1 : comma + 1;
 			}
-			(a_key == "chainUV" ? io_settings.chainUV : io_settings.excludeUV).push_back({ values[0], values[1], values[2], values[3] });
+			if (a_key == "attach") {
+				if (values.size() != 3 && values.size() != 4)
+					throw std::runtime_error("attach takes x,y,z[,radius]");
+				io_settings.attachPoints.push_back({ Vec3(values[0], values[1], values[2]), values.size() == 4 ? values[3] : AttachPoint{}.radius });
+			} else {
+				if (values.size() != 4)
+					throw std::runtime_error(a_key + " takes minU,minV,maxU,maxV");
+				(a_key == "chainUV" ? io_settings.chainUV : io_settings.excludeUV).push_back({ values[0], values[1], values[2], values[3] });
+			}
 		} else
 			throw std::runtime_error("unknown setting " + a_key);
 	}
