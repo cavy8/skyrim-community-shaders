@@ -541,14 +541,16 @@ float NeuralSilhouetteWeight(Texture2D<float> guideDepth, SamplerState linearCla
 }
 
 /**
- * Fade stale enhancements by comparing reprojected proxy luminance with fresh color under the same
+ * Fade stale enhancements by comparing reprojected proxy color with fresh color under the same
  * display transform.
  */
 float NeuralStaleEditWeight(float4 proxyColor, float4 originalColor, uint domain, uint space, NeuralDisplayTransform display)
 {
-	float staleLuma = dot(NeuralModelToLinear(proxyColor.rgb, space), kNeuralLuma);
-	float freshLuma = dot(EncodeNeuralProxy(originalColor.rgb, domain, display), kNeuralLuma);
-	float difference = abs(staleLuma - freshLuma);
+	float3 stale = NeuralModelToLinear(proxyColor.rgb, space);
+	float3 fresh = EncodeNeuralProxy(originalColor.rgb, domain, display);
+	float staleLuma = dot(stale, kNeuralLuma);
+	float freshLuma = dot(fresh, kNeuralLuma);
+	float difference = dot(abs(stale - fresh), kNeuralLuma);
 	return saturate(1.0 - (difference * 2.5) / (staleLuma + freshLuma + 0.05));
 }
 

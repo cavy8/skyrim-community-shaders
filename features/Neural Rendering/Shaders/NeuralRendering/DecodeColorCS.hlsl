@@ -1,5 +1,6 @@
 #include "Common/NeuralRenderingCategories.hlsli"
 #include "NeuralRendering/ColorTransfer.hlsli"
+#include "NeuralRendering/TemporalReprojection.hlsli"
 #include "NeuralRendering/TransferParams.hlsli"
 
 Texture2D<float4> ModelColor : register(t0);                   // Feature 18 answer, display-referred proxy domain.
@@ -11,6 +12,7 @@ Texture2D<float2> VanillaAdaptation : register(t5);            // Same inputs En
 StructuredBuffer<float> PostProcessAdaptation : register(t6);  // so a stale proxy can be compared with a fresh encode.
 Texture2D<float2> MotionVectors : register(t7);                // Game motion vectors at the guide resolution (current -> previous, normalised UV).
 Texture2D<float2> ToneLow : register(t8);                      // y: the edge-aware blur of the edit (FilterToneDataCS); x unused here.
+Texture2D<float4> PreviousGuides : register(t9);               // Previous raw motion, depth, and material category.
 RWTexture2D<float4> DestinationColor : register(u0);
 // Debug statistics: clamp count, sample count, and asuint peak luminance. Sampled on an 8x8 grid when
 // enabled.
@@ -112,11 +114,21 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 	// the clean input.
 	float2 answerUV = uv;
 	bool answerOnScreen = true;
+	float temporalWeight = 1.0;
 	if (StaleAnswer != 0 && all(GuideSize > 0)) {
 		float2 motionCoord = NeuralGuidePosition(dispatchThreadID.xy, GuideSize, ActiveSize, GuideJitterOffset) - 0.5;
 		int2 motionTexel = clamp((int2)round(motionCoord), int2(0, 0), int2(GuideSize) - 1);
 		answerUV = uv + MotionVectors.Load(int3(motionTexel, 0));
-		answerOnScreen = all(answerUV >= 0.0) && all(answerUV <= 1.0);
+		int2 previousTexel;
+		answerOnScreen = NeuralPreviousGuideTexel(answerUV, GuideSize, PreviousGuideJitter.xy, previousTexel);
+		temporalWeight = 0.0;
+		if (answerOnScreen) {
+			float4 previous = PreviousGuides.Load(int3(previousTexel, 0));
+			uint category = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(motionTexel, 0)));
+			temporalWeight = NeuralTemporalSurfaceWeight(GuideDepth.Load(int3(motionTexel, 0)), category, previous);
+		}
+		if (!answerOnScreen)
+			answerUV = uv;  // Never pass a non-finite motion coordinate to a texture sampler.
 	}
 	float4 model = ModelColor.SampleLevel(LinearClampSampler, answerUV, 0);
 	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, answerUV, 0);
@@ -189,7 +201,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 			ProxyCurve);
 		displayExposure = display.exposure;
 		if (StaleAnswer != 0)
-			editWeight *= answerOnScreen ? NeuralStaleEditWeight(proxy, original, ColorDomain, modelSpace, display) : 0.0;
+			editWeight *= temporalWeight * NeuralStaleEditWeight(proxy, original, ColorDomain, modelSpace, display);
 	}
 	if (DepthAwareResolve != 0 && all(GuideSize > 0)) {
 		// Left fractional so NeuralSilhouetteWeight can blend across the guide/active resolution mismatch.

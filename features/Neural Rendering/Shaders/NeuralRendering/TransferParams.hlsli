@@ -36,6 +36,7 @@ cbuffer TransferParams : register(b0)
 	// x: Detail Luminosity, y: band radius in model texels, z: non-zero when the band textures
 	// hold data for this evaluation, w: spare.
 	float4 BandParams;
+	float4 PreviousGuideJitter;  // xy: preceding guide raster's absolute jitter in guide texels; zw spare.
 };
 
 /** The model-space encoding this evaluation uses (see ColorTransfer.hlsli, NeuralModelSpace). */
