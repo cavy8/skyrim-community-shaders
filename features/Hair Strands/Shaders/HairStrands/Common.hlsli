@@ -39,6 +39,7 @@ namespace HairStrands
 		float Random;
 		uint Guide;  // the simulated strand this one follows (itself for a guide)
 		float ClumpRandom;
+		float Width;  // relative: scales RootWidth and TipWidth (1 for converted hair)
 	};
 
 	struct SkinnedPoint

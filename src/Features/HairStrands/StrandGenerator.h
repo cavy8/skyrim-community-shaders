@@ -30,8 +30,9 @@ namespace Strands
 		float random;    // uniform [0, 1), stable per strand
 		uint32_t guide;  // the simulated strand this one follows (itself for a guide)
 		float clumpRandom;
+		float width;  // relative: scales the style's root and tip widths (1 for converted hair; the designer's Set Thickness)
 	};
-	static_assert(sizeof(StrandInfo) == 16);
+	static_assert(sizeof(StrandInfo) == 20);
 
 	/** @brief Mirrors CardVertex in HairStrands/Common.hlsli: a vertex of the cards kept as cards (braids, ties, gathered hair). */
 	struct CardVertex
@@ -81,6 +82,8 @@ namespace Strands
 		std::vector<CardsToStrands::ChainCurve> chains;
 		uint32_t chainBoneBase = 0;
 		uint32_t chainBoneCount = 0;
+
+		std::string sourceFile;  // the .skhair file it was loaded from; empty if converted here
 
 		uint32_t StrandCount() const { return static_cast<uint32_t>(strands.size()); }
 	};

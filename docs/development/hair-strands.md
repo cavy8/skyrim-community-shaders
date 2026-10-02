@@ -914,10 +914,40 @@ with no `match` applies to all hair.
     styles take their hair type's TressFX settings. TressFX's damping is saved as
     `dampingCoeff` because the old `damping` (0.4: of the velocity relative to the head, per
     1/60 s) would read as very heavy air drag.
+-   `asset` (since `0-9-0`): a `.skhair` file, relative to `Data`, that the Skyrim Hair
+    Designer (skyrim-hair-designer) exported for this hair; its `docs/FORMAT.md` has the
+    layout. See [Hair from the designer](#hair-from-the-designer).
 -   In-game editor: select a hair in view, edit it, and the change applies to every actor
     wearing it. Render fields apply live; generation fields apply when the slider is
     released. **Save** writes the fully resolved style, matched on that exact head part,
     model and shape, to `UserStyles.json`.
+
+### Hair from the designer
+
+A style entry naming an `asset` loads the hair from that file instead of converting it
+(`AssetFile.cpp`). It is matched like any style, so it ships as a style file here, e.g.
+`{ "match": { "model": "...\\hair03.nif" }, "asset": "meshes\\...\\hair03.skhair" }`. The file
+holds the designer's conversion part by part, a part being the shapes it converted together (one
+texture, as [What converts](#what-converts) groups them in game); its records are `RestPoint`,
+`StrandInfo` (with its width in an array of its own) and `CardVertex`, so loading copies them and
+maps bones: each bone name to the skin instance's bone of that name (the head bone, with a
+warning, when there is none), chain joints after the skin instance's bones.
+
+-   The generation job still reads the texture back: strands take their colour from it. The flow
+    map and `CardsToStrands` are skipped.
+-   The part holding the converting shape must list every shape converted with it here, with the
+    vertex and triangle counts they have now, and its strands must have at most 32 points
+    (`MAX_POINTS`). Otherwise the file is logged and the hair converts as usual. A shape in no part
+    keeps its cards (hairlines, anything the designer did not convert). A shape the game converts on
+    its own but the file holds as a part's second shape gets an asset with no strands and no cards:
+    its cards are hidden, and the part's first shape draws it.
+-   The style's render and motion fields still apply; its generation fields are ignored.
+-   `StrandInfo.width` (the designer's Set Thickness, 1 for converted hair) scales `rootWidth` and
+    `tipWidth` per strand.
+-   The asset key takes the file's name and write time: a file exported again loads when styles
+    next reload.
+-   Log: `loaded from <file>: N strands x P points ...`, or `in <file>, drawn by its part's first
+    shape`, or `<reason>; converting it instead`.
 
 ## Hair types
 
@@ -1137,6 +1167,10 @@ Check these first in game:
     on the bind pose, so one bone carries a shape into the host's skin space. A hosted shape's
     strands offset from where its cards were would point here. The `converting N shapes on one
     texture together` log line names each group.
+-   Hair loaded from a `.skhair` file (`0-9-0`) sits where the designer showed it: the designer
+    writes positions in the skin space of the part's first shape as it reads the NIF, and the
+    game keeps that shape's vertices in the same space. Checked only offline: hair03's export
+    loads with every bone mapped and every index in range (a harness around `AssetFile.cpp`).
 
 ## Not done (candidates)
 

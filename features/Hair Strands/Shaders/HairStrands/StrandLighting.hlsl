@@ -195,7 +195,7 @@ VS_OUTPUT main(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	const float3 viewDir = position / max(distance, 1e-4);
 	float3 sideDir = cross(tangent, viewDir);
 	sideDir = dot(sideDir, sideDir) > 1e-8 ? normalize(sideDir) : binormal;
-	const float width = max(lerp(RootWidth, TipWidth, t) * WidthScale, MinWidthPerDistance * distance);
+	const float width = max(lerp(RootWidth, TipWidth, t) * info.Width * WidthScale, MinWidthPerDistance * distance);
 	position += sideDir * (0.5 * width * side);
 	previousPosition += sideDir * (0.5 * width * side);
 

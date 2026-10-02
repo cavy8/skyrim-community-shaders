@@ -135,7 +135,7 @@ namespace Strands
 			o_asset.points.push_back(Pack(point));
 		o_asset.strands.reserve(result.strands.size());
 		for (const auto& strand : result.strands)
-			o_asset.strands.push_back({ strand.length, strand.random, strand.guide, strand.clumpRandom });
+			o_asset.strands.push_back({ strand.length, strand.random, strand.guide, strand.clumpRandom, 1.0f });
 		o_asset.guideCount = result.guideCount;
 		o_asset.headBone = result.headBone;
 		o_asset.headCentre = ToFloat3(result.headCentre);

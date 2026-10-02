@@ -108,6 +108,14 @@ namespace Strands
 		Hash(hash, keepWoven);
 		for (const auto& rect : chainUV)
 			Hash(hash, rect);
+		if (!asset.empty()) {
+			// A file exported again is a new asset.
+			HashBytes(hash, asset.data(), asset.size());
+			std::error_code ec;
+			const auto written = std::filesystem::last_write_time(Util::PathHelpers::GetDataPath() / asset, ec);
+			if (!ec)
+				Hash(hash, written.time_since_epoch().count());
+		}
 		return hash;
 	}
 
@@ -333,6 +341,8 @@ namespace Strands
 		};
 		o_json["excludeUV"] = rects(a_style.excludeUV);
 		o_json["chainUV"] = rects(a_style.chainUV);
+		if (!a_style.asset.empty())
+			o_json["asset"] = a_style.asset;
 	}
 
 	StrandStyle StyleFromJson(const json& a_json, HairPreset a_autoPreset)
@@ -407,6 +417,14 @@ namespace Strands
 		};
 		readRects("excludeUV", style.excludeUV);
 		readRects("chainUV", style.chainUV);
+		if (auto it = a_json.find("asset"); it != a_json.end() && it->is_string()) {
+			const std::filesystem::path path(it->get<std::string>());
+			// Inside Data only: no drive, no root, no way up.
+			if (path.empty() || path.has_root_name() || path.has_root_directory() || std::ranges::any_of(path, [](const std::filesystem::path& a_part) { return a_part == ".."; }))
+				logger::warn("[HairStrands] Ignoring asset \"{}\": it must be a path relative to Data", it->get<std::string>());
+			else
+				style.asset = it->get<std::string>();
+		}
 
 		Sanitize(style);
 		return style;

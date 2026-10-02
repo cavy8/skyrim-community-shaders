@@ -85,6 +85,10 @@ namespace Strands
 		// them. Braids hanging free swing on chains of their own.
 		bool keepWoven = true;
 		std::vector<UVRect> chainUV;  // triangles kept as cards that hang on a chain
+		// A .skhair file (the Skyrim Hair Designer's export), relative to Data: the hair is loaded
+		// from it rather than converted, and the generation fields above are ignored. Hair the file
+		// does not cover keeps its cards; a file that no longer fits the mesh is ignored (logged).
+		std::string asset;
 
 		// Render: the vertex shader applies these every frame.
 		float rootWidth = 0.06f;
@@ -123,7 +127,7 @@ namespace Strands
 
 		/** @brief True if a change from this style to another requires regenerating the asset. */
 		bool GenerationDiffers(const StrandStyle& a_other) const;
-		/** @brief Hash of the generation fields (the part of the asset cache key a style owns). */
+		/** @brief Hash of the generation fields and the asset file's name and write time (the part of the asset cache key a style owns). */
 		uint64_t GenerationHash() const;
 	};
 

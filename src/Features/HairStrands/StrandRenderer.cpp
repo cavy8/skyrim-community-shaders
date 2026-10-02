@@ -4,6 +4,7 @@
 #include <bit>
 #include <sstream>
 
+#include "AssetFile.h"
 #include "Deferred.h"
 #include "Features/ReverseZ.h"
 #include "MeshExtract.h"
@@ -560,7 +561,8 @@ namespace Strands
 		};
 
 		std::string key;
-		uint32_t serial = 0;  // tells a replaced asset from its successor
+		uint32_t serial = 0;          // tells a replaced asset from its successor
+		std::vector<ShapeId> shapes;  // the shapes it stands for, the drawing one first
 		State state = State::Queued;
 		std::string error;
 		HairMeshData mesh;              // released once the job starts
@@ -942,15 +944,24 @@ namespace Strands
 					asset->colour = CreateColourTexture(colourImage, asset->colourBytes);
 				asset->state = Asset::State::Ready;
 				const auto& conversion = data->conversion;
-				logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}{}; card guides: {} traced, {} repeats dropped, {} on the scalp, {} carrying on from rooted hair, {} following rooted hair, {} bridged to the scalp, {} too far from it, {} gathered into braids or ties, {} growing from them", asset->key, asset->strandCount,
-					asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "scalp", asset->guideCount, asset->headRadius,
-					asset->colour ? std::format("{}x{} strand colour", colourImage.width, colourImage.height) : std::string("card colour"),
-					data->flowMapShare > 0.0f ? std::format(", flow map on {:.0f}% of the hair", data->flowMapShare * 100.0f) : std::string(),
-					conversion.cardGuides, conversion.redundantGuides, conversion.rootedGuides, conversion.continuedGuides, conversion.mergedGuides, conversion.bridgedGuides, conversion.droppedGuides,
-					conversion.gatheredGuides, conversion.tiedGuides);
-				if (asset->cardIndexCount > 0)
-					logger::info("[HairStrands] {}: {} of {} triangles kept as cards ({} braids, ties or buns), {} of them on {} chains ({} joints)", asset->key, conversion.cardTriangles + conversion.chainTriangles,
-						conversion.totalTriangles, conversion.wovenPieces, conversion.chainTriangles, asset->chains.size(), asset->chainBoneCount);
+				if (!data->sourceFile.empty()) {
+					if (asset->strandCount == 0 && asset->cardIndexCount == 0)
+						logger::info("[HairStrands] {}: in {}, drawn by its part's first shape", asset->key, data->sourceFile);
+					else
+						logger::info("[HairStrands] {}: loaded from {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}; {} triangles kept as cards, {} chains ({} joints)", asset->key, data->sourceFile,
+							asset->strandCount, asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "scalp", asset->guideCount, asset->headRadius,
+							asset->colour ? std::format("{}x{} strand colour", colourImage.width, colourImage.height) : std::string("card colour"), asset->cardIndexCount / 3, asset->chains.size(), asset->chainBoneCount);
+				} else {
+					logger::info("[HairStrands] {}: {} strands x {} points (avg length {:.1f}, {} seeding), {} guides, head collider radius {:.1f}, {}{}; card guides: {} traced, {} repeats dropped, {} on the scalp, {} carrying on from rooted hair, {} following rooted hair, {} bridged to the scalp, {} too far from it, {} gathered into braids or ties, {} growing from them", asset->key, asset->strandCount,
+						asset->pointsPerStrand, asset->averageLength, asset->seedingUsed == SeedMode::Area ? "area" : "scalp", asset->guideCount, asset->headRadius,
+						asset->colour ? std::format("{}x{} strand colour", colourImage.width, colourImage.height) : std::string("card colour"),
+						data->flowMapShare > 0.0f ? std::format(", flow map on {:.0f}% of the hair", data->flowMapShare * 100.0f) : std::string(),
+						conversion.cardGuides, conversion.redundantGuides, conversion.rootedGuides, conversion.continuedGuides, conversion.mergedGuides, conversion.bridgedGuides, conversion.droppedGuides,
+						conversion.gatheredGuides, conversion.tiedGuides);
+					if (asset->cardIndexCount > 0)
+						logger::info("[HairStrands] {}: {} of {} triangles kept as cards ({} braids, ties or buns), {} of them on {} chains ({} joints)", asset->key, conversion.cardTriangles + conversion.chainTriangles,
+							conversion.totalTriangles, conversion.wovenPieces, conversion.chainTriangles, asset->chains.size(), asset->chainBoneCount);
+				}
 			} catch (const std::exception& e) {
 				asset->state = Asset::State::Failed;
 				asset->error = "GPU upload failed";
@@ -975,13 +986,32 @@ namespace Strands
 							logger::warn("[HairStrands] {}: {}; strands fill the whole cards", asset->key, coverageError);
 						asset->readback = {};
 					}
-					if (!asset->flowReadback.bytes.empty()) {
-						std::string flowError;
-						if (!DecodeFlow(asset->flowReadback, asset->mesh.flow, flowError))
-							logger::warn("[HairStrands] {}: flow map: {}; flow follows the texture", asset->key, flowError);
-						asset->flowReadback = {};
+					bool loaded = false;
+					if (!asset->style.asset.empty()) {
+						const auto path = Util::PathHelpers::GetDataPath() / asset->style.asset;
+						std::string loadError;
+						switch (LoadAssetFile(path, asset->shapes, asset->mesh.boneNames, *data, loadError)) {
+						case AssetLoad::Loaded:
+							loaded = ok = true;
+							break;
+						case AssetLoad::NotCovered:
+							loaded = true;
+							error = std::format("{} has no part for {}; it keeps its cards", asset->style.asset, asset->shapes.front().name);
+							break;
+						case AssetLoad::Rejected:
+							logger::warn("[HairStrands] {}: {}; converting it instead", asset->key, loadError);
+							break;
+						}
 					}
-					ok = GenerateStrands(asset->mesh, asset->style, *data, error);
+					if (!loaded) {
+						if (!asset->flowReadback.bytes.empty()) {
+							std::string flowError;
+							if (!DecodeFlow(asset->flowReadback, asset->mesh.flow, flowError))
+								logger::warn("[HairStrands] {}: flow map: {}; flow follows the texture", asset->key, flowError);
+						}
+						ok = GenerateStrands(asset->mesh, asset->style, *data, error);
+					}
+					asset->flowReadback = {};
 				} catch (const std::exception& e) {
 					error = e.what();  // bad_alloc on an absurd mesh must not reach the render thread
 				}
@@ -1228,6 +1258,11 @@ namespace Strands
 		asset->key = key;
 		asset->serial = ++nextAssetSerial;
 		asset->style = a_instance.style;
+		asset->shapes.push_back({ a_instance.key.shape, a_instance.key.vertexCount, a_instance.key.triangleCount });
+		for (const auto& member : members) {
+			if (member.geometry != a_geometry)
+				asset->shapes.push_back({ member.name, member.vertexCount, member.triangleCount });
+		}
 		asset->lastUsedFrame = frame;
 		std::string error;
 		bool extracted = ExtractHairMesh(a_geometry, asset->mesh, error);
@@ -1247,8 +1282,10 @@ namespace Strands
 		} else {
 			if (!shapes.empty())
 				logger::info("[HairStrands] {}: converting {} shapes on one texture together", key, members.size());
-			const bool coverage = asset->style.coverageThreshold > 0.0f && BeginCoverageReadback(a_pass, asset->readback, error);
-			if (asset->style.coverageThreshold > 0.0f && !coverage)
+			// Hair loaded from a file needs the texture too: strands take their colour from it.
+			const bool wantCoverage = asset->style.coverageThreshold > 0.0f || !asset->style.asset.empty();
+			const bool coverage = wantCoverage && BeginCoverageReadback(a_pass, asset->readback, error);
+			if (wantCoverage && !coverage)
 				logger::info("[HairStrands] {}: {}; strands fill the whole cards", a_instance.key.ToString(), error);
 			std::string flowError;
 			const bool flow = asset->style.flowAxis == FlowAxis::Auto && BeginFlowReadback(a_pass, asset->flowReadback, flowError);
