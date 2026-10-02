@@ -599,6 +599,8 @@ namespace CardsToStrands
 			 * grows strands from the tie.
 			 */
 			void FindTies(const Scalp& a_scalp, std::vector<uint32_t>& io_floating);
+			/** @brief True if most of a card guide's own path lies over triangles chosen as Strands: it is never gathered. */
+			bool ChosenAsStrands(uint32_t a_guide) const;
 
 			// Hair that is not loose.
 			/** @brief Each triangle's region as chosen by hand: Settings::triangleRegions, excludeUV, chainUV. */
@@ -1898,7 +1900,7 @@ namespace CardsToStrands
 					path.pop_back();  // now at p0, which the guide's own path starts with
 					path.insert(path.end(), guide.path.begin(), guide.path.end());
 					Recompute(path);
-					guide.kind = upstream.kind == GuideKind::Gathered ? GuideKind::Gathered : GuideKind::Merged;
+					guide.kind = upstream.kind == GuideKind::Gathered && !ChosenAsStrands(g) ? GuideKind::Gathered : GuideKind::Merged;
 					guide.ancestor = upstream.ancestor;
 					guide.path = std::move(path);
 					boundNow.push_back(g);
@@ -2659,8 +2661,9 @@ namespace CardsToStrands
 			// leaves the head), or inside a hanging braid, is gathered into it: pulled tight, it
 			// stays cards. So is hair starting there that stays on the head: on a tight cap the
 			// cards run either way, into the tie or out from it.
-			for (auto& guide : guides) {
-				if (guide.kind != GuideKind::Rooted)
+			for (uint32_t g = 0; g < guides.size(); ++g) {
+				auto& guide = guides[g];
+				if (guide.kind != GuideKind::Rooted || ChosenAsStrands(g))
 					continue;
 				const Vec3 tip = guide.path.back().position;
 				const int32_t piece = nearest(tip, false);
@@ -2686,7 +2689,10 @@ namespace CardsToStrands
 				}
 				const float tipHeight = a_scalp.Height(guide.path.back().position);
 				if (tipHeight < kAttachHeight || tipHeight < a_scalp.Height(start) - 0.5f) {
-					guide.kind = GuideKind::Gathered;
+					if (ChosenAsStrands(g))
+						left.push_back(g);  // binds as any other floating guide
+					else
+						guide.kind = GuideKind::Gathered;
 					continue;
 				}
 				const int32_t chain = woven[piece].chain;
@@ -2820,8 +2826,10 @@ namespace CardsToStrands
 				Tie tie;
 				tie.centre = centre;
 				tie.gathered = static_cast<uint32_t>(feeders.size());
-				for (uint32_t h : feeders)
-					guides[h].kind = GuideKind::Gathered;
+				for (uint32_t h : feeders) {
+					if (!ChosenAsStrands(h))
+						guides[h].kind = GuideKind::Gathered;
+				}
 				for (uint32_t g : tail) {
 					const Vec3 start = guides[g].path[0].position;
 					guides[g].kind = GuideKind::Tied;
@@ -2843,8 +2851,9 @@ namespace CardsToStrands
 				if (tie.chain >= 0)
 					continue;
 				const float reach = tie.radius + kTieRadius;
-				for (auto& guide : guides) {
-					if (guide.kind != GuideKind::Rooted)
+				for (uint32_t g = 0; g < guides.size(); ++g) {
+					auto& guide = guides[g];
+					if (guide.kind != GuideKind::Rooted || ChosenAsStrands(g))
 						continue;
 					const Vec3 start = guide.path[0].position, tip = guide.path.back().position;
 					const auto n = static_cast<uint32_t>(guide.path.size());
@@ -2856,6 +2865,16 @@ namespace CardsToStrands
 						guide.kind = GuideKind::Gathered;
 				}
 			}
+		}
+
+		bool Generator::ChosenAsStrands(uint32_t a_guide) const
+		{
+			if (a_guide >= ownPaths.size() || ownPaths[a_guide].empty())
+				return false;
+			size_t chosen = 0;
+			for (const auto& sample : ownPaths[a_guide])
+				chosen += sample.tri < choice.size() && choice[sample.tri] == RegionChoice::Strands;
+			return 2 * chosen > ownPaths[a_guide].size();
 		}
 
 		void Generator::LabelTriangles(Result& o_result)
@@ -2933,6 +2952,17 @@ namespace CardsToStrands
 				if (from >= 0) {
 					regionOf[t] = regionOf[from];
 					chainOf[t] = chainOf[from];
+				}
+			}
+
+			// A region chosen by hand is the region reported. Cards and Chain choices are woven pieces
+			// already (a Chain choice that does not hang stays plain cards); a Strands choice wins over
+			// the card guide nearest it, even one dropped for starting far from the scalp, whose
+			// triangles then show neither cards nor strands.
+			for (uint32_t t = 0; t < triCount; ++t) {
+				if (t < choice.size() && choice[t] == RegionChoice::Strands) {
+					regionOf[t] = Region::Strands;
+					chainOf[t] = -1;
 				}
 			}
 

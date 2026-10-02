@@ -10,16 +10,20 @@
 //
 // Settings keys match CardsToStrands::Settings (density, segmentLength, clumpSize, ...), plus
 // seeding=auto|scalp|area, flowAxis=auto|v|-v|u|-u, keepWoven=0|1, and excludeUV / chainUV
-// rectangles as minU,minV,maxU,maxV (each may be given more than once). The file formats are
+// rectangles as minU,minV,maxU,maxV (each may be given more than once), and regions=<file>: one
+// byte per mesh triangle, a CardsToStrands::RegionChoice (0 Auto, 1 Strands, 2 Cards, 3 Chain),
+// as Settings::triangleRegions. The file formats are
 // written and read by tools/hair_cards_to_strands/ctsio.py; see that file for the layout.
 
 #include "CardsToStrands.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 using namespace CardsToStrands;
@@ -133,7 +137,15 @@ namespace
 			io_settings.seed = static_cast<uint32_t>(std::stoul(a_value));
 		else if (a_key == "keepWoven")
 			io_settings.keepWoven = a_value != "0";
-		else if (a_key == "excludeUV" || a_key == "chainUV") {
+		else if (a_key == "regions") {
+			std::ifstream in(a_value, std::ios::binary);
+			if (!in)
+				throw std::runtime_error("cannot open " + a_value);
+			const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+			io_settings.triangleRegions.clear();
+			for (const char byte : bytes)
+				io_settings.triangleRegions.push_back(static_cast<RegionChoice>(std::min<uint8_t>(static_cast<uint8_t>(byte), 3)));
+		} else if (a_key == "excludeUV" || a_key == "chainUV") {
 			float values[4]{};
 			size_t at = 0;
 			for (float& value : values) {

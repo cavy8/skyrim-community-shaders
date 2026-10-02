@@ -267,10 +267,15 @@ frame (or one from the UVs) and its bones, or two joints of its chain.
 ### Choosing regions by hand
 
 `Settings::triangleRegions` sets any triangle's region (`RegionChoice`: Auto, Strands, Cards,
-Chain); it wins over everything. `excludeUV` and `chainUV` rectangles set Cards and Chain by
-the triangle's UV centre. Triangles chosen as Strands are never woven. Triangles chosen as Cards
-or Chain form pieces of their own (connected sets); a Chain piece is one chain, pinned where it
-lies on the head, and stays cards if it does not hang. A designer can show `triangleRegions`,
+Chain); it wins over `excludeUV` and `chainUV`, whose rectangles set Cards and Chain by the
+triangle's UV centre. Triangles chosen as Cards or Chain form pieces of their own (connected
+sets); a Chain piece is one chain, pinned where it lies on the head, and stays cards if it does
+not hang. Triangles chosen as Strands are never woven, and a card guide whose own path lies mostly
+over them is never gathered into a braid or a tie (`BindToWoven`, `FindTies`, or merging onto
+gathered hair): it stays rooted, or merges, and grows strands that end at the braid or tie.
+`Result::triangleRegions` reports Strands for every triangle chosen so. What a Strands choice
+cannot do is give hair a root: a card guide dropped for starting far from the scalp grows
+nothing, so its chosen triangles show neither cards nor strands. A designer can show `triangleRegions`,
 let the user paint `RegionChoice`s per triangle (or pick a piece and set all its triangles), and
 convert again: triangle indices do not change with the other settings.
 
@@ -360,7 +365,8 @@ ties among its curls.
 
 - `convert.cpp`: a command-line front end, `cards_to_strands <mesh.ctsm> <out.ctsr>
 [key=value ...]` (keys as in `Settings`, with `keepWoven=0|1` and `excludeUV` / `chainUV`
-rectangles as `minU,minV,maxU,maxV`). Build:
+rectangles as `minU,minV,maxU,maxV`, and `regions=<file>`: one `RegionChoice` byte per mesh
+triangle, as `triangleRegions`). Build:
   `g++ -std=c++20 -O2 -I src/Features/HairStrands/CardsToStrands tools/hair_cards_to_strands/convert.cpp src/Features/HairStrands/CardsToStrands/CardsToStrands.cpp -o cards_to_strands`.
 - `ctsio.py`: writes meshes (`.ctsm`) and reads results (`.ctsr`); the formats are in its
   docstring.
