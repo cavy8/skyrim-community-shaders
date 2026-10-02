@@ -156,13 +156,42 @@ namespace Strands
 
 		// The hair-tint material: what the HAIR technique, and so every hair shading feature,
 		// treats as hair. Hair worn as equipment (wigs) has only this to go by.
-		bool IsHairTintShader(const RE::BSRenderPass* a_pass)
+		bool IsHairTintShader(const RE::BSShaderProperty* a_property)
 		{
-			if (!a_pass->shaderProperty || a_pass->shaderProperty->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
+			if (!a_property || a_property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
 				return false;
-			const auto* lightingProperty = static_cast<const RE::BSLightingShaderProperty*>(a_pass->shaderProperty);
+			const auto* lightingProperty = static_cast<const RE::BSLightingShaderProperty*>(a_property);
 			return (lightingProperty->material && lightingProperty->material->GetFeature() == RE::BSShaderMaterial::Feature::kHairTint) ||
 			       lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kHairTint);
+		}
+
+		bool IsHairTintShader(const RE::BSRenderPass* a_pass)
+		{
+			return IsHairTintShader(a_pass->shaderProperty);
+		}
+
+		// What tells one hair texture from another: the diffuse path the material's texture set
+		// names, else the diffuse texture object itself. Empty for a material with neither.
+		std::string DiffuseKey(const RE::BSShaderProperty* a_property)
+		{
+			if (!a_property || a_property->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get())
+				return {};
+			const auto* material = static_cast<const RE::BSLightingShaderMaterialBase*>(static_cast<const RE::BSLightingShaderProperty*>(a_property)->material);
+			if (!material)
+				return {};
+			if (material->textureSet) {
+				if (const char* path = material->textureSet->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse); path && *path)
+					return ToLower(path);
+			}
+			return material->diffuseTexture ? std::format("{}", static_cast<const void*>(material->diffuseTexture.get())) : std::string{};
+		}
+
+		uint32_t TriangleCount(const RE::NiSkinPartition* a_partition)
+		{
+			uint32_t triangles = 0;
+			for (uint32_t p = 0; p < a_partition->numPartitions; ++p)
+				triangles += a_partition->partitions[p].triangles;
+			return triangles;
 		}
 
 		// Splits ShaderCache::GetDefinesString ("NAME=VALUE NAME ...") into macro pairs.
@@ -222,6 +251,159 @@ namespace Strands
 		float3 ToFloat3(const RE::NiPoint3& a_point)
 		{
 			return { a_point.x, a_point.y, a_point.z };
+		}
+
+		/** A hair shape that shares its texture with others of its hair. */
+		struct GroupMember
+		{
+			RE::BSGeometry* geometry = nullptr;  // live only while the scene graph is: the render thread, this frame
+			std::string name;
+			uint32_t vertexCount = 0;
+			uint32_t triangleCount = 0;
+		};
+
+		// The shapes of a_geometry's hair that share its texture, converted together as one hair
+		// (as the hair designer converts them): skinned hair cards with alpha under the same head
+		// part (or, for hair worn as equipment, the same parent node), in scene order. A second
+		// copy of a shape (same vertex and triangle counts: hair shipped as alpha-tested and
+		// blended layers of one mesh) is a layer, not another shape: a_geometry stands in for
+		// the copy it matches. A shape skinned to a bone the first shape is not skinned to is
+		// left to convert on its own. Fewer than two shapes: the hair converts on its own.
+		std::vector<GroupMember> FindShapeGroup(RE::Actor* a_actor, RE::BSGeometry* a_geometry)
+		{
+			const auto* faceNode = a_actor->GetFaceNodeSkinned();
+			RE::NiAVObject* root = a_geometry;
+			while (root && root->parent && root->parent != faceNode)
+				root = root->parent;
+			if (!root || !root->parent)
+				root = a_geometry->parent;
+			const std::string texture = DiffuseKey(a_geometry->GetGeometryRuntimeData().shaderProperty.get());
+			if (!root || texture.empty())
+				return {};
+
+			auto* ownSkin = a_geometry->GetGeometryRuntimeData().skinInstance.get();
+			const uint32_t ownVertices = ownSkin->skinPartition->vertexCount;
+			const uint32_t ownTriangles = TriangleCount(ownSkin->skinPartition.get());
+			std::vector<GroupMember> members;
+			const std::function<void(RE::NiAVObject*, int)> visit = [&](RE::NiAVObject* a_object, int a_depth) {
+				if (!a_object)
+					return;
+				if (auto* node = a_object->AsNode()) {
+					if (a_depth > 0) {
+						for (auto& child : node->GetChildren())
+							visit(child.get(), a_depth - 1);
+					}
+					return;
+				}
+				auto* geometry = a_object->AsGeometry();
+				if (!geometry)
+					return;
+				const auto& data = geometry->GetGeometryRuntimeData();
+				auto* skin = data.skinInstance.get();
+				if (!skin || !skin->skinPartition || !skin->skinData || !skin->bones || !HasAlpha(geometry) || !IsHairTintShader(data.shaderProperty.get()) ||
+					DiffuseKey(data.shaderProperty.get()) != texture)
+					return;
+				GroupMember member{ geometry, geometry->name.c_str(), skin->skinPartition->vertexCount, TriangleCount(skin->skinPartition.get()) };
+				if (member.vertexCount == ownVertices && member.triangleCount == ownTriangles) {
+					member.geometry = a_geometry;
+					member.name = a_geometry->name.c_str();
+				}
+				if (std::ranges::none_of(members, [&](const GroupMember& m) { return m.vertexCount == member.vertexCount && m.triangleCount == member.triangleCount; }))
+					members.push_back(std::move(member));
+			};
+			visit(root, 4);
+			if (members.size() < 2)
+				return {};
+
+			// Every shape after the first must be skinned to the first's bones (the same nodes).
+			const auto* hostSkin = members.front().geometry->GetGeometryRuntimeData().skinInstance.get();
+			const uint32_t hostBones = hostSkin->skinData->GetBoneCount();
+			std::erase_if(members, [&](const GroupMember& a_member) {
+				const auto* skin = a_member.geometry->GetGeometryRuntimeData().skinInstance.get();
+				if (skin == hostSkin)
+					return false;
+				const uint32_t bones = skin->skinData->GetBoneCount();
+				for (uint32_t b = 0; b < bones; ++b) {
+					if (std::find(hostSkin->bones, hostSkin->bones + hostBones, skin->bones[b]) == hostSkin->bones + hostBones)
+						return true;
+				}
+				return false;
+			});
+			if (members.size() < 2 || std::ranges::none_of(members, [&](const GroupMember& m) { return m.geometry == a_geometry; }))
+				return {};
+			return members;
+		}
+
+		// Appends a_member, a shape skinned to the same skeleton, to io_mesh: in io_mesh's skin space
+		// (through the bind pose of the bone a_member leans on most) and on io_mesh's bones.
+		bool AppendShape(HairMeshData& io_mesh, const RE::NiSkinInstance* a_skin, const HairMeshData& a_member, const RE::NiSkinInstance* a_memberSkin, std::string& o_error)
+		{
+			const uint32_t hostBones = a_skin->skinData->GetBoneCount();
+			const uint32_t memberBones = a_memberSkin->skinData->GetBoneCount();
+			std::vector<int32_t> boneMap(memberBones, -1);
+			for (uint32_t b = 0; b < memberBones; ++b) {
+				const auto* it = std::find(a_skin->bones, a_skin->bones + hostBones, a_memberSkin->bones[b]);
+				if (it != a_skin->bones + hostBones)
+					boneMap[b] = static_cast<int32_t>(it - a_skin->bones);
+			}
+			std::vector<float> use(memberBones, 0.0f);
+			for (size_t v = 0; v < a_member.boneIndices.size(); ++v) {
+				for (int i = 0; i < 4; ++i) {
+					const uint16_t bone = a_member.boneIndices[v][i];
+					const float weight = a_member.boneWeights[v][i];
+					if (!(weight > 0.0f))
+						continue;
+					if (bone >= memberBones || boneMap[bone] < 0) {
+						o_error = "skinned to a bone the first shape is not";
+						return false;
+					}
+					use[bone] += weight;
+				}
+			}
+			const auto lean = use.empty() ? 0u : static_cast<uint32_t>(std::ranges::max_element(use) - use.begin());
+			if (use.empty() || !(use[lean] > 0.0f) || boneMap[lean] < 0) {
+				o_error = "not skinned";
+				return false;
+			}
+
+			// Member skin space -> that bone -> the first shape's skin space.
+			const RE::NiTransform toHost = a_skin->skinData->GetBoneDataSkinToBone(static_cast<uint32_t>(boneMap[lean])).Invert() * a_memberSkin->skinData->GetBoneDataSkinToBone(lean);
+			const auto point = [&](const float3& a_p) { return ToFloat3(toHost * RE::NiPoint3(a_p.x, a_p.y, a_p.z)); };
+			const auto direction = [&](const float3& a_d) {
+				float3 d = ToFloat3(toHost.rotate * RE::NiPoint3(a_d.x, a_d.y, a_d.z));
+				d.Normalize();
+				return d;
+			};
+
+			const auto base = static_cast<uint32_t>(io_mesh.positions.size());
+			const size_t count = a_member.positions.size();
+			// An attribute one shape lacks is dropped from all: the conversion takes it per vertex or not at all.
+			const auto merge = [&](std::vector<float3>& io_values, const std::vector<float3>& a_values) {
+				if (io_values.size() != base || a_values.size() != count) {
+					io_values.clear();
+					return;
+				}
+				for (const auto& value : a_values)
+					io_values.push_back(direction(value));
+			};
+			merge(io_mesh.normals, a_member.normals);
+			merge(io_mesh.tangents, a_member.tangents);
+			merge(io_mesh.bitangents, a_member.bitangents);
+			for (const auto& p : a_member.positions)
+				io_mesh.positions.push_back(point(p));
+			io_mesh.uvs.insert(io_mesh.uvs.end(), a_member.uvs.begin(), a_member.uvs.end());
+			for (size_t v = 0; v < count; ++v) {
+				std::array<uint16_t, 4> bones{};
+				for (int i = 0; i < 4; ++i) {
+					const uint16_t bone = a_member.boneIndices[v][i];
+					bones[i] = bone < memberBones && boneMap[bone] >= 0 ? static_cast<uint16_t>(boneMap[bone]) : 0;
+				}
+				io_mesh.boneIndices.push_back(bones);
+				io_mesh.boneWeights.push_back(a_member.boneWeights[v]);
+			}
+			for (uint32_t index : a_member.indices)
+				io_mesh.indices.push_back(base + index);
+			return true;
 		}
 
 		// The rendered frame, counted at Present: the same for a hair's depth prepass and its
@@ -428,8 +610,18 @@ namespace Strands
 
 		HairKey key;
 		RE::FormID actorId = 0;
-		bool isHair = false;   // drawn as strands when converted
-		bool layer = false;    // a card layer over hair drawn as strands: hidden while its twin has strands
+		bool isHair = false;  // drawn as strands when converted
+		bool layer = false;   // a card layer over hair drawn as strands: hidden while its twin has strands
+		bool hosted = false;  // a shape of a hair converted with the first shape on its texture: hidden while that one has strands
+		// The shapes converted together with this one, the host (which draws them all) first, as
+		// FindShapeGroup found them; empty for a shape converted on its own.
+		struct GroupShape
+		{
+			std::string name;
+			uint32_t vertexCount = 0;
+			uint32_t triangleCount = 0;
+		};
+		std::vector<GroupShape> group;
 		bool blended = false;  // alpha-blended cards: drawn forward, after the deferred passes, with no depth prepass
 		bool isPlayer = false;
 		bool converted = false;
@@ -914,11 +1106,7 @@ namespace Strands
 		a_instance.isPlayer = actor->IsPlayerRef();
 		a_instance.key.shape = a_geometry->name.c_str();
 		a_instance.key.vertexCount = a_instance.vertexCount;
-		uint32_t triangles = 0;
-		const auto* partition = a_instance.skinInstance->skinPartition.get();
-		for (uint32_t p = 0; p < partition->numPartitions; ++p)
-			triangles += partition->partitions[p].triangles;
-		a_instance.key.triangleCount = triangles;
+		a_instance.key.triangleCount = TriangleCount(a_instance.skinInstance->skinPartition.get());
 		if (part) {
 			a_instance.key.headPart = part->formEditorID.c_str();
 			if (const char* model = part->GetModel())
@@ -937,6 +1125,35 @@ namespace Strands
 				}
 			}
 		}
+
+		// Hair split into several shapes on one texture converts as one: the first shape hosts.
+		if (a_instance.isHair) {
+			const auto members = FindShapeGroup(actor, a_geometry);
+			for (const auto& member : members)
+				a_instance.group.push_back({ member.name, member.vertexCount, member.triangleCount });
+			if (!members.empty() && members.front().geometry != a_geometry) {
+				a_instance.isHair = false;
+				a_instance.hosted = true;
+			}
+		}
+	}
+
+	StrandRenderer::Instance* StrandRenderer::FindGroupHost(const Instance& a_hosted) const
+	{
+		if (a_hosted.group.empty())
+			return nullptr;
+		const auto& host = a_hosted.group.front();
+		for (const auto& [geometry, other] : instances) {
+			if (other->isHair && other->actorId == a_hosted.actorId && other->key.vertexCount == host.vertexCount && other->key.triangleCount == host.triangleCount)
+				return other.get();
+		}
+		return nullptr;
+	}
+
+	bool StrandRenderer::HostDrawsStrands(const Instance& a_hosted) const
+	{
+		const auto* host = FindGroupHost(a_hosted);
+		return host && DrawsStrands(*host);
 	}
 
 	std::pair<RE::BSGeometry*, StrandRenderer::Instance*> StrandRenderer::FindStrandTwin(const Instance& a_layer) const
@@ -992,7 +1209,18 @@ namespace Strands
 
 	std::shared_ptr<StrandRenderer::Asset> StrandRenderer::RequestAsset(Instance& a_instance, RE::BSRenderPass* a_pass, RE::BSGeometry* a_geometry)
 	{
-		const std::string key = std::format("{}#{:016X}", a_instance.key.ToString(), a_instance.style.GenerationHash());
+		// The shapes converted with this one, as the scene has them now.
+		auto* userData = a_geometry->GetUserData();
+		auto* actor = userData ? userData->As<RE::Actor>() : nullptr;
+		const auto members = actor ? FindShapeGroup(actor, a_geometry) : std::vector<GroupMember>{};
+		a_instance.group.clear();
+		std::string shapes;
+		for (const auto& member : members) {
+			a_instance.group.push_back({ member.name, member.vertexCount, member.triangleCount });
+			if (member.geometry != a_geometry)
+				shapes += std::format(" + {} ({} verts, {} tris)", member.name, member.vertexCount, member.triangleCount);
+		}
+		const std::string key = std::format("{}{}#{:016X}", a_instance.key.ToString(), shapes, a_instance.style.GenerationHash());
 		if (auto it = assets.find(key); it != assets.end())
 			return it->second;
 
@@ -1002,11 +1230,23 @@ namespace Strands
 		asset->style = a_instance.style;
 		asset->lastUsedFrame = frame;
 		std::string error;
-		if (!ExtractHairMesh(a_geometry, asset->mesh, error)) {
+		bool extracted = ExtractHairMesh(a_geometry, asset->mesh, error);
+		for (const auto& member : members) {
+			if (!extracted || member.geometry == a_geometry)
+				continue;
+			HairMeshData mesh;
+			extracted = ExtractHairMesh(member.geometry, mesh, error) &&
+			            AppendShape(asset->mesh, a_geometry->GetGeometryRuntimeData().skinInstance.get(), mesh, member.geometry->GetGeometryRuntimeData().skinInstance.get(), error);
+			if (!extracted)
+				error = std::format("shape {}: {}", member.name, error);
+		}
+		if (!extracted) {
 			asset->state = Asset::State::Failed;
 			asset->error = error;
-			logger::warn("[HairStrands] {}: cannot read the mesh: {}", a_instance.key.ToString(), error);
+			logger::warn("[HairStrands] {}: cannot read the mesh: {}", key, error);
 		} else {
+			if (!shapes.empty())
+				logger::info("[HairStrands] {}: converting {} shapes on one texture together", key, members.size());
 			const bool coverage = asset->style.coverageThreshold > 0.0f && BeginCoverageReadback(a_pass, asset->readback, error);
 			if (asset->style.coverageThreshold > 0.0f && !coverage)
 				logger::info("[HairStrands] {}: {}; strands fill the whole cards", a_instance.key.ToString(), error);
@@ -2137,6 +2377,12 @@ namespace Strands
 			currentVariant = variant;
 			return;
 		}
+		if (instance->hosted) {
+			// The host draws the whole hair; a fading actor keeps its cards, as the host does.
+			if (HostDrawsStrands(*instance) && !(a_pass->shaderProperty && a_pass->shaderProperty->alpha < 0.99f))
+				HideCards(a_pass);
+			return;
+		}
 		if (!instance->isHair)
 			return;
 		if (instance->styleGeneration == UINT32_MAX) {
@@ -2267,6 +2513,12 @@ namespace Strands
 			return;
 		}
 
+		if (instance.hosted) {
+			if (HostDrawsStrands(instance) && !(a_pass->shaderProperty && a_pass->shaderProperty->alpha < 0.99f))
+				HideCards(a_pass);
+			return;
+		}
+
 		// The depth prepass takes the strands' depth in place of the cards'. The shadow mask and
 		// every other screen-space pass built from this depth then see the strands, not whatever
 		// lies behind them. The lighting pass that follows draws the same depth again. The
@@ -2306,7 +2558,8 @@ namespace Strands
 		if (it == instances.end() || !skin || !skin->skinPartition || it->second->skinInstance != skin || it->second->vertexCount != skin->skinPartition->vertexCount)
 			return;
 		const Instance& instance = *it->second;
-		if (instance.layer ? TwinDrawsStrands(instance) : instance.isHair && DrawsStrands(instance))
+		if (instance.layer ? TwinDrawsStrands(instance) : instance.hosted ? HostDrawsStrands(instance) :
+																			instance.isHair && DrawsStrands(instance))
 			HideCards(a_pass);
 	}
 

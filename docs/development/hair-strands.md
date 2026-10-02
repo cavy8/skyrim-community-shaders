@@ -426,6 +426,18 @@ under the strands, where it covers the gaps between them. Two Hair shapes of one
 identical counts are handled the same way: the first seen becomes strands, the other is
 hidden.
 
+Since `0-8-0` a hair split into several shapes on one texture converts as one, as the hair
+designer converts it (`FindShapeGroup`): the shapes that pass the checks above under the same
+head part (for a wig, the same parent node) and name the same diffuse texture, in scene order,
+a second copy of a shape (same counts) counting as that shape. The first shape hosts: it reads
+every shape's mesh, takes them into its own skin space through the bind pose of the bone each
+leans on most, and its strands and kept cards stand for them all, drawn with its material and
+under its style. The others are *hosted*: hidden, like a layer, while the host draws strands,
+and back as cards whenever it does not (past the LOD distance, over budget, fading). A shape
+skinned to a bone the first shape is not converts on its own. Converting together matters for
+hair built in layers: an under-layer can merge onto the hair it lies on only when both are in
+the same conversion. The asset key lists the hosted shapes.
+
 Within a converted hair, since `0-7-0`, only loose hair becomes strands. Braids, twists, ties,
 buns and the hair pulled tight into them keep their cards, and braids hanging free swing on
 chains of their own; loose hair below a ponytail's tie or a braid's end grows strands from there
@@ -1120,6 +1132,11 @@ Check these first in game:
     differently from Hair Specular, which samples it linearised.
 -   `RE::GetSecondsSinceLastFrame()` is real frame time, and `UI::GameIsPaused()` covers
     menus. Slow-motion kill cameras may play hair at full speed.
+-   Shapes converted together (`0-8-0`): the shapes of a head part hang within four levels of
+    the node named by its editor ID, in the NIF's order, and their skin-to-bone transforms agree
+    on the bind pose, so one bone carries a shape into the host's skin space. A hosted shape's
+    strands offset from where its cards were would point here. The `converting N shapes on one
+    texture together` log line names each group.
 
 ## Not done (candidates)
 

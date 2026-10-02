@@ -306,6 +306,10 @@ namespace Strands
 		static bool DrawsTwin(const Instance& a_layer, const Instance& a_twin);
 		/** @brief True if a_instance drew strands this frame or the last. */
 		static bool DrawsStrands(const Instance& a_instance);
+		/** @brief The shape that converts a_hosted's hair (the first of its group, same actor, same mesh counts), if seen. */
+		Instance* FindGroupHost(const Instance& a_hosted) const;
+		/** @brief True if a_hosted's host drew strands this frame or the last. */
+		bool HostDrawsStrands(const Instance& a_hosted) const;
 		void HideCards(RE::BSRenderPass* a_pass);
 		/** @brief The viewport the hidden cards would have used, for the strands drawn in their place. */
 		bool GetCardViewport(D3D11_VIEWPORT& o_viewport);
