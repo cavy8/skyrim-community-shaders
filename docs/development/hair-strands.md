@@ -1223,8 +1223,10 @@ Check these first in game:
 -   The bone capsules (the fallback) still use TressFX's stop response and this frame's pose
     for every step. Both made hair shake against the `0-4-0` body colliders before they were
     changed.
--   Wigs have no model path in their key (no head part), so they match on shape name and
-    vertex/triangle count.
+-   Wigs have no head part. Since `0-11-0` their key takes the model of the worn item whose
+    attached node holds the geometry (from the actor's biped), so they match on model like head
+    parts and load a `.skhair` beside their NIF. A wig no biped slot claims still has no model
+    and matches on shape name and vertex/triangle count.
 -   Actor fade-out keeps the cards: strands have no alpha to fade with.
 -   Beards and other facial hair keep their cards. They would need their own flow and
     density rules, since beard cards lie flat on the skin.

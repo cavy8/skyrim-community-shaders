@@ -160,6 +160,28 @@ namespace Strands
 			return match;
 		}
 
+		// The model path (relative to Meshes) of the worn item whose nif a_geometry came from, or
+		// null if it is not part of any: the biped records each worn piece's model and the node it
+		// attached, which is an ancestor of the geometry.
+		const char* FindWornModel(RE::Actor* a_actor, const RE::BSGeometry* a_geometry)
+		{
+			const auto& biped = a_actor->GetCurrentBiped();
+			if (!biped)
+				return nullptr;
+			for (const auto& object : biped->objects) {
+				const auto* attached = object.partClone.get();
+				if (!attached || !object.part)
+					continue;
+				for (const RE::NiAVObject* node = a_geometry; node; node = node->parent) {
+					if (node == attached) {
+						const char* model = object.part->GetModel();
+						return model && *model ? model : nullptr;
+					}
+				}
+			}
+			return nullptr;
+		}
+
 		bool HasAlpha(const RE::BSGeometry* a_geometry)
 		{
 			const auto& property = a_geometry->GetGeometryRuntimeData().alphaProperty;
@@ -1155,6 +1177,8 @@ namespace Strands
 			a_instance.key.headPart = part->formEditorID.c_str();
 			if (const char* model = part->GetModel())
 				a_instance.key.model = ToLower(model);
+		} else if (const char* model = FindWornModel(actor, a_geometry)) {
+			a_instance.key.model = ToLower(model);
 		}
 
 		// Hair shipped as two layers of one mesh (alpha-tested and blended copies): the first
