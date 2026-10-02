@@ -434,10 +434,13 @@ namespace CardsToStrands
 	/** @brief How a chain (ChainCurve) moves. Units and seconds; per-step values are for steps of 1/60 s. */
 	struct ChainSettings
 	{
-		float gravity = 400.0f;   // units/s^2, down (-Z)
-		float damping = 0.08f;    // share of its velocity a joint loses per step
-		float stiffness = 0.2f;   // pull back towards the braid's styled shape per step: 0 limp, 1 rigid
-		uint32_t iterations = 4;  // constraint passes per step
+		float gravity = 400.0f;      // units/s^2, down (-Z)
+		float damping = 0.08f;       // share of its velocity relative to the head a joint loses per step
+		float stiffness = 0.2f;      // pull back towards the braid's styled shape per step: 0 limp, 1 rigid
+		float inertia = 0.6f;        // share of the head's acceleration a joint does not follow: 0 rides the head, 1 free
+		float maxInertia = 1600.0f;  // units/s^2: the most a jolt of the head (a snap turn, a stagger) throws a joint
+		float dftlDamping = 0.9f;    // share of the length constraints' pull on the next joint taken out of a joint's velocity
+		uint32_t iterations = 4;     // constraint passes per step
 	};
 
 	/** @brief A capsule a chain keeps out of (a sphere when a == b), in the chain's space. */
@@ -449,11 +452,15 @@ namespace CardsToStrands
 	};
 
 	/**
-	 * Simulates one ChainCurve: Verlet points at its joints, the pinned ones carried by the parent
-	 * bone, each other pulled towards the styled shape as its parent segment carries it, segments
-	 * kept at their length from the root down (follow the leader), and pushed out of colliders.
-	 * Each joint becomes a bone the braid's cards are skinned to. Works in whatever space the
-	 * parent transforms are given in (the game: camera-relative, shifted with Translate).
+	 * Simulates one ChainCurve: points at its joints, the pinned ones carried by the parent bone.
+	 * The others move with the parent bone, plus a velocity of their own relative to it: gravity,
+	 * the part of the head's acceleration they do not follow, damped, so walking or running
+	 * carries the braid along instead of blowing it back. Each is pulled towards the styled shape
+	 * as its parent segment carries it (TressFX's local shape constraint, on both ends of a
+	 * segment), segments are kept at their length from the root down (follow the leader, with
+	 * DFTL's velocity correction), and pushed out of colliders. Each joint becomes a bone the
+	 * braid's cards are skinned to. Works in whatever space the parent transforms are given in
+	 * (the game: camera-relative, shifted with Translate).
 	 */
 	class ChainSimulator
 	{
@@ -476,8 +483,11 @@ namespace CardsToStrands
 
 	private:
 		std::vector<Vec3> position;
-		std::vector<Vec3> previous;
-		std::vector<Vec3> offset;  // from where the parent bone alone would carry each joint, at the last step
+		std::vector<Vec3> velocity;    // each joint's own move over the last step, beyond its target's (relative to the head)
+		std::vector<Vec3> target;      // where the parent bone alone carried each joint at the last step
+		std::vector<Vec3> targetMove;  // and how far that moved over the last step
+		std::vector<Vec3> offset;      // position - target, at the last step
 		std::vector<Vec3> previousOffset;
+		bool moved = false;  // targetMove is known (a step since the reset)
 	};
 }

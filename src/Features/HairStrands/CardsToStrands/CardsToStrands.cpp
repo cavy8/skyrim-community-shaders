@@ -3574,17 +3574,20 @@ namespace CardsToStrands
 	void ChainSimulator::Reset(const ChainCurve& a_chain, const Affine& a_parent)
 	{
 		const size_t n = a_chain.joints.size();
-		position.resize(n);
+		target.resize(n);
 		for (size_t j = 0; j < n; ++j)
-			position[j] = a_parent.Apply(a_chain.joints[j]);
-		previous = position;
+			target[j] = a_parent.Apply(a_chain.joints[j]);
+		position = target;
+		velocity.assign(n, Vec3{});
+		targetMove.assign(n, Vec3{});
 		offset.assign(n, Vec3{});
 		previousOffset = offset;
+		moved = false;
 	}
 
 	void ChainSimulator::Translate(const Vec3& a_delta)
 	{
-		for (auto* points : { &position, &previous })
+		for (auto* points : { &position, &target })
 			for (auto& p : *points)
 				p += a_delta;
 	}
@@ -3600,67 +3603,111 @@ namespace CardsToStrands
 		}
 		const uint32_t pinned = std::clamp<uint32_t>(a_chain.pinnedJoints, 1, n);
 		const uint32_t iterations = std::max(a_settings.iterations, 1u);
-		// The settings are per 1/60 s step; the pull is spread over the passes.
+		// The settings are per 1/60 s step; the pull is spread over the passes, and TressFX halves
+		// its local stiffness (one segment's pull moves both its ends) and keeps it below 0.5.
 		const float steps = a_dt * 60.0f;
 		const float keep = std::pow(std::clamp(1.0f - a_settings.damping, 0.0f, 1.0f), steps);
-		const float pull = 1.0f - std::pow(1.0f - std::clamp(a_settings.stiffness, 0.0f, 1.0f), steps / static_cast<float>(iterations));
+		const float pull = 0.5f * std::min(1.0f - std::pow(1.0f - std::clamp(a_settings.stiffness, 0.0f, 1.0f), steps / static_cast<float>(iterations)), 0.95f);
+		const float inertia = std::clamp(a_settings.inertia, 0.0f, 1.0f);
+		const float maxThrow = std::max(a_settings.maxInertia, 0.0f) * a_dt * a_dt;
+		const float dftl = std::clamp(a_settings.dftlDamping, 0.0f, 1.0f);
 
 		// Where the parent bone alone carries each joint, and each styled segment.
-		std::vector<Vec3> target(n), rest(n - 1);
+		std::vector<Vec3> now(n), rest(n - 1);
 		for (uint32_t j = 0; j < n; ++j)
-			target[j] = a_parent.Apply(a_chain.joints[j]);
+			now[j] = a_parent.Apply(a_chain.joints[j]);
 		for (uint32_t j = 0; j + 1 < n; ++j)
 			rest[j] = a_parent.ApplyLinear(a_chain.joints[j + 1] - a_chain.joints[j]);
 
-		// Verlet; the pinned joints go where the parent bone puts them.
+		// Each joint moves with its target, plus its own velocity: gravity, and the head's
+		// acceleration it does not follow (bounded, against the game's snap turns), damped. The
+		// pinned joints go where the parent bone puts them.
 		const Vec3 fall(0.0f, 0.0f, -a_settings.gravity * a_dt * a_dt);
 		for (uint32_t j = 0; j < n; ++j) {
+			const Vec3 move = now[j] - target[j];
 			if (j < pinned) {
-				previous[j] = position[j];
-				position[j] = target[j];
-				continue;
+				position[j] = now[j];
+				velocity[j] = {};
+			} else {
+				Vec3 thrown = moved ? (targetMove[j] - move) * inertia : Vec3{};
+				if (const float length = thrown.Length(); length > maxThrow)
+					thrown = thrown * (maxThrow / length);
+				velocity[j] = velocity[j] * keep + thrown + fall;
+				// Never more than a segment's length in a step: a hitch cannot fling the braid.
+				const float limit = rest[j - 1].Length();
+				if (const float speed = velocity[j].Length(); speed > limit)
+					velocity[j] = velocity[j] * (limit / speed);
+				position[j] += move + velocity[j];
 			}
-			const Vec3 velocity = (position[j] - previous[j]) * keep;
-			previous[j] = position[j];
-			position[j] += velocity + fall;
+			targetMove[j] = move;
+			target[j] = now[j];
 		}
+		moved = true;
+		const std::vector<Vec3> integrated = position;
 
+		// Towards the styled shape: each segment as the one before it carries its styled
+		// direction (the first, as the parent bone does), pulling both its ends.
 		for (uint32_t pass = 0; pass < iterations; ++pass) {
-			Quat turn;  // how far the segments so far have turned from their styled directions
 			for (uint32_t j = 0; j + 1 < n; ++j) {
 				const uint32_t c = j + 1;
-				if (c >= pinned) {
-					// Towards the styled shape, as the segment before carries it.
-					position[c] += (position[j] + turn.Rotate(rest[j]) - position[c]) * pull;
-					// The segment keeps its length: only the joint further from the root moves.
-					const Vec3 d = position[c] - position[j];
-					const float length = d.Length();
-					if (length > 1e-6f)
-						position[c] = position[j] + d * (rest[j].Length() / length);
-					// Out of the colliders, the braid's thickness off them, but never further out than
-					// its styled place lies (a braid styled against the neck stays there), and never
-					// less than half of it (the strands' simulation keeps the same margin).
-					for (size_t k = 0; k < a_colliderCount; ++k) {
-						const auto& collider = a_colliders[k];
-						const Vec3 nearest = ClosestOnSegment(position[c], collider.a, collider.b);
-						const float full = collider.radius + a_chain.radius;
-						const float styled = (target[c] - ClosestOnSegment(target[c], collider.a, collider.b)).Length();
-						const float clearance = std::max(std::min(full, styled), 0.5f * full);
-						Vec3 away = position[c] - nearest;
-						const float distance = away.Length();
-						if (distance >= clearance)
-							continue;
-						away = distance > 1e-6f ? away / distance : Vec3(0.0f, 0.0f, 1.0f);
-						position[c] = nearest + away * clearance;
-					}
+				if (c < pinned)
+					continue;
+				Vec3 styled = rest[j];
+				if (j > 0) {
+					const Vec3 before = position[j] - position[j - 1];
+					if (rest[j - 1].LengthSquared() > 1e-12f && before.LengthSquared() > 1e-12f)
+						styled = Quat::Arc(rest[j - 1].Normalized(), before.Normalized()).Rotate(rest[j]);
 				}
-				turn = Transport(turn, rest[j], position[c] - position[j]);
+				const Vec3 delta = (position[j] + styled - position[c]) * pull;
+				if (j >= pinned)
+					position[j] -= delta;
+				position[c] += delta;
 			}
+		}
+
+		// Segments at their length, from the root down: only the joint further from it moves, and
+		// what it moved is taken back out of the joint before (DFTL), or the chain gains energy.
+		std::vector<Vec3> correction(n);
+		for (uint32_t pass = 0; pass < iterations; ++pass) {
+			for (uint32_t j = 0; j + 1 < n; ++j) {
+				const uint32_t c = j + 1;
+				if (c < pinned)
+					continue;
+				const Vec3 before = position[c];
+				const Vec3 d = position[c] - position[j];
+				const float length = d.Length();
+				if (length > 1e-6f)
+					position[c] = position[j] + d * (rest[j].Length() / length);
+				// Out of the colliders, the braid's thickness off them, but never further out than
+				// its styled place lies (a braid styled against the neck stays there), and never
+				// less than half of it (the strands' simulation keeps the same margin).
+				for (size_t k = 0; k < a_colliderCount; ++k) {
+					const auto& collider = a_colliders[k];
+					const Vec3 nearest = ClosestOnSegment(position[c], collider.a, collider.b);
+					const float full = collider.radius + a_chain.radius;
+					const float styled = (now[c] - ClosestOnSegment(now[c], collider.a, collider.b)).Length();
+					const float clearance = std::max(std::min(full, styled), 0.5f * full);
+					Vec3 away = position[c] - nearest;
+					const float distance = away.Length();
+					if (distance >= clearance)
+						continue;
+					away = distance > 1e-6f ? away / distance : Vec3(0.0f, 0.0f, 1.0f);
+					position[c] = nearest + away * clearance;
+				}
+				correction[c] += position[c] - before;
+			}
+		}
+
+		// What the constraints moved becomes velocity, as Verlet's would.
+		for (uint32_t j = pinned; j < n; ++j) {
+			velocity[j] += position[j] - integrated[j];
+			if (j + 1 < n)
+				velocity[j] -= correction[j + 1] * dftl;
 		}
 
 		previousOffset = offset;
 		for (uint32_t j = 0; j < n; ++j)
-			offset[j] = position[j] - target[j];
+			offset[j] = position[j] - now[j];
 	}
 
 	void ChainSimulator::Bones(const ChainCurve& a_chain, const Affine& a_parent, float a_alpha, std::vector<Affine>& o_bones) const

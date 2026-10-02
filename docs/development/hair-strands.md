@@ -771,10 +771,14 @@ A braid hanging free is kept as cards and skinned to a chain of joints
 `CardsToStrands::ChainSimulator` in `StrandRenderer::SimulateChains`: on the strands' clock (the
 same fixed 1/60 s steps), each step with the parent bone (the head) where it is at the step's
 end between last frame's pose and this frame's. Joints lying on the head are pinned to it; the
-others are Verlet points pulled towards the styled shape (`chainStiffness`, 0.2 per step), damped
-(`chainDamping`, 0.08) and falling (`chainGravity`, 400 units/s²), kept at their segment lengths
-from the root down, and pushed out of the head sphere and the body's bone capsules by the
-braid's thickness (never further than the styled braid lies, never less than half). The joints
+others move with the head plus a velocity of their own relative to it: falling (`chainGravity`,
+400 units/s²), thrown by 60% of the head's acceleration (at most 1600 units/s², so a snap turn
+does not fling the braid) and damped (`chainDamping`, 0.08) relative to the head, so a walk or a
+run carries the braid along instead of blowing it up behind the head. They are pulled towards the
+styled shape (`chainStiffness`, 0.2 per step, on both ends of a segment as TressFX's local shape
+constraint), kept at their segment lengths from the root down (DFTL), and pushed out of the head
+sphere and the body's bone capsules by the braid's thickness (never further than the styled
+braid lies, never less than half). The joints
 become bones appended to the palette after the skin instance's, so the same compute and vertex
 shaders skin the braid's cards and any strands growing from its end: those strands' points are
 skinned to the chain, and `TargetSkin` takes their full skinning at any guidance, so the strand
