@@ -946,6 +946,13 @@ over the file beside the NIF.
     keeps its cards (hairlines, anything the designer did not convert). A shape the game converts on
     its own but the file holds as a part's second shape gets an asset with no strands and no cards:
     its cards are hidden, and the part's first shape draws it.
+-   Shapes are found in the file by name. The game renames a head part's geometry to the part's
+    editor ID (`hair19.nif`'s `Hair19` is `HairFemaleNord19` in game), so since `0-11-1` a shape
+    named after its head part is found by its vertex and triangle counts instead. Among shapes
+    with the same counts (copies of one shape), the one whose name the editor ID ends with,
+    longest first, wins (NPC2Wig: `NPC2Wig_KSsky161_F_Sky161Inv`); still tied, the shape is in
+    no part. Checked on 2026-10-02 against a load order's 11,478 head parts: all but NPC2Wig's
+    five use a single-shape NIF; wigs (KS SMP) keep their NIF's shape names.
 -   The style's render and motion fields still apply; its generation fields are ignored.
 -   `StrandInfo.width` (the designer's Set Thickness, 1 for converted hair) scales `rootWidth` and
     `tipWidth` per strand.

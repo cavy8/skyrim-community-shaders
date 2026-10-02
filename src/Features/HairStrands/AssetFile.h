@@ -14,6 +14,7 @@ namespace Strands
 		std::string name;
 		uint32_t vertexCount = 0;
 		uint32_t triangleCount = 0;
+		bool renamed = false;  // named after its head part: the game gives head-part geometry the part's editor ID
 	};
 
 	enum class AssetLoad
@@ -35,7 +36,9 @@ namespace Strands
 	 * @param a_path       The file.
 	 * @param a_shapes     The shapes converted together here, the drawing shape first (one, for a
 	 *                     shape converted on its own). The part holding the first must list every
-	 *                     one, with the same vertex and triangle counts.
+	 *                     one, with the same vertex and triangle counts. A renamed shape (the file
+	 *                     has the nif's name) is found by its counts; among copies with the same
+	 *                     counts, by the longest nif shape name its editor ID ends with.
 	 * @param a_boneNames  The drawing shape's skin-instance bones, by name.
 	 * @param o_asset      Receives the part, in the drawing shape's skin space. If the shape is not
 	 *                     its part's first, an asset with no strands and no cards: the part's first

@@ -1302,10 +1302,11 @@ namespace Strands
 		asset->key = key;
 		asset->serial = ++nextAssetSerial;
 		asset->style = a_instance.style;
-		asset->shapes.push_back({ a_instance.key.shape, a_instance.key.vertexCount, a_instance.key.triangleCount });
+		const auto renamed = [&](const std::string& a_name) { return !a_instance.key.headPart.empty() && _stricmp(a_name.c_str(), a_instance.key.headPart.c_str()) == 0; };
+		asset->shapes.push_back({ a_instance.key.shape, a_instance.key.vertexCount, a_instance.key.triangleCount, renamed(a_instance.key.shape) });
 		for (const auto& member : members) {
 			if (member.geometry != a_geometry)
-				asset->shapes.push_back({ member.name, member.vertexCount, member.triangleCount });
+				asset->shapes.push_back({ member.name, member.vertexCount, member.triangleCount, renamed(member.name) });
 		}
 		asset->lastUsedFrame = frame;
 		std::string error;

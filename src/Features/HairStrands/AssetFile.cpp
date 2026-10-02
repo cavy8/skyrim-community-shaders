@@ -106,32 +106,60 @@ namespace Strands
 			const auto fileBones = j.at("bones").get<std::vector<std::string>>();
 			const auto& parts = j.at("parts");
 
-			// The part holding the first shape, and where its arrays start.
-			const std::string wanted = Lower(a_shapes.front().name);
-			uint64_t offset = kHeaderBytes + jsonLength;
-			const json* part = nullptr;
-			for (const auto& candidate : parts) {
-				if (std::ranges::any_of(candidate.at("shapes"), [&](const json& s) { return Lower(s.at("name").get<std::string>()) == wanted; })) {
-					part = &candidate;
-					break;
+			// Where the file holds a shape: by name, or for a renamed shape (the file has the nif's
+			// name) by its counts. Copies of one shape share counts; an editor ID often ends with the
+			// nif's shape name (NPC2Wig: "NPC2Wig_KSsky161_F_Sky161Inv"), so the longest such ending
+			// picks among them. Still more than one: not found.
+			struct Found
+			{
+				size_t part = SIZE_MAX;
+				const json* shape = nullptr;
+			};
+			const auto find = [&](const ShapeId& a_shape) {
+				const std::string lower = Lower(a_shape.name);
+				Found best;
+				size_t bestSuffix = 0;
+				uint32_t tied = 0;
+				for (size_t p = 0; p < parts.size(); ++p) {
+					for (const auto& s : parts[p].at("shapes")) {
+						const std::string fileName = Lower(s.at("name").get<std::string>());
+						if (fileName == lower)
+							return Found{ p, &s };
+						if (!a_shape.renamed || s.value("vertices", 0u) != a_shape.vertexCount || s.value("triangles", 0u) != a_shape.triangleCount)
+							continue;
+						const size_t suffix = !fileName.empty() && lower.ends_with(fileName) ? fileName.size() : 0;
+						if (!best.shape || suffix > bestSuffix) {
+							best = { p, &s };
+							bestSuffix = suffix;
+							tied = 1;
+						} else if (suffix == bestSuffix)
+							++tied;
+					}
 				}
-				offset += PartBytes(candidate);
-			}
-			if (!part)
+				return tied == 1 ? best : Found{};
+			};
+
+			// The part holding the first shape, and where its arrays start.
+			const Found first = find(a_shapes.front());
+			if (!first.shape)
 				return AssetLoad::NotCovered;
+			const json* part = &parts.at(first.part);
+			uint64_t offset = kHeaderBytes + jsonLength;
+			for (size_t p = 0; p < first.part; ++p)
+				offset += PartBytes(parts[p]);
 
 			// Every shape converted together here must be in the part as exported.
 			const auto& partShapes = part->at("shapes");
 			for (const auto& shape : a_shapes) {
-				const auto it = std::ranges::find_if(partShapes, [&](const json& s) { return Lower(s.at("name").get<std::string>()) == Lower(shape.name); });
-				if (it == partShapes.end())
+				const Found found = find(shape);
+				if (found.part != first.part)
 					return reject(std::format("{} converts {} without {}, which is on the same texture here", name, a_shapes.front().name, shape.name));
-				const auto vertices = it->value("vertices", 0u), triangles = it->value("triangles", 0u);
+				const auto vertices = found.shape->value("vertices", 0u), triangles = found.shape->value("triangles", 0u);
 				if (vertices != shape.vertexCount || triangles != shape.triangleCount)
 					return reject(std::format("{} was exported from {} with {} vertices and {} triangles; it has {} and {} now", name, shape.name, vertices, triangles, shape.vertexCount, shape.triangleCount));
 			}
 			// The part's arrays are in its first shape's skin space: only that shape can draw them.
-			if (Lower(partShapes.at(0).at("name").get<std::string>()) != wanted) {
+			if (first.shape != &partShapes.at(0)) {
 				if (a_shapes.size() > 1)
 					return reject(std::format("{} converts these shapes from {}, here from {}", name, partShapes.at(0).at("name").get<std::string>(), a_shapes.front().name));
 				o_asset.sourceFile = a_path.string();
