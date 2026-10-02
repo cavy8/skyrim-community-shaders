@@ -933,6 +933,11 @@ texture, as [What converts](#what-converts) groups them in game); its records ar
 maps bones: each bone name to the skin instance's bone of that name (the head bone, with a
 warning, when there is none), chain joints after the skin instance's bones.
 
+A hair no style entry matches (since `0-10-0`) uses the file beside its NIF, if there is one:
+`meshes\...\hair03.nif` loads `meshes\...\hair03.skhair`. An export dropped next to the mesh
+needs no style file. Any style entry that matches the hair, even one without an `asset`, wins
+over the file beside the NIF.
+
 -   The generation job still reads the texture back: strands take their colour from it. The flow
     map and `CardsToStrands` are skipped.
 -   The part holding the converting shape must list every shape converted with it here, with the

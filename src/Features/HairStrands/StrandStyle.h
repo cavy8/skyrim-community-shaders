@@ -88,6 +88,7 @@ namespace Strands
 		// A .skhair file (the Skyrim Hair Designer's export), relative to Data: the hair is loaded
 		// from it rather than converted, and the generation fields above are ignored. Hair the file
 		// does not cover keeps its cards; a file that no longer fits the mesh is ignored (logged).
+		// A hair with no style entry uses the .skhair beside its nif (hair.nif -> hair.skhair).
 		std::string asset;
 
 		// Render: the vertex shader applies these every frame.

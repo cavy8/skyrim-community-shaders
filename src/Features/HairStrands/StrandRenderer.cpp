@@ -78,6 +78,20 @@ namespace Strands
 			return result;
 		}
 
+		// The .skhair file beside a hair's nif (relative to Data), or empty if the model is unknown
+		// or no such file exists. a_model is lowercase and relative to Meshes.
+		std::string SidecarAssetPath(std::string_view a_model)
+		{
+			if (a_model.empty())
+				return {};
+			std::filesystem::path relative = std::filesystem::path("meshes") / std::string(a_model);
+			relative.replace_extension(".skhair");
+			std::error_code ec;
+			if (!std::filesystem::is_regular_file(Util::PathHelpers::GetDataPath() / relative, ec))
+				return {};
+			return relative.string();
+		}
+
 		// The Lighting shader's TexcoordOffset for a pass: its material's UV offset and scale.
 		float4 MaterialTexcoordOffset(const RE::BSRenderPass* a_pass)
 		{
@@ -1229,6 +1243,12 @@ namespace Strands
 			a_instance.style = MakePresetStyle(guess);
 			a_instance.style.preset = HairPreset::Auto;
 			a_instance.source.clear();
+			// No style entry: a designer export beside the nif (hair.nif -> hair.skhair) is used as is.
+			if (const auto sidecar = SidecarAssetPath(a_instance.key.model); !sidecar.empty()) {
+				a_instance.style.asset = sidecar;
+				a_instance.authored = true;
+				a_instance.source = sidecar;
+			}
 		}
 		if (auto it = overrides.find(a_instance.key.ToString()); it != overrides.end()) {
 			a_instance.style = it->second;
