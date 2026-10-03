@@ -106,7 +106,7 @@ namespace Strands
 		// simulation reads every frame. As in TressFX they apply per step (1/60 s here), with
 		// lengths in units: TressFX's sample values for the threshold and clamp carry over.
 		bool simulate = true;
-		float vspCoeff = 0.4f;                    // share of the root segment's motion each step passes rigidly to the strand
+		float vspCoeff = 0.5f;                    // share of the root segment's motion each step passes rigidly to the strand
 		float vspAccelThreshold = 1.208f;         // root pseudo-acceleration (units per step^2) past which that share is 1
 		float localConstraintStiffness = 0.908f;  // how firmly each segment keeps its rest angle to the one before it
 		uint32_t localConstraintsIterations = 3;
@@ -120,9 +120,9 @@ namespace Strands
 		float windResponse = 1.0f;         // how much the weather's wind moves the hair
 
 		// Motion of braids hanging on chains (CardsToStrands::ChainSettings), per 1/60 s step.
-		float chainStiffness = 0.2f;  // pull back towards the styled shape: 0 limp, 1 rigid
-		float chainDamping = 0.08f;   // velocity lost
-		float chainGravity = 400.0f;  // units/s^2
+		float chainStiffness = 0.4f;  // pull back towards the styled shape: 0 limp, 1 rigid
+		float chainDamping = 0.12f;   // velocity lost
+		float chainGravity = 687.0f;  // units/s^2 (Skyrim's)
 
 		bool operator==(const StrandStyle&) const = default;
 

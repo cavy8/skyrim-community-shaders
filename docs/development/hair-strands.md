@@ -727,7 +727,7 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
         collider a step ahead of its targets shook the hair).
     -   *Contact.* A pushed point moves on with the surface. It takes the surface's own move
         over the step, keeps 0.4 of its slide along the surface (TressFX's capsule friction), and
-        loses its motion into or off it. VSP moves every point with the root each step (0.4 of
+        loses its motion into or off it. VSP moves every point with the root each step (0.5 of
         the root's move at the defaults), its previous position too, so the velocity a point is
         left with is the surface's move less VSP's. Without that, hair on the back of a running
         body was driven into it by VSP's share every step (2 units at 300 units/s) and crept along
@@ -789,13 +789,15 @@ A braid hanging free is kept as cards and skinned to a chain of joints
 same fixed 1/60 s steps), each step with the parent bone (the head) where it is at the step's
 end between last frame's pose and this frame's. Joints lying on the head are pinned to it; the
 others move with the head plus a velocity of their own relative to it: falling (`chainGravity`,
-400 units/s²), thrown by 60% of the head's acceleration (at most 1600 units/s², so a snap turn
-does not fling the braid) and damped (`chainDamping`, 0.08) relative to the head, so a walk or a
-run carries the braid along instead of blowing it up behind the head. They are pulled towards the
-styled shape (`chainStiffness`, 0.2 per step, on both ends of a segment as TressFX's local shape
-constraint), kept at their segment lengths from the root down (DFTL), and pushed out of the head
-sphere and the body's bone capsules by the braid's thickness (never further than the styled
-braid lies, never less than half). The joints
+687 units/s², Skyrim's), thrown by 40% of the head's acceleration (at most 400 units/s², so a
+snap turn or a run's stride does not fling the braid) and damped (`chainDamping`, 0.12) relative
+to the head, so a walk or a run carries the braid along instead of blowing it up behind the head.
+They are pulled towards the styled shape (`chainStiffness`, 0.4 per step, on both ends of a
+segment as TressFX's local shape constraint), kept at their segment lengths from the root down
+(DFTL), and pushed out of the head sphere and the body's bone capsules by the braid's thickness
+(never further than the styled braid lies, never less than half). A push out of a collider
+stops a joint but adds no speed away from it, so an arm or the back moving into a braid does
+not kick it off. The joints
 become bones appended to the palette after the skin instance's, so the same compute and vertex
 shaders skin the braid's cards and any strands growing from its end: those strands' points are
 skinned to the chain, and `TargetSkin` takes their full skinning at any guidance, so the strand
@@ -826,7 +828,7 @@ The per-style motion settings are TressFX's `TressFXSimulationSettings`, under i
 
 | Setting | Straight | TressFX 4.1 sample (Ratboy mohawk, metres) |
 | --- | --- | --- |
-| `vspCoeff` | 0.4 | 0.758 |
+| `vspCoeff` | 0.5 | 0.758 |
 | `vspAccelThreshold` | 1.208 units/step² | 1.208 |
 | `localConstraintStiffness` | 0.908 | 0.908 |
 | `localConstraintsIterations` | 3 | 3 |
@@ -844,7 +846,13 @@ NumPy port:
 -   **`vspCoeff`.** 0.758 carries three quarters of every move of the head rigidly. A 40-unit
     lock then lifted only 4, 9 and 17 degrees 0.5, 1 and 1.5 s into a fall, as rigid as the
     hair the owner reported. At 0.4 it streams up (11, 111 and 150 degrees) and trails when
-    running.
+    running, but the owner found hair light and flying about: Skyrim starts and stops a run
+    far quicker than a person can, so taking the full lag looks weightless. 0.5 (`0-11-3`;
+    the curly, coily and locs presets went up 0.1 with it) cuts a 36-unit lock's swing in a
+    sprint from 60% to 48% of its length and while walking from 28% to 21%, and still
+    streams up in a fall (8, 49 and 141 degrees). 0.6 halves the swing but drives waist-long
+    hair 1.2 units into a shield on the back when a sprint stops. Damping the velocity
+    relative to the head instead of the world's made swings larger, not smaller.
 -   **Gravity and length passes.** TressFX's sample assets are in metres, so its gravity is
     about 1% of Earth's. Its constraints hold a shape against light gravity only: at Earth's
     gravity a 40-unit, 32-point lock rests 13% long with 3 length passes (22% without the

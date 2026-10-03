@@ -8,9 +8,11 @@
 //   (one command)
 //
 // Checked: a braid at rest sags under gravity and holds still; running carries it along rather
-// than blowing it up behind the head; no motion lifts it more than a third of its length above
-// its styled place; segments keep their length; joints stay out of the head and neck; it comes
-// to rest once the head stops; the state stays finite. Exit code 1 on failure.
+// than blowing it up behind the head; it is heavy: no motion lifts it more than a twelfth of its
+// length above its styled place or swings it more than a third of its length from it, and a
+// back rocking against it on a run does not kick it off; segments keep their length; joints
+// stay out of the head, neck and back; it comes to rest once the head stops; the state stays
+// finite. Exit code 1 on failure.
 
 #include "CardsToStrands.h"
 
@@ -64,11 +66,13 @@ namespace
 		const char* name;
 		float seconds;
 		std::function<Pose(float)> pose;  // the head at a time
+		float rock = 0.0f;                // how far the back sways towards the braid and away, at a run's stride
 	};
 
 	struct Outcome
 	{
 		float rise = 0.0f;         // the most a free joint rose above its styled place
+		float swing = 0.0f;        // the furthest a free joint strayed from its styled place
 		float stretch = 0.0f;      // the worst segment length error, as a fraction
 		float penetration = 0.0f;  // the deepest a joint went into a collider, less the margin allowed
 		float finalSpeed = 0.0f;   // units per step, after two still seconds at the end
@@ -84,6 +88,7 @@ namespace
 		chain.radius = 1.0f;
 		const ChainCollider head{ { 0.0f, 0.0f, 120.0f }, { 0.0f, 0.0f, 120.0f }, 8.0f };
 		const ChainCollider neck{ { 0.0f, -1.0f, 110.0f }, { 0.0f, -1.0f, 100.0f }, 4.0f };
+		const ChainCollider back{ { 0.0f, -6.0f, 100.0f }, { 0.0f, -6.0f, 70.0f }, 6.5f };  // the braid lies against it
 
 		ChainSimulator sim;
 		const ChainSettings settings;
@@ -97,7 +102,10 @@ namespace
 			if (step < moving)
 				last = pose;
 			const Affine parent = HeadTransform(pose);
-			ChainCollider colliders[2] = { head, neck };
+			ChainCollider colliders[3] = { head, neck, back };
+			const Vec3 sway(0.0f, -a_scenario.rock * std::sin(2.0f * 3.14159265f * 2.5f * std::min(step, moving) * kStep), 0.0f);
+			colliders[2].a = colliders[2].a + sway;
+			colliders[2].b = colliders[2].b + sway;
 			for (auto& collider : colliders) {
 				collider.a = parent.Apply(collider.a);
 				collider.b = parent.Apply(collider.b);
@@ -105,16 +113,19 @@ namespace
 			if (step == 0)
 				sim.Reset(chain, parent);
 			before = sim.Joints();
-			sim.Step(chain, parent, kStep, settings, colliders, 2);
+			sim.Step(chain, parent, kStep, settings, colliders, a_scenario.rock > 0.0f ? 3 : 2);
 			const auto& joints = sim.Joints();
 			for (int j = 0; j < kJoints; ++j) {
 				const Vec3 styled = parent.Apply(chain.joints[j]);
 				outcome.finite = outcome.finite && std::isfinite(joints[j].x) && std::isfinite(joints[j].y) && std::isfinite(joints[j].z);
-				if (j >= static_cast<int>(chain.pinnedJoints))
+				if (j >= static_cast<int>(chain.pinnedJoints)) {
 					outcome.rise = std::max(outcome.rise, joints[j].z - styled.z);
+					outcome.swing = std::max(outcome.swing, (joints[j] - styled).Length());
+				}
 				if (j + 1 < kJoints)
 					outcome.stretch = std::max(outcome.stretch, std::abs((joints[j + 1] - joints[j]).Length() / kSegment - 1.0f));
-				for (const auto& collider : colliders) {
+				for (int k = 0; k < (a_scenario.rock > 0.0f ? 3 : 2); ++k) {
+					const auto& collider = colliders[k];
 					const Vec3 d = collider.b - collider.a;
 					const float s = d.LengthSquared() > 0.0f ? std::clamp((joints[j] - collider.a).Dot(d) / d.LengthSquared(), 0.0f, 1.0f) : 0.0f;
 					const float distance = (joints[j] - (collider.a + d * s)).Length();
@@ -139,13 +150,14 @@ int main()
 		{ "run and bob", 4.0f, [](float t) { return Pose{ { 0.0f, 300.0f * t, 20.0f * std::sin(10.0f * t) }, 0.5f * std::sin(3.0f * t) }; } },
 		{ "snap turns", 4.0f, [](float t) { return Pose{ {}, static_cast<int>(t / 1.5f) % 2 ? 3.14159f : 0.0f }; } },
 		{ "fast turns", 4.0f, [](float t) { return Pose{ {}, 3.14159f * std::min(1.0f, std::fmod(t, 1.5f) / 0.15f) }; } },
+		{ "back rocking", 4.0f, [](float t) { return Pose{ { 0.0f, 300.0f * t, 0.0f } }; }, 3.0f },
 	};
 
 	bool ok = true;
 	for (const auto& scenario : scenarios) {
 		const Outcome o = Run(scenario);
-		const bool pass = o.finite && o.rise <= kLength / 3.0f && o.stretch <= 0.02f && o.penetration <= 0.01f && o.finalSpeed <= 0.01f;
-		std::printf("%-15s %s  rise %5.2f  stretch %5.3f  penetration %5.2f  moving %6.4f/step at the end\n", scenario.name, pass ? "ok  " : "FAIL", o.rise, o.stretch,
+		const bool pass = o.finite && o.rise <= kLength / 12.0f && o.swing <= kLength / 3.0f && o.stretch <= 0.02f && o.penetration <= 0.01f && o.finalSpeed <= 0.01f;
+		std::printf("%-15s %s  rise %5.2f  swing %5.2f  stretch %5.3f  penetration %5.2f  moving %6.4f/step at the end\n", scenario.name, pass ? "ok  " : "FAIL", o.rise, o.swing, o.stretch,
 			o.penetration, o.finalSpeed);
 		ok = ok && pass;
 	}

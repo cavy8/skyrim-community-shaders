@@ -457,13 +457,13 @@ namespace CardsToStrands
 	/** @brief How a chain (ChainCurve) moves. Units and seconds; per-step values are for steps of 1/60 s. */
 	struct ChainSettings
 	{
-		float gravity = 400.0f;      // units/s^2, down (-Z)
-		float damping = 0.08f;       // share of its velocity relative to the head a joint loses per step
-		float stiffness = 0.2f;      // pull back towards the braid's styled shape per step: 0 limp, 1 rigid
-		float inertia = 0.6f;        // share of the head's acceleration a joint does not follow: 0 rides the head, 1 free
-		float maxInertia = 1600.0f;  // units/s^2: the most a jolt of the head (a snap turn, a stagger) throws a joint
-		float dftlDamping = 0.9f;    // share of the length constraints' pull on the next joint taken out of a joint's velocity
-		uint32_t iterations = 4;     // constraint passes per step
+		float gravity = 687.0f;     // units/s^2, down (-Z): Skyrim's
+		float damping = 0.12f;      // share of its velocity relative to the head a joint loses per step
+		float stiffness = 0.4f;     // pull back towards the braid's styled shape per step: 0 limp, 1 rigid
+		float inertia = 0.4f;       // share of the head's acceleration a joint does not follow: 0 rides the head, 1 free
+		float maxInertia = 400.0f;  // units/s^2: the most a jolt of the head (a snap turn, a stagger) throws a joint
+		float dftlDamping = 0.9f;   // share of the length constraints' pull on the next joint taken out of a joint's velocity
+		uint32_t iterations = 4;    // constraint passes per step
 	};
 
 	/** @brief A capsule a chain keeps out of (a sphere when a == b), in the chain's space. */
@@ -481,9 +481,9 @@ namespace CardsToStrands
 	 * carries the braid along instead of blowing it back. Each is pulled towards the styled shape
 	 * as its parent segment carries it (TressFX's local shape constraint, on both ends of a
 	 * segment), segments are kept at their length from the root down (follow the leader, with
-	 * DFTL's velocity correction), and pushed out of colliders. Each joint becomes a bone the
-	 * braid's cards are skinned to. Works in whatever space the parent transforms are given in
-	 * (the game: camera-relative, shifted with Translate).
+	 * DFTL's velocity correction), and pushed out of colliders without gaining speed away from
+	 * them. Each joint becomes a bone the braid's cards are skinned to. Works in whatever space
+	 * the parent transforms are given in (the game: camera-relative, shifted with Translate).
 	 */
 	class ChainSimulator
 	{

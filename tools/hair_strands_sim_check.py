@@ -56,14 +56,14 @@ BODY_MAX_CLEARANCE = 0.35  # kBodyMaxClearance
 BODY_SLIDE = 0.4  # HairStrandsSim::BodySlide, TressFX's capsule friction share
 
 # Strands::StrandStyle motion defaults and MakePresetStyle's changes to them.
-DEFAULT = dict(vsp=0.4, vsp_threshold=1.208, local=0.908, local_iterations=3, global_stiffness=0.408, global_range=0.4,
+DEFAULT = dict(vsp=0.5, vsp_threshold=1.208, local=0.908, local_iterations=3, global_stiffness=0.408, global_range=0.4,
                length_iterations=10, damping=0.068, gravity=100.0, tip_separation=0.0, clamp=20.0, wind=1.0)
 PRESETS = {
     "straight": dict(DEFAULT),
     "wavy": dict(DEFAULT, local=0.93, damping=0.075),
-    "curly": dict(DEFAULT, vsp=0.5, local=0.95, local_iterations=4, global_stiffness=0.45, global_range=0.5, damping=0.08, gravity=75.0),
-    "coily": dict(DEFAULT, vsp=0.7, local=0.95, local_iterations=4, global_stiffness=0.6, global_range=0.8, damping=0.15, gravity=50.0, wind=0.4),
-    "locs": dict(DEFAULT, vsp=0.3, local=0.85, global_range=0.3, length_iterations=12, gravity=150.0, wind=0.6),
+    "curly": dict(DEFAULT, vsp=0.6, local=0.95, local_iterations=4, global_stiffness=0.45, global_range=0.5, damping=0.08, gravity=75.0),
+    "coily": dict(DEFAULT, vsp=0.8, local=0.95, local_iterations=4, global_stiffness=0.6, global_range=0.8, damping=0.15, gravity=50.0, wind=0.4),
+    "locs": dict(DEFAULT, vsp=0.4, local=0.85, global_range=0.3, length_iterations=12, gravity=150.0, wind=0.6),
 }
 
 
