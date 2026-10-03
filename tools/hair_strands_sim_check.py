@@ -55,6 +55,7 @@ CLUSTER_SIZE = 1.25  # kClusterSize: the collision mesh's vertex spacing
 BODY_MIN_CLEARANCE = 0.15  # kBodyMinClearance
 BODY_MAX_CLEARANCE = 0.35  # kBodyMaxClearance
 BODY_SLIDE = 0.4  # HairStrandsSim::BodySlide, TressFX's capsule friction share
+CONTACT_FRICTION = 0.25  # HairStrandsSim::ContactFriction
 
 # Strands::StrandStyle motion defaults and MakePresetStyle's changes to them.
 DEFAULT = dict(vsp=0.4, vsp_threshold=1.208, local=0.5, local_iterations=3, global_stiffness=0.408, global_range=0.4,
@@ -66,6 +67,14 @@ PRESETS = {
     "coily": dict(DEFAULT, vsp=0.7, local=0.523, local_iterations=4, global_stiffness=0.6, global_range=0.8, damping=0.236, gravity=166.667, wind=0.4),
     "locs": dict(DEFAULT, vsp=0.3, local=0.468, global_range=0.3, gravity=291.667, wind=0.6),
 }
+
+
+def contact_move(delta, normal, surface_move, shift, correction):
+    """HairStrandsSim::ContactMove: velocity response, independent of positional push-out."""
+    slide = delta + shift - surface_move
+    slide = slide - normal * (slide @ normal)
+    slip = np.clip(1.0 - CONTACT_FRICTION * max(correction, 0.0) / max(np.linalg.norm(slide), 1e-7), 0.0, 1.0)
+    return surface_move - shift + BODY_SLIDE * slip * slide
 
 
 def safe_normalize(v, fallback):
@@ -843,6 +852,10 @@ class Guide:
                     if hit:
                         position[i], collided = pushed, True
                 contact = None
+                contact_delta = position[i] - previous[i]
+                contact_speed_squared = contact_delta @ contact_delta
+                if contact_speed_squared > clamp * clamp:
+                    contact_delta = contact_delta * (clamp * clamp / contact_speed_squared)
                 if sdf is not None:
                     # VSP moved the point and its previous position with the root this step.
                     shift = (rotate(q, position[i]) + translation - position[i]) * vsp
@@ -859,6 +872,7 @@ class Guide:
                             position[i] = start + before[1] * max(limits[i][0] - before[0], 0.0)
                             normal = before[1]
                         contact = (normal, surface_move, shift)
+                        contact_delta = contact_move(contact_delta, normal, surface_move, shift, limits[i][0] - distance)
                 delta = position[i] - previous[i]
                 speed_squared = delta @ delta
                 if speed_squared > clamp * clamp:
@@ -866,14 +880,7 @@ class Guide:
                 if collided:
                     previous[i] = position[i].copy()
                 elif contact is not None:
-                    # Resting on the body: the point moves on with the surface, keeping BODY_SLIDE of
-                    # its slide along it and none of its motion into or off it. VSP moved it (and its
-                    # previous position) with the root this step and will again: its velocity is the
-                    # surface's move less that.
-                    normal, surface_move, shift = contact
-                    relative = position[i] - previous[i] + shift - surface_move
-                    relative -= normal * (relative @ normal)
-                    previous[i] = position[i] - (surface_move - shift) - BODY_SLIDE * relative
+                    previous[i] = position[i] - contact_delta
 
             # The head field, as TressFX's signed distance field collision, on the head's pose at the step.
             if head_field is not None:
@@ -1296,6 +1303,39 @@ def deepest(frames, log, name):
     return max(max(body_depth(p, r[4], name) for p in drawn[2:]) for drawn, r in zip(frames[5:], log[5:]))
 
 
+def check_contact_response():
+    """Resting contact sticks, sliding dissipates energy, and overlapping contacts cannot turn
+    positional corrections into velocity. The shader applies this response to body and card contacts."""
+    zero = np.zeros(3)
+    up = np.array([0., 0., 1.])
+    side = np.array([1., 0., 0.])
+    results = []
+
+    # A stationary point pushed out of two intersecting surfaces has no incoming velocity.
+    # Previously the first push (X) survived as tangent velocity at the second contact (Z).
+    delta = contact_move(zero, side, zero, zero, 1.0)
+    delta = contact_move(delta, up, zero, zero, 1.0)
+    results.append(("overlapping body and card contacts do not generate sideways velocity", np.linalg.norm(delta) < 1e-8,
+                    f"{np.linalg.norm(delta):.6f} units/step after two push-outs"))
+
+    delta = contact_move(np.array([0.01, 0., -0.1]), up, zero, zero, 0.1)
+    results.append(("a small resting slide sticks under contact load", np.linalg.norm(delta) < 1e-8,
+                    f"{np.linalg.norm(delta):.6f} units/step retained"))
+
+    incoming = np.array([1., 0., -0.1])
+    delta = contact_move(incoming, up, zero, zero, 0.1)
+    results.append(("a loaded contact allows larger slides and dissipates energy", 0.0 < delta[0] < incoming[0] and abs(delta[2]) < 1e-8,
+                    f"{delta[0]:.3f} tangential, {delta[2]:.3f} normal units/step"))
+
+    # Surface carry and the root's VSP share must survive sticking, including pure normal motion.
+    for label, surface_move in (("tangential", np.array([0.3, -0.2, 0.])), ("normal", np.array([0., 0., 0.3]))):
+        shift = surface_move * 0.4
+        delta = contact_move(surface_move - shift, up, surface_move, shift, 0.1)
+        error = np.linalg.norm(delta + shift - surface_move)
+        results.append((f"sticking keeps {label} surface motion without duplicating VSP", error < 1e-8, f"carry error {error:.6f} units/step"))
+    return results
+
+
 def check_body_collision():
     """Hair keeps off the body's distance field (the body's own shape and what it wears) and comes
     to rest on it."""
@@ -1518,7 +1558,7 @@ def job(task):
         return check_held(arg)
     if kind == "body motion":
         return check_body_motion(arg)
-    return {"collision": check_collision, "head field": check_head_field, "body field": check_body_field, "body collision": check_body_collision,
+    return {"contact response": check_contact_response, "collision": check_collision, "head field": check_head_field, "body field": check_body_field, "body collision": check_body_collision,
             "short locks": check_short_locks, "swings": check_swings, "running stop": check_running_stop,
             "wind": check_wind, "extremes": check_extremes, "followers": check_followers}[kind]()
 
@@ -1530,7 +1570,7 @@ def main():
     tasks = [(kind, name) for name in PRESETS for kind in ("rest", "motion", "held")]
     tasks += [("rates", "straight"), ("rates", "locs")]
     tasks += [("body motion", fps) for fps in (144, 60, 30)]
-    tasks += [(kind, None) for kind in ("body collision", "collision", "head field", "body field", "short locks", "swings", "running stop", "wind", "extremes", "followers")]
+    tasks += [(kind, None) for kind in ("contact response", "body collision", "collision", "head field", "body field", "short locks", "swings", "running stop", "wind", "extremes", "followers")]
     failures = []
     with Pool() as pool:
         for results in pool.imap(job, tasks):

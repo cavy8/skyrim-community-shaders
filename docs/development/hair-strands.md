@@ -726,8 +726,14 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
         pose; the `0-4-0` colliders rode their bones' poses at each step for the same reason (a
         collider a step ahead of its targets shook the hair).
     -   *Contact.* A pushed point moves on with the surface. It takes the surface's own move
-        over the step, keeps 0.4 of its slide along the surface (TressFX's capsule friction), and
-        loses its motion into or off it. VSP moves every point with the root each step (0.4 of
+        over the step and loses its motion into or off it. Static friction first removes up to
+        a quarter of the normal push-out distance from its tangential move; a smaller slide sticks,
+        and a larger slide keeps 0.4 of what remains (TressFX's capsule friction share). This
+        acts only on contact; stiffness, gravity, damping and wind settings are unchanged.
+        The velocity comes from before positional push-out and is resolved for each body and
+        card contact. Previously a card contact replaced the body's normal, so the body's
+        push could become tangential velocity at the card and sustain motion in an overlap.
+        VSP moves every point with the root each step (0.4 of
         the root's move at the defaults), its previous position too, so the velocity a point is
         left with is the surface's move less VSP's. Without that, hair on the back of a running
         body was driven into it by VSP's share every step (2 units at 300 units/s) and crept along
@@ -1092,6 +1098,9 @@ permutation bit.
     after the sheet rule. A short lock hanging 1.5 to 7 units above the lip must read outside
     everywhere, rest as it does with no body (within 0.1 units) and not shake while the body
     breathes. Under `0-5-0`'s rules it read 6.3 units inside and ended 6.0 units off its style.
+    Contact-response regressions check that simultaneous body/card push-outs create no sideways
+    velocity, small resting slides stick, larger slides still slip with less energy, and sticking
+    preserves tangential and normal surface motion without duplicating VSP.
     Turning or tipping the head into the shoulder must leave hair out of it and at rest. Breathing,
     walking, running and turning at 30, 60 and 144 fps must leave drawn hair no more than 0.35
     units deep, on the bare body and, for a 45-unit lock down to the waist, in the cuirass with

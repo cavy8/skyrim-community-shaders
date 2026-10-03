@@ -74,8 +74,10 @@
 //  - The body keeps a point as far off it as the point's target lies (between BodyMinClearance and
 //    BodyMaxClearance), so a styled shape resting on the body rests as styled, and one styled into
 //    armour lies on the armour. A point pushed out moves on with the surface: it keeps the
-//    surface's move over the step and BodySlide of its own slide along it, none of its motion into
-//    or off it, less the move VSP gives it with the root. Stopping it dead, as TressFX does, left
+//    surface's move over the step and BodySlide of its own slide after contact friction, none of
+//    its motion into or off it, less the move VSP gives it with the root. Small slides stick under
+//    the contact load. Velocity is resolved at each contact, separately from positional push-out:
+//    one surface's correction cannot become a slide at another. Stopping it dead, as TressFX does, left
 //    hair on a moving body to be caught up and shoved every step, and it shook. With VSP's move on
 //    top, hair on the back of a running body was driven into it a little every step.
 //  - A point that went past the middle of a thin part (a shield, a plate) in one step reads inside
@@ -84,7 +86,7 @@
 //  - Not in TressFX at all: the cards the hair keeps (braids, ties, buns, CardField.hlsli) collide
 //    like the body, after it: a point is kept as far off them as its target lies (between
 //    CardMinClearance and CardMaxClearance), moves on with them (a swinging braid carries it
-//    aside) and keeps BodySlide of its slide along them. A card is a sheet with no inside, so a
+//    aside) and takes the same friction response. A card is a sheet with no inside, so a
 //    point that went through one in a step goes back to where it began, on the side it came from.
 
 #include "HairStrands/CardField.hlsli"
@@ -101,12 +103,24 @@ namespace HairStrandsSim
 	static const float CapsuleFriction = 0.4;
 	// The share of a point's slide along the body (relative to it) kept: TressFX's capsule friction.
 	static const float BodySlide = CapsuleFriction;
+	// Static friction uses the normal correction as the contact load, in units per step.
+	static const float ContactFriction = 0.25;
 	// Longest a segment may end a step, relative to its rest length.
 	static const float MaxStretch = 1.2;
 	// Units. A shorter strand has the global range of one this long, and VSP by its length over it.
 	static const float ShortStrandLength = 10.0;
 	// Longer locks take the full gravity load; shorter scalp/fringe strands resist sag.
 	static const float FullGravityLength = 20.0;
+
+	// Resolve velocity separately from depenetration: another contact's correction must not
+	// become a tangential impulse. Small slides stick under the normal load; larger ones slip.
+	float3 ContactMove(float3 a_delta, float3 a_normal, float3 a_surfaceMove, float3 a_shift, float a_correction)
+	{
+		float3 slide = a_delta + a_shift - a_surfaceMove;
+		slide -= a_normal * dot(slide, a_normal);
+		const float slip = saturate(1.0 - ContactFriction * max(a_correction, 0.0) / max(length(slide), 1e-7));
+		return a_surfaceMove - a_shift + BodySlide * slip * slide;
+	}
 
 	float4 NormalizeQuaternion(float4 q)
 	{
@@ -429,6 +443,10 @@ namespace HairStrandsSim
 			bool contact = false;
 			float3 contactNormal = 0;
 			float3 surfaceMove = 0;
+			float3 contactDelta = position[i] - previous[i];
+			const float contactSpeedSquared = dot(contactDelta, contactDelta);
+			if (contactSpeedSquared > ClampPositionDelta * ClampPositionDelta)
+				contactDelta *= ClampPositionDelta * ClampPositionDelta / contactSpeedSquared;
 			float3 shift = 0;  // VSP's move of the point (and its previous position) with the root this step
 			if (collideBody || collideCards)
 				shift = (HairStrandsSim::MultQuaternionAndVector(rotation, position[i]) + translation - position[i]) * vsp;
@@ -453,6 +471,7 @@ namespace HairStrandsSim
 							contactNormal = startNormal;
 						}
 					}
+					contactDelta = HairStrandsSim::ContactMove(contactDelta, contactNormal, surfaceMove, shift, bodyLimits[i].x - surfaceDistance);
 				}
 			}
 			if (collideCards) {
@@ -477,8 +496,7 @@ namespace HairStrandsSim
 					}
 					if (cardDistance < clearance) {
 						contact = true;
-						contactNormal = cardNormal;
-						surfaceMove = cardMove * StepFraction;
+						contactDelta = HairStrandsSim::ContactMove(contactDelta, cardNormal, cardMove * StepFraction, shift, clearance - cardDistance);
 					}
 				}
 			}
@@ -491,12 +509,8 @@ namespace HairStrandsSim
 			if (collided) {
 				previous[i] = position[i];
 			} else if (contact) {
-				// On the body (or a card): the point moves on with the surface, keeping BodySlide of its
-				// slide along it. VSP will move it with the root again next step: its velocity is the
-				// surface's move less that.
-				float3 slide = position[i] - previous[i] + shift - surfaceMove;
-				slide -= contactNormal * dot(slide, contactNormal);
-				previous[i] = position[i] - (surfaceMove - shift) - HairStrandsSim::BodySlide * slide;
+				// Each contact already resolved the step's move, without any positional push-out.
+				previous[i] = position[i] - contactDelta;
 			}
 		}
 
