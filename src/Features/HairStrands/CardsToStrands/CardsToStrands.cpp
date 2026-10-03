@@ -181,6 +181,9 @@ namespace CardsToStrands
 		constexpr float kMinChainLength = 3.0f;  // shorter hanging braids stay with the head
 		constexpr float kChainSegment = 2.0f;    // a chain's joint spacing, at least
 		constexpr float kChainBin = 1.0f;        // arclength per centre-line sample
+		constexpr float kSeamBlend = 2.0f;       // a chain's cards blend into the head's skin over this distance from cards kept on the head...
+		constexpr float kOffAxisRadii = 4.0f;    // ...and from this many of its radii off its line (at least kMinOffAxis) outwards
+		constexpr float kMinOffAxis = 4.0f;
 		constexpr float kGatherReach = 1.5f;     // hair ending this close to a braid on the head, or a chain's root, is gathered into it
 		constexpr float kTuftStart = 0.7f;       // hair starting past this share of a chain's length grows from it
 		constexpr float kTieRadius = 2.5f;       // tails starting this close together share a tie
@@ -650,6 +653,8 @@ namespace CardsToStrands
 			float ChainPosition(const ChainCurve& a_chain, const Vec3& a_p, float& o_length, float& o_pinned) const;
 			/** @brief The bones (chain joints, by bone number) and weights a point hanging from a chain follows. */
 			void ChainSkin(uint32_t a_chain, const Vec3& a_p, std::array<uint16_t, 4>& o_bones, std::array<float, 4>& o_weights) const;
+			/** @brief Blends a ChainSkin result for mesh vertex a_vertex into its own skin (a_chainShare of the chain kept), its own skin standing in for the pinned joints. */
+			void SeamSkin(const ChainCurve& a_chain, uint32_t a_vertex, float a_chainShare, std::array<uint16_t, 4>& io_bones, std::array<float, 4>& io_weights) const;
 			/** @brief Each mesh triangle's region, from the woven pieces and the card guides as bound. */
 			void LabelTriangles(Result& o_result);
 			/** @brief The triangles kept as cards, as a mesh to draw. */
@@ -2743,6 +2748,58 @@ namespace CardsToStrands
 			}
 		}
 
+		void Generator::SeamSkin(const ChainCurve& a_chain, uint32_t a_vertex, float a_chainShare, std::array<uint16_t, 4>& io_bones, std::array<float, 4>& io_weights) const
+		{
+			// A pinned joint is the parent bone as it is, so the vertex's own skin may stand in for
+			// it, and near the seam with cards on the head the chain gives way to it: the cards on
+			// both sides of the seam then move as one, however far from its root joint the seam lies
+			// and however many bones the mesh skins its hair to.
+			const uint32_t pinnedEnd = a_chain.firstBone + a_chain.pinnedJoints;
+			std::array<std::pair<uint16_t, float>, 8> mixed{};
+			size_t count = 0;
+			const auto add = [&](uint16_t a_bone, float a_weight) {
+				if (!(a_weight > 0.0f))
+					return;
+				for (size_t k = 0; k < count; ++k) {
+					if (mixed[k].first == a_bone) {
+						mixed[k].second += a_weight;
+						return;
+					}
+				}
+				mixed[count++] = { a_bone, a_weight };
+			};
+			const float chainShare = std::clamp(a_chainShare, 0.0f, 1.0f);
+			float headWeight = 1.0f - chainShare;
+			for (int k = 0; k < 4; ++k) {
+				if (io_bones[k] >= a_chain.firstBone && io_bones[k] < pinnedEnd)
+					headWeight += io_weights[k] * chainShare;
+				else
+					add(io_bones[k], io_weights[k] * chainShare);
+			}
+			if (!(headWeight > 0.0f))
+				return;
+			const bool skinned = mesh.boneIndices.size() == mesh.positions.size() && mesh.boneWeights.size() == mesh.positions.size();
+			float meshTotal = 0.0f;
+			if (skinned)
+				for (int k = 0; k < 4; ++k)
+					meshTotal += std::max(mesh.boneWeights[a_vertex][k], 0.0f);
+			if (meshTotal > 0.0f) {
+				for (int k = 0; k < 4; ++k)
+					add(mesh.boneIndices[a_vertex][k], std::max(mesh.boneWeights[a_vertex][k], 0.0f) * headWeight / meshTotal);
+			} else {
+				add(skinned ? static_cast<uint16_t>(std::max(a_chain.parentBone, 0)) : 0, headWeight);
+			}
+			std::sort(mixed.begin(), mixed.begin() + count, [](const auto& a, const auto& b) { return a.second > b.second; });
+			count = std::min<size_t>(count, 4);
+			float total = 0.0f;
+			for (size_t k = 0; k < count; ++k)
+				total += mixed[k].second;
+			for (size_t k = 0; k < 4; ++k) {
+				io_bones[k] = k < count ? mixed[k].first : 0;
+				io_weights[k] = k < count ? mixed[k].second / total : 0.0f;
+			}
+		}
+
 		void Generator::BindToWoven(const Scalp& a_scalp, std::vector<uint32_t>& io_floating)
 		{
 			if (woven.empty())
@@ -3155,6 +3212,60 @@ namespace CardsToStrands
 				}
 			}
 
+			// Where a chain's cards meet cards kept on the head (a braid leaving a French braid or a
+			// cap): the welded vertices both use. The chain's skin gives way to the mesh's own over a
+			// segment's length from there, so the seam never opens.
+			struct SeamPoint
+			{
+				Vec3 p;
+				int32_t chain;
+			};
+			PointGrid<SeamPoint> seams(kSeamBlend);
+			{
+				std::vector<uint8_t> onCards;
+				std::unordered_map<uint32_t, std::vector<int32_t>> chainsAt;
+				for (uint32_t t = 0; t < tris.size(); ++t) {
+					for (uint32_t w : tris[t].w) {
+						if (regionOf[t] == Region::Cards) {
+							if (w >= onCards.size())
+								onCards.resize(w + 1, 0);
+							onCards[w] = 1;
+						} else if (regionOf[t] == Region::Chain && chainOf[t] >= 0) {
+							auto& at = chainsAt[w];
+							if (std::ranges::find(at, chainOf[t]) == at.end())
+								at.push_back(chainOf[t]);
+						}
+					}
+				}
+				std::unordered_map<uint32_t, Vec3> weldedAt;
+				for (uint32_t t = 0; t < tris.size(); ++t)
+					for (int k = 0; k < 3; ++k)
+						weldedAt.try_emplace(tris[t].w[k], Position(tris[t].v[k]));
+				for (const auto& [w, at] : chainsAt) {
+					if (w < onCards.size() && onCards[w])
+						for (int32_t chain : at)
+							seams.Insert(weldedAt[w], { weldedAt[w], chain });
+				}
+			}
+			// Cards labelled with a chain but lying far off its line (a branch of the piece the centre
+			// line does not follow) would swing on a long lever round their joint: they stay with the head too.
+			const auto chainShare = [&](int32_t a_chain, const Vec3& a_p) {
+				float nearest = kSeamBlend;
+				seams.Query(a_p, kSeamBlend, [&](const SeamPoint& a_s) {
+					if (a_s.chain == a_chain)
+						nearest = std::min(nearest, (a_s.p - a_p).Length());
+				});
+				const auto& joints = chains[a_chain].joints;
+				float offAxis = FLT_MAX;
+				for (size_t j = 0; j + 1 < joints.size(); ++j) {
+					const Vec3 d = joints[j + 1] - joints[j];
+					const float s = std::clamp((a_p - joints[j]).Dot(d) / std::max(d.LengthSquared(), 1e-12f), 0.0f, 1.0f);
+					offAxis = std::min(offAxis, (joints[j] + d * s - a_p).Length());
+				}
+				const float reach = std::max(kOffAxisRadii * chains[a_chain].radius, kMinOffAxis);
+				return Smoothstep(nearest / kSeamBlend) * (1.0f - Smoothstep((offAxis - reach) / kSeamBlend));
+			};
+
 			std::unordered_map<uint64_t, uint32_t> remap;
 			for (uint32_t t = 0; t < tris.size(); ++t) {
 				if (regionOf[t] == Region::Strands)
@@ -3182,6 +3293,7 @@ namespace CardsToStrands
 						}
 						if (chain >= 0) {
 							ChainSkin(static_cast<uint32_t>(chain), vertex.position, vertex.bones, vertex.weights);
+							SeamSkin(chains[chain], i, chainShare(chain, vertex.position), vertex.bones, vertex.weights);
 						} else if (skinned) {
 							vertex.bones = mesh.boneIndices[i];
 							vertex.weights = mesh.boneWeights[i];
@@ -3915,14 +4027,19 @@ namespace CardsToStrands
 		for (size_t j = 0; j < n; ++j)
 			drawn[j] = a_parent.Apply(a_chain.joints[j]) + Vec3::Lerp(previousOffset[j], offset[j], std::clamp(a_alpha, 0.0f, 1.0f));
 		// Each joint turns with the segment leaving it (the last with the one reaching it), twisting no more than the bends need.
+		// The pinned joints keep the parent bone's turn: the root joint turning with the first free
+		// segment would swing the braid's cards round it and tear them from the cards on the head.
+		// The first segment bends instead, from the head's pose at its root to the next joint's.
+		const size_t pinned = std::clamp<size_t>(a_chain.pinnedJoints, 1, n);
 		Quat turn;
 		for (size_t j = 0; j < n; ++j) {
 			if (j + 1 < n)
 				turn = Transport(turn, a_parent.ApplyLinear(a_chain.joints[j + 1] - a_chain.joints[j]), drawn[j + 1] - drawn[j]);
+			const Quat jointTurn = j < pinned ? Quat{} : turn;
 			auto& bone = o_bones[j];
 			for (int column = 0; column < 3; ++column) {
 				const Vec3 axis(column == 0 ? 1.0f : 0.0f, column == 1 ? 1.0f : 0.0f, column == 2 ? 1.0f : 0.0f);
-				const Vec3 turned = turn.Rotate(a_parent.ApplyLinear(axis));
+				const Vec3 turned = jointTurn.Rotate(a_parent.ApplyLinear(axis));
 				for (int row = 0; row < 3; ++row)
 					bone.rows[row][column] = turned[row];
 			}

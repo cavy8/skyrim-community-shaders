@@ -10,7 +10,9 @@
 // Checked: a braid at rest sags under gravity and holds still; running carries it along rather
 // than blowing it up behind the head; no motion lifts it more than a third of its length above
 // its styled place; segments keep their length; joints stay out of the head and neck; it comes
-// to rest once the head stops; the state stays finite. Exit code 1 on failure.
+// to rest once the head stops; the state stays finite; the cards where the braid leaves the head
+// (on its last pinned joint) stay where the head puts them, not torn off by the swing. Exit code 1
+// on failure.
 
 #include "CardsToStrands.h"
 
@@ -72,6 +74,7 @@ namespace
 		float stretch = 0.0f;      // the worst segment length error, as a fraction
 		float penetration = 0.0f;  // the deepest a joint went into a collider, less the margin allowed
 		float finalSpeed = 0.0f;   // units per step, after two still seconds at the end
+		float tear = 0.0f;         // the furthest a card vertex at the chain's root moved from where the head puts it
 		bool finite = true;
 	};
 
@@ -92,6 +95,10 @@ namespace
 		const int still = 120;
 		Pose last;
 		std::vector<Vec3> before;
+		std::vector<Affine> bones;
+		// Card vertices round the last pinned joint, a braid's thickness off it: the seam with the cards on the head.
+		const Vec3 root = chain.joints[chain.pinnedJoints - 1];
+		const Vec3 seam[4] = { root + Vec3(1.0f, 0.0f, 0.0f), root + Vec3(-1.0f, 0.0f, 0.0f), root + Vec3(0.0f, 1.0f, 0.0f), root + Vec3(0.0f, -1.0f, 0.0f) };
 		for (int step = 0; step < moving + still; ++step) {
 			const Pose pose = step < moving ? a_scenario.pose(step * kStep) : last;
 			if (step < moving)
@@ -107,6 +114,9 @@ namespace
 			before = sim.Joints();
 			sim.Step(chain, parent, kStep, settings, colliders, 2);
 			const auto& joints = sim.Joints();
+			sim.Bones(chain, parent, 1.0f, bones);
+			for (const Vec3& v : seam)
+				outcome.tear = std::max(outcome.tear, (bones[chain.pinnedJoints - 1].Apply(v) - parent.Apply(v)).Length());
 			for (int j = 0; j < kJoints; ++j) {
 				const Vec3 styled = parent.Apply(chain.joints[j]);
 				outcome.finite = outcome.finite && std::isfinite(joints[j].x) && std::isfinite(joints[j].y) && std::isfinite(joints[j].z);
@@ -144,9 +154,9 @@ int main()
 	bool ok = true;
 	for (const auto& scenario : scenarios) {
 		const Outcome o = Run(scenario);
-		const bool pass = o.finite && o.rise <= kLength / 3.0f && o.stretch <= 0.02f && o.penetration <= 0.01f && o.finalSpeed <= 0.01f;
-		std::printf("%-15s %s  rise %5.2f  stretch %5.3f  penetration %5.2f  moving %6.4f/step at the end\n", scenario.name, pass ? "ok  " : "FAIL", o.rise, o.stretch,
-			o.penetration, o.finalSpeed);
+		const bool pass = o.finite && o.rise <= kLength / 3.0f && o.stretch <= 0.02f && o.penetration <= 0.01f && o.finalSpeed <= 0.01f && o.tear <= 0.001f;
+		std::printf("%-15s %s  rise %5.2f  stretch %5.3f  penetration %5.2f  moving %6.4f/step at the end  root tear %5.3f\n", scenario.name, pass ? "ok  " : "FAIL", o.rise,
+			o.stretch, o.penetration, o.finalSpeed, o.tear);
 		ok = ok && pass;
 	}
 	return ok ? 0 : 1;

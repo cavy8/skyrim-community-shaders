@@ -225,6 +225,15 @@ parent bone (the dominant bone at the root). Its radius is the median distance o
 triangles from the centre line. Card vertices on a chain blend the two joints of their nearest
 segment by where they project on it.
 
+Where a chain's cards meet cards kept on the head (the braid leaving a French braid, a cap or a
+crown, or a braid painted half Cards and half Chain), the two sides share welded vertices. Those
+must move as one, or the braid tears off the head as it swings. Within 2 units of such a vertex
+the chain's skin gives way to the mesh's own (smoothstep over the distance), and the pinned joints'
+weights always go to the mesh's own skin, which is exact where the mesh skins hair to more than the
+parent bone. So do vertices more than 4 radii (at least 4 units) off the chain's line: a branch of
+the piece its centre line does not follow (Apachii 03 has one 10 units off, at the back of the
+head) would otherwise swing on a long lever round its joint.
+
 ### Gathered hair, ties and tails (`BindToWoven`, `FindTies`)
 
 Woven triangles take no part in tracing, so loose hair stops at them and hair below a braid's
@@ -330,14 +339,23 @@ joint below (DFTL, Müller et al. 2012), without which follow the leader adds en
 chain swings by itself. `Bones` gives each joint's skin-to-world transform: the bind pose turned
 with its segment and carried to the joint as drawn, the parent bone as it is now plus the offset
 simulated at the last two steps blended by the frame's position between them, so a chain follows
-the head smoothly between steps.
+the head smoothly between steps. The pinned joints keep the parent bone's turn, so the first free
+segment bends from the head's pose to the next joint's. Until `0-11-2` the last pinned joint
+turned with the segment leaving it, swinging the cards round the root with it: swung 30 degrees,
+the seams of nine real braided meshes (Apachii 03, Viking long braid, Navi 2 braids, KS
+TombRaider, KS Dreadlocks, BG3 Orin, vanilla remake 03, 14, 16) opened by 0.5 to 4.6 units. Now
+none opens (`swing.py` in the session's harness: every chain swung rigidly round its root, the
+kept cards skinned as the game does); the blend stretches a few long card edges instead, by up
+to 1.2 units, and by 3.3 units on Apachii 03's off-line branch.
 
 `tools/hair_cards_to_strands/chain_check.cpp` checks it against a head at rest, running,
 starting and stopping, spinning, shaking, running while bobbing, and turning (in 0.15 s, and in
 one frame). A 36-unit braid sags 2 units under gravity and holds still; no motion lifts a joint
 more than 11 units above its styled place (the 0.15 s half turn; under 1 for running, starting
 and stopping, a spin and a snap turn); segments keep their length within 0.3%; joints stay out of
-the head and neck; the chain comes to rest within two seconds of the head stopping. The `0-7-0`
+the head and neck; the chain comes to rest within two seconds of the head stopping; cards round
+the last pinned joint stay exactly where the head puts them (they moved up to 0.57 units before
+`0-11-2`). The `0-7-0`
 simulator, which damped world velocity and pulled only the lower end of each segment, failed
 all but rest: braids rose up to 50 units above their styled place (above the head), stretched
 segments by up to 88% on a snap turn, and were still swinging two seconds after a run stopped.
