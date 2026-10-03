@@ -348,9 +348,14 @@ Shaders are in `features/Hair Strands/Shaders/HairStrands/`.
     two from the tangent). UVs use the material's offset and scale from the draw's constant
     buffer, because the prepass's Utility shader binds another `b1`. The depth prepass draws
     them with `CardDepth.hlsl`, which alpha-tests the texture the Utility pass bound at `t0`
-    against that pass's threshold (`AlphaTestRef.x` in its `b2`), as `Utility.hlsl` does: depth
-    written through transparent card parts would cut holes in whatever lies behind. A Utility
-    pass without `ALPHA_TEST` draws them with no pixel shader. The lighting pass widens the equal test as the
+    exactly as `Utility.hlsl` does: sampled with `SharedData::MipBias`, against both that
+    pass's threshold (`AlphaTestRef.x` in its `b2`) and the render state's (`AlphaTestRefRS`,
+    `b11`, the one `Lighting.hlsl` tests). Depth written through transparent card parts would
+    cut holes in whatever lies behind, and depth the lighting pass's alpha test then discards
+    shows the sky: without the mip bias (about -1.6 under DLSS) the prepass read a blurrier mip
+    whose strand gaps passed. If the lighting pass's card permutation is still compiling, it
+    shades with the one that drew the prepass depth. A Utility pass without `ALPHA_TEST` draws
+    them with no pixel shader. The lighting pass widens the equal test as the
     strands do but keeps the pass's depth writes (off for blended hair) and its rasterizer and
     blend state, so the cards cull and blend as authored. A hair kept wholly as cards (a braid
     on its own) has no strands and draws only its cards. Shadow maps still use the game's cards,

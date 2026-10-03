@@ -2,8 +2,14 @@
 // after CardLighting.hlsl's vertex shader (it reads the position and texture coordinates, the
 // first two outputs) and keeps only what the hair texture's alpha shows, as the game's own
 // alpha-tested depth pass (Utility.hlsl, RENDER_DEPTH with ALPHA_TEST) does: with the texture,
-// sampler and threshold that pass binds. Passes that do not alpha-test draw the cards without a
-// pixel shader (StrandRenderer::DrawCards).
+// sampler, mip bias and thresholds that pass uses. Passes that do not alpha-test draw the cards
+// without a pixel shader (StrandRenderer::DrawCards).
+//
+// The lighting pass shades the cards wherever its own alpha test (Lighting.hlsl) passes, so any
+// texel kept here that it discards is depth without colour: the sky shows through. Sampling
+// without the mip bias did that, as a blurrier mip keeps the gaps between painted strands.
+
+#include "Common/SharedData.hlsli"
 
 struct PS_INPUT
 {
@@ -22,8 +28,15 @@ cbuffer PerGeometry : register(b2)
 	float4 AlphaTestRef : packoffset(c2);
 }
 
+// The render state's alpha reference, the one Lighting.hlsl tests against.
+cbuffer AlphaTestRefCB : register(b11)
+{
+	float AlphaTestRefRS : packoffset(c0);
+}
+
 void main(PS_INPUT input)
 {
-	if (TexBaseSampler.Sample(SampBaseSampler, input.TexCoord0).w - AlphaTestRef.x < 0)
+	const float alpha = TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord0, SharedData::MipBias).w;
+	if (alpha - AlphaTestRef.x < 0 || alpha - AlphaTestRefRS < 0)
 		discard;
 }

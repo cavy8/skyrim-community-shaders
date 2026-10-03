@@ -691,6 +691,8 @@ namespace Strands
 		uint32_t strandDescriptor = 0;           // lighting permutation whose strand shaders drew this hair last
 		uint32_t lastPrepassFrame = UINT32_MAX;  // RenderFrame() in which the depth prepass drew the strands
 		uint32_t layerDrawFrame = UINT32_MAX;    // RenderFrame() in which its alpha-tested layer drew the strands
+		uint32_t cardDepthDescriptor = 0;        // lighting permutation whose card shaders drew the kept cards' prepass depth
+		uint32_t cardDepthFrame = UINT32_MAX;    // RenderFrame() in which they did
 
 		// This frame's draw parameters.
 		bool drawThisFrame = false;
@@ -2319,11 +2321,19 @@ namespace Strands
 			return;
 		// The card shaders of the lighting permutation that drew the hair (requested in its lighting
 		// pass); in the depth prepass, its vertex shader with the alpha-testing depth shader, or with
-		// none when the pass does not alpha-test (depth alone, as the game writes it).
+		// none when the pass does not alpha-test (depth alone, as the game writes it). Cards whose
+		// depth the prepass drew must be shaded: while this permutation compiles, the lighting pass
+		// uses the one that drew their depth.
 		ShaderVariant* variant = nullptr;
+		uint32_t descriptor = a_instance.strandDescriptor;
 		{
 			std::scoped_lock lock(variantMutex);
-			if (auto it = cardVariants.find(a_instance.strandDescriptor); it != cardVariants.end() && it->second->Ready())
+			auto it = cardVariants.find(descriptor);
+			if ((it == cardVariants.end() || !it->second->Ready()) && !a_depthOnly && a_instance.cardDepthFrame == RenderFrame()) {
+				descriptor = a_instance.cardDepthDescriptor;
+				it = cardVariants.find(descriptor);
+			}
+			if (it != cardVariants.end() && it->second->Ready())
 				variant = it->second.get();
 		}
 		if (!variant)
@@ -2391,6 +2401,10 @@ namespace Strands
 
 		context->DrawIndexed(asset.cardIndexCount, 0, 0);
 		cardTrianglesThisFrame += asset.cardIndexCount / 3;
+		if (a_depthOnly) {
+			a_instance.cardDepthDescriptor = descriptor;
+			a_instance.cardDepthFrame = RenderFrame();
+		}
 
 		if (viewports > 0)
 			context->RSSetViewports(1, &oldViewport);
