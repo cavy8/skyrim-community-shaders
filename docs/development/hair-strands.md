@@ -797,7 +797,48 @@ skinned to the chain, and `TargetSkin` takes their full skinning at any guidance
 simulation's targets ride the braid. State is camera-relative, shifted when the camera moves,
 and restarts with the asset, after a gap of more than two frames, or when the root jumps further
 than a strand's teleport distance. Physics off or out of its distance: the braid hangs as
-styled. The body field (GPU) is not used: braids collide with capsules only.
+styled. The body field (GPU) is not used: braids collide with capsules only. Strands collide
+with the braid where it swings to (see [Kept cards](#kept-cards-cardfieldcpp-cardfieldhlsli)),
+but strands do not push braids.
+
+### Kept cards (`CardField.cpp`, `CardField.hlsli`)
+
+Since `0-12-0` strands collide with the cards the hair keeps (braids, ties, buns, the hair gathered
+into them), including braids swinging on chains. TressFX has nothing to port here: no TressFX
+release (3.1.1, 4.0, 4.1) has hair-hair collision or any collision but capsules and its
+collision mesh's distance field. Strands do not collide with each other.
+
+-   *The field.* `BuildCardCollisionMesh` turns the kept cards into the body field's collision
+    vertices and triangles once per asset, every triangle with inside band 0 (a card is a sheet).
+    Every frame a hair with kept cards is simulated, `CardField::Prepare` skins them with the
+    hair's own palette, chain joints included, and runs `BodySdf.cs.hlsl`'s three kernels into a
+    second set of shared textures: a grid in the head's axes, snapped to cells fixed on the head,
+    0.5 units a cell (at actor scale 1; coarsened 1.25x up to eight times to fit 128 cells an
+    axis and 512K cells), reaching 2 cells either side of a card. It covers the cards on the head
+    (their skin-space box plus 1 unit, for cards on the neck or SMP bones) and each chain's joints
+    at their last step plus the furthest its cards lie from them, clipped to the strands' reach.
+    A card may span the grid (`maxExtent` is the grid's size, not the body's 32 cells). It is
+    bound at b1, t7 and t8 for both strand compute shaders, with `SkinCB` flag 32.
+-   *Sampling.* Each cell holds the distance to its nearest card and the direction away from it
+    on the cell's side, so linear filtering, as the body's sampling does, would never read 0 at a
+    card and its direction would vanish there. `SampleCards` carries each of the eight cells'
+    values to the point along the cell's own plane (its nearest card, flat), turns the cells
+    facing the other way (beyond the card) to face as the heaviest cell does, and weighs them as
+    linear filtering would. The result is 0 at the card and changes sign across it. A NumPy mirror
+    (session scratchpad `card_sample_check.py`) reads a flat sheet exactly and a 1-unit tube
+    within 0.09 units.
+-   *Collision.* In the simulation after the body (so the cards' push is the last before the
+    clamp), as the body's: a point is kept as far off the cards as its target lies, between
+    0.1 and 0.4 units (`CardMinClearance`, `CardMaxClearance`), moves on with them (a swinging
+    braid carries it aside), and keeps `BodySlide` of its slide along them. A card has no inside,
+    so a point that went through one in a step (it ends behind the plane of the card it started
+    off, near a card facing the other way) goes back to where it began, on its side. Across the
+    inside of a braid's tube the far wall faces the other way too, but the point stays in front of
+    the near wall's plane, so that is not taken for a crossing. Followers, which have no history,
+    are kept off the cards the same way and put back on their target's side of a card when they
+    are found behind it near their target.
+-   *Off.* The setting "Collide with Braids and Ties" (`CardCollision`, under Collision) turns it
+    off. Statistics show the fields built a frame.
 
 ### Followers (`StrandSkin.cs.hlsl`)
 
@@ -1092,6 +1133,10 @@ permutation bit.
 
 Check these first in game:
 
+-   Card collision (`0-12-0`): statistics show "Braid and tie collision: N fields a frame" for a
+    simulated hair with kept cards. Loose hair over a bun or tie should rest on it, and a
+    swinging braid push it aside; 0.4 units of clearance may show as a gap round braids, and
+    0.5-unit cells may be too coarse for thin ties. Untested in game.
 -   Each draw happens between slots 6 and 7 with its state still bound (FrameAnnotations
     assumes the same), and `RestoreGeometry` still has the pass's pixel shader constants bound.
 -   `partitions[i].buffData->rawVertexData` is kept on the CPU after load. RaceMenu's body
@@ -1200,7 +1245,11 @@ Check these first in game:
     styled).
 -   Strand shadow maps and self-shadowing beyond Hair Specular's, and deep opacity maps.
     Cards cast the shadows.
--   Hair-hair collision.
+-   Hair-hair collision between strands (TressFX has none to port), and strands pushing
+    braids or kept cards (`0-12-0` collides strands with them one way). A grid of strand
+    density and velocity (push out of crowded cells, even out neighbours' velocities) would
+    fit a frame behind, since one thread runs a whole strand through every step; braids
+    feeling the strands would need the grid read back to the CPU.
 -   The body field reaches 2.5 units in front of a surface and up to 7.5 behind it. Hair whose
     styled place lies deeper inside armour than that, or that gets deeper than 2.5 units below
     its target in one step, is not pushed out. Just inside that reach a target is pushed all

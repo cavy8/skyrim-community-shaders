@@ -14,6 +14,7 @@
 #define HAIR_STRANDS_FLAG_COLLIDE 4      // guides keep out of the colliders
 #define HAIR_STRANDS_FLAG_HEAD_FIELD 8   // every strand keeps out of the head field (t4)
 #define HAIR_STRANDS_FLAG_BODY_FIELD 16  // every strand keeps off the body's distance field (t5, t6)
+#define HAIR_STRANDS_FLAG_CARD_FIELD 32  // every strand keeps off the kept cards' field (CardField.hlsli)
 
 // Mirrors Strands::SkinCB (StrandRenderer.h).
 cbuffer SkinCB : register(b0)

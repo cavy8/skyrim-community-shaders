@@ -15,8 +15,12 @@
 // carried into the head by the guide's offset, so each strand point is also kept out of the
 // head field (never deeper than its own target lies), as TressFX's signed distance field
 // collision treats every point of every strand, and off the body's distance field as far as its
-// own target lies (but for the two points at the root, pinned in the simulation too).
+// own target lies (but for the two points at the root, pinned in the simulation too), and off
+// the cards the hair keeps in the same way. A strand point found on the other side of a card from
+// its target, near it, is put back on its target's side: it has no history to tell how it got
+// there, and a strand styled over a bun belongs over it.
 
+#include "HairStrands/CardField.hlsli"
 #include "HairStrands/Skinning.hlsli"
 
 StructuredBuffer<HairStrands::GuidePoint> Guides : register(t3);
@@ -92,6 +96,25 @@ RWStructuredBuffer<HairStrands::SkinnedPoint> Skinned : register(u0);
 			HairStrandsSkin::CollideBody(followed, (float3)0, limits, surfaceDistance, normal, move);
 			float3 previousHere = followedPrevious + PreviousToCurrent;
 			HairStrandsSkin::CollideBody(previousHere, HairStrandsSkin::BodyAhead(previousHere, 0.0), limits, surfaceDistance, normal, move);
+			followedPrevious = previousHere - PreviousToCurrent;
+		}
+		if ((Flags & HAIR_STRANDS_FLAG_CARD_FIELD) && id % PointsPerStrand >= 2) {
+			float targetDistance;
+			float3 targetNormal, targetMove;
+			const bool nearTarget = HairStrandsCards::SampleCards(target, targetDistance, targetNormal, targetMove);
+			const float clearance = nearTarget ? clamp(targetDistance, CardMinClearance, CardMaxClearance) : CardMaxClearance;
+			float cardDistance;
+			float3 cardNormal, cardMove;
+			if (HairStrandsCards::SampleCards(followed, cardDistance, cardNormal, cardMove)) {
+				// A target lying on the card itself has no side to keep to.
+				if (nearTarget && targetDistance >= CardMinClearance && HairStrandsCards::CrossedCard(target, targetDistance, targetNormal, followed, cardNormal))
+					followed += targetNormal * (cardDistance + clearance);
+				else if (cardDistance < clearance)
+					followed += cardNormal * (clearance - cardDistance);
+			}
+			// Last frame's position against last frame's cards: this frame's, taken back by their move.
+			float3 previousHere = followedPrevious + PreviousToCurrent;
+			HairStrandsCards::CollideCards(previousHere, HairStrandsCards::CardsAhead(previousHere, 0.0), clearance, cardDistance, cardNormal, cardMove);
 			followedPrevious = previousHere - PreviousToCurrent;
 		}
 		const float4 rotation = normalize(lerp(a.Rotation, dot(a.Rotation, b.Rotation) < 0.0 ? -b.Rotation : b.Rotation, w));

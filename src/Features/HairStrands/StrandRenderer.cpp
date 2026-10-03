@@ -632,11 +632,13 @@ namespace Strands
 		std::vector<CardsToStrands::ChainCurve> chains;
 		uint32_t chainBoneBase = 0;
 		uint32_t chainBoneCount = 0;
+		std::unique_ptr<CardCollisionMesh> cardCollision;  // the kept cards, for the strands to collide with
 
 		uint64_t GpuBytes() const
 		{
 			return static_cast<uint64_t>(strandCount) * (pointsPerStrand * sizeof(RestPoint) + sizeof(StrandInfo)) + colourBytes +
-			       static_cast<uint64_t>(cardVertexCount) * sizeof(CardVertex) + static_cast<uint64_t>(cardIndexCount) * sizeof(uint32_t);
+			       static_cast<uint64_t>(cardVertexCount) * sizeof(CardVertex) + static_cast<uint64_t>(cardIndexCount) * sizeof(uint32_t) +
+			       (cardCollision ? cardCollision->GpuBytes() : 0);
 		}
 	};
 
@@ -730,7 +732,8 @@ namespace Strands
 
 	StrandRenderer::StrandRenderer(StyleLibrary& a_library) :
 		library(a_library),
-		bodyCollision(std::make_unique<BodyCollision>())
+		bodyCollision(std::make_unique<BodyCollision>()),
+		cardField(std::make_unique<CardField>())
 	{}
 
 	StrandRenderer::~StrandRenderer()
@@ -751,6 +754,7 @@ namespace Strands
 		assets.clear();
 		jobQueue.clear();
 		bodyCollision->Reset();
+		cardField->Reset();
 		currentPass = nullptr;
 		currentInstance = nullptr;
 		stats = {};
@@ -972,6 +976,7 @@ namespace Strands
 					if (FAILED(globals::d3d::device->CreateBuffer(&indexDesc, &indicesInit, asset->cardIndices.put())))
 						throw std::runtime_error("cannot create the card index buffer");
 					Util::SetResourceName(asset->cardIndices.get(), "HairStrands::CardIndices");
+					asset->cardCollision = BuildCardCollisionMesh(data->cardVertices, data->cardIndices, asset->chains);
 				} else {
 					asset->cardIndexCount = 0;
 					asset->cardVertexCount = 0;
@@ -1106,7 +1111,8 @@ namespace Strands
 		stats.bodyActors = body.actors;
 		stats.bodyTriangles = body.triangles;
 		stats.bodyFields = body.fieldsBuilt;
-		stats.gpuBytes = body.gpuBytes;
+		stats.cardFields = cardField->TakeFieldCount();
+		stats.gpuBytes = body.gpuBytes + cardField->GpuBytes();
 		for (const auto& [geometry, instance] : instances) {
 			if (!instance->isHair || frame - instance->lastSeenFrame > 2)
 				continue;
@@ -1660,18 +1666,20 @@ namespace Strands
 			return true;  // the kept cards read the palette alone
 
 		// Mid-pass dispatches: put back every compute binding they touch.
-		constexpr UINT kSRVs = 7;
+		constexpr UINT kSRVs = 9;
 		constexpr UINT kUAVs = 4;
+		constexpr UINT kCBs = 2;
+		constexpr UINT kSamplers = 1;
 		winrt::com_ptr<ID3D11ComputeShader> oldShader;
 		context->CSGetShader(oldShader.put(), nullptr, nullptr);
-		ID3D11Buffer* oldCB = nullptr;
-		context->CSGetConstantBuffers(0, 1, &oldCB);
+		ID3D11Buffer* oldCBs[kCBs]{};
+		context->CSGetConstantBuffers(0, kCBs, oldCBs);
 		ID3D11ShaderResourceView* oldSRVs[kSRVs]{};
 		context->CSGetShaderResources(0, kSRVs, oldSRVs);
 		ID3D11UnorderedAccessView* oldUAVs[kUAVs]{};
 		context->CSGetUnorderedAccessViews(0, kUAVs, oldUAVs);
-		ID3D11SamplerState* oldSampler = nullptr;
-		context->CSGetSamplers(0, 1, &oldSampler);
+		ID3D11SamplerState* oldSamplers[kSamplers]{};
+		context->CSGetSamplers(0, kSamplers, oldSamplers);
 
 		// The actor's body field first, for this frame: the guides and the followers collide with it.
 		BodyFieldView body;
@@ -1685,16 +1693,33 @@ namespace Strands
 			for (int r = 0; r < 3; ++r)
 				cb.bodyRootMove[r] = body.rootMove[r];
 		}
+		// Then the cards the hair keeps, where its braids swing to this frame.
+		CardFieldView cards;
+		const auto& asset = *a_instance.asset;
+		if (simulate && settings.collision && settings.cardCollision && asset.cardCollision && bodyRequest.reach > 0.0f) {
+			CardFieldRequest request;
+			request.mesh = asset.cardCollision.get();
+			request.palette = &a_instance.paletteData;
+			request.bones = paletteBones;
+			request.headBone = cb.headBone;
+			request.previousToCurrent = previousEye - eye;
+			for (const auto& sim : a_instance.chainSims)
+				request.chainJoints.push_back(&sim.Joints());
+			request.reachCentre = bodyRequest.centre;
+			request.reach = bodyRequest.reach;
+			if (cardField->Prepare(request, GetBodyPrograms(), cards))
+				cb.flags |= SkinCB::kCardField;
+		}
 		skinCB->Update(cb);
 
-		ID3D11Buffer* cbBuffer = skinCB->CB();
+		ID3D11Buffer* cbBuffers[kCBs] = { skinCB->CB(), cards.constants };
 		ID3D11ShaderResourceView* headField = (cb.flags & SkinCB::kHeadField) ? a_instance.headField->srv.get() : nullptr;
 		ID3D11ShaderResourceView* srvs[kSRVs] = { a_instance.asset->restPoints->srv.get(), a_instance.palette->srv.get(), a_instance.asset->strandInfo->srv.get(), nullptr, headField,
-			body.motion, body.surface };
-		ID3D11SamplerState* bodySampler = body.sampler;
-		context->CSSetConstantBuffers(0, 1, &cbBuffer);
+			body.motion, body.surface, cards.motion, cards.surface };
+		ID3D11SamplerState* samplers[kSamplers] = { body.sampler };
+		context->CSSetConstantBuffers(0, kCBs, cbBuffers);
 		context->CSSetShaderResources(0, kSRVs, srvs);
-		context->CSSetSamplers(0, 1, &bodySampler);
+		context->CSSetSamplers(0, kSamplers, samplers);
 		if (simulate) {
 			// The guides first: every strand follows one.
 			ID3D11UnorderedAccessView* guideUAV = a_instance.guideState->uav.get();
@@ -1712,8 +1737,8 @@ namespace Strands
 
 		context->CSSetUnorderedAccessViews(0, kUAVs, oldUAVs, nullptr);
 		context->CSSetShaderResources(0, kSRVs, oldSRVs);
-		context->CSSetSamplers(0, 1, &oldSampler);
-		context->CSSetConstantBuffers(0, 1, &oldCB);
+		context->CSSetSamplers(0, kSamplers, oldSamplers);
+		context->CSSetConstantBuffers(0, kCBs, oldCBs);
 		context->CSSetShader(oldShader.get(), nullptr, 0);
 		for (auto* srv : oldSRVs) {
 			if (srv)
@@ -1723,10 +1748,14 @@ namespace Strands
 			if (uav)
 				uav->Release();
 		}
-		if (oldSampler)
-			oldSampler->Release();
-		if (oldCB)
-			oldCB->Release();
+		for (auto* sampler : oldSamplers) {
+			if (sampler)
+				sampler->Release();
+		}
+		for (auto* buffer : oldCBs) {
+			if (buffer)
+				buffer->Release();
+		}
 		return true;
 	}
 
@@ -1905,15 +1934,17 @@ namespace Strands
 		const BodySkeleton skeleton = FindBodySkeleton(haveHead && a_skin->bones ? a_skin->bones[asset.headBone] : nullptr);
 		const bool bodyMesh = settings.collision && haveHead && bodyCollision->HasMesh(a_instance.actorId) && GetBodyPrograms().Ready();
 		o_cb.colliderCount = settings.collision ? GatherColliders(a_instance, skeleton, a_palette, frameBone, a_eye, !bodyMesh, o_cb.colliders) : 0;
-		if (bodyMesh) {
+		if (haveHead) {
 			const float4* rows = &a_palette[frameBone * 3];
 			const float scale = float3(rows[0].x, rows[1].x, rows[2].x).Length();
 			const float4 centre(asset.headCentre.x, asset.headCentre.y, asset.headCentre.z, 1.0f);
-			o_body.wanted = true;
 			o_body.centre = float3(rows[0].Dot(centre), rows[1].Dot(centre), rows[2].Dot(centre)) - a_eye;
 			o_body.reach = (asset.reach * kReachStretch + kReachMargin) * scale;
-			o_cb.bodyMinClearance = kBodyMinClearance * scale;
-			o_cb.bodyMaxClearance = kBodyMaxClearance * scale;
+			if (bodyMesh) {
+				o_body.wanted = true;
+				o_cb.bodyMinClearance = kBodyMinClearance * scale;
+				o_cb.bodyMaxClearance = kBodyMaxClearance * scale;
+			}
 		}
 
 		a_instance.simEye = a_eye;
