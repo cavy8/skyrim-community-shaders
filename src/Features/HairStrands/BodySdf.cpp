@@ -141,35 +141,6 @@ namespace Strands
 			return desc;
 		}
 
-		std::unique_ptr<Texture3D> MakeVolume(const std::array<uint32_t, 3>& a_size, DXGI_FORMAT a_format, bool a_srv, const char* a_name)
-		{
-			D3D11_TEXTURE3D_DESC desc{};
-			desc.Width = a_size[0];
-			desc.Height = a_size[1];
-			desc.Depth = a_size[2];
-			desc.MipLevels = 1;
-			desc.Format = a_format;
-			desc.Usage = D3D11_USAGE_DEFAULT;
-			desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | (a_srv ? D3D11_BIND_SHADER_RESOURCE : 0);
-			auto texture = std::make_unique<Texture3D>(desc, a_name);
-			D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};
-			uav.Format = a_format;
-			uav.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
-			uav.Texture3D.MipSlice = 0;
-			uav.Texture3D.FirstWSlice = 0;
-			uav.Texture3D.WSize = a_size[2];
-			texture->CreateUAV(uav);
-			if (a_srv) {
-				D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
-				srv.Format = a_format;
-				srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
-				srv.Texture3D.MostDetailedMip = 0;
-				srv.Texture3D.MipLevels = 1;
-				texture->CreateSRV(srv);
-			}
-			return texture;
-		}
-
 		// --- What an actor wears ---
 
 		const RE::BSLightingShaderProperty* LitProperty(RE::BSGeometry* a_geometry)
@@ -909,6 +880,35 @@ namespace Strands
 				unreadable ? std::format(" ({} unreadable)", unreadable) : std::string(), o_data.vertices.size(), o_data.triangles.size(), clusterSize,
 				triangles > kMaxTriangles ? std::format("; {} over the budget left out", triangles - kMaxTriangles) : std::string());
 		}
+	}
+
+	std::unique_ptr<Texture3D> MakeVolume(const std::array<uint32_t, 3>& a_size, DXGI_FORMAT a_format, bool a_srv, const char* a_name)
+	{
+		D3D11_TEXTURE3D_DESC desc{};
+		desc.Width = a_size[0];
+		desc.Height = a_size[1];
+		desc.Depth = a_size[2];
+		desc.MipLevels = 1;
+		desc.Format = a_format;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | (a_srv ? D3D11_BIND_SHADER_RESOURCE : 0);
+		auto texture = std::make_unique<Texture3D>(desc, a_name);
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};
+		uav.Format = a_format;
+		uav.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
+		uav.Texture3D.MipSlice = 0;
+		uav.Texture3D.FirstWSlice = 0;
+		uav.Texture3D.WSize = a_size[2];
+		texture->CreateUAV(uav);
+		if (a_srv) {
+			D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
+			srv.Format = a_format;
+			srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+			srv.Texture3D.MostDetailedMip = 0;
+			srv.Texture3D.MipLevels = 1;
+			texture->CreateSRV(srv);
+		}
+		return texture;
 	}
 
 	uint32_t PackCollisionNormal(const float3& a_normal)

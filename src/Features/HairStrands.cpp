@@ -24,7 +24,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	PhysicsDistance,
 	SmpGuidance,
 	WindStrength,
-	BodyCollision);
+	BodyCollision,
+	CardCollision);
 
 namespace
 {
@@ -160,6 +161,7 @@ Strands::RenderSettings HairStrands::MakeRenderSettings() const
 	result.smpGuidance = settings.SmpGuidance;
 	result.windStrength = settings.WindStrength;
 	result.collision = settings.BodyCollision;
+	result.cardCollision = settings.CardCollision;
 	return result;
 }
 
@@ -307,6 +309,14 @@ void HairStrands::DrawPhysicsSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("body_collision_tooltip"), "Keeps strands out of the head (the character's own head mesh) and off everything the\ncharacter wears: body, armour and clothes, and shields, weapons and quivers hanging\non it. Long hair rests on them as they move."));
 	}
+	{
+		ImGui::BeginDisabled(!settings.BodyCollision);
+		ImGui::Checkbox(T(TKEY("card_collision"), "Collide with Braids and Ties"), &settings.CardCollision);
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("card_collision_tooltip"), "Keeps strands off the braids, ties and buns a hairstyle keeps as cards: loose hair\nrests on them instead of sinking through, and a swinging braid pushes it aside."));
+		}
+	}
 }
 
 void HairStrands::DrawStatistics()
@@ -320,6 +330,7 @@ void HairStrands::DrawStatistics()
 	ImGui::Text(T(TKEY("stats_physics"), "Simulated hair: %u, guide strands: %llu"), stats.simulatedHair, static_cast<unsigned long long>(stats.guidesSimulated));
 	ImGui::Text(T(TKEY("stats_body"), "Body collision: %u characters, %u triangles, %u fields a frame"), stats.bodyActors, stats.bodyTriangles, stats.bodyFields);
 	ImGui::Text(T(TKEY("stats_kept_cards"), "Braids and ties kept as cards: %llu triangles drawn, %u chains swinging"), static_cast<unsigned long long>(stats.cardTrianglesDrawn), stats.chainsSimulated);
+	ImGui::Text(T(TKEY("stats_card_collision"), "Braid and tie collision: %u fields a frame"), stats.cardFields);
 }
 
 bool HairStrands::DrawStyleFields(Strands::StrandStyle& a_style, bool& o_regenerate)

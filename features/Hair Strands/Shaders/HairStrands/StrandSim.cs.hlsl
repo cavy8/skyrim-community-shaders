@@ -81,7 +81,13 @@
 //  - A point that went past the middle of a thin part (a shield, a plate) in one step reads inside
 //    it, from the far side's surface. If where it began the step reads the other way, it goes back
 //    there, on the surface's side it came from, rather than out through the part.
+//  - Not in TressFX at all: the cards the hair keeps (braids, ties, buns, CardField.hlsli) collide
+//    like the body, after it: a point is kept as far off them as its target lies (between
+//    CardMinClearance and CardMaxClearance), moves on with them (a swinging braid carries it
+//    aside) and keeps BodySlide of its slide along them. A card is a sheet with no inside, so a
+//    point that went through one in a step goes back to where it began, on the side it came from.
 
+#include "HairStrands/CardField.hlsli"
 #include "HairStrands/Skinning.hlsli"
 
 RWStructuredBuffer<HairStrands::GuidePoint> Guides : register(u0);
@@ -301,6 +307,7 @@ namespace HairStrandsSim
 	const bool collide = (Flags & HAIR_STRANDS_FLAG_COLLIDE) != 0 && ColliderCount > 0;
 	const bool collideHead = (Flags & HAIR_STRANDS_FLAG_HEAD_FIELD) != 0;
 	const bool collideBody = (Flags & HAIR_STRANDS_FLAG_BODY_FIELD) != 0;
+	const bool collideCards = (Flags & HAIR_STRANDS_FLAG_CARD_FIELD) != 0;
 	[loop] for (i = 0; i < n; ++i)
 	{
 		bodyLimits[i] = 0;
@@ -418,8 +425,9 @@ namespace HairStrandsSim
 			float3 contactNormal = 0;
 			float3 surfaceMove = 0;
 			float3 shift = 0;  // VSP's move of the point (and its previous position) with the root this step
-			if (collideBody) {
+			if (collideBody || collideCards)
 				shift = (HairStrandsSim::MultQuaternionAndVector(rotation, position[i]) + translation - position[i]) * vsp;
+			if (collideBody) {
 				// The field is the body at the frame's end: the point goes ahead with the surface to
 				// then, and the surface moved over the step as over the frame.
 				const float3 ahead = HairStrandsSkin::BodyAhead(position[i], f);
@@ -442,6 +450,33 @@ namespace HairStrandsSim
 					}
 				}
 			}
+			if (collideCards) {
+				// The field is the cards at the frame's end, as the body's: the point goes ahead with
+				// them to then. Its clearance is read only near them (the target is read again).
+				const float3 ahead = HairStrandsCards::CardsAhead(position[i], f);
+				float cardDistance;
+				float3 cardNormal, cardMove;
+				if (HairStrandsCards::SampleCards(position[i] + ahead, cardDistance, cardNormal, cardMove)) {
+					const float clearance = HairStrandsCards::CardClearance(targetEnd[i]);
+					const float3 start = previous[i] - shift + cardMove * StepFraction;
+					float startDistance;
+					float3 startNormal, startMove;
+					const bool started = HairStrandsCards::SampleCards(start + ahead, startDistance, startNormal, startMove);
+					if (started && HairStrandsCards::CrossedCard(start + ahead, startDistance, startNormal, position[i] + ahead, cardNormal)) {
+						// Through a card in one step: back where it began, on the side it came from.
+						position[i] = start + startNormal * max(clearance - startDistance, 0.0);
+						cardNormal = startNormal;
+						cardDistance = 0.0;
+					} else if (cardDistance < clearance) {
+						position[i] += cardNormal * (clearance - cardDistance);
+					}
+					if (cardDistance < clearance) {
+						contact = true;
+						contactNormal = cardNormal;
+						surfaceMove = cardMove * StepFraction;
+					}
+				}
+			}
 			float3 positionDelta = position[i] - previous[i];
 			const float speedSquared = dot(positionDelta, positionDelta);
 			if (speedSquared > ClampPositionDelta * ClampPositionDelta) {
@@ -451,9 +486,9 @@ namespace HairStrandsSim
 			if (collided) {
 				previous[i] = position[i];
 			} else if (contact) {
-				// On the body: the point moves on with the surface, keeping BodySlide of its slide along
-				// it. VSP will move it with the root again next step: its velocity is the surface's move
-				// less that.
+				// On the body (or a card): the point moves on with the surface, keeping BodySlide of its
+				// slide along it. VSP will move it with the root again next step: its velocity is the
+				// surface's move less that.
 				float3 slide = position[i] - previous[i] + shift - surfaceMove;
 				slide -= contactNormal * dot(slide, contactNormal);
 				previous[i] = position[i] - (surfaceMove - shift) - HairStrandsSim::BodySlide * slide;

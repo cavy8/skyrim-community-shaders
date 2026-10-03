@@ -35,6 +35,7 @@ struct HairStrands : Feature
 		float SmpGuidance = 0.35f;
 		float WindStrength = 1.0f;
 		bool BodyCollision = true;
+		bool CardCollision = true;
 	};
 
 	virtual inline std::string GetName() override { return "Hair Strands"; }

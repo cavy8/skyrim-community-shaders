@@ -97,6 +97,9 @@ namespace Strands
 	/** @brief Octahedral unit vector as two snorm16 (HairStrandsBody::UnpackNormal). */
 	uint32_t PackCollisionNormal(const float3& a_normal);
 
+	/** @brief A 3D texture with a UAV (and an SRV if a_srv), as the distance fields use. Throws on failure. */
+	std::unique_ptr<Texture3D> MakeVolume(const std::array<uint32_t, 3>& a_size, DXGI_FORMAT a_format, bool a_srv, const char* a_name);
+
 	/** @brief BodySdf.cs.hlsl's entry points, compiled. */
 	struct BodySdfPrograms
 	{

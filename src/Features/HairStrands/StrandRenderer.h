@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "BodySdf.h"
+#include "CardField.h"
 #include "StrandGenerator.h"
 #include "StrandStyle.h"
 
@@ -100,6 +101,7 @@ namespace Strands
 			kCollide = 4,     // guides keep out of the colliders
 			kHeadField = 8,   // every strand keeps out of the head field (t4)
 			kBodyField = 16,  // every strand keeps off the body's distance field (t5, t6)
+			kCardField = 32,  // every strand keeps off the kept cards' field (b1, t7, t8)
 		};
 
 		uint32_t pointCount;
@@ -178,6 +180,7 @@ namespace Strands
 		float smpGuidance = 0.35f;       // how much bone (SMP) motion, beyond the head's, moves the targets
 		float windStrength = 1.0f;
 		bool collision = true;
+		bool cardCollision = true;  // strands keep off the cards the hair keeps (braids, ties, buns)
 	};
 
 	/** @brief What the editor and statistics show for one tracked hair. */
@@ -221,6 +224,7 @@ namespace Strands
 		uint32_t bodyActors = 0;          // characters with a collision mesh
 		uint32_t bodyTriangles = 0;       // in their collision meshes
 		uint32_t bodyFields = 0;          // distance fields built
+		uint32_t cardFields = 0;          // kept-card fields built
 		uint64_t cardTrianglesDrawn = 0;  // kept as cards (braids, ties, gathered hair), drawn in place of the hidden cards
 		uint32_t chainsSimulated = 0;     // hanging braids swinging on chains
 	};
@@ -346,8 +350,8 @@ namespace Strands
 		struct BodyRequest
 		{
 			bool wanted = false;  // the actor has a collision mesh (no bone capsules were gathered)
-			float3 centre;        // camera-relative: the hair's skull centre
-			float reach = 0.0f;   // units from it the hair can reach
+			float3 centre;        // camera-relative: the hair's skull centre (with a head bone)
+			float reach = 0.0f;   // units from it the hair can reach; 0 without a head bone
 		};
 
 		/**
@@ -408,6 +412,7 @@ namespace Strands
 		ComputeShader bodyFinalizeShader;
 
 		std::unique_ptr<BodyCollision> bodyCollision;
+		std::unique_ptr<CardField> cardField;
 
 		// Simulation clock, advanced once per frame: fixed steps shared by all hair (none while
 		// paused), where in the frame they end, and how far the frame is past the last one.
