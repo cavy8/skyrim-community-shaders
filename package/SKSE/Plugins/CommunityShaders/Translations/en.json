@@ -1223,7 +1223,7 @@
     "feature.hair_strands.style_global_stiffness": "Global Constraint Stiffness",
     "feature.hair_strands.style_global_stiffness_tooltip": "Pull back towards the styled shape each step, on the part of each strand within the\nglobal range.",
     "feature.hair_strands.style_gravity_magnitude": "Gravity Magnitude",
-    "feature.hair_strands.style_gravity_magnitude_tooltip": "Gravity in units/s^2 (Earth's is about 687). The styled shape is how the hair hangs\nwith the head upright, and TressFX's constraints hold it against light gravity only:\nmore lets the hair fall as the head tilts, but strands sag and stretch.",
+    "feature.hair_strands.style_gravity_magnitude_tooltip": "Gravity in units/s^2 for long locks (Earth's is about 687). More pulls loose hair back\nfaster after a stop, but increases sag and stretch: use enough length constraint passes.\nScalp strands up to 4 units take a quarter of this load, rising to full load at 20 units.",
     "feature.hair_strands.style_keep_woven": "Keep Braids and Ties as Cards",
     "feature.hair_strands.style_keep_woven_tooltip": "Finds the parts that are not loose hair and keeps their cards: braids and twists, a\nponytail's tie and the hair pulled tight into it, buns. Braids hanging free swing on\nchains of their own; hair below a tie or a braid's end grows strands from there.\nOff, everything becomes strands.",
     "feature.hair_strands.style_layer_jitter": "Layering",

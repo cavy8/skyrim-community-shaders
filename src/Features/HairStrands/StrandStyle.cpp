@@ -204,13 +204,13 @@ namespace Strands
 			style.frizz = 0.08f;
 			style.flyaways = 0.04f;
 			// Curls are springy: they keep their shape and bounce rather than swing.
-			style.vspCoeff = 0.6f;
+			style.vspCoeff = 0.5f;
 			style.localConstraintStiffness = 0.95f;
 			style.localConstraintsIterations = 4;
 			style.globalConstraintStiffness = 0.45f;
 			style.globalConstraintsRange = 0.5f;
 			style.damping = 0.08f;
-			style.gravityMagnitude = 75.0f;
+			style.gravityMagnitude = 300.0f;
 			break;
 		case HairPreset::Coily:
 			// Afro-textured hair: tight coils that start at the root, almost no clumping
@@ -230,13 +230,13 @@ namespace Strands
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.03f;
 			// A coily cloud holds its shape and barely sways.
-			style.vspCoeff = 0.8f;
+			style.vspCoeff = 0.7f;
 			style.localConstraintStiffness = 0.95f;
 			style.localConstraintsIterations = 4;
 			style.globalConstraintStiffness = 0.6f;
 			style.globalConstraintsRange = 0.8f;
 			style.damping = 0.15f;
-			style.gravityMagnitude = 50.0f;
+			style.gravityMagnitude = 200.0f;
 			style.windResponse = 0.4f;
 			break;
 		case HairPreset::Locs:
@@ -251,11 +251,10 @@ namespace Strands
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.05f;
 			// Heavy ropes: they hang lower and swing wide.
-			style.vspCoeff = 0.4f;
+			style.vspCoeff = 0.3f;
 			style.localConstraintStiffness = 0.85f;
 			style.globalConstraintsRange = 0.3f;
-			style.lengthConstraintsIterations = 12;
-			style.gravityMagnitude = 150.0f;
+			style.gravityMagnitude = 350.0f;
 			style.windResponse = 0.6f;
 			break;
 		case HairPreset::Auto:

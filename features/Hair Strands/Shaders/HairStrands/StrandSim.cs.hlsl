@@ -105,6 +105,8 @@ namespace HairStrandsSim
 	static const float MaxStretch = 1.2;
 	// Units. A shorter strand has the global range of one this long, and VSP by its length over it.
 	static const float ShortStrandLength = 10.0;
+	// Longer locks take the full gravity load; shorter scalp/fringe strands resist sag.
+	static const float FullGravityLength = 20.0;
 
 	float4 NormalizeQuaternion(float4 q)
 	{
@@ -297,7 +299,10 @@ namespace HairStrandsSim
 	const uint steps = reset ? 0 : Steps;
 	const float h = StepTime;
 	const float decay = exp(-Damping * h * 60.0);
-	const float3 gravity = float3(0.0, 0.0, -Gravity) * (h * h);
+	// Stronger gravity restores long locks promptly after a stop. Scalp strands keep the
+	// lighter load their shape constraints supported; ramp to the full load over 4-20 units.
+	const float gravityScale = lerp(0.25, 1.0, saturate((Strands[guide].Length - 4.0) / (HairStrandsSim::FullGravityLength - 4.0)));
+	const float3 gravity = float3(0.0, 0.0, -Gravity) * (gravityScale * h * h);
 	// TressFX: 1.0 for stiffness makes things unstable sometimes.
 	const float localStiffness = 0.5 * min(LocalStiffness, 0.95);
 	const float lengthScale = saturate(Strands[guide].Length / HairStrandsSim::ShortStrandLength);

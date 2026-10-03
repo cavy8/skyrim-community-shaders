@@ -727,7 +727,7 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
         collider a step ahead of its targets shook the hair).
     -   *Contact.* A pushed point moves on with the surface. It takes the surface's own move
         over the step, keeps 0.4 of its slide along the surface (TressFX's capsule friction), and
-        loses its motion into or off it. VSP moves every point with the root each step (0.5 of
+        loses its motion into or off it. VSP moves every point with the root each step (0.4 of
         the root's move at the defaults), its previous position too, so the velocity a point is
         left with is the surface's move less VSP's. Without that, hair on the back of a running
         body was driven into it by VSP's share every step (2 units at 300 units/s) and crept along
@@ -869,15 +869,15 @@ The per-style motion settings are TressFX's `TressFXSimulationSettings`, under i
 
 | Setting | Straight | TressFX 4.1 sample (Ratboy mohawk, metres) |
 | --- | --- | --- |
-| `vspCoeff` | 0.5 | 0.758 |
+| `vspCoeff` | 0.4 | 0.758 |
 | `vspAccelThreshold` | 1.208 units/step² | 1.208 |
 | `localConstraintStiffness` | 0.908 | 0.908 |
 | `localConstraintsIterations` | 3 | 3 |
 | `globalConstraintStiffness` | 0.408 | 0.408 |
 | `globalConstraintsRange` | 0.4 | 0.308 |
-| `lengthConstraintsIterations` | 10 | 3 |
+| `lengthConstraintsIterations` | 16 | 3 |
 | `damping` (`dampingCoeff` in style files) | 0.068 | 0.068 |
-| `gravityMagnitude` | 100 units/s² | 0.09 |
+| `gravityMagnitude` | 300 units/s² (full load at 20 units long) | 0.09 |
 | `tipSeparation` | 0 | 0 |
 | `clampPositionDelta` | 20 units/step | 20 (set in code) |
 
@@ -887,21 +887,24 @@ NumPy port:
 -   **`vspCoeff`.** 0.758 carries three quarters of every move of the head rigidly. A 40-unit
     lock then lifted only 4, 9 and 17 degrees 0.5, 1 and 1.5 s into a fall, as rigid as the
     hair the owner reported. At 0.4 it streams up (11, 111 and 150 degrees) and trails when
-    running, but the owner found hair light and flying about: Skyrim starts and stops a run
-    far quicker than a person can, so taking the full lag looks weightless. 0.5 (`0-11-3`;
-    the curly, coily and locs presets went up 0.1 with it) cuts a 36-unit lock's swing in a
-    sprint from 60% to 48% of its length and while walking from 28% to 21%, and still
-    streams up in a fall (8, 49 and 141 degrees). 0.6 halves the swing but drives waist-long
-    hair 1.2 units into a shield on the back when a sprint stops. Damping the velocity
-    relative to the head instead of the world's made swings larger, not smaller.
+    running. `0-11-3` raised it to 0.5 (and each other preset by 0.1) to reduce swing, but
+    the owner reported loose hair moving in slow motion after stopping. `0-13-1` restores
+    the previous VSP values and strengthens gravity instead: carrying more head movement
+    rigidly does not strengthen the downward restoring force once the head is still.
 -   **Gravity and length passes.** TressFX's sample assets are in metres, so its gravity is
-    about 1% of Earth's. Its constraints hold a shape against light gravity only: at Earth's
-    gravity a 40-unit, 32-point lock rests 13% long with 3 length passes (22% without the
-    stretch cap) and still 7% with 20. The stretch grows with gravity per step against segment
-    length, which the even/odd passes leave on the even segments. At 100 units/s² (about
-    1.4 m/s²; Earth's is about 687) with 10 passes, hair falls a little as the head tilts and
-    rests about 1.6% long (a 3.8-unit, 14-point lock 0.7%: the global pull holds it all
-    along). Passes are cheap: only guides take them.
+    about 1% of Earth's. The old 100 units/s² load with 10 length passes made long locks
+    return too slowly after a stop. `0-13-1` uses 300 units/s² for straight and wavy hair,
+    300 for curly, 200 for coily and 350 for locs, with 16 length passes for all presets. A 40-unit,
+    32-point straight lock rests about 3.5% long at this load; using Earth's roughly 687
+    units/s² would stretch it about 7.8% even with 16 passes. Only guides take the extra
+    passes, but their length-constraint work rises 60% from the old straight preset.
+    Scalp strands up to 4 units take a quarter of the selected gravity, linearly rising to
+    full gravity at 20 units: their short segments and global shape constraints otherwise
+    sag too far under the stronger load. This is a constraint-support adjustment, not a
+    physical mass model. Damping, wind response and braid-chain physics are unchanged.
+    Saved styles retain their explicit motion settings. To test the tuning on a custom
+    style without resetting its shape, set VSP, Gravity Magnitude and Length Constraint
+    Iterations to the preset's values in the editor and save it.
 -   **`globalConstraintsRange`.** With 0.308 a 40-unit lock streamed nearly level behind a
     300 units/s run, its tip 29 units off target. 0.4 keeps it at 22.
 -   **`damping`** is the sample's 0.068. At 0.05 hair trails less when running (16 units for
@@ -1019,11 +1022,11 @@ over the file beside the NIF.
 
 | Preset | What it changes |
 | --- | --- |
-| Straight | defaults: light clumping, little frizz; TressFX settings as in [Settings](#settings) (VSP 0.4, local 0.908 x 3, global 0.408 over 0.4, length x 10, damping 0.068, gravity 100) |
+| Straight | defaults: light clumping, little frizz; TressFX settings as in [Settings](#settings) (VSP 0.4, local 0.908 x 3, global 0.408 over 0.4, length x 16, damping 0.068, gravity 300) |
 | Wavy | per-lock sine waves (period 4); keeps its shape a little more firmly (local 0.93, damping 0.075) |
-| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets; springy (VSP 0.5, local 0.95 x 4, global 0.45 over 0.5, damping 0.08, gravity 75) |
-| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show; holds its shape (VSP 0.7, local 0.95 x 4, global 0.6 over 0.8, damping 0.15, gravity 50, wind 0.4) |
-| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists); heavy (VSP 0.3, local 0.85, global over 0.3, length x 12, gravity 150, wind 0.6) |
+| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets; springy (VSP 0.5, local 0.95 x 4, global 0.45 over 0.5, damping 0.08, gravity 300) |
+| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show; holds its shape (VSP 0.7, local 0.95 x 4, global 0.6 over 0.8, damping 0.15, gravity 200, wind 0.4) |
+| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists); heavy (VSP 0.3, local 0.85, global over 0.3, length x 16, gravity 350, wind 0.6) |
 
 Short hair (buzz cuts, fades, fuzz) is covered by area seeding, not a preset. Long hair just
 gets more control points, up to 32. Dark hair over a light background shows gaps between
@@ -1146,6 +1149,12 @@ permutation bit.
 
 Check these first in game:
 
+-   Loose-hair weight (`0-13-1`): stronger gravity and 16 length passes return long locks
+    sooner after stopping, with the pre-`0-11-3` VSP values. The offline 36-unit straight lock
+    is about 7.4 units from rest 0.4 s after a sprint stops (about 10.8 with the old tuning).
+    Check the first rebound as well as recovery: reduced VSP can give a larger initial swing.
+    Compare short scalp strands for sag, long locks for stretch, and collision with a shield.
+    Saved styles need the new motion values applied explicitly; braid-chain physics is unchanged.
 -   Card collision (`0-12-0`): statistics show "Braid and tie collision: N fields a frame" for a
     simulated hair with kept cards. Loose hair over a bun or tie should rest on it, and a
     swinging braid push it aside; 0.4 units of clearance may show as a gap round braids, and

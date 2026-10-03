@@ -38,6 +38,7 @@ CAPSULE_FRICTION = 0.4
 MIN_COLLIDER_DEPTH = 0.5
 MAX_STRETCH = 1.2  # StrandSim's MaxStretch
 SHORT_STRAND_LENGTH = 10.0  # StrandSim's ShortStrandLength
+FULL_GRAVITY_LENGTH = 20.0  # StrandSim's FullGravityLength
 SKYRIM_GRAVITY = 686.7  # a falling character, units/s^2
 # The body's distance field (BodySdf.cpp, BodySdf.cs.hlsl, HairStrandsSkin::SampleBody).
 SDF_CELL = 1.25  # kCellSize (actor scale 1)
@@ -56,14 +57,14 @@ BODY_MAX_CLEARANCE = 0.35  # kBodyMaxClearance
 BODY_SLIDE = 0.4  # HairStrandsSim::BodySlide, TressFX's capsule friction share
 
 # Strands::StrandStyle motion defaults and MakePresetStyle's changes to them.
-DEFAULT = dict(vsp=0.5, vsp_threshold=1.208, local=0.908, local_iterations=3, global_stiffness=0.408, global_range=0.4,
-               length_iterations=10, damping=0.068, gravity=100.0, tip_separation=0.0, clamp=20.0, wind=1.0)
+DEFAULT = dict(vsp=0.4, vsp_threshold=1.208, local=0.908, local_iterations=3, global_stiffness=0.408, global_range=0.4,
+               length_iterations=16, damping=0.068, gravity=300.0, tip_separation=0.0, clamp=20.0, wind=1.0)
 PRESETS = {
     "straight": dict(DEFAULT),
     "wavy": dict(DEFAULT, local=0.93, damping=0.075),
-    "curly": dict(DEFAULT, vsp=0.6, local=0.95, local_iterations=4, global_stiffness=0.45, global_range=0.5, damping=0.08, gravity=75.0),
-    "coily": dict(DEFAULT, vsp=0.8, local=0.95, local_iterations=4, global_stiffness=0.6, global_range=0.8, damping=0.15, gravity=50.0, wind=0.4),
-    "locs": dict(DEFAULT, vsp=0.4, local=0.85, global_range=0.3, length_iterations=12, gravity=150.0, wind=0.6),
+    "curly": dict(DEFAULT, vsp=0.5, local=0.95, local_iterations=4, global_stiffness=0.45, global_range=0.5, damping=0.08, gravity=300.0),
+    "coily": dict(DEFAULT, vsp=0.7, local=0.95, local_iterations=4, global_stiffness=0.6, global_range=0.8, damping=0.15, gravity=200.0, wind=0.4),
+    "locs": dict(DEFAULT, vsp=0.3, local=0.85, global_range=0.3, gravity=350.0, wind=0.6),
 }
 
 
@@ -757,7 +758,8 @@ class Guide:
 
         h = STEP
         decay = math.exp(-style["damping"] * h * 60.0)
-        gravity = np.array([0.0, 0.0, -style["gravity"]]) * h * h
+        gravity_scale = 0.25 + 0.75 * np.clip((self.length - 4.0) / (FULL_GRAVITY_LENGTH - 4.0), 0.0, 1.0)
+        gravity = np.array([0.0, 0.0, -style["gravity"]]) * gravity_scale * h * h
         local = 0.5 * min(style["local"], 0.95)
         # A strand shorter than SHORT_STRAND_LENGTH: the global range of one that long, VSP by its length.
         length_scale = min(max(self.length / SHORT_STRAND_LENGTH, 0.0), 1.0)
@@ -1407,15 +1409,42 @@ def check_swings():
     return results
 
 
+def check_running_stop():
+    """A long loose lock must return promptly after a sprint, rather than drift in slow motion.
+
+    At gravity 100 and ten length passes, the 36-unit straight lock is still 10.8 units
+    from rest 0.4 s after stopping. Raising VSP to 0.5 only reduces that to 9.7 units.
+    """
+    results = []
+    for name in ("straight", "wavy"):
+        for fps in (30, 60, 144):
+            rest = hanging(36.0, 32)
+            log = run(rest, PRESETS[name], fps, sprint, 4.0, jitter=0.1)
+            resting_tip = log[-1][1][-1] - log[-1][2][-1]
+            def distance_from_rest(row):
+                return np.linalg.norm(row[1][-1] - row[2][-1] - resting_tip)
+            returning = distance_from_rest(at(log, 2.0))
+            recovered = max(distance_from_rest(row) for row in log if row[0] >= 2.7)
+            ok = returning < 8.0 and recovered < 1.0
+            results.append((f"{name} long lock returns promptly after a running stop, {fps} fps", ok,
+                            f"{returning:.2f} units from rest after 0.4 s, at most {recovered:.2f} after 1.1 s"))
+    return results
+
+
 def check_wind():
     results = []
     style = PRESETS["straight"]
     for speed in (0.3, 1.0):
         log = run(hanging(20.0, 20), style, 60, still, 8.0, wind_speed=speed)
-        calm = deviation(run(hanging(20.0, 20), style, 60, still, 8.0)[-1])
+        calm_row = run(hanging(20.0, 20), style, 60, still, 8.0)[-1]
+        calm = deviation(calm_row)
         worst = max(deviation(r) for r in log[len(log) // 2:])
-        ok = worst > calm + 0.2 and worst < 12.0 and all(np.isfinite(r[1]).all() for r in log) and max(stretch(r) for r in log) < 1.2
-        results.append((f"wind at {speed:.0%} of full moves a 20-unit lock, within bounds", ok, f"up to {worst:.2f} off target (calm {calm:.2f})"))
+        # Measure actual movement from calm hair: sideways wind can move a sagging lock
+        # substantially without increasing its scalar distance from the styled target much.
+        blown = max(np.linalg.norm(r[1] - calm_row[1], axis=1).max() for r in log[len(log) // 2:])
+        ok = blown > 0.2 and worst < 12.0 and all(np.isfinite(r[1]).all() for r in log) and max(stretch(r) for r in log) < 1.2
+        results.append((f"wind at {speed:.0%} of full moves a 20-unit lock, within bounds", ok,
+                        f"up to {worst:.2f} off target (calm {calm:.2f}), {blown:.2f} from calm hair"))
     return results
 
 
@@ -1490,7 +1519,7 @@ def job(task):
     if kind == "body motion":
         return check_body_motion(arg)
     return {"collision": check_collision, "head field": check_head_field, "body field": check_body_field, "body collision": check_body_collision,
-            "short locks": check_short_locks, "swings": check_swings,
+            "short locks": check_short_locks, "swings": check_swings, "running stop": check_running_stop,
             "wind": check_wind, "extremes": check_extremes, "followers": check_followers}[kind]()
 
 
@@ -1501,7 +1530,7 @@ def main():
     tasks = [(kind, name) for name in PRESETS for kind in ("rest", "motion", "held")]
     tasks += [("rates", "straight"), ("rates", "locs")]
     tasks += [("body motion", fps) for fps in (144, 60, 30)]
-    tasks += [(kind, None) for kind in ("body collision", "collision", "head field", "body field", "short locks", "swings", "wind", "extremes", "followers")]
+    tasks += [(kind, None) for kind in ("body collision", "collision", "head field", "body field", "short locks", "swings", "running stop", "wind", "extremes", "followers")]
     failures = []
     with Pool() as pool:
         for results in pool.imap(job, tasks):
