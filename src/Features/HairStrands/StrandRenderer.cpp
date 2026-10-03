@@ -1724,18 +1724,22 @@ namespace Strands
 		context->CSSetSamplers(0, kSamplers, samplers);
 		if (simulate) {
 			// The guides first: every strand follows one.
+			globals::profiler->BeginPass("HairStrands::Simulation");
 			ID3D11UnorderedAccessView* guideUAV = a_instance.guideState->uav.get();
 			context->CSSetUnorderedAccessViews(0, 1, &guideUAV, nullptr);
 			context->CSSetShader(simProgram.get(), nullptr, 0);
 			context->Dispatch((cb.guideCount + 63) / 64, 1, 1);
+			globals::profiler->EndPass();
 		}
 		// The guide state moves from the UAV slot to t3: unbind it as a UAV first.
+		globals::profiler->BeginPass("HairStrands::Skinning");
 		ID3D11UnorderedAccessView* skinnedUAV = a_instance.skinned->uav.get();
 		context->CSSetUnorderedAccessViews(0, 1, &skinnedUAV, nullptr);
 		ID3D11ShaderResourceView* guideSRV = simulate ? a_instance.guideState->srv.get() : nullptr;
 		context->CSSetShaderResources(3, 1, &guideSRV);
 		context->CSSetShader(skinProgram.get(), nullptr, 0);
 		context->Dispatch((cb.pointCount + 63) / 64, 1, 1);
+		globals::profiler->EndPass();
 
 		context->CSSetUnorderedAccessViews(0, kUAVs, oldUAVs, nullptr);
 		context->CSSetShaderResources(0, kSRVs, oldSRVs);
@@ -2262,9 +2266,7 @@ namespace Strands
 			return;
 		}
 
-		const bool annotate = globals::state->frameAnnotations;
-		if (annotate)
-			globals::state->BeginPerfEvent(a_depthOnly ? "Hair Strands Depth" : "Hair Strands");
+		globals::profiler->BeginPass(a_depthOnly ? "HairStrands::StrandsDepth" : "HairStrands::StrandsLighting");
 
 		// Everything below is put back exactly, so the game's cached state stays true. ReverseZ
 		// flips the depth test and rasterizer state as it binds them, and its read-back hooks
@@ -2339,8 +2341,7 @@ namespace Strands
 			oldCB->Release();
 		ReverseZ::SetHookPassthrough(false);
 
-		if (annotate)
-			globals::state->EndPerfEvent();
+		globals::profiler->EndPass();
 
 		DrawCards(a_instance, a_viewport, a_depthOnly);
 	}
@@ -2386,9 +2387,7 @@ namespace Strands
 		cb.texcoordOffset = a_instance.texcoordOffset;
 		cardCB->Update(cb);
 
-		const bool annotate = globals::state->frameAnnotations;
-		if (annotate)
-			globals::state->BeginPerfEvent(a_depthOnly ? "Hair Kept Cards Depth" : "Hair Kept Cards");
+		globals::profiler->BeginPass(a_depthOnly ? "HairStrands::CardsDepth" : "HairStrands::CardsLighting");
 
 		// As Draw: everything is put back exactly, read and set raw under ReverseZ's passthrough. The
 		// cards keep the pass's rasterizer state (culling as authored), blend state and textures.
@@ -2455,8 +2454,7 @@ namespace Strands
 			oldCB->Release();
 		ReverseZ::SetHookPassthrough(false);
 
-		if (annotate)
-			globals::state->EndPerfEvent();
+		globals::profiler->EndPass();
 	}
 
 	void StrandRenderer::OnSetupGeometry(RE::BSRenderPass* a_pass)

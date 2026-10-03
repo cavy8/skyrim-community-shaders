@@ -559,6 +559,24 @@ earlier, kept for the history of the fixes they mention.
 -   Physics fades out over the last quarter of `PhysicsDistance` (default 400). Every guide
     is simulated while a hair is: guides are cheap next to the drawn strands.
 
+## Performance monitoring
+
+The shared profiler reports hair's CPU and GPU pass timings in the Hair Strands settings'
+Profiling section, the performance overlay's CS passes, and the profiling statistics under
+`HairStrands`. It records `Simulation`, `Skinning`, `BodyField`, `CardField`,
+`StrandsDepth`, `StrandsLighting`, `CardsDepth` and
+`CardsLighting` separately. Collision field timings cover builds only; a cached field adds
+no sample. Simulation and skinning run once per rendered frame per hair, while the draw
+timings cover each depth or lighting pass that draws it. These timers measure rendering
+work, not background conversion jobs or all CPU preparation. When frame annotations are
+enabled, the shared profiler also emits the corresponding RenderDoc events.
+
+To check in game, enable hair strands and view a converted hairstyle up close, then open
+its settings' Profiling section or enable CS passes in the performance overlay. Compare
+GPU and CPU timings in profiling statistics; turn physics off to stop `Simulation` and
+collision field samples, and disable Hair Strands to
+stop all its samples (the profiler retires their history after 60 collected frames).
+
 ## Physics (`StrandSim.cs.hlsl`)
 
 Since `0-3-0` the guide solver is a port of TressFX 4.1's simulation

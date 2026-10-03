@@ -1561,9 +1561,7 @@ namespace Strands
 		}
 		context->Unmap(body.palette->resource.get(), 0);
 
-		const bool annotate = globals::state->frameAnnotations;
-		if (annotate)
-			globals::state->BeginPerfEvent("Hair Strands Body Field");
+		globals::profiler->BeginPass("HairStrands::BodyField");
 		ID3D11Buffer* cbBuffer = constants->CB();
 		context->CSSetConstantBuffers(0, 1, &cbBuffer);
 		ID3D11ShaderResourceView* srvs[4] = { body.vertices->srv.get(), body.palette->srv.get(), body.triangles->srv.get(), nullptr };
@@ -1594,8 +1592,7 @@ namespace Strands
 		context->CSSetUnorderedAccessViews(0, 4, noUAVs, nullptr);
 		ID3D11ShaderResourceView* noSRVs[4]{};
 		context->CSSetShaderResources(0, 4, noSRVs);
-		if (annotate)
-			globals::state->EndPerfEvent();
+		globals::profiler->EndPass();
 
 		fieldView.toGrid = { cb.worldToGrid[0], cb.worldToGrid[1], cb.worldToGrid[2] };
 		fieldView.size = float3(static_cast<float>(size[0]), static_cast<float>(size[1]), static_cast<float>(size[2]));

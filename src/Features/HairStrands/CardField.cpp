@@ -292,9 +292,7 @@ namespace Strands
 		}
 		context->Unmap(palette->resource.get(), 0);
 
-		const bool annotate = globals::state->frameAnnotations;
-		if (annotate)
-			globals::state->BeginPerfEvent("Hair Strands Card Field");
+		globals::profiler->BeginPass("HairStrands::CardField");
 		ID3D11Buffer* cbBuffer = buildConstants->CB();
 		context->CSSetConstantBuffers(0, 1, &cbBuffer);
 		ID3D11ShaderResourceView* srvs[4] = { mesh->vertices->srv.get(), palette->srv.get(), mesh->triangles->srv.get(), nullptr };
@@ -325,8 +323,7 @@ namespace Strands
 		context->CSSetUnorderedAccessViews(0, 4, noUAVs, nullptr);
 		ID3D11ShaderResourceView* noSRVs[4]{};
 		context->CSSetShaderResources(0, 4, noSRVs);
-		if (annotate)
-			globals::state->EndPerfEvent();
+		globals::profiler->EndPass();
 
 		CardFieldCB view{};
 		for (int a = 0; a < 3; ++a)
