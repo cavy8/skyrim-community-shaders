@@ -92,6 +92,7 @@ namespace CardsToStrands
 		constexpr float kSkullCentreOffset = 5.0f;   // head bone (skull base) to skull centre, up
 		constexpr float kRootEntryThreshold = 0.3f;  // how squarely flow must enter a root edge
 		constexpr float kFoldThreshold = -0.2f;      // neighbour normals this opposed end a strand
+		constexpr float kOnCard = 0.1f;              // a guide sample this close to its triangle's plane lies on the card
 		constexpr float kShortHairLength = 1.0f;     // Auto seeding: short hair if half the traced length lies in card guides shorter than this
 		constexpr uint32_t kMaxStepsPerStrand = 4096;
 		constexpr uint32_t kMaxCrossingsPerStep = 64;  // triangles one step may cross (slivers)
@@ -184,6 +185,9 @@ namespace CardsToStrands
 		constexpr float kSeamBlend = 2.0f;       // a chain's cards blend into the head's skin over this distance from cards kept on the head...
 		constexpr float kOffAxisRadii = 4.0f;    // ...and from this many of its radii off its line (at least kMinOffAxis) outwards
 		constexpr float kMinOffAxis = 4.0f;
+		constexpr float kSealLength = 1.0f;      // where strands grow out of kept cards, this much of their own cards is drawn too...
+		constexpr float kSealedHair = 5.0f;      // ...for hair at least this long...
+		constexpr float kMaxSealShare = 0.35f;   // ...on a sheet it would not cover more of than this
 		constexpr float kGatherReach = 1.5f;     // hair ending this close to a braid on the head, or a chain's root, is gathered into it
 		constexpr float kTuftStart = 0.7f;       // hair starting past this share of a chain's length grows from it
 		constexpr float kTieRadius = 2.5f;       // tails starting this close together share a tie
@@ -602,6 +606,8 @@ namespace CardsToStrands
 			 */
 			bool TryAddGuide(uint32_t a_tri, const Vec3& a_pos, float a_maxLength, bool a_countVisits, bool a_findCoverage);
 			float Coverage(uint32_t a_tri, const Vec3& a_pos) const;
+			/** @brief How far the painted card reaches from a_pos (on a_tri) along a_dir, over the surface, up to a_max. */
+			float CardExtent(uint32_t a_tri, Vec3 a_pos, const Vec3& a_dir, float a_max) const;
 			bool Covered(uint32_t a_tri, const Vec3& a_pos) const { return !useCoverage || Coverage(a_tri, a_pos) >= settings.coverageThreshold; }
 			bool HasCoverage(uint32_t a_tri) const;
 
@@ -1343,6 +1349,63 @@ namespace CardsToStrands
 			if (o_endPos)
 				*o_endPos = pos;
 			return length;
+		}
+
+		float Generator::CardExtent(uint32_t a_tri, Vec3 a_pos, const Vec3& a_dir, float a_max) const
+		{
+			// A straight walk over the surface, turned into each triangle's plane, until the card
+			// ends (an open edge, a fold, a triangle not converted) or, if it started on painted hair,
+			// the paint does.
+			constexpr float kExtentStep = 0.1f;
+			uint32_t tri = a_tri;
+			const bool painted = useCoverage && Covered(tri, a_pos);
+			float travelled = 0.0f;
+			for (uint32_t stepIndex = 0; travelled < a_max && stepIndex < 64; ++stepIndex) {
+				float remaining = std::min(kExtentStep, a_max - travelled);
+				for (uint32_t crossing = 0; remaining > 1e-5f; ++crossing) {
+					if (crossing >= kMaxCrossingsPerStep)
+						return travelled;
+					const Triangle& t = tris[tri];
+					Vec3 dir = a_dir - t.normal * a_dir.Dot(t.normal);
+					if (dir.LengthSquared() < 1e-8f)
+						return travelled;
+					dir.Normalize();
+					const Vec3 a = Position(t.v[0]), b = Position(t.v[1]), c = Position(t.v[2]);
+					const Vec3 bp = ClampBarycentric(Barycentric(a_pos, a, b, c));
+					a_pos = a * bp.x + b * bp.y + c * bp.z;
+					const Vec3 bq = Barycentric(a_pos + dir * remaining, a, b, c);
+					if (bq.x >= 0.0f && bq.y >= 0.0f && bq.z >= 0.0f) {
+						a_pos += dir * remaining;
+						travelled += remaining;
+						break;
+					}
+					float s = 1.0f;
+					int exitVertex = -1;
+					for (int i = 0; i < 3; ++i) {
+						const float from = bp[i], to = bq[i];
+						if (to < 0.0f && from - to > 1e-9f) {
+							const float si = from / (from - to);
+							if (si < s) {
+								s = si;
+								exitVertex = i;
+							}
+						}
+					}
+					if (exitVertex < 0)
+						return travelled;
+					const float moved = remaining * std::clamp(s, 0.0f, 1.0f);
+					a_pos += dir * moved;
+					travelled += moved;
+					remaining -= moved;
+					const int32_t next = t.neighbor[(exitVertex + 1) % 3];
+					if (next < 0 || !tris[next].valid || tris[next].normal.Dot(t.normal) < kFoldThreshold)
+						return travelled;  // the card's edge
+					tri = static_cast<uint32_t>(next);
+				}
+				if (painted && !Covered(tri, a_pos))
+					return travelled;
+			}
+			return std::min(travelled, a_max);
 		}
 
 		float Generator::Coverage(uint32_t a_tri, const Vec3& a_pos) const
@@ -3186,6 +3249,92 @@ namespace CardsToStrands
 			const bool haveFrame = mesh.tangents.size() == mesh.positions.size() && mesh.bitangents.size() == mesh.positions.size();
 			const bool haveNormals = mesh.normals.size() == mesh.positions.size();
 
+			// The seal. Where strands grow out of kept cards (a ponytail's tail below its tie, the tuft
+			// below a braid's end, hair painted as strands below hair painted as cards), the strands
+			// start as a sparse fringe of roots at the cards' edge, and the hair seems to break off
+			// there. The first kSealLength of their own cards is drawn as cards too, riding with the
+			// cards it touches: the painted hair runs on over the strands' roots and they emerge from
+			// under it.
+			struct Seal
+			{
+				uint32_t tri;
+				int32_t chain;  // the chain of the kept cards it touches; -1: on the head
+				Vec3 flow;      // root to tip
+				float start;    // the seam, along the flow
+			};
+			std::vector<Seal> seals;
+			std::vector<uint8_t> sealed(tris.size(), 0);
+			{
+				PointGrid<std::pair<Vec3, int32_t>> keptAt(kContactRadius);
+				for (uint32_t t = 0; t < tris.size(); ++t) {
+					if (regionOf[t] == Region::Strands)
+						continue;
+					const int32_t chain = regionOf[t] == Region::Chain ? chainOf[t] : -1;
+					for (uint32_t i : tris[t].v)
+						keptAt.Insert(Position(i), { Position(i), chain });
+				}
+				// Only hair long enough for the seal to be its root: short wisps along a braid would
+				// turn back into cards almost whole.
+				PointGrid<Vec3> tiedStarts(spacing);
+				for (const auto& guide : guides)
+					if (guide.kind == GuideKind::Tied && guide.path.size() >= 2 && guide.path.back().s >= kSealedHair)
+						tiedStarts.Insert(guide.path[0].position, guide.path[0].position);
+				for (uint32_t t = 0; t < tris.size(); ++t) {
+					if (regionOf[t] != Region::Strands)
+						continue;
+					const auto& tri = tris[t];
+					Vec3 flow = tri.flow;
+					if (flow.LengthSquared() < 1e-6f && tri.sameAs >= 0)
+						flow = tris[tri.sameAs].flow;  // a back face: its front's
+					if (flow.LengthSquared() < 1e-6f)
+						continue;
+					flow.Normalize();
+					// It touches kept cards, close to where tied hair starts; the seal runs from there,
+					// so a strip lying alongside the cards keeps only its part by the strands' roots.
+					int32_t chain = -2;
+					float start = FLT_MAX, rootEnd = FLT_MAX, tipEnd = -FLT_MAX;
+					for (uint32_t i : tri.v) {
+						const Vec3 p = Position(i);
+						rootEnd = std::min(rootEnd, p.Dot(flow));
+						tipEnd = std::max(tipEnd, p.Dot(flow));
+						keptAt.Query(p, kContactRadius, [&](const std::pair<Vec3, int32_t>& a_k) {
+							if ((a_k.first - p).LengthSquared() <= kContactRadius * kContactRadius)
+								chain = std::max(chain, a_k.second);
+						});
+						tiedStarts.Query(p, spacing, [&](const Vec3& a_q) {
+							if ((a_q - p).LengthSquared() <= spacing * spacing)
+								start = std::min(start, a_q.Dot(flow));
+						});
+					}
+					if (chain < -1 || start == FLT_MAX || rootEnd > start + kSealLength || tipEnd < start - kContactRadius)
+						continue;
+					seals.push_back({ t, chain, flow, start });
+					sealed[t] = 1;
+				}
+				// A sheet the seal would cover much of is hair lying over the cards (wisps along a
+				// braid), not hair growing out of them: it stays strands only.
+				std::unordered_map<int32_t, std::pair<float, float>> shares;  // per sheet: its area, the area sealed
+				const auto sheetOf = [&](uint32_t a_t) { return tris[a_t].component >= 0 || tris[a_t].sameAs < 0 ? tris[a_t].component : tris[tris[a_t].sameAs].component; };
+				for (uint32_t t = 0; t < tris.size(); ++t)
+					if (regionOf[t] == Region::Strands)
+						shares[sheetOf(t)].first += tris[t].area;
+				for (const auto& seal : seals) {
+					float lo = FLT_MAX, hi = -FLT_MAX;
+					for (uint32_t i : tris[seal.tri].v) {
+						lo = std::min(lo, Position(i).Dot(seal.flow));
+						hi = std::max(hi, Position(i).Dot(seal.flow));
+					}
+					const float kept = std::min(hi, seal.start + kSealLength) - std::max(lo, seal.start - kContactRadius);
+					shares[sheetOf(seal.tri)].second += tris[seal.tri].area * (hi > lo ? std::clamp(kept / (hi - lo), 0.0f, 1.0f) : 1.0f);
+				}
+				std::erase_if(seals, [&](const Seal& a_seal) {
+					const auto& [area, covered] = shares[sheetOf(a_seal.tri)];
+					const bool drop = covered > kMaxSealShare * area;
+					sealed[a_seal.tri] = drop ? 0 : 1;
+					return drop;
+				});
+			}
+
 			// Without the mesh's own tangent frame, the texture's U and V directions on the surface.
 			std::vector<Vec3> alongU, alongV, normals;
 			if (!haveFrame || !haveNormals) {
@@ -3193,7 +3342,7 @@ namespace CardsToStrands
 				alongV.assign(mesh.positions.size(), kZero);
 				normals.assign(mesh.positions.size(), kZero);
 				for (uint32_t t = 0; t < tris.size(); ++t) {
-					if (regionOf[t] == Region::Strands)
+					if (regionOf[t] == Region::Strands && !sealed[t])
 						continue;
 					const auto& v = tris[t].v;
 					const Vec3 a = Position(v[0]), b = Position(v[1]), c = Position(v[2]);
@@ -3266,43 +3415,105 @@ namespace CardsToStrands
 				return Smoothstep(nearest / kSeamBlend) * (1.0f - Smoothstep((offAxis - reach) / kSeamBlend));
 			};
 
+			// Mesh vertex a_i, or a_f of the way from it to a_j, skinned to a_chain (-1: the mesh's own skin).
+			const auto makeVertex = [&](uint32_t a_i, uint32_t a_j, float a_f, int32_t a_chain) {
+				const auto frame = [&](uint32_t a_v, Vec3& o_normal, Vec3& o_tangent, Vec3& o_bitangent) {
+					o_normal = haveNormals ? mesh.normals[a_v] : normals[a_v].Normalized();
+					if (haveFrame) {
+						o_tangent = mesh.tangents[a_v];
+						o_bitangent = mesh.bitangents[a_v];
+					} else {
+						o_tangent = (alongU[a_v] - o_normal * alongU[a_v].Dot(o_normal)).Normalized();
+						o_bitangent = (alongV[a_v] - o_normal * alongV[a_v].Dot(o_normal)).Normalized();
+					}
+				};
+				CardVertex vertex;
+				frame(a_i, vertex.normal, vertex.tangent, vertex.bitangent);
+				vertex.position = Position(a_i);
+				vertex.uv = mesh.uvs[a_i];
+				if (a_f > 0.0f) {
+					CardVertex other;
+					frame(a_j, other.normal, other.tangent, other.bitangent);
+					vertex.position = Vec3::Lerp(vertex.position, Position(a_j), a_f);
+					vertex.uv = mesh.uvs[a_i] + (mesh.uvs[a_j] - mesh.uvs[a_i]) * a_f;
+					vertex.normal = Vec3::Lerp(vertex.normal, other.normal, a_f).Normalized();
+					vertex.tangent = Vec3::Lerp(vertex.tangent, other.tangent, a_f).Normalized();
+					vertex.bitangent = Vec3::Lerp(vertex.bitangent, other.bitangent, a_f).Normalized();
+				}
+				const uint32_t source = a_f > 0.5f ? a_j : a_i;  // skinned as the nearer end
+				vertex.source = source;
+				if (a_chain >= 0) {
+					ChainSkin(static_cast<uint32_t>(a_chain), vertex.position, vertex.bones, vertex.weights);
+					SeamSkin(chains[a_chain], source, chainShare(a_chain, vertex.position), vertex.bones, vertex.weights);
+				} else if (skinned) {
+					vertex.bones = mesh.boneIndices[source];
+					vertex.weights = mesh.boneWeights[source];
+				} else {
+					vertex.weights[0] = 1.0f;
+				}
+				return vertex;
+			};
 			std::unordered_map<uint64_t, uint32_t> remap;
+			const auto index = [&](uint32_t a_i, int32_t a_chain) {
+				const uint64_t key = (static_cast<uint64_t>(a_i) << 8) | static_cast<uint64_t>(a_chain + 1);
+				const auto [it, inserted] = remap.try_emplace(key, static_cast<uint32_t>(o_result.cardVertices.size()));
+				if (inserted)
+					o_result.cardVertices.push_back(makeVertex(a_i, a_i, 0.0f, a_chain));
+				return it->second;
+			};
+			const auto inMesh = [&](const std::array<uint32_t, 3>& a_v) {
+				return a_v[0] < mesh.positions.size() && a_v[1] < mesh.positions.size() && a_v[2] < mesh.positions.size();
+			};
 			for (uint32_t t = 0; t < tris.size(); ++t) {
-				if (regionOf[t] == Region::Strands)
-					continue;
-				const auto& v = tris[t].v;
-				if (v[0] >= mesh.positions.size() || v[1] >= mesh.positions.size() || v[2] >= mesh.positions.size())
+				if (regionOf[t] == Region::Strands || !inMesh(tris[t].v))
 					continue;
 				const int32_t chain = regionOf[t] == Region::Chain ? chainOf[t] : -1;
-				for (uint32_t i : v) {
-					const uint64_t key = (static_cast<uint64_t>(i) << 8) | static_cast<uint64_t>(chain + 1);
-					const auto [it, inserted] = remap.try_emplace(key, static_cast<uint32_t>(o_result.cardVertices.size()));
-					if (inserted) {
-						CardVertex vertex;
-						vertex.position = Position(i);
-						vertex.uv = mesh.uvs[i];
-						vertex.source = i;
-						vertex.normal = haveNormals ? mesh.normals[i] : normals[i].Normalized();
-						if (haveFrame) {
-							vertex.tangent = mesh.tangents[i];
-							vertex.bitangent = mesh.bitangents[i];
-						} else {
-							const Vec3 n = vertex.normal;
-							vertex.tangent = (alongU[i] - n * alongU[i].Dot(n)).Normalized();
-							vertex.bitangent = (alongV[i] - n * alongV[i].Dot(n)).Normalized();
-						}
-						if (chain >= 0) {
-							ChainSkin(static_cast<uint32_t>(chain), vertex.position, vertex.bones, vertex.weights);
-							SeamSkin(chains[chain], i, chainShare(chain, vertex.position), vertex.bones, vertex.weights);
-						} else if (skinned) {
-							vertex.bones = mesh.boneIndices[i];
-							vertex.weights = mesh.boneWeights[i];
-						} else {
-							vertex.weights[0] = 1.0f;
-						}
-						o_result.cardVertices.push_back(vertex);
+				for (uint32_t i : tris[t].v)
+					o_result.cardIndices.push_back(index(i, chain));
+			}
+
+			// The seals: each triangle cut to its band, from just before the strands' roots to
+			// kSealLength past them along its flow (two parallel cuts, so every new vertex lies on an
+			// edge of the triangle, shared with the triangle across that edge).
+			std::unordered_map<uint64_t, uint32_t> cuts;
+			for (const auto& seal : seals) {
+				const auto& v = tris[seal.tri].v;
+				if (!inMesh(v))
+					continue;
+				const float levels[2] = { seal.start - kContactRadius, seal.start + kSealLength };
+				std::array<float, 3> along{};
+				for (int k = 0; k < 3; ++k)
+					along[k] = Position(v[k]).Dot(seal.flow);
+				std::array<uint32_t, 7> polygon{};
+				size_t corners = 0;
+				for (int k = 0; k < 3; ++k) {
+					const int n = (k + 1) % 3;
+					if (along[k] >= levels[0] && along[k] <= levels[1])
+						polygon[corners++] = index(v[k], seal.chain);
+					// Where the edge crosses the band's ends, in order along it.
+					std::array<std::pair<float, int>, 2> crossings{};
+					size_t count = 0;
+					for (int level = 0; level < 2; ++level)
+						if ((along[k] < levels[level]) != (along[n] < levels[level]))
+							crossings[count++] = { (levels[level] - along[k]) / (along[n] - along[k]), level };
+					if (count == 2 && crossings[1].first < crossings[0].first)
+						std::swap(crossings[0], crossings[1]);
+					for (size_t c = 0; c < count; ++c) {
+						// Cut from the edge's lower vertex index, so both its triangles cut it alike.
+						const bool forward = v[k] < v[n];
+						const uint32_t a = forward ? v[k] : v[n], b = forward ? v[n] : v[k];
+						const float f = std::clamp(forward ? crossings[c].first : 1.0f - crossings[c].first, 0.0f, 1.0f);
+						const uint64_t key = ((((static_cast<uint64_t>(a) << 32) | b) << 6) | (static_cast<uint64_t>(crossings[c].second) << 5)) ^ static_cast<uint64_t>(seal.chain + 1);
+						const auto [it, inserted] = cuts.try_emplace(key, static_cast<uint32_t>(o_result.cardVertices.size()));
+						if (inserted)
+							o_result.cardVertices.push_back(makeVertex(a, b, f, seal.chain));
+						polygon[corners++] = it->second;
 					}
-					o_result.cardIndices.push_back(it->second);
+				}
+				for (size_t k = 1; k + 1 < corners; ++k) {
+					o_result.cardIndices.push_back(polygon[0]);
+					o_result.cardIndices.push_back(polygon[k]);
+					o_result.cardIndices.push_back(polygon[k + 1]);
 				}
 			}
 		}
@@ -3435,6 +3646,7 @@ namespace CardsToStrands
 
 			const float exponent = 0.35f + 0.65f * (1.0f - settings.clumpStrength);
 			std::vector<Vec3> tangent, lift, across;
+			std::vector<float> sideRoom;  // per path sample, the share of half a spacing the card offers towards -across and +across
 			std::vector<PointAttributes> attributes;
 			double lengthSum = 0.0;
 			for (uint32_t g : kept) {
@@ -3459,6 +3671,30 @@ namespace CardsToStrands
 					across[i] = tangent[i].Cross(lift[i]);
 					attributes[i] = Attributes(path[i].tri, path[i].position);
 				}
+				// How much of its half spacing the card offers on each side of the guide: a clump is
+				// as wide as the hair it stands for, never wider than the card it came from (a lock
+				// narrower than the clump size, a braid's tuft, a ponytail's tail).
+				const float halfSpacing = 0.5f * spacing;
+				sideRoom.assign(static_cast<size_t>(n) * 2, 1.0f);
+				if (!area) {
+					for (uint32_t i = 0; i < n; ++i) {
+						const auto& tri = tris[path[i].tri];
+						if (!tri.valid || std::abs((path[i].position - Position(tri.v[0])).Dot(tri.normal)) > kOnCard)
+							continue;  // off the cards (joined to the scalp, or carried over from hair it continues)
+						sideRoom[i * 2] = CardExtent(path[i].tri, path[i].position, -across[i], halfSpacing) / halfSpacing;
+						sideRoom[i * 2 + 1] = CardExtent(path[i].tri, path[i].position, across[i], halfSpacing) / halfSpacing;
+					}
+					// Smoothed along the guide, so a clump follows the card's outline without kinks.
+					auto smoothed = sideRoom;
+					for (uint32_t i = 0; i < n; ++i)
+						for (uint32_t side = 0; side < 2; ++side)
+							smoothed[i * 2 + side] = (sideRoom[(i > 0 ? i - 1 : i) * 2 + side] + 2.0f * sideRoom[i * 2 + side] + sideRoom[std::min(i + 1, n - 1) * 2 + side]) * 0.25f;
+					sideRoom = std::move(smoothed);
+				}
+				const auto roomAt = [&](uint32_t a_i, float a_f, float a_across) {
+					const uint32_t side = a_across < 0.0f ? 0u : 1u;
+					return std::lerp(sideRoom[a_i * 2 + side], sideRoom[std::min(a_i + 1, n - 1) * 2 + side], a_f);
+				};
 				const auto at = [&](float a_s, uint32_t& io_i) {
 					while (io_i + 2 < n && path[io_i + 1].s < a_s)
 						++io_i;
@@ -3507,10 +3743,7 @@ namespace CardsToStrands
 					scalpAlong = scalpAlong.LengthSquared() > 1e-6f ? scalpAlong.Normalized() : across[i].Cross(radial).Normalized();
 					const Vec3 scalpAcross = radial.Cross(scalpAlong);
 					Vec3 strandRoot = a_scalp.centre + radial * rootRadius;
-					if (tied) {
-						// Round where it starts at its tie, across the card and off it.
-						strandRoot = path[0].position + (across[0] * (2.0f * b) + lift[0] * a) * rootSpread;
-					} else if (!area) {
+					if (!tied && !area) {
 						// Along the guide the start already spreads the roots; at the guide's own
 						// root they spread both ways, and only over scalp under rooted hair, so
 						// none crosses a hairline.
@@ -3536,7 +3769,7 @@ namespace CardsToStrands
 						const Vec3 up = Vec3::Lerp(lift[a_i], lift[a_i + 1], a_f).Normalized();
 						const Vec3 side = Vec3::Lerp(across[a_i], across[a_i + 1], a_f).Normalized();
 						const float depth = area ? layer : layer + settings.volume * Smoothstep(a_t);
-						Vec3 offset = side * width + up * depth;
+						Vec3 offset = side * (width * roomAt(a_i, a_f, width)) + up * depth;
 						if (settings.clumpTwist != 0.0f) {
 							const float angle = 2.0f * kPi * settings.clumpTwist * a_s;
 							offset = offset * std::cos(angle) + t.Cross(offset) * std::sin(angle);
@@ -3545,7 +3778,9 @@ namespace CardsToStrands
 						return offset * (1.0f - pull);
 					};
 
-					const Vec3 rootCorrection = strandRoot - (base + offsetAt(i, f, start, 0.0f));
+					// Hair growing from a tie or a braid's end starts on its own card, no wider than the
+					// card is (it spread off the card both ways before).
+					const Vec3 rootCorrection = tied ? kZero : strandRoot - (base + offsetAt(i, f, start, 0.0f));
 					const float blend = std::min(kRootBlend, 0.3f * length);
 					for (uint32_t k = 0; k < points; ++k) {
 						const float t = static_cast<float>(k) / (points - 1);
