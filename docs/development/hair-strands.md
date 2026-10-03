@@ -789,7 +789,7 @@ A braid hanging free is kept as cards and skinned to a chain of joints
 same fixed 1/60 s steps), each step with the parent bone (the head) where it is at the step's
 end between last frame's pose and this frame's. Joints lying on the head are pinned to it; the
 others move with the head plus a velocity of their own relative to it: falling (`chainGravity`,
-687 units/s², Skyrim's), thrown by 40% of the head's acceleration (at most 400 units/s², so a
+50 units/s² by default), thrown by 40% of the head's acceleration (at most 400 units/s², so a
 snap turn or a run's stride does not fling the braid) and damped (`chainDamping`, 0.12) relative
 to the head, so a walk or a run carries the braid along instead of blowing it up behind the head.
 They are pulled towards the styled shape (`chainStiffness`, 0.4 per step, on both ends of a
@@ -871,18 +871,21 @@ The per-style motion settings are TressFX's `TressFXSimulationSettings`, under i
 | --- | --- | --- |
 | `vspCoeff` | 0.4 | 0.758 |
 | `vspAccelThreshold` | 1.208 units/step² | 1.208 |
-| `localConstraintStiffness` | 0.908 | 0.908 |
+| `localConstraintStiffness` | 0.5 | 0.908 |
 | `localConstraintsIterations` | 3 | 3 |
 | `globalConstraintStiffness` | 0.408 | 0.408 |
 | `globalConstraintsRange` | 0.4 | 0.308 |
 | `lengthConstraintsIterations` | 16 | 3 |
-| `damping` (`dampingCoeff` in style files) | 0.068 | 0.068 |
-| `gravityMagnitude` | 300 units/s² (full load at 20 units long) | 0.09 |
+| `damping` (`dampingCoeff` in style files) | 0.107 | 0.068 |
+| `gravityMagnitude` | 250 units/s² (full load at 20 units long) | 0.09 |
 | `tipSeparation` | 0 | 0 |
 | `clampPositionDelta` | 20 units/step | 20 (set in code) |
 
-Plus `simulate` and `windResponse`, as before. The differences from the sample, all from the
-NumPy port:
+Plus `simulate` and `windResponse`, as before. The owner-selected defaults use local stiffness
+0.5, damping 0.107, gravity 250 units/s² and braid gravity 50 units/s². Other presets scale
+their previous local stiffness by 0.5/0.908, damping by 0.107/0.068 and gravity by 250/300,
+rounded to three decimal places. Every preset uses the new braid gravity. Saved styles retain
+their explicit values. The earlier tuning and its NumPy comparisons are recorded below:
 
 -   **`vspCoeff`.** 0.758 carries three quarters of every move of the head rigidly. A 40-unit
     lock then lifted only 4, 9 and 17 degrees 0.5, 1 and 1.5 s into a fall, as rigid as the
@@ -907,7 +910,7 @@ NumPy port:
     Iterations to the preset's values in the editor and save it.
 -   **`globalConstraintsRange`.** With 0.308 a 40-unit lock streamed nearly level behind a
     300 units/s run, its tip 29 units off target. 0.4 keeps it at 22.
--   **`damping`** is the sample's 0.068. At 0.05 hair trails less when running (16 units for
+-   **`damping`** previously used the sample's 0.068. At 0.05 hair trails less when running (16 units for
     that lock) but swings longer: after a step aside a 20-unit lock's swings shrink to 0.42 of
     the one before, against about a third at 0.068, and it rises later in a fall (49 degrees
     1 s in, against 111).
@@ -1022,11 +1025,11 @@ over the file beside the NIF.
 
 | Preset | What it changes |
 | --- | --- |
-| Straight | defaults: light clumping, little frizz; TressFX settings as in [Settings](#settings) (VSP 0.4, local 0.908 x 3, global 0.408 over 0.4, length x 16, damping 0.068, gravity 300) |
-| Wavy | per-lock sine waves (period 4); keeps its shape a little more firmly (local 0.93, damping 0.075) |
-| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets; springy (VSP 0.5, local 0.95 x 4, global 0.45 over 0.5, damping 0.08, gravity 300) |
-| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show; holds its shape (VSP 0.7, local 0.95 x 4, global 0.6 over 0.8, damping 0.15, gravity 200, wind 0.4) |
-| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists); heavy (VSP 0.3, local 0.85, global over 0.3, length x 16, gravity 350, wind 0.6) |
+| Straight | defaults: light clumping, little frizz; TressFX settings as in [Settings](#settings) (VSP 0.4, local 0.5 x 3, global 0.408 over 0.4, length x 16, damping 0.107, gravity 250) |
+| Wavy | per-lock sine waves (period 4); keeps its shape a little more firmly (local 0.512, damping 0.118) |
+| Curly | helical curls (radius 0.35, period 1.6), strong clumping, so locks spiral together as ringlets; springy (VSP 0.5, local 0.523 x 4, global 0.45 over 0.5, damping 0.126, gravity 250) |
+| Coily | tight coils from the root (radius 0.18, period 0.45), little clumping (a cloud rather than ringlets), high volume and frizz, denser and thicker strands so the scalp does not show; holds its shape (VSP 0.7, local 0.523 x 4, global 0.6 over 0.8, damping 0.236, gravity 166.667, wind 0.4) |
+| Locs | clump pull 0.95 with twist: strands collapse into twisted ropes (locs, braids, twists); heavy (VSP 0.3, local 0.468, global over 0.3, length x 16, gravity 291.667, wind 0.6) |
 
 Short hair (buzz cuts, fades, fuzz) is covered by area seeding, not a preset. Long hair just
 gets more control points, up to 32. Dark hair over a light background shows gaps between

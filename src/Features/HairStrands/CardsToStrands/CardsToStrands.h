@@ -457,7 +457,7 @@ namespace CardsToStrands
 	/** @brief How a chain (ChainCurve) moves. Units and seconds; per-step values are for steps of 1/60 s. */
 	struct ChainSettings
 	{
-		float gravity = 687.0f;     // units/s^2, down (-Z): Skyrim's
+		float gravity = 50.0f;      // units/s^2, down (-Z)
 		float damping = 0.12f;      // share of its velocity relative to the head a joint loses per step
 		float stiffness = 0.4f;     // pull back towards the braid's styled shape per step: 0 limp, 1 rigid
 		float inertia = 0.4f;       // share of the head's acceleration a joint does not follow: 0 rides the head, 1 free

@@ -106,15 +106,15 @@ namespace Strands
 		// simulation reads every frame. As in TressFX they apply per step (1/60 s here), with
 		// lengths in units: TressFX's sample values for the threshold and clamp carry over.
 		bool simulate = true;
-		float vspCoeff = 0.4f;                    // share of the root segment's motion each step passes rigidly to the strand
-		float vspAccelThreshold = 1.208f;         // root pseudo-acceleration (units per step^2) past which that share is 1
-		float localConstraintStiffness = 0.908f;  // how firmly each segment keeps its rest angle to the one before it
+		float vspCoeff = 0.4f;                  // share of the root segment's motion each step passes rigidly to the strand
+		float vspAccelThreshold = 1.208f;       // root pseudo-acceleration (units per step^2) past which that share is 1
+		float localConstraintStiffness = 0.5f;  // how firmly each segment keeps its rest angle to the one before it
 		uint32_t localConstraintsIterations = 3;
 		float globalConstraintStiffness = 0.408f;  // pull towards the styled shape per step, within the global range
 		float globalConstraintsRange = 0.4f;       // fraction of the strand, from the root, the global constraint holds
 		uint32_t lengthConstraintsIterations = 16;
-		float damping = 0.068f;            // velocity lost per step (air drag)
-		float gravityMagnitude = 300.0f;   // units/s^2 for long locks; short scalp strands take a reduced load
+		float damping = 0.107f;            // velocity lost per step (air drag)
+		float gravityMagnitude = 250.0f;   // units/s^2 for long locks; short scalp strands take a reduced load
 		float tipSeparation = 0.0f;        // how far strands spread from their guide towards the tip
 		float clampPositionDelta = 20.0f;  // largest move of a point in a step, in units
 		float windResponse = 1.0f;         // how much the weather's wind moves the hair
@@ -122,7 +122,7 @@ namespace Strands
 		// Motion of braids hanging on chains (CardsToStrands::ChainSettings), per 1/60 s step.
 		float chainStiffness = 0.4f;  // pull back towards the styled shape: 0 limp, 1 rigid
 		float chainDamping = 0.12f;   // velocity lost
-		float chainGravity = 687.0f;  // units/s^2 (Skyrim's)
+		float chainGravity = 50.0f;   // units/s^2
 
 		bool operator==(const StrandStyle&) const = default;
 
