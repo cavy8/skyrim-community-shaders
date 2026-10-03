@@ -106,7 +106,7 @@ namespace Strands
 		// simulation reads every frame. As in TressFX they apply per step (1/60 s here), with
 		// lengths in units: TressFX's sample values for the threshold and clamp carry over.
 		bool simulate = true;
-		float vspCoeff = 0.4f;                    // share of the root segment's motion each step passes rigidly to the strand
+		float vspCoeff = 0.5f;                    // share of the root segment's motion each step passes rigidly to the strand
 		float vspAccelThreshold = 1.208f;         // root pseudo-acceleration (units per step^2) past which that share is 1
 		float localConstraintStiffness = 0.908f;  // how firmly each segment keeps its rest angle to the one before it
 		uint32_t localConstraintsIterations = 3;

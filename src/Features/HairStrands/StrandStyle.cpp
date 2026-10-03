@@ -204,7 +204,7 @@ namespace Strands
 			style.frizz = 0.08f;
 			style.flyaways = 0.04f;
 			// Curls are springy: they keep their shape and bounce rather than swing.
-			style.vspCoeff = 0.5f;
+			style.vspCoeff = 0.6f;
 			style.localConstraintStiffness = 0.95f;
 			style.localConstraintsIterations = 4;
 			style.globalConstraintStiffness = 0.45f;
@@ -230,7 +230,7 @@ namespace Strands
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.03f;
 			// A coily cloud holds its shape and barely sways.
-			style.vspCoeff = 0.7f;
+			style.vspCoeff = 0.8f;
 			style.localConstraintStiffness = 0.95f;
 			style.localConstraintsIterations = 4;
 			style.globalConstraintStiffness = 0.6f;
@@ -251,7 +251,7 @@ namespace Strands
 			style.rootWidth = 0.07f;
 			style.tipWidth = 0.05f;
 			// Heavy ropes: they hang lower and swing wide.
-			style.vspCoeff = 0.3f;
+			style.vspCoeff = 0.4f;
 			style.localConstraintStiffness = 0.85f;
 			style.globalConstraintsRange = 0.3f;
 			style.lengthConstraintsIterations = 12;
