@@ -159,6 +159,12 @@ read in, as Skyrim's Lighting vertex shader builds it; only the cards kept as ca
       `clumpTwist` turns the offset round the tangent, and `clumpStrength` pulls it in towards
       the tip. The difference between the scalp root and the guide's start is blended out over
       the first 2 units (at most 30% of the strand).
+    - A clump is never wider than its card (`CardExtent`). At each sample of the guide lying
+      on a card, a straight walk over the surface each way across it finds where the card ends
+      (an open edge, a fold, a triangle not converted) or, from painted hair, where the paint
+      does, up to half a spacing; smoothed along the guide, that share of half a spacing scales
+      the strands' offset on that side. A lock or a tail narrower than `clumpSize` used to grow
+      a clump of the full width, its strands standing off the card's sides.
     - UVs follow the offset across the card (through ∂P/∂U and ∂P/∂V, at most 0.25), so a clump
       shows the card's painted strands; bones, weights and normals come from the triangle
       under the guide. Strands end up to `tipVariation` short of the guide's tip.
@@ -225,6 +231,15 @@ parent bone (the dominant bone at the root). Its radius is the median distance o
 triangles from the centre line. Card vertices on a chain blend the two joints of their nearest
 segment by where they project on it.
 
+Where a chain's cards meet cards kept on the head (the braid leaving a French braid, a cap or a
+crown, or a braid painted half Cards and half Chain), the two sides share welded vertices. Those
+must move as one, or the braid tears off the head as it swings. Within 2 units of such a vertex
+the chain's skin gives way to the mesh's own (smoothstep over the distance), and the pinned joints'
+weights always go to the mesh's own skin, which is exact where the mesh skins hair to more than the
+parent bone. So do vertices more than 4 radii (at least 4 units) off the chain's line: a branch of
+the piece its centre line does not follow (Apachii 03 has one 10 units off, at the back of the
+head) would otherwise swing on a long lever round its joint.
+
 ### Gathered hair, ties and tails (`BindToWoven`, `FindTies`)
 
 Woven triangles take no part in tracing, so loose hair stops at them and hair below a braid's
@@ -252,7 +267,9 @@ end starts there. Before binding:
   gathered, and so is all hair lying on the head that runs to the tie (its tip or root within
   the tie's radius + 2.5, or its last segment pointing at it): a cap's front row stops short of
   the tie. The tails, and any other floating guide starting at the tie, are tied: their strands
-  root round their own start (half a spacing across the card and off it).
+  root on their own card at their start, spread across it as far as the card reaches. Until
+  `0-11-3` they also spread off the card both ways by up to a quarter of a spacing and across
+  it by the full spacing, and a ponytail's tail grew from a ball of roots round its tie.
 
 Card guides dropped for starting far from the head keep their cards now (before, they vanished
 with the rest of the cards).
@@ -266,6 +283,21 @@ of their copy on the same vertices, or of the kept sheet whose back face they ar
 nearest labelled triangle within 1.5 units. `cardVertices` copies each kept triangle's vertices
 (per chain, so a vertex shared with a chain triangle is skinned twice), with the mesh's tangent
 frame (or one from the UVs) and its bones, or two joints of its chain.
+
+**The seal.** Where tied hair grows out of kept cards (a ponytail's tail below its tie, the
+tuft below a braid's end, hair painted Strands below hair painted Cards or Chain), its strands
+start as a thin fringe of roots at the cards' edge, and the hair looked broken off there. So
+`cardVertices` also draws a band of the strands' own cards over their roots: each Strands
+triangle touching kept cards (within 0.75 units) near the start (within a spacing) of tied hair
+at least 5 units long is cut, along its flow, to the band from 0.75 units before the strands'
+roots to 1 unit past them. The cut's vertices lie on the triangle's edges and are shared with
+the triangle across each edge; they ride with the cards the band touches (a chain's joints, or
+the mesh's own skin). A sheet the band would cover more than 35% of is hair lying over the
+cards (wisps along a braid), not growing out of them, and is not sealed. `triangleRegions`
+still reports those triangles as Strands. On the 51 real meshes the seal adds 80 to 570 card
+triangles to a ponytail or a braid's tufts (vanilla remake 05, 09, 11, 12, 16; Apachii 79, 64,
+Saram, Corse; KS TombRaider), and 1,200 to 2,900 to the BG3 curls (Orin, Laezel, Minthara,
+Karlach).
 
 ### Choosing regions by hand
 
@@ -332,7 +364,14 @@ joint already had: as velocity, every stride of a back or arm capsule moving int
 kicked it off the body. `Bones` gives each joint's skin-to-world transform: the bind pose turned
 with its segment and carried to the joint as drawn, the parent bone as it is now plus the offset
 simulated at the last two steps blended by the frame's position between them, so a chain follows
-the head smoothly between steps.
+the head smoothly between steps. The pinned joints keep the parent bone's turn, so the first free
+segment bends from the head's pose to the next joint's. Until `0-11-2` the last pinned joint
+turned with the segment leaving it, swinging the cards round the root with it: swung 30 degrees,
+the seams of nine real braided meshes (Apachii 03, Viking long braid, Navi 2 braids, KS
+TombRaider, KS Dreadlocks, BG3 Orin, vanilla remake 03, 14, 16) opened by 0.5 to 4.6 units. Now
+none opens (`swing.py` in the session's harness: every chain swung rigidly round its root, the
+kept cards skinned as the game does); the blend stretches a few long card edges instead, by up
+to 1.2 units, and by 3.3 units on Apachii 03's off-line branch.
 
 `tools/hair_cards_to_strands/chain_check.cpp` checks it against a head at rest, running,
 starting and stopping, spinning, shaking, running while bobbing, turning (in 0.15 s, and in
@@ -341,12 +380,20 @@ one frame), and running with the back rocking 3 units against the braid at a str
 units above its styled place or strays one more than 12 from it (0-7-1's defaults, which felt
 light in game, lifted it 11 and swung it 22 on the half turn, 7 and 14 running with a bob, and
 the rocking back stretched its segments 5%); segments keep their length within 0.3%; joints stay out of
-the head and neck; the chain comes to rest within two seconds of the head stopping. The `0-7-0`
+the head and neck; the chain comes to rest within two seconds of the head stopping; cards round
+the last pinned joint stay exactly where the head puts them (they moved up to 0.57 units before
+`0-11-2`). The `0-7-0`
 simulator, which damped world velocity and pulled only the lower end of each segment, failed
 all but rest: braids rose up to 50 units above their styled place (above the head), stretched
 segments by up to 88% on a snap turn, and were still swinging two seconds after a run stopped.
 
 ## Results
+
+Measured with `0-11-3` on the real meshes below (the harness that rendered them, in the
+session's scratchpad): of the tied strands' points, those more than 0.5 units from any painted
+card fell from 3.2% to 0% on KS TombRaider, from 0.9% to 0.1% on vanilla remake 05 and from
+1.1% to 0% on 09, and the tails of Apachii 79 and vanilla 05 no longer start as a ball of roots
+round the tie. Strand counts and regions are unchanged on all 51.
 
 The numbers below were measured before random numbers were keyed per root edge, triangle and
 card guide ([Choosing regions by hand](#choosing-regions-by-hand)). Conversions now differ draw
