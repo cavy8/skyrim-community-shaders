@@ -310,6 +310,26 @@ namespace HairStrandsSim
 			previousPrevious1 = old.PreviousPreviousPosition + EyeShift;
 	}
 
+	// Stair collision can translate the actor vertically in one rendered frame. Treat just
+	// that discontinuity as a change of origin, including frames with no fixed step: position
+	// histories, targets and collisions must agree, without resetting the strand's swing.
+	float3 snapMove = 0;
+	if (!reset && StepFraction > 0.0) {
+		const float frameMove = targetEnd[0].z - targetStart[0].z;
+		const float expectedMove = (position[0].z - previous[0].z) / StepFraction;
+		const float excess = frameMove - expectedMove;
+		if (excess * frameMove > 0.0 && abs(excess) * StepFraction > VspAccelThreshold) {
+			snapMove.z = sign(frameMove) * min(abs(excess), abs(frameMove));
+			[loop] for (i = 0; i < n; ++i)
+			{
+				position[i] += snapMove;
+				previous[i] += snapMove;
+				targetStart[i] += snapMove;
+			}
+			previousPrevious1 += snapMove;
+		}
+	}
+
 	const uint steps = reset ? 0 : Steps;
 	const float h = StepTime;
 	const float decay = exp(-Damping * h * 60.0);
@@ -453,11 +473,11 @@ namespace HairStrandsSim
 			if (collideBody) {
 				// The field is the body at the frame's end: the point goes ahead with the surface to
 				// then, and the surface moved over the step as over the frame.
-				const float3 ahead = HairStrandsSkin::BodyAhead(position[i], f);
+				const float3 ahead = HairStrandsSkin::BodyAhead(position[i], f, snapMove);
 				float surfaceDistance;
 				float3 frameMove;
 				if (HairStrandsSkin::CollideBody(position[i], ahead, bodyLimits[i], surfaceDistance, contactNormal, frameMove)) {
-					surfaceMove = frameMove * StepFraction;
+					surfaceMove = (frameMove - snapMove) * StepFraction;
 					contact = true;
 					// Into a thin part from the other side in one step (inside it, the field is the far
 					// side's): back where it began on the surface, on the side it came from.
@@ -477,12 +497,13 @@ namespace HairStrandsSim
 			if (collideCards) {
 				// The field is the cards at the frame's end, as the body's: the point goes ahead with
 				// them to then. Its clearance is read only near them (the target is read again).
-				const float3 ahead = HairStrandsCards::CardsAhead(position[i], f);
+				const float3 ahead = HairStrandsCards::CardsAhead(position[i], f, snapMove);
 				float cardDistance;
 				float3 cardNormal, cardMove;
 				if (HairStrandsCards::SampleCards(position[i] + ahead, cardDistance, cardNormal, cardMove)) {
 					const float clearance = HairStrandsCards::CardClearance(targetEnd[i]);
-					const float3 start = previous[i] - shift + cardMove * StepFraction;
+					const float3 cardStepMove = (cardMove - snapMove) * StepFraction;
+					const float3 start = previous[i] - shift + cardStepMove;
 					float startDistance;
 					float3 startNormal, startMove;
 					const bool started = HairStrandsCards::SampleCards(start + ahead, startDistance, startNormal, startMove);
@@ -496,7 +517,7 @@ namespace HairStrandsSim
 					}
 					if (cardDistance < clearance) {
 						contact = true;
-						contactDelta = HairStrandsSim::ContactMove(contactDelta, cardNormal, cardMove * StepFraction, shift, clearance - cardDistance);
+						contactDelta = HairStrandsSim::ContactMove(contactDelta, cardNormal, cardStepMove, shift, clearance - cardDistance);
 					}
 				}
 			}
@@ -516,7 +537,8 @@ namespace HairStrandsSim
 
 		// The head field, as TressFX's signed distance field collision.
 		if (collideHead) {
-			const HairStrandsSkin::HeadFrame head = HairStrandsSim::StepHeadFrame(f);
+			HairStrandsSkin::HeadFrame head = HairStrandsSim::StepHeadFrame(f);
+			head.origin += snapMove * (1.0 - f);
 			[loop] for (i = 2; i < n; ++i)
 			{
 				const float3 pushed = HairStrandsSkin::CollideHead(position[i], HairStrandsSkin::HeadDepth(lerp(targetStart[i], targetEnd[i], f), head), head);

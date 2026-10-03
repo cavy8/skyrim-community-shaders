@@ -103,12 +103,12 @@ namespace HairStrandsCards
 	}
 
 	// How far the cards near camera-relative point a_p, as they are a_f of the way through the frame,
-	// move by the frame's end; nothing where the field has no value.
-	float3 CardsAhead(float3 a_p, float a_f)
+	// move by the frame's end, less a snap already carried; nothing where the field has no value.
+	float3 CardsAhead(float3 a_p, float a_f, float3 a_snapMove = (float3)0)
 	{
 		float distance;
 		float3 normal, move;
-		return SampleCards(a_p, distance, normal, move) ? move * (1.0 - a_f) : (float3)0;
+		return SampleCards(a_p, distance, normal, move) ? (move - a_snapMove) * (1.0 - a_f) : (float3)0;
 	}
 
 	// How far off the cards a point whose target is a_target is kept: as far as its target lies (a

@@ -387,13 +387,13 @@ class BodySdf:
         move = w @ (q @ (rotation - previous_pose[:, :3]).T + (pose[:, 3] - previous_pose[:, 3]))
         return (w @ self.distance[i, j, k]) / total, normal / length, move / total
 
-    def ahead(self, p, f, pose, previous_pose):
+    def ahead(self, p, f, pose, previous_pose, snap_move=0.0):
         """HairStrandsSkin::BodyAhead: how far the surface near world point p, as it is f of the way
         through the frame, moves by the frame's end. The actor's root (here the whole body) carries
         p first; the surface's own move over the frame is read where that puts it."""
-        root = (pose[:, :3] @ np.linalg.solve(previous_pose[:, :3], p - previous_pose[:, 3]) + pose[:, 3] - p) * (1.0 - f)
+        root = (pose[:, :3] @ np.linalg.solve(previous_pose[:, :3], p - snap_move - previous_pose[:, 3]) + pose[:, 3] - p) * (1.0 - f)
         hit = self.sample(p + root, pose, previous_pose)
-        return root if hit is None else hit[2] * (1.0 - f)
+        return root if hit is None else (hit[2] - snap_move) * (1.0 - f)
 
     def limits(self, target, pose, previous_pose):
         """HairStrandsSkin::BodyLimits: (how far off the body the point is kept, the deepest it is believed to lie)."""
@@ -786,6 +786,18 @@ class Guide:
         m0 = np.where(movable0, 0.5, 0.0)
         m1 = np.where(movable0, 0.5, np.where(np.arange(1, n) >= 2, 1.0, 0.0))
 
+        snap_move = np.zeros(3)
+        if clock["fraction"] > 0.0:
+            frame_move = target_end[0, 2] - target_start[0, 2]
+            expected_move = (position[0, 2] - previous[0, 2]) / clock["fraction"]
+            excess = frame_move - expected_move
+            if excess * frame_move > 0.0 and abs(excess) * clock["fraction"] > vsp_threshold:
+                snap_move[2] = np.sign(frame_move) * min(abs(excess), abs(frame_move))
+                position += snap_move
+                previous += snap_move
+                target_start += snap_move
+                pp1 += snap_move
+
         for step in range(clock["steps"]):
             f = min(max(clock["first"] + step * clock["fraction"], 0.0), 1.0)
             t = target_start + (target_end - target_start) * f
@@ -859,10 +871,10 @@ class Guide:
                 if sdf is not None:
                     # VSP moved the point and its previous position with the root this step.
                     shift = (rotate(q, position[i]) + translation - position[i]) * vsp
-                    ahead = sdf.ahead(position[i], f, body, body_previous)
+                    ahead = sdf.ahead(position[i], f, body, body_previous, snap_move)
                     hit, pushed, normal, frame_move, distance = sdf.collide(position[i], ahead, limits[i], body, body_previous)
                     if hit:
-                        surface_move = frame_move * clock["fraction"]  # the surface's move over the step
+                        surface_move = (frame_move - snap_move) * clock["fraction"]  # the surface's move over the step
                         position[i] = pushed
                         # Into a thin part from the other side in one step (inside it, the field is the
                         # far side's): back where it began on the surface, on the side it came from.
@@ -885,6 +897,7 @@ class Guide:
             # The head field, as TressFX's signed distance field collision, on the head's pose at the step.
             if head_field is not None:
                 head_at = head_previous + (head - head_previous) * f
+                head_at[:, 3] += snap_move * (1.0 - f)
                 for i in range(2, n):
                     pushed = head_field.collide(position[i], head_field.depth(t[i], head_at), head_at)
                     if np.any(pushed != position[i]):
@@ -1449,6 +1462,49 @@ def check_swings():
     return results
 
 
+def check_stair_snaps():
+    """Repeated stair translations must not kick resting hair or erase an existing swing.
+
+    Compare with the same motion on level ground: stair height is carried with the root,
+    while the strand's offsets keep evolving under the same gravity and constraints.
+    """
+    results = []
+    for fps in (30, 60, 144, 240):
+        for label, rest in (("scalp", scalp_lock()), ("long", hanging(36.0, 32))):
+            for direction in (-1.0, 1.0):
+                for motion in (still, small_step):
+                    def stairs(s):
+                        pose = motion(s).copy()
+                        pose[2, 3] += direction * 8.0 * sum(s >= t for t in (0.6, 0.85, 1.1, 1.35))
+                        return pose
+                    baseline = run(rest, DEFAULT, fps, motion, 2.0, jitter=0.1)
+                    log = run(rest, DEFAULT, fps, stairs, 2.0, jitter=0.1)
+                    error = max(np.linalg.norm((a[1] - a[2]) - (b[1] - b[2]), axis=1).max() for a, b in zip(log, baseline))
+                    results.append((f"{label} hair {'up' if direction > 0 else 'down'} stairs during {motion.__name__}, {fps} fps",
+                                    error < 0.1, f"stair snaps change the normal motion by at most {error:.4f} units"))
+    return results
+
+
+def check_stair_contacts():
+    """A carried snap must not be carried again by a moving head or body collider."""
+    results = []
+    field = HeadField()
+    for fps in (30, 144):
+        for direction in (-1.0, 1.0):
+            def stairs(s):
+                return head_transform((0, 0, direction * 8.0 * sum(s >= t for t in (0.6, 0.85, 1.1, 1.35))))
+            for label, rest, options in (("head", fringe(field), dict(head_field=field)),
+                                          ("body", through_shoulder(), dict(body_motion=still))):
+                baseline = run(rest, DEFAULT, fps, still, 2.0, jitter=0.1, **options)
+                if label == "body":
+                    options = dict(body_motion=stairs)
+                log = run(rest, DEFAULT, fps, stairs, 2.0, jitter=0.1, **options)
+                error = max(np.linalg.norm((a[1] - a[2]) - (b[1] - b[2]), axis=1).max() for a, b in zip(log, baseline))
+                results.append((f"{label} contact follows stairs {'up' if direction > 0 else 'down'}, {fps} fps",
+                                error < 0.1, f"stair snaps change colliding hair's normal motion by at most {error:.4f} units"))
+    return results
+
+
 def check_running_stop():
     """A long loose lock must return promptly after a sprint, rather than drift in slow motion.
 
@@ -1559,7 +1615,7 @@ def job(task):
     if kind == "body motion":
         return check_body_motion(arg)
     return {"contact response": check_contact_response, "collision": check_collision, "head field": check_head_field, "body field": check_body_field, "body collision": check_body_collision,
-            "short locks": check_short_locks, "swings": check_swings, "running stop": check_running_stop,
+            "short locks": check_short_locks, "swings": check_swings, "stair snaps": check_stair_snaps, "stair contacts": check_stair_contacts, "running stop": check_running_stop,
             "wind": check_wind, "extremes": check_extremes, "followers": check_followers}[kind]()
 
 
@@ -1570,7 +1626,7 @@ def main():
     tasks = [(kind, name) for name in PRESETS for kind in ("rest", "motion", "held")]
     tasks += [("rates", "straight"), ("rates", "locs")]
     tasks += [("body motion", fps) for fps in (144, 60, 30)]
-    tasks += [(kind, None) for kind in ("contact response", "body collision", "collision", "head field", "body field", "short locks", "swings", "running stop", "wind", "extremes", "followers")]
+    tasks += [(kind, None) for kind in ("contact response", "body collision", "collision", "head field", "body field", "short locks", "swings", "stair snaps", "stair contacts", "running stop", "wind", "extremes", "followers")]
     failures = []
     with Pool() as pool:
         for results in pool.imap(job, tasks):

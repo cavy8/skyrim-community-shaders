@@ -270,14 +270,15 @@ namespace HairStrandsSkin
 	// moves by the frame's end, where the field is. The actor's root carries the point first (all of
 	// a run or a turn); the surface's own move over the frame is read where that puts it. At a_p
 	// itself the field may not reach: the body there is the rest of the frame's move on.
-	float3 BodyAhead(float3 a_p, float a_f)
+	// a_snapMove has already carried the simulation state and must not carry it again.
+	float3 BodyAhead(float3 a_p, float a_f, float3 a_snapMove = (float3)0)
 	{
-		const float3 root = mul(float3x4(BodyRootMove[0], BodyRootMove[1], BodyRootMove[2]), float4(a_p, 1.0)) * (1.0 - a_f);
+		const float3 root = (mul(float3x4(BodyRootMove[0], BodyRootMove[1], BodyRootMove[2]), float4(a_p - a_snapMove, 1.0)) - a_snapMove) * (1.0 - a_f);
 		const float3 cell = BodyCell(a_p + root);
 		if (any(cell < 0.5) || any(cell > BodyGridSize - 0.5))
 			return root;
 		const float4 motion = BodyMotion.SampleLevel(BodySampler, cell * BodyTexel, 0);
-		return motion.w > MinBodyWeight ? motion.xyz / motion.w * (1.0 - a_f) : root;
+		return motion.w > MinBodyWeight ? (motion.xyz / motion.w - a_snapMove) * (1.0 - a_f) : root;
 	}
 
 	// For a point whose target is a_target: x, how far off the body it is kept, as far as its target

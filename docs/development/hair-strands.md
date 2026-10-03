@@ -618,6 +618,16 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
     targets. TressFX skins each strand rigidly by its root's bones, which is Guidance 0. Non-SMP
     hair is skinned to the head, so both are the same; hair without a head bone always uses its
     full skinning.
+-   **Stair snaps (`0-13-2`).** Before any fixed steps, the frame's vertical root displacement
+    is compared with the previous step's vertical velocity, scaled to the frame's duration.
+    An excess in the direction of travel above `vspAccelThreshold` (in units per step) is
+    carried as a change of origin, capped at the frame's actual vertical displacement.
+    Current, previous and second-point older positions, and the frame's starting targets,
+    all move by it. Offsets and velocities survive; even a frame with no fixed step carries
+    the snap. Head collision takes the same shifted pose, and body/card surface motion
+    excludes the displacement already carried. This avoids the global shape pull turning
+    a stair into an impulse before full VSP carries it again. Ordinary motion still runs
+    the same solver with the same settings; stops and landings cannot invent a displacement.
 -   **Short strands.** TressFX's constraints act per point, whatever a strand's length, so a
     load moves points about the same distance on any strand. A converted hairstyle mixes
     1-unit scalp strands with 40-unit locks. Without what follows, at the defaults, a 3.8-unit
@@ -1101,6 +1111,9 @@ permutation bit.
     Contact-response regressions check that simultaneous body/card push-outs create no sideways
     velocity, small resting slides stick, larger slides still slip with less energy, and sticking
     preserves tangential and normal surface motion without duplicating VSP.
+    Repeated 8-unit stair snaps up and down, both at rest and during an existing swing, must
+    preserve the corresponding level-ground offsets within 0.1 units at 30, 60, 144 and
+    240 fps with uneven frame times. Head and body contact must preserve those offsets too.
     Turning or tipping the head into the shoulder must leave hair out of it and at rest. Breathing,
     walking, running and turning at 30, 60 and 144 fps must leave drawn hair no more than 0.35
     units deep, on the bare body and, for a 45-unit lock down to the waist, in the cuirass with
@@ -1161,6 +1174,10 @@ permutation bit.
 
 Check these first in game:
 
+-   Stair snaps (`0-13-2`): walk and run up and down individually modeled stairs with short
+    and long hair, including hair resting on a shoulder or armour. Compare normal walking,
+    turns, jumps and landings on level ground. The offline stair and collision cases pass;
+    the threshold's coverage of actual Skyrim steps remains untested in game.
 -   Loose-hair weight (`0-13-1`): stronger gravity and 16 length passes return long locks
     sooner after stopping, with the pre-`0-11-3` VSP values. The offline 36-unit straight lock
     is about 7.4 units from rest 0.4 s after a sprint stops (about 10.8 with the old tuning).
