@@ -574,7 +574,7 @@ enabled, the shared profiler also emits the corresponding RenderDoc events.
 To check in game, enable hair strands and view a converted hairstyle up close, then open
 its settings' Profiling section or enable CS passes in the performance overlay. Compare
 GPU and CPU timings in profiling statistics; turn physics off to stop `Simulation` and
-collision field samples, and disable Hair Strands to
+collision field samples, Simple physics to stop `BodyField`, and disable Hair Strands to
 stop all its samples (the profiler retires their history after 60 collected frames).
 
 ## Physics (`StrandSim.cs.hlsl`)
@@ -676,11 +676,13 @@ Every step runs TressFX's simulation pass on a strand, in TressFX's order and wi
     1.2 times its rest length, measured from the root. That holds landings and sprint stops to
     about 1.16 and barely changes the motion.
 -   **Collision.** The body's distance field (below), built every frame from what the actor
-    wears. Until an actor's collision mesh is built, or when none can be, TressFX's capsule
-    response on capsules found up the head bone's own skeleton: neck (neck → head, radius 3),
-    chest (spine 2 → neck, 5.5), back (spine 1 → spine 2, 6.5), shoulders (clavicle → upper
-    arm, 3.5) and upper arms (upper arm → forearm, 3). With no head field, the head is a sphere
-    under the same response. Radii scale with the head bone's world scale. Per point, each
+    wears ("Simulate Strands" at Advanced, `PhysicsMode` 2). Until an actor's collision mesh is
+    built, when none can be, or always at Simple (`PhysicsMode` 1, which reads and builds no
+    collision mesh, so no `BodyField` work), TressFX's capsule response on capsules found up the head
+    bone's own skeleton: neck (neck → head, radius 3), chest (spine 2 → neck, 5.5), back
+    (spine 1 → spine 2, 6.5), shoulders (clavicle → upper arm, 3.5) and upper arms (upper arm →
+    forearm, 3), all following the live pose. With no head field, the head is a sphere under the
+    same response. Radii scale with the head bone's world scale. Per point, each
     capsule shrinks to the depth the point's target already lies at (never below half its
     radius), so the styled shape itself never collides.
 -   **The body's distance field** (`BodySdf.cpp`, `BodySdf.cs.hlsl`, `HairStrandsSkin::CollideBody`).

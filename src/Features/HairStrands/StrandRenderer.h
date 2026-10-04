@@ -180,6 +180,7 @@ namespace Strands
 		float smpGuidance = 0.35f;       // how much bone (SMP) motion, beyond the head's, moves the targets
 		float windStrength = 1.0f;
 		bool collision = true;
+		bool simpleCollision = false;  // simple physics: the body is bone capsules, no collision mesh is built
 		bool cardCollision = true;  // strands keep off the cards the hair keeps (braids, ties, buns)
 	};
 

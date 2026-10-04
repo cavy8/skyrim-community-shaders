@@ -20,7 +20,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MaxWidthScale,
 	MaxSubdivisions,
 	MaxStrandsPerFrame,
-	Physics,
+	PhysicsMode,
 	PhysicsDistance,
 	SmpGuidance,
 	WindStrength,
@@ -39,6 +39,9 @@ namespace
 	constexpr float kMaxPixelWidthLimit = 4.0f;
 	constexpr float kMaxWidthScaleLimit = 10.0f;
 	constexpr float kMaxPhysicsDistance = 2000.0f;
+	constexpr uint kPhysicsOff = 0;
+	constexpr uint kPhysicsSimple = 1;
+	constexpr uint kPhysicsAdvanced = 2;
 	constexpr float kMaxWindStrength = 3.0f;
 
 	struct QualityPreset
@@ -156,11 +159,12 @@ Strands::RenderSettings HairStrands::MakeRenderSettings() const
 	result.maxWidthScale = settings.MaxWidthScale;
 	result.maxSubdivisions = settings.MaxSubdivisions;
 	result.maxStrandsPerFrame = settings.MaxStrandsPerFrame;
-	result.physics = settings.Physics;
+	result.physics = settings.PhysicsMode != kPhysicsOff;
 	result.physicsDistance = settings.PhysicsDistance;
 	result.smpGuidance = settings.SmpGuidance;
 	result.windStrength = settings.WindStrength;
 	result.collision = settings.BodyCollision;
+	result.simpleCollision = settings.PhysicsMode == kPhysicsSimple;
 	result.cardCollision = settings.CardCollision;
 	return result;
 }
@@ -288,11 +292,14 @@ void HairStrands::DrawPerformanceSettings()
 
 void HairStrands::DrawPhysicsSettings()
 {
-	ImGui::Checkbox(T(TKEY("physics_enable"), "Simulate Strands"), &settings.Physics);
+	const char* physicsNames[] = { T(TKEY("physics_off"), "Disabled"), T(TKEY("physics_simple"), "Simple"), T(TKEY("physics_advanced"), "Advanced") };
+	int physicsMode = static_cast<int>(std::min(settings.PhysicsMode, kPhysicsAdvanced));
+	if (ImGui::SliderInt(T(TKEY("physics_enable"), "Simulate Strands"), &physicsMode, kPhysicsOff, kPhysicsAdvanced, physicsNames[physicsMode], ImGuiSliderFlags_AlwaysClamp))
+		settings.PhysicsMode = static_cast<uint>(physicsMode);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("physics_enable_tooltip"), "Simulates the strands with TressFX 4.1's hair physics: they swing, stream and settle\nwith gravity, inertia, wind and collision with the head and body. Off, they follow the\nhair's bones (and SMP physics) only. Each hairstyle's motion is tuned in the hairstyle\neditor below."));
+		ImGui::Text("%s", T(TKEY("physics_enable_tooltip"), "Simulates the strands with TressFX 4.1's hair physics: they swing, stream and settle\nwith gravity, inertia, wind and collision with the head and body. Each hairstyle's\nmotion is tuned in the hairstyle editor below.\nDisabled: the strands follow the hair's bones (and SMP physics) only.\nSimple: the body is capsules on the neck, spine, shoulders and upper arms. Cheaper,\nbut hair rests on a rough body shape and passes through armour, shields and weapons.\nAdvanced: the body is what the character wears, rebuilt every frame."));
 	}
-	auto _ = Util::DisableGuard(!settings.Physics);
+	auto _ = Util::DisableGuard(settings.PhysicsMode == kPhysicsOff);
 	ImGui::SliderFloat(T(TKEY("physics_distance"), "Physics Distance"), &settings.PhysicsDistance, 0.0f, kMaxPhysicsDistance, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("physics_distance_tooltip"), "Distance (in units, about 1.4 cm each) past which strands are no longer simulated.\nThe motion fades out over the last quarter."));
@@ -307,7 +314,7 @@ void HairStrands::DrawPhysicsSettings()
 	}
 	ImGui::Checkbox(T(TKEY("body_collision"), "Collision"), &settings.BodyCollision);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("body_collision_tooltip"), "Keeps strands out of the head (the character's own head mesh) and off everything the\ncharacter wears: body, armour and clothes, and shields, weapons and quivers hanging\non it. Long hair rests on them as they move."));
+		ImGui::Text("%s", T(TKEY("body_collision_tooltip"), "Keeps strands out of the head (the character's own head mesh) and off the body. With\nAdvanced physics, that is everything the character wears: body, armour and clothes,\nand shields, weapons and quivers hanging on it. Long hair rests on them as they move."));
 	}
 	{
 		ImGui::BeginDisabled(!settings.BodyCollision);
@@ -664,6 +671,10 @@ void HairStrands::SaveSettings(json& o_json)
 void HairStrands::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	// Before 0-14-0, physics was an on/off "Physics" switch; on was today's Advanced.
+	if (o_json.is_object() && !o_json.contains("PhysicsMode") && o_json.contains("Physics") && o_json["Physics"].is_boolean())
+		settings.PhysicsMode = o_json["Physics"].get<bool>() ? kPhysicsAdvanced : kPhysicsOff;
+	settings.PhysicsMode = std::min(settings.PhysicsMode, kPhysicsAdvanced);
 	settings.MaxActors = std::clamp(settings.MaxActors, 1u, kMaxActorsLimit);
 	settings.DensityScale = std::clamp(settings.DensityScale, kMinDensityScale, 1.0f);
 	settings.LodEnd = std::clamp(settings.LodEnd, 0.0f, kMaxLodDistance);

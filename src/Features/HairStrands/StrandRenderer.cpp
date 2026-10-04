@@ -1936,9 +1936,9 @@ namespace Strands
 		for (size_t k = 0; k < windCorners.size(); ++k)
 			o_cb.wind[k] = windCorners[k] * style.windResponse;
 		// The body: its distance field where the actor has a collision mesh (built in Skin), else the
-		// bone capsules.
+		// bone capsules (always, with simple physics).
 		const BodySkeleton skeleton = FindBodySkeleton(haveHead && a_skin->bones ? a_skin->bones[asset.headBone] : nullptr);
-		const bool bodyMesh = settings.collision && haveHead && bodyCollision->HasMesh(a_instance.actorId) && GetBodyPrograms().Ready();
+		const bool bodyMesh = settings.collision && !settings.simpleCollision && haveHead && bodyCollision->HasMesh(a_instance.actorId) && GetBodyPrograms().Ready();
 		o_cb.colliderCount = settings.collision ? GatherColliders(a_instance, skeleton, a_palette, frameBone, a_eye, !bodyMesh, o_cb.colliders) : 0;
 		if (haveHead) {
 			const float4* rows = &a_palette[frameBone * 3];
@@ -2574,7 +2574,9 @@ namespace Strands
 			if (a_instance.drawThisFrame && a_instance.simWeight > 0.0f && settings.collision && a_instance.style.simulate && asset.seedingUsed != SeedMode::Area && asset.guideCount > 0) {
 				if (a_instance.headFieldSerial != asset.serial)
 					BuildHeadField(a_instance, a_geometry, a_skin);
-				UpdateBody(a_instance, a_geometry, a_skin);
+				// Simple physics builds no collision mesh; one built before is evicted unseen.
+				if (!settings.simpleCollision)
+					UpdateBody(a_instance, a_geometry, a_skin);
 			}
 			a_instance.drawThisFrame = a_instance.drawThisFrame && Skin(a_instance, a_skin);
 			if (a_instance.drawThisFrame) {

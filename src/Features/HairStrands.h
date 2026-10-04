@@ -30,7 +30,7 @@ struct HairStrands : Feature
 		float MaxWidthScale = 4.0f;
 		uint MaxSubdivisions = 4;
 		uint MaxStrandsPerFrame = 200000;
-		bool Physics = true;
+		uint PhysicsMode = 2;  // 0 off, 1 simple (bone capsules for the body), 2 advanced (what the character wears)
 		float PhysicsDistance = 400.0f;
 		float SmpGuidance = 0.35f;
 		float WindStrength = 1.0f;
