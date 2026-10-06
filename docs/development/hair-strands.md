@@ -1194,6 +1194,13 @@ permutation bit.
 
 Check these first in game:
 
+-   Clumps as wide as their card share (`0-15-0`, see
+    [Hair cards to strands](hair-cards-to-strands.md#algorithm)): converted hair has 10-30% more
+    strands on wide or sparsely traced cards (vanilla remake 01: 2,700 to 3,185), with
+    correspondingly more simulation and drawing. Check vanilla remake hair 01 and 02 from behind
+    and the side: the head should no longer show between the clumps of the big lower-layer cards,
+    and no clump should twist over itself just off the scalp. `Settings::fill` is not yet a style
+    field, so the game converts with it off.
 -   Stair snaps (`0-13-2`): walk and run up and down individually modeled stairs with short
     and long hair, including hair resting on a shoulder or armour. Compare normal walking,
     turns, jumps and landings on level ground. The offline stair and collision cases pass;

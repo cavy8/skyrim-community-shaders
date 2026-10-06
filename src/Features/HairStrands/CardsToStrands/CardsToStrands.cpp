@@ -145,6 +145,13 @@ namespace CardsToStrands
 		constexpr float kMinCoverageShare = 0.35f;  // a sparsely painted card guide keeps at least this share of its strands
 		constexpr float kFullCoverage = 0.6f;       // mean alpha along a card guide that counts as fully painted
 		constexpr float kMaxUVOffset = 0.25f;
+		constexpr float kMaxShareReach = 2.0f;     // x spacing: a clump reaches this far across its card each way at most, to its share of it
+		constexpr float kShareWidthPercentile = 0.8f;  // a clump's strand count is set by its width this far up its widths along the card
+		constexpr uint32_t kShareSmoothing = 3;    // 1-2-1 passes over a clump's widths along its guide
+		constexpr uint32_t kShareStride = 2;       // a clump's width is measured at every this many samples of its guide
+		constexpr float kMaxFillReach = 3.0f;      // units: Settings::fill 1 lets a clump reach this far past its card's edge
+		constexpr float kFillAlignment = 0.7f;     // a gap fills only between hair running this alike (cosine)
+		constexpr float kFillLayerSlope = 0.5f;    // and lying beside it, not above or below (rise over distance)
 		constexpr float kScalpRootShare = 0.5f;   // strands rooted where their card guide starts; the rest along the stretch it lies on the scalp
 		constexpr float kMaxRootAlong = 0.6f;     // and no further along it than this share of its length, so none is a stub
 		constexpr float kRedundantRadius = 0.5f;  // x spacing: a card guide running this close to a longer one...
@@ -606,8 +613,12 @@ namespace CardsToStrands
 			 */
 			bool TryAddGuide(uint32_t a_tri, const Vec3& a_pos, float a_maxLength, bool a_countVisits, bool a_findCoverage);
 			float Coverage(uint32_t a_tri, const Vec3& a_pos) const;
-			/** @brief How far the painted card reaches from a_pos (on a_tri) along a_dir, over the surface, up to a_max. */
-			float CardExtent(uint32_t a_tri, Vec3 a_pos, const Vec3& a_dir, float a_max) const;
+			/**
+			 * @brief How far the painted card reaches from a_pos (on a_tri) along a_dir, over the surface, up to a_max.
+			 * o_open, if given, says whether the walk ended at an open edge of the card or where its paint ends (not at a
+			 * fold, a triangle not converted, or a_max): where hair beside it may fill the gap.
+			 */
+			float CardExtent(uint32_t a_tri, Vec3 a_pos, const Vec3& a_dir, float a_max, bool* o_open = nullptr) const;
 			bool Covered(uint32_t a_tri, const Vec3& a_pos) const { return !useCoverage || Coverage(a_tri, a_pos) >= settings.coverageThreshold; }
 			bool HasCoverage(uint32_t a_tri) const;
 
@@ -1351,7 +1362,7 @@ namespace CardsToStrands
 			return length;
 		}
 
-		float Generator::CardExtent(uint32_t a_tri, Vec3 a_pos, const Vec3& a_dir, float a_max) const
+		float Generator::CardExtent(uint32_t a_tri, Vec3 a_pos, const Vec3& a_dir, float a_max, bool* o_open) const
 		{
 			// A straight walk over the surface, turned into each triangle's plane, until the card
 			// ends (an open edge, a fold, a triangle not converted) or, if it started on painted hair,
@@ -1360,15 +1371,20 @@ namespace CardsToStrands
 			uint32_t tri = a_tri;
 			const bool painted = useCoverage && Covered(tri, a_pos);
 			float travelled = 0.0f;
+			const auto end = [&](bool a_open) {
+				if (o_open)
+					*o_open = a_open;
+				return std::min(travelled, a_max);
+			};
 			for (uint32_t stepIndex = 0; travelled < a_max && stepIndex < 64; ++stepIndex) {
 				float remaining = std::min(kExtentStep, a_max - travelled);
 				for (uint32_t crossing = 0; remaining > 1e-5f; ++crossing) {
 					if (crossing >= kMaxCrossingsPerStep)
-						return travelled;
+						return end(false);
 					const Triangle& t = tris[tri];
 					Vec3 dir = a_dir - t.normal * a_dir.Dot(t.normal);
 					if (dir.LengthSquared() < 1e-8f)
-						return travelled;
+						return end(false);
 					dir.Normalize();
 					const Vec3 a = Position(t.v[0]), b = Position(t.v[1]), c = Position(t.v[2]);
 					const Vec3 bp = ClampBarycentric(Barycentric(a_pos, a, b, c));
@@ -1392,20 +1408,20 @@ namespace CardsToStrands
 						}
 					}
 					if (exitVertex < 0)
-						return travelled;
+						return end(false);
 					const float moved = remaining * std::clamp(s, 0.0f, 1.0f);
 					a_pos += dir * moved;
 					travelled += moved;
 					remaining -= moved;
 					const int32_t next = t.neighbor[(exitVertex + 1) % 3];
 					if (next < 0 || !tris[next].valid || tris[next].normal.Dot(t.normal) < kFoldThreshold)
-						return travelled;  // the card's edge
+						return end(next < 0);  // the card's edge (or a fold, or cards kept as cards: no hair across those)
 					tri = static_cast<uint32_t>(next);
 				}
 				if (painted && !Covered(tri, a_pos))
-					return travelled;
+					return end(true);
 			}
-			return std::min(travelled, a_max);
+			return end(false);
 		}
 
 		float Generator::Coverage(uint32_t a_tri, const Vec3& a_pos) const
@@ -3579,9 +3595,9 @@ namespace CardsToStrands
 		void Generator::BuildStrands(const Scalp& a_scalp, Result& o_result)
 		{
 			// Each kept card guide is one clump, as in HairCS's wrappers and in TressFX's or
-			// Unreal's guide-and-follower hair: `density` strands per unit of card width,
-			// rooted round the guide's scalp root and spread across its share of the card, then
-			// drawn towards the guide by `clumpStrength` towards the tip.
+			// Unreal's guide-and-follower hair: rooted round the guide's scalp root, spread across
+			// its share of the card at `density` strands per unit of that width, then drawn
+			// towards the guide by `clumpStrength` towards the tip.
 			std::vector<uint32_t> kept;
 			for (uint32_t g = 0; g < guides.size(); ++g)
 				if (guides[g].kind != GuideKind::Dropped && guides[g].kind != GuideKind::Continued && guides[g].kind != GuideKind::Gathered && guides[g].path.size() >= 2 && guides[g].path.back().s >= Limits::kMinStrandLength)
@@ -3590,12 +3606,232 @@ namespace CardsToStrands
 				return;
 
 			const bool area = o_result.stats.seedingUsed == Seeding::Area;
+			const auto guideCount = static_cast<uint32_t>(guides.size());
+
+			// A frame along each kept guide: tangent, lift (the card normal facing away from the
+			// head, square to the tangent) and across the card.
+			struct Frame
+			{
+				Vec3 tangent, lift, across;
+			};
+			std::vector<std::vector<Frame>> frames(guideCount);
+			for (uint32_t g : kept) {
+				const auto& path = guides[g].path;
+				const auto n = static_cast<uint32_t>(path.size());
+				auto& frame = frames[g];
+				frame.resize(n);
+				for (uint32_t i = 0; i < n; ++i) {
+					const Vec3 d = path[std::min(i + 1, n - 1)].position - path[i > 0 ? i - 1 : 0].position;
+					frame[i].tangent = d.LengthSquared() > 1e-12f ? d.Normalized() : (i > 0 ? frame[i - 1].tangent : kUnitZ);
+					Vec3 up = LiftNormal(path[i].tri, path[i].position);
+					up -= frame[i].tangent * up.Dot(frame[i].tangent);
+					frame[i].lift = up.LengthSquared() > 1e-6f ? up.Normalized() : (i > 0 ? frame[i - 1].lift : (path[i].position - headCentre).Normalized());
+					frame[i].across = frame[i].tangent.Cross(frame[i].lift);
+				}
+			}
+			const auto onCard = [&](const PathSample& a_sample) {
+				const auto& tri = tris[a_sample.tri];
+				return tri.valid && std::abs((a_sample.position - Position(tri.v[0])).Dot(tri.normal)) <= kOnCard;
+			};
+
+			// Each clump's share of the card, per path sample, towards -across and +across, in units:
+			// to the card's edge (or where its paint ends), or halfway to the next card guide on the
+			// same sheet, whichever is nearer. A clump is as wide as the hair it stands for: a lock
+			// narrower than the clump size, or a wide card whose few guides lie far apart (vanilla's
+			// fans of cards from the crown, a third of the head across, kept one clump size each
+			// before and showed the head between them). With `fill`, a clump reaches on past its
+			// card's edge to meet hair running alike beside it.
+			const float halfSpacing = 0.5f * spacing;
+			std::vector<std::vector<float>> extents(guideCount);
+			for (uint32_t g : kept)
+				extents[g].assign(guides[g].path.size() * 2, halfSpacing);
+			if (!area) {
+				struct Segment
+				{
+					Vec3 a, b;
+					uint32_t guide;
+					int32_t ancestor;
+					int32_t component;
+					bool grows;  // grows strands (else gathered or dropped: its cards stay, and stop a clump all the same)
+				};
+				std::vector<uint8_t> grows(guideCount, 0);
+				for (uint32_t g : kept)
+					grows[g] = 1;
+				const float maxShare = kMaxShareReach * spacing;
+				const float fillReach = std::clamp(settings.fill, 0.0f, 1.0f) * kMaxFillReach;
+				// A clump's share stops at the bisector to the nearest point of the hair beside it, which
+				// lies at most twice the reach away (bisector distance = d^2 / (2 d.dir) >= d / 2).
+				const float shareRadius = 2.0f * maxShare + step;
+				const float fillRadius = 2.0f * (maxShare + fillReach) + step;
+				PointGrid<Segment> segments(std::max(shareRadius * 0.5f, 1.0f));
+				PointGrid<Segment> fillSegments(std::max(fillRadius * 0.5f, 1.0f));  // only growing hair, only with fill
+				for (uint32_t g = 0; g < guideCount; ++g) {
+					if (guides[g].kind == GuideKind::Continued)
+						continue;  // carried on by the hair continuing into it
+					const auto& path = grows[g] || g >= ownPaths.size() ? guides[g].path : ownPaths[g];
+					for (size_t i = 0; i + 1 < path.size(); ++i) {
+						if (!onCard(path[i]))
+							continue;
+						const Segment segment{ path[i].position, path[i + 1].position, g, guides[g].ancestor, tris[path[i].tri].component, grows[g] != 0 };
+						segments.Insert(path[i].position, segment);
+						if (fillReach > 0.0f && segment.grows)
+							fillSegments.Insert(path[i].position, segment);
+					}
+				}
+				const auto sharesPath = [&](uint32_t a_g, const Segment& a_s) {
+					return a_s.guide == a_g || (a_s.ancestor >= 0 && a_s.ancestor == guides[a_g].ancestor);
+				};
+				// Along a_dir from a_p, how far until a point of the segment is nearer than a_p is: the
+				// perpendicular bisector between a_p and the segment's point nearest it. FLT_MAX if the
+				// segment lies behind.
+				const auto bisector = [](const Vec3& a_p, const Vec3& a_dir, const Segment& a_s, Vec3& o_near) {
+					const Vec3 ab = a_s.b - a_s.a;
+					const float len2 = ab.LengthSquared();
+					const float t = len2 > 1e-12f ? std::clamp((a_p - a_s.a).Dot(ab) / len2, 0.0f, 1.0f) : 0.0f;
+					o_near = a_s.a + ab * t;
+					const Vec3 to = o_near - a_p;
+					const float ahead = to.Dot(a_dir);
+					return ahead > 1e-4f ? to.LengthSquared() / (2.0f * ahead) : FLT_MAX;
+				};
+
+				std::vector<const Segment*> nearby, beside;
+				std::vector<uint8_t> measured;
+				for (uint32_t g : kept) {
+					const auto& path = guides[g].path;
+					const auto n = static_cast<uint32_t>(path.size());
+					auto& extent = extents[g];
+					measured.assign(n, 0);
+					// Every other sample on the cards is measured (the widths are smoothed along the guide
+					// anyway), and the last one; those between are interpolated.
+					int32_t lastOnCard = -1;
+					for (uint32_t i = 0; i < n; ++i)
+						if (onCard(path[i]))
+							lastOnCard = static_cast<int32_t>(i);
+					for (uint32_t i = 0; i < n; ++i) {
+						if (!onCard(path[i]))
+							continue;  // off the cards (joined to the scalp, or carried over from hair it continues)
+						if (i % kShareStride != 0 && static_cast<int32_t>(i) != lastOnCard) {
+							measured[i] = 2;  // on the cards, interpolated below
+							continue;
+						}
+						measured[i] = 1;
+						const Vec3& p = path[i].position;
+						const Frame& frame = frames[g][i];
+						const int32_t component = tris[path[i].tri].component;
+						nearby.clear();
+						segments.Query(p, shareRadius, [&](const Segment& a_s) {
+							if (a_s.component == component && !sharesPath(g, a_s) && (a_s.a - p).LengthSquared() <= shareRadius * shareRadius)
+								nearby.push_back(&a_s);
+						});
+						bool besideFound = false;
+						for (uint32_t side = 0; side < 2; ++side) {
+							const Vec3 dir = side == 0 ? -frame.across : frame.across;
+							// On the card: halfway to the nearest guide on the same sheet, and never less
+							// than half a spacing, so clumps of guides closer than that still overlap as they
+							// always did (each pulled in towards its tip by clumpStrength).
+							float share = maxShare;
+							Vec3 near;
+							for (const Segment* s : nearby)
+								share = std::min(share, bisector(p, dir, *s, near));
+							share = std::max(share, halfSpacing);
+							bool open = false;
+							float reach = CardExtent(path[i].tri, p, dir, share, &open);
+							// Past the card's edge, with fill: halfway to hair beside it running alike,
+							// if there is any within reach; else the clump ends with its card.
+							if (open && fillReach > 0.0f) {
+								if (!besideFound) {
+									beside.clear();
+									fillSegments.Query(p, fillRadius, [&](const Segment& a_s) {
+										if (a_s.component == component || sharesPath(g, a_s) || (a_s.a - p).LengthSquared() > fillRadius * fillRadius)
+											return;
+										const Vec3 along = a_s.b - a_s.a;
+										if (along.LengthSquared() > 1e-8f && along.Normalized().Dot(frame.tangent) >= kFillAlignment)
+											beside.push_back(&a_s);
+									});
+									besideFound = true;
+								}
+								float meet = FLT_MAX;
+								for (const Segment* s : beside) {
+									const float d = bisector(p, dir, *s, near);
+									const Vec3 to = near - p;
+									if (d < meet && std::abs(to.Dot(frame.lift)) <= kFillLayerSlope * std::abs(to.Dot(dir)))
+										meet = d;  // beside it, not a layer above or below
+								}
+								if (meet > reach && meet <= reach + fillReach)
+									reach = std::min(meet, maxShare + fillReach);
+							}
+							extent[i * 2 + side] = reach;
+						}
+					}
+					// The samples on the cards between those measured, interpolated.
+					for (uint32_t i = 0; i < n; ++i) {
+						if (measured[i] != 2)
+							continue;
+						int32_t before = static_cast<int32_t>(i) - 1, after = static_cast<int32_t>(i) + 1;
+						while (before >= 0 && measured[before] != 1)
+							--before;
+						while (after < static_cast<int32_t>(n) && measured[after] != 1)
+							++after;
+						for (uint32_t side = 0; side < 2; ++side) {
+							if (before >= 0 && after < static_cast<int32_t>(n)) {
+								const float f = static_cast<float>(static_cast<int32_t>(i) - before) / static_cast<float>(after - before);
+								extent[i * 2 + side] = std::lerp(extent[before * 2 + side], extent[after * 2 + side], f);
+							} else if (before >= 0 || after < static_cast<int32_t>(n)) {
+								extent[i * 2 + side] = extent[(before >= 0 ? before : after) * 2 + side];
+							}
+						}
+						measured[i] = 1;
+					}
+					// Samples off the cards take the width of the nearest one on them.
+					int32_t last = -1;
+					for (uint32_t i = 0; i < n; ++i) {
+						if (measured[i]) {
+							if (last < 0)
+								for (uint32_t k = 0; k < i; ++k)
+									for (uint32_t side = 0; side < 2; ++side)
+										extent[k * 2 + side] = extent[i * 2 + side];
+							last = static_cast<int32_t>(i);
+						} else if (last >= 0) {
+							for (uint32_t side = 0; side < 2; ++side)
+								extent[i * 2 + side] = extent[last * 2 + side];
+						}
+					}
+					// Smoothed along the guide, so a clump follows the card's outline without kinks.
+					auto smoothed = extent;
+					for (uint32_t pass = 0; pass < kShareSmoothing; ++pass) {
+						for (uint32_t i = 0; i < n; ++i)
+							for (uint32_t side = 0; side < 2; ++side)
+								smoothed[i * 2 + side] = (extent[(i > 0 ? i - 1 : i) * 2 + side] + 2.0f * extent[i * 2 + side] + extent[std::min(i + 1, n - 1) * 2 + side]) * 0.25f;
+						std::swap(extent, smoothed);
+					}
+				}
+			}
+
+			// Strands per clump: `density` per unit of its width, as wide as it is over most of its
+			// card, and never fewer than a clump size's worth (a narrow lock or tail keeps the
+			// strands it had); fewer where its painted coverage is thin.
+			std::vector<float> widths(guideCount, spacing);
+			if (!area) {
+				std::vector<float> across;
+				for (uint32_t g : kept) {
+					across.clear();
+					const auto& path = guides[g].path;
+					for (uint32_t i = 0; i < path.size(); ++i)
+						if (onCard(path[i]))
+							across.push_back(extents[g][i * 2] + extents[g][i * 2 + 1]);
+					if (across.empty())
+						continue;
+					const size_t k = std::min(static_cast<size_t>(static_cast<float>(across.size()) * kShareWidthPercentile), across.size() - 1);
+					std::nth_element(across.begin(), across.begin() + k, across.end());
+					widths[g] = std::max(spacing, across[k]);
+				}
+			}
 			std::unordered_map<int32_t, uint32_t> sharing;  // card guides per scalp root
 			float total = 0.0f;
 			for (uint32_t g : kept) {
 				++sharing[guides[g].ancestor];
 				const float painted = useCoverage ? std::clamp(guides[g].coverage / kFullCoverage, kMinCoverageShare, 1.0f) : 1.0f;
-				total += area ? 1.0f : settings.density * spacing * painted;
+				total += area ? 1.0f : settings.density * widths[g] * painted;
 			}
 			const float acceptance = total > Limits::kMaxStrands ? Limits::kMaxStrands / total : 1.0f;
 			// Each card guide's random numbers are its own, keyed by where it starts on the cards.
@@ -3612,7 +3848,7 @@ namespace CardsToStrands
 			for (uint32_t g : kept) {
 				KeyedRandom random(4, keys[g], settings.seed);
 				const float painted = useCoverage ? std::clamp(guides[g].coverage / kFullCoverage, kMinCoverageShare, 1.0f) : 1.0f;
-				counts[g] = area ? 1u : static_cast<uint32_t>(settings.density * spacing * painted * acceptance + random());
+				counts[g] = area ? 1u : static_cast<uint32_t>(settings.density * widths[g] * painted * acceptance + random());
 				counts[g] = std::min(counts[g], Limits::kMaxStrands - strandTotal);
 				strandTotal += counts[g];
 			}
@@ -3645,8 +3881,6 @@ namespace CardsToStrands
 			o_result.strands.reserve(strandTotal);
 
 			const float exponent = 0.35f + 0.65f * (1.0f - settings.clumpStrength);
-			std::vector<Vec3> tangent, lift, across;
-			std::vector<float> sideRoom;  // per path sample, the share of half a spacing the card offers towards -across and +across
 			std::vector<PointAttributes> attributes;
 			double lengthSum = 0.0;
 			for (uint32_t g : kept) {
@@ -3655,45 +3889,18 @@ namespace CardsToStrands
 				const auto& path = guides[g].path;
 				const auto n = static_cast<uint32_t>(path.size());
 				const float guideLength = path.back().s;
-
-				// A frame along the guide: tangent, lift (the card normal facing away from the
-				// head, square to the tangent) and across the card.
-				tangent.resize(n);
-				lift.resize(n);
-				across.resize(n);
+				const auto& frame = frames[g];
+				const auto& extent = extents[g];
 				attributes.resize(n);
-				for (uint32_t i = 0; i < n; ++i) {
-					const Vec3 d = path[std::min(i + 1, n - 1)].position - path[i > 0 ? i - 1 : 0].position;
-					tangent[i] = d.LengthSquared() > 1e-12f ? d.Normalized() : (i > 0 ? tangent[i - 1] : kUnitZ);
-					Vec3 up = LiftNormal(path[i].tri, path[i].position);
-					up -= tangent[i] * up.Dot(tangent[i]);
-					lift[i] = up.LengthSquared() > 1e-6f ? up.Normalized() : (i > 0 ? lift[i - 1] : (path[i].position - headCentre).Normalized());
-					across[i] = tangent[i].Cross(lift[i]);
+				for (uint32_t i = 0; i < n; ++i)
 					attributes[i] = Attributes(path[i].tri, path[i].position);
-				}
-				// How much of its half spacing the card offers on each side of the guide: a clump is
-				// as wide as the hair it stands for, never wider than the card it came from (a lock
-				// narrower than the clump size, a braid's tuft, a ponytail's tail).
-				const float halfSpacing = 0.5f * spacing;
-				sideRoom.assign(static_cast<size_t>(n) * 2, 1.0f);
-				if (!area) {
-					for (uint32_t i = 0; i < n; ++i) {
-						const auto& tri = tris[path[i].tri];
-						if (!tri.valid || std::abs((path[i].position - Position(tri.v[0])).Dot(tri.normal)) > kOnCard)
-							continue;  // off the cards (joined to the scalp, or carried over from hair it continues)
-						sideRoom[i * 2] = CardExtent(path[i].tri, path[i].position, -across[i], halfSpacing) / halfSpacing;
-						sideRoom[i * 2 + 1] = CardExtent(path[i].tri, path[i].position, across[i], halfSpacing) / halfSpacing;
-					}
-					// Smoothed along the guide, so a clump follows the card's outline without kinks.
-					auto smoothed = sideRoom;
-					for (uint32_t i = 0; i < n; ++i)
-						for (uint32_t side = 0; side < 2; ++side)
-							smoothed[i * 2 + side] = (sideRoom[(i > 0 ? i - 1 : i) * 2 + side] + 2.0f * sideRoom[i * 2 + side] + sideRoom[std::min(i + 1, n - 1) * 2 + side]) * 0.25f;
-					sideRoom = std::move(smoothed);
-				}
-				const auto roomAt = [&](uint32_t a_i, float a_f, float a_across) {
-					const uint32_t side = a_across < 0.0f ? 0u : 1u;
-					return std::lerp(sideRoom[a_i * 2 + side], sideRoom[std::min(a_i + 1, n - 1) * 2 + side], a_f);
+				// Where a strand lies across its clump, a_u from 0 (its -across edge) to 1: at the
+				// same share of the clump's width all along it, so strands keep their order root to tip.
+				const auto acrossAt = [&](uint32_t a_i, float a_f, float a_u) {
+					const uint32_t k = std::min(a_i + 1, n - 1);
+					const float left = std::lerp(extent[a_i * 2], extent[k * 2], a_f);
+					const float right = std::lerp(extent[a_i * 2 + 1], extent[k * 2 + 1], a_f);
+					return std::lerp(-left, right, a_u);
 				};
 				const auto at = [&](float a_s, uint32_t& io_i) {
 					while (io_i + 2 < n && path[io_i + 1].s < a_s)
@@ -3711,8 +3918,8 @@ namespace CardsToStrands
 				const bool tied = guides[g].kind == GuideKind::Tied;
 				const float maxAlong = area || tied || guides[g].kind == GuideKind::Free ? 0.0f : std::min(scalpRun, kMaxRootAlong * guideLength);
 
-				// Roots spread over a guide's share of the card width, wider where several card
-				// guides share one scalp root.
+				// Roots spread over the clump's share of the card where it starts, wider where
+				// several card guides share one scalp root.
 				const float shared = static_cast<float>(sharing[guides[g].ancestor]);
 				const float rootSpread = area ? 0.0f : 0.5f * spacing * std::min(std::sqrt(shared), 4.0f);
 				const float clumpRandom = Hash01(keys[g] + settings.seed);
@@ -3726,7 +3933,7 @@ namespace CardsToStrands
 
 				for (uint32_t j = 0; j < counts[g]; ++j) {
 					// Stratified across the card, so strands keep their order from root to tip.
-					const float b = area ? 0.0f : (j + random()) / static_cast<float>(counts[g]) - 0.5f;
+					const float u = area ? 0.5f : (j + random()) / static_cast<float>(counts[g]);
 					const float a = area ? 0.0f : random() - 0.5f;
 					const float start = maxAlong > 0.0f && random() >= kScalpRootShare ? random() * maxAlong : 0.0f;
 
@@ -3738,21 +3945,31 @@ namespace CardsToStrands
 					const float baseRadius = radial.Length();
 					radial = baseRadius > 1e-6f ? radial / baseRadius : kUnitZ;
 					const float rootRadius = std::min(baseRadius, a_scalp.Radius(radial));
-					const Vec3 t0 = Vec3::Lerp(tangent[i], tangent[i + 1], f);
+					const Vec3 t0 = Vec3::Lerp(frame[i].tangent, frame[i + 1].tangent, f);
+					const Vec3 acrossHere = Vec3::Lerp(frame[i].across, frame[i + 1].across, f);
 					Vec3 scalpAlong = t0 - radial * t0.Dot(radial);
-					scalpAlong = scalpAlong.LengthSquared() > 1e-6f ? scalpAlong.Normalized() : across[i].Cross(radial).Normalized();
-					const Vec3 scalpAcross = radial.Cross(scalpAlong);
+					scalpAlong = scalpAlong.LengthSquared() > 1e-6f ? scalpAlong.Normalized() : acrossHere.Cross(radial).Normalized();
+					// The same way round as the clump's own across, so each strand roots on the side of
+					// the clump it runs on. radial x along is its opposite where the card lies on the
+					// scalp (lift ~ radial), and every strand crossed its clump within the root blend.
+					Vec3 scalpAcross = radial.Cross(scalpAlong);
+					if (scalpAcross.Dot(acrossHere) < 0.0f)
+						scalpAcross = -scalpAcross;
 					Vec3 strandRoot = a_scalp.centre + radial * rootRadius;
 					if (!tied && !area) {
 						// Along the guide the start already spreads the roots; at the guide's own
-						// root they spread both ways, and only over scalp under rooted hair, so
-						// none crosses a hairline.
-						const float spread = start > 0.0f ? 0.5f * spacing : rootSpread;
-						const float alongShare = start > 0.0f ? 0.0f : a;
+						// root they spread both ways. Within the clump's own share of the card they
+						// may go anywhere; wider (several card guides sharing one root), only over
+						// scalp under rooted hair, so none crosses a hairline.
+						const float own = acrossAt(i, f, u);
+						const float ownEdge = own < 0.0f ? -acrossAt(i, f, 0.0f) : acrossAt(i, f, 1.0f);
+						const float wide = start > 0.0f || ownEdge <= 1e-4f ? own : own * std::max(1.0f, rootSpread / ownEdge);
+						const float alongShare = start > 0.0f ? 0.0f : a * rootSpread;
 						for (float shrink = 1.0f; shrink > 0.1f; shrink *= 0.5f) {
-							Vec3 p = strandRoot + (scalpAcross * (2.0f * b) + scalpAlong * alongShare) * (spread * shrink);
+							const float sideways = std::abs(wide) * shrink > std::abs(own) ? wide * shrink : own;
+							Vec3 p = strandRoot + scalpAcross * sideways + scalpAlong * (alongShare * shrink);
 							p = a_scalp.centre + (p - a_scalp.centre).Normalized() * rootRadius;
-							if (shrink < 0.2f || start > 0.0f || onScalpUnderHair(p)) {
+							if (shrink < 0.2f || start > 0.0f || std::abs(sideways) <= std::abs(own) + 1e-4f || onScalpUnderHair(p)) {
 								strandRoot = p;
 								break;
 							}
@@ -3762,14 +3979,14 @@ namespace CardsToStrands
 					}
 
 					const float length = std::max(Limits::kMinStrandLength, (guideLength - start) * settings.lengthScale * (1.0f - settings.tipVariation * random()));
-					const float width = b * spacing;
 					const float layer = random() * settings.layerJitter;
 					const auto offsetAt = [&](uint32_t a_i, float a_f, float a_s, float a_t) {
-						const Vec3 t = Vec3::Lerp(tangent[a_i], tangent[a_i + 1], a_f).Normalized();
-						const Vec3 up = Vec3::Lerp(lift[a_i], lift[a_i + 1], a_f).Normalized();
-						const Vec3 side = Vec3::Lerp(across[a_i], across[a_i + 1], a_f).Normalized();
+						const uint32_t k = std::min(a_i + 1, n - 1);
+						const Vec3 t = Vec3::Lerp(frame[a_i].tangent, frame[k].tangent, a_f).Normalized();
+						const Vec3 up = Vec3::Lerp(frame[a_i].lift, frame[k].lift, a_f).Normalized();
+						const Vec3 side = Vec3::Lerp(frame[a_i].across, frame[k].across, a_f).Normalized();
 						const float depth = area ? layer : layer + settings.volume * Smoothstep(a_t);
-						Vec3 offset = side * (width * roomAt(a_i, a_f, width)) + up * depth;
+						Vec3 offset = side * (area ? 0.0f : acrossAt(a_i, a_f, u)) + up * depth;
 						if (settings.clumpTwist != 0.0f) {
 							const float angle = 2.0f * kPi * settings.clumpTwist * a_s;
 							offset = offset * std::cos(angle) + t.Cross(offset) * std::sin(angle);

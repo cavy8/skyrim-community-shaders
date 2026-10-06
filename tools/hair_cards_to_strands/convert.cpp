@@ -129,6 +129,8 @@ namespace
 			io_settings.clumpSize = number();
 		else if (a_key == "clumpTwist")
 			io_settings.clumpTwist = number();
+		else if (a_key == "fill")
+			io_settings.fill = number();
 		else if (a_key == "shortLength")
 			io_settings.shortLength = number();
 		else if (a_key == "coverageThreshold")

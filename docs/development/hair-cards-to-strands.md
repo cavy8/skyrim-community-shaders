@@ -65,7 +65,9 @@ milliseconds on a worker thread and give the same result every time.
 | `flow`                                   | a flow map (RG = tip-to-root in texture space), optional                   |
 
 `CardsToStrands::Settings`: `density` (strands per unit of card width), `clumpSize` (card width
-per guide, so per clump), `clumpStrength`, `clumpTwist`, `volume`, `layerJitter`, `segmentLength`,
+per guide traced, so the most a clump stands for where guides lie close), `clumpStrength`,
+`clumpTwist`, `fill` (how far clumps reach past their card's edge to the hair beside it, 0 to 1;
+see [Grow strands](#algorithm)), `volume`, `layerJitter`, `segmentLength`,
 `lengthScale`, `tipVariation`, `coverageThreshold`, `seeding` (Auto, Scalp, Area), `flowAxis`,
 `seed`, and what stays cards (see [Hair that is not loose](#hair-that-is-not-loose)):
 `keepWoven`, `excludeUV`, `chainUV` and `triangleRegions`, and what was chosen by hand about
@@ -146,25 +148,51 @@ read in, as Skyrim's Lighting vertex shader builds it; only the cards kept as ca
           above it.
     - What is left joins the scalp along a Hermite curve if it starts within 5 units of it
       (**bridged**) and is dropped otherwise: hair has to come from the head.
-6. **Grow strands** (`BuildStrands`). Each bound guide is one clump: `density × spacing`
-   strands, fewer (down to 35%) where its painted coverage is thin, 40,000 at most.
-    - Roots: half at the guide's scalp root, spread across (and along) it over half a spacing
-      (wider, up to 4×, when several guides share one root), and only over scalp that rooted
-      hair covers, so none crosses a hairline or parting. The other half spread along the
-      stretch the guide lies on the scalp, up to 0.6 of its length: hair combed back from the
-      hairline grows from under the hair before it, not all from the hairline.
+6. **Grow strands** (`BuildStrands`). Each bound guide is one clump: `density` strands per unit
+   of its width (below; the width 80% of the way up its widths along the card), never fewer than
+   `density × spacing`, fewer (down to 35%) where its painted coverage is thin, 40,000 at most.
+    - Width: a clump is as wide as its share of the card. At every other sample of the guide
+      lying on a card (those between interpolated), a straight walk over the surface each way
+      across it (`CardExtent`) stops where the card ends (an open edge, a fold, a triangle not
+      converted), where the paint does (from painted hair), or halfway to the next card guide on
+      the same sheet: the perpendicular bisector to that guide's nearest point, whichever comes
+      first, never under half a spacing (unless the card ends sooner) and at most twice the
+      spacing. Gathered and dropped guides count as neighbours (their cards stay cards), guides
+      sharing its scalp root do not (their paths are its own up to where they leave it). Samples
+      off the cards take the nearest one's widths, and the widths are smoothed along the guide.
+      Until `0-15-0` a clump was half a spacing each way at most, so a card held one clump size of
+      hair per guide however far apart its guides lay. Vanilla's big fans of cards from the
+      crown (remake female hair 01's lower layers, 6 to 7 units wide at the bottom) are strips of
+      big triangles; fill seeding needs one streamline through each, so they trace 2 to 4 guides
+      2 to 4 units apart, and the head showed between their clumps. A lock or a tail narrower
+      than `clumpSize` still grows no wider than its card.
+    - `fill`: where a walk ends at an open edge of the card or where its paint ends (not at a
+      fold, nor at cards kept as cards: no hair grows across a braid), the clump may reach on
+      straight, up to `fill` × 3 units past it, to halfway to growing hair on another sheet beside it: running alike
+      (cosine 0.7 or more) and beside it rather than a layer above or below (rising under half
+      the distance across). With none within reach the clump ends with its card, so a card's
+      outer edge grows no hair into the air. Cards side by side fill the gap between them from
+      both sides and meet in the middle.
+    - Roots: half at the guide's scalp root, spread across it over its share of the card there
+      (and along it; wider, up to 4×, when several guides share one root, but beyond the share
+      only over scalp that rooted hair covers, so none crosses a hairline or parting). The other
+      half spread along the stretch the guide lies on the scalp, up to 0.6 of its length: hair
+      combed back from the hairline grows from under the hair before it, not all from the
+      hairline.
     - Shape: the guide's path plus an offset in its frame (tangent, the card normal away from
-      the head, across). Across the card, strands are stratified over the spacing, so they keep
-      their order from root to tip. The lift is layer jitter plus `volume` towards the tip.
-      `clumpTwist` turns the offset round the tangent, and `clumpStrength` pulls it in towards
-      the tip. The difference between the scalp root and the guide's start is blended out over
-      the first 2 units (at most 30% of the strand).
-    - A clump is never wider than its card (`CardExtent`). At each sample of the guide lying
-      on a card, a straight walk over the surface each way across it finds where the card ends
-      (an open edge, a fold, a triangle not converted) or, from painted hair, where the paint
-      does, up to half a spacing; smoothed along the guide, that share of half a spacing scales
-      the strands' offset on that side. A lock or a tail narrower than `clumpSize` used to grow
-      a clump of the full width, its strands standing off the card's sides.
+      the head, across). Across the card each strand keeps its place in its clump's width (a
+      stratified share of it from one edge), so strands keep their order from root to tip as the
+      clump widens and narrows. Its root keeps that order too: the scalp's across direction is
+      taken the same way round as the clump's. Until `0-15-0` it was radial × along, the opposite
+      of tangent × lift where a card lies on the scalp, and every strand rooted on the mirrored
+      side of its clump and crossed it within the root blend: on vanilla remake 01 and 02 and
+      Apachii 01, 03 and 09, 98-100% of strands were in clumps whose order across was reversed a
+      quarter of the way along (rank correlation -0.92 to -1.00 with the root's; now +0.89 to
+      +0.96). That was the tangle at every clump's root, and why regrowing a clump round its
+      curve (which keeps each root's side) untangled it. The lift is layer jitter plus `volume`
+      towards the tip. `clumpTwist` turns the offset round the tangent, and `clumpStrength` pulls
+      it in towards the tip. The difference between the scalp root and the guide's start is
+      blended out over the first 2 units (at most 30% of the strand).
     - UVs follow the offset across the card (through ∂P/∂U and ∂P/∂V, at most 0.25), so a clump
       shows the card's painted strands; bones, weights and normals come from the triangle
       under the guide. Strands end up to `tipVariation` short of the guide's tip.
@@ -388,6 +416,26 @@ all but rest: braids rose up to 50 units above their styled place (above the hea
 segments by up to 88% on a snap turn, and were still swinging two seconds after a run stopped.
 
 ## Results
+
+Measured with `0-15-0` on seven real meshes (vanilla remake female 01, 02, 05, 19; Apachii 01, 03,
+09), against `0-14-0`. Head showing through: of the head's surface under the hair (a root within 2
+units on the scalp sphere, the face and neck left out), the share no strand covers seen
+orthographically from eight directions round the head and eight more from 30 degrees above, the
+strands drawn as 0.08-unit dots (the session's `showthrough.py`):
+
+| Hair | Strands (`0-14-0` → clump shares → `fill` 1) | Head showing through | Conversion |
+| --- | --- | --- | --- |
+| vanilla remake 01 | 2,700 → 3,185 → 3,588 | 9.1% → 4.7% → 2.7% | 39 → 46 → 89 ms |
+| vanilla remake 02 | 2,280 → 2,796 → 3,073 | 8.9% → 4.2% → 3.3% | 40 → 46 → 79 ms |
+| vanilla remake 19 | 5,100 → 5,677 → 6,833 | 19.9% → 17.5% → 14.8% | 66 → 77 → 114 ms |
+| Apachii 01 | 4,860 → 4,969 → 5,660 | 4.5% → 4.4% → 1.2% | 124 → 132 → 211 ms |
+| Apachii 09 | 7,777 → 8,232 → 9,163 | 1.3% → 0.4% → 0.3% | 513 → 548 → 944 ms |
+
+Vanilla remake 05 and Apachii 03 keep most of their caps as cards, so strands cover little of the
+head there either way (their counts rise 30% and 2%). `check.py` passes as before: on its
+synthetic styles, whose cards are narrow and their guides close, strand counts are the same but for
+the untextured layered style (+2%) and the coily preset (+1%), coverage within 0.007 and the 95th
+percentile distance from a card within 0.02.
 
 Measured with `0-11-3` on the real meshes below (the harness that rendered them, in the
 session's scratchpad): of the tied strands' points, those more than 0.5 units from any painted

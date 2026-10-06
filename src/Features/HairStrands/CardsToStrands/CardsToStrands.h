@@ -243,6 +243,7 @@ namespace CardsToStrands
 		float clumpStrength = 0.25f;     // pull of each clump's strands towards its card guide, towards the tip
 		float clumpSize = 1.5f;          // card width each card guide (one clump) stands for
 		float clumpTwist = 0.0f;         // turns per unit round the card guide (locs, twists)
+		float fill = 0.0f;               // 0 to 1: clumps reach past their card's edge (up to 3 units at 1) to meet hair running alike beside it
 		float shortLength = 1.2f;        // strand length with Area seeding
 		float coverageThreshold = 0.3f;  // texture alpha below this has no hair (0: ignore the texture)
 		float tipVariation = 0.15f;      // strands end up to this fraction short of their card guide's tip
