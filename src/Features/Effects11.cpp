@@ -296,6 +296,7 @@ Effects11::PerFrame Effects11::GetCommonBufferData()
 	data.LightSpriteIntensity = settingManager.GetInterpolatedTimeOfDayValue("Intensity", "LIGHTSPRITE");
 	data.LightSpriteCurve = settingManager.GetInterpolatedTimeOfDayValue("Curve", "LIGHTSPRITE");
 
+	data.EnableParticle = enableEffect && !settings.IgnorePresetParticles;
 	data.ParticleIntensity = settingManager.GetInterpolatedTimeOfDayValue("Intensity", "PARTICLE");
 	data.ParticleLightingInfluence = settingManager.GetInterpolatedTimeOfDayValue("LightingInfluence", "PARTICLE");
 	data.ParticleAmbientInfluence = settingManager.GetInterpolatedTimeOfDayValue("AmbientInfluence", "PARTICLE");
@@ -342,9 +343,28 @@ Effects11::PerFrame Effects11::GetCommonBufferData()
 	return data;
 }
 
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	Effects11::Settings,
+	IgnorePresetParticles)
+
 void Effects11::DrawSettings()
 {
 	Effects11Editor::GetSingleton().DrawLauncher();
+}
+
+void Effects11::LoadSettings(json& o_json)
+{
+	settings = o_json;
+}
+
+void Effects11::SaveSettings(json& o_json)
+{
+	o_json = settings;
+}
+
+void Effects11::RestoreDefaultSettings()
+{
+	settings = {};
 }
 
 void Effects11::ToggleEnabled()
@@ -605,7 +625,7 @@ void Effects11::OverrideWeather(RE::Sky* a_sky)
 
 	{
 		auto fogAmountMultiplier = settingManager.GetInterpolatedTimeOfDayValue("FogAmountMultiplier", "ENVIRONMENT");
-		fogAmountMultiplier = std::max(fogAmountMultiplier, FLT_MIN);
+		fogAmountMultiplier = std::max(fogAmountMultiplier, 1e-4f);
 
 		a_sky->fogNear /= fogAmountMultiplier;
 		a_sky->fogFar /= fogAmountMultiplier;
@@ -752,21 +772,12 @@ void Effects11::OverridePointLightColor(float3& a_color)
 void Effects11::OverrideAmbientLighting(DirectionalAmbientColors& DirectionalAmbientColors)
 {
 	auto& settingManager = SettingManager::GetSingleton();
+	const float desaturation = settingManager.GetInterpolatedTimeOfDayValue("AmbientLightingDesaturation", "ENVIRONMENT");
+	const float intensity = settingManager.GetInterpolatedTimeOfDayValue("AmbientLightingIntensity", "ENVIRONMENT");
 
-	for (int i = 0; i < 3; i++) {
-		for (int j = 0; j < 2; j++) {
-			auto& ambientLightingColor = DirectionalAmbientColors.directionalAmbientColors[i][j];
-
-			float3 ambientLightingColorF3 = NiToF3(ambientLightingColor);
-
-			int currentSide = i * 2 + j;
-			if (currentSide == 3)
-				ambientLightingColorF3 = Desaturation(ambientLightingColorF3, settingManager.GetInterpolatedTimeOfDayValue("AmbientLightingDesaturation", "ENVIRONMENT"));
-
-			ambientLightingColorF3 = Intensity(ambientLightingColorF3, settingManager.GetInterpolatedTimeOfDayValue("AmbientLightingIntensity", "ENVIRONMENT"));
-
-			ambientLightingColor = F3ToNi(ambientLightingColorF3);
-		}
+	for (auto& axis : DirectionalAmbientColors.directionalAmbientColors) {
+		for (auto& ambientLightingColor : axis)
+			ambientLightingColor = F3ToNi(Intensity(Desaturation(NiToF3(ambientLightingColor), desaturation), intensity));
 	}
 }
 
@@ -801,7 +812,8 @@ bool Effects11::RenderTonemap(RE::RENDER_TARGET a_input, RE::RENDER_TARGET a_out
 	auto& renderTargets = globals::game::renderer->GetRuntimeData().renderTargets;
 	// Only report replacement after the effect chain actually wrote the output.
 	if (effectManager.ExecuteEffects(renderTargets[a_input], renderTargets[a_output])) {
-		tonemapReplacedFrame = globals::state->frameCount;
+		// State::Reset bumps frameCount at the start of Present, before HDR Display composites this output
+		tonemapReplacedFrame = globals::state->frameCount + 1;
 		return true;
 	}
 	return false;
@@ -866,11 +878,14 @@ void Effects11::ParticleShaderHacks()
 		blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
 		blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
 		blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-		globals::d3d::device->CreateBlendState(&blendDesc, alphaBlendState.put());
+		if (FAILED(globals::d3d::device->CreateBlendState(&blendDesc, alphaBlendState.put())))
+			return;
+		Util::SetResourceName(alphaBlendState.get(), "Effects11::RainAlphaBlendState");
 	}
 
 	float blendFactor[4] = { 0, 0, 0, 0 };
 	context->OMSetBlendState(alphaBlendState.get(), blendFactor, 0xFFFFFFFF);
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
 }
 
 void Effects11::DrawVolumetricRays()

@@ -8,15 +8,23 @@ class LODShadowMap
 {
 public:
 	static constexpr uint32_t kCascadeCount = 3;
+	static constexpr uint32_t kCaptureCount = 2;
+
+	struct ReceiverCapture
+	{
+		float4 axisX{};
+		float4 axisY{};
+		float4 axisZ{};
+		float4 cascades[kCascadeCount]{};
+	};
+	static_assert(sizeof(ReceiverCapture) % 16 == 0);
 
 	struct ReceiverData
 	{
 		float strength = 0.0f;
 		float resolution = 1.0f;
-		float4 axisX{};
-		float4 axisY{};
-		float4 axisZ{};
-		float4 cascades[kCascadeCount]{};
+		float blend = 1.0f;
+		ReceiverCapture captures[kCaptureCount]{};
 		float4 depthBias{};
 	};
 
@@ -73,8 +81,9 @@ private:
 	void StartCapture(const RE::NiPoint3& a_origin);
 	void Publish();
 	bool UpdateCaptureRows();
-	void BuildReceiverData(float a_strength);
+	void BuildReceiverData(float a_strength, float a_blend);
 	[[nodiscard]] LightSpace MakeLightSpace(const RE::NiPoint3& a_direction, const RE::NiPoint3& a_origin) const;
+	[[nodiscard]] static ReceiverCapture MakeReceiverCapture(const LightSpace& a_space);
 
 	std::unique_ptr<Texture2D> targets[2];
 	uint32_t activeTarget = 0;
@@ -93,6 +102,8 @@ private:
 	bool faceActive = false;
 	bool captureRowsValid = false;
 	bool publishedValid = false;
+	bool previousValid = false;
+	float blendDuration = 1.0f;
 	uint32_t faceMask = 0;
 	uint32_t capturedFaces = 0;
 	uint32_t capturedDraws = 0;
@@ -112,6 +123,7 @@ private:
 	RE::TESWorldSpace* publishedWorldSpace = nullptr;
 	LightSpace building;
 	LightSpace published;
+	LightSpace previous;
 	Matrix lastViewProj;
 	float4 lastPosAdjust;
 	ReceiverData receiver;

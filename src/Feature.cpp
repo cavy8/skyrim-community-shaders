@@ -12,6 +12,7 @@
 #include "Features/ExtendedTranslucency.h"
 #include "Features/FoliageLighting.h"
 #include "Features/FootstepParticles.h"
+#include "Features/FurShells.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/GrassOptimizations.h"
@@ -23,6 +24,7 @@
 #include "Features/InteriorSun.h"
 #include "Features/InverseSquareLighting.h"
 #include "Features/LODBlending.h"
+#include "Features/LandscapeSeams.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
 #include "Features/PerformanceOverlay.h"
@@ -239,7 +241,9 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::snowCover,
 		&globals::features::footstepParticles,
 		&globals::features::neuralRendering,
-		&globals::features::hairBacklighting
+		&globals::features::hairBacklighting,
+		&globals::features::furShells,
+		&globals::features::landscapeSeams
 	};
 
 	return features;

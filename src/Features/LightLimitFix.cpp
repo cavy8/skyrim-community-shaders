@@ -132,7 +132,7 @@ void LightLimitFix::DrawSettings()
 
 	ImGui::Checkbox(T(TKEY("log_shadow_diagnostics"), "Log Shadow Diagnostics"), &settings.LogShadowDiagnostics);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("log_shadow_diagnostics_tooltip"), "Logs local light shadow events and the lights and plugins involved to CommunityShaders.log.\nPress F11 right after a flash to write a full report."));
+		ImGui::Text("%s", T(TKEY("log_shadow_diagnostics_tooltip"), "Logs local light shadow events and the lights and plugins involved to BottledShaders.log.\nPress F11 right after a flash to write a full report."));
 	}
 	if (settings.LogShadowDiagnostics) {
 		ImGui::SameLine();
@@ -179,7 +179,7 @@ void LightLimitFix::DrawOverlay()
 	if (settings.EnableLightsVisualisation)
 		Util::Text::Error("%s", T(TKEY("debug_feature_enabled"), "DEBUG FEATURE - LIGHT LIMIT VISUALISATION ENABLED"));
 	if (reportNotice)
-		ImGui::Text("%s", T(TKEY("shadow_report_written"), "Shadow report written to CommunityShaders.log"));
+		ImGui::Text("%s", T(TKEY("shadow_report_written"), "Shadow report written to BottledShaders.log"));
 	ImGui::End();
 }
 
@@ -1066,13 +1066,14 @@ void LightLimitFix::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lights
 
 		LightData light{};
 		constexpr float invPI = 1.f / std::numbers::pi_v<float>;
-		light.color.x = pl.color.red * invPI;
-		light.color.y = pl.color.green * invPI;
-		light.color.z = pl.color.blue * invPI;
-		light.color *= pl.color.alpha;
+		light.color.x = pl.color.red;
+		light.color.y = pl.color.green;
+		light.color.z = pl.color.blue;
 
 		if (effects11.enableEffect)
 			effects11.OverridePointLightColor(light.color);
+
+		light.color *= invPI * pl.color.alpha;
 
 		light.radius = pl.radius * 0.5f;
 

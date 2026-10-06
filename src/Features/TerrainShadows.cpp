@@ -401,11 +401,9 @@ TerrainShadows::PerFrame TerrainShadows::GetCommonBufferData()
 	const auto& lodShadow = lodShadowMap.GetReceiverData();
 	data.LODShadowStrength = lodShadow.strength;
 	data.LODShadowResolution = lodShadow.resolution;
-	data.LODShadowAxisX = lodShadow.axisX;
-	data.LODShadowAxisY = lodShadow.axisY;
-	data.LODShadowAxisZ = lodShadow.axisZ;
-	for (uint32_t cascade = 0; cascade < LODShadowMap::kCascadeCount; ++cascade)
-		data.LODShadowCascades[cascade] = lodShadow.cascades[cascade];
+	data.LODShadowBlend = lodShadow.blend;
+	for (uint32_t capture = 0; capture < LODShadowMap::kCaptureCount; ++capture)
+		data.LODShadowCaptures[capture] = lodShadow.captures[capture];
 	data.LODShadowDepthBias = lodShadow.depthBias;
 
 	return data;
@@ -536,6 +534,7 @@ bool TerrainShadows::UpdateShadow(bool a_refreshImmediately)
 	// don't forget to change NTHREADS in shader!
 	constexpr uint updateLength = 128u;
 	constexpr uint logUpdateLength = std::bit_width(128u) - 1;  // integer log2, https://stackoverflow.com/questions/994593/how-to-do-an-integer-log2-in-c
+	constexpr uint updatesPerFrame = 4u;
 
 	auto context = globals::d3d::context;
 
@@ -635,12 +634,14 @@ bool TerrainShadows::UpdateShadow(bool a_refreshImmediately)
 	context->CSSetConstantBuffers(0, 1, &newer.buffer);
 	context->CSSetShader(shadowUpdateProgram.get(), nullptr, 0);
 	globals::profiler->BeginPass("TerrainShadows::ShadowUpdate");
-	const uint updateCount = a_refreshImmediately ? maxUpdates : 1u;
+	const uint updateCount = a_refreshImmediately ? maxUpdates : updatesPerFrame;
 	for (uint update = 0; update < updateCount; ++update) {
 		shadowUpdateCBData.StartPxCoord = edgePxCoord + signDir * shadowUpdateIdx * updateLength;
 		shadowUpdateCB->Update(shadowUpdateCBData);
 		context->Dispatch(abs(shadowUpdateCBData.LightPxDir.x) >= abs(shadowUpdateCBData.LightPxDir.y) ? height : width, 1, 1);
 		shadowUpdateIdx = (shadowUpdateIdx + 1) % maxUpdates;
+		if (shadowUpdateIdx == 0)
+			break;
 	}
 	globals::profiler->EndPass();
 

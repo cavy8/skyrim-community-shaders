@@ -829,6 +829,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float skylightingDiffuse = Skylighting::GetSkylightingDiffuse(skylightingSH, positionMSSkylight, normal, grassAO);
 #			endif  // SKYLIGHTING
 
+	float3 albedo = baseColor.xyz * vertexColor;
+
 #			if defined(SNOW_COVER)
 	if (SharedData::snowCoverSettings.EnableSnowCover) {
 #				if defined(SKYLIGHTING)
@@ -851,11 +853,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		}
 		snowOcclusion *= saturate(input.WorldPosition.z - SharedData::GetWaterData(input.WorldPosition.xyz).w);
 		// Grass blades are vertical, so remap the normal instead of feeding its raw z to the angle mask.
-		SnowCover::ApplySnowFoliage(baseColor.xyz, float3(input.TexCoord.xy, normal.z * 0.5 + 0.5), input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, snowOcclusion, length(viewPosition.xyz), 1.0);
+		SnowCover::ApplySnowFoliage(albedo, float3(input.TexCoord.xy, normal.z * 0.5 + 0.5), input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, snowOcclusion, length(viewPosition.xyz), 1.0);
 	}
 #			endif
 
-	float3 albedo = baseColor.xyz * vertexColor;
 	float3 transmissionTint = GrassLighting::GetTransmissionTint(albedo, SharedData::grassLightingSettings.TransmissionSaturation);
 
 	float dirVdotL = dot(viewDirection, SharedData::DirLightDirection.xyz);

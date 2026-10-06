@@ -172,7 +172,7 @@ Use a JSON validator to ensure your override files have valid syntax:
 
 Bottled Shaders logs override discovery and application:
 
--   Check `CommunityShaders.log` for override-related messages
+-   Check `BottledShaders.log` for override-related messages
 -   Look for "Discovered X override files" and "Applied X override(s)" messages
 
 ## Examples

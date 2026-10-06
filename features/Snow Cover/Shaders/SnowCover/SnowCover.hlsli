@@ -78,7 +78,7 @@ namespace SnowCover
 		float gmult = saturate(env_mult - SharedData::snowCoverSettings.FoliageHeightOffset / 5000);
 		float3 hsv = Color::RGBtoHSV(color);
 		if (hsv.x > 0.55)
-			hsv.x = frac(lerp(hsv.x, 1.1, gmult) * 2);
+			hsv.x = frac(lerp(hsv.x, 1.1, gmult));
 		else
 			hsv.x = lerp(hsv.x, 0.1, gmult);
 		hsv.y *= lerp(1, 0.25, 4.0 * gmult * (1.0 - gmult));

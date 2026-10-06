@@ -27,6 +27,44 @@ public:
 	winrt::com_ptr<ID3D12Resource> resource;
 };
 
+/** @brief D3D12 fence shared into D3D11; value is the last value handed out by Next(). */
+struct SharedFence
+{
+	static constexpr DWORD kRemovalPollMs = 100;
+	/** @brief CPU bound for one fence value; a wedged GPU must not hang the render thread. */
+	static constexpr DWORD kFenceTimeoutMs = 5000;
+	winrt::com_ptr<ID3D12Fence> fence12;
+	winrt::com_ptr<ID3D11Fence> fence11;
+	uint64_t value = 0;
+
+	/** @brief Returns the next value to signal, advancing the monotonic counter. */
+	uint64_t Next() { return ++value; }
+	/** @brief Releases both fence interfaces and returns the counter to zero. */
+	void Reset()
+	{
+		fence12 = nullptr;
+		fence11 = nullptr;
+		value = 0;
+	}
+	/** @brief Outcome of a bounded CPU wait, so a caller can tell a slow GPU from a broken wait. */
+	enum class WaitOutcome : uint8_t
+	{
+		kComplete,  ///< The fence reached the value.
+		kTimeout,   ///< The fence did not reach the value within the bound.
+		kFailed     ///< The wait itself failed: no event, no completion registration, or WAIT_FAILED.
+	};
+
+	/** @brief Creates and names the fence; throws on failure without leaking the NT handle. */
+	void Create(ID3D12Device* a_device12, ID3D11Device5* a_device11, const char* a_name);
+	/** @brief Waits on the CPU up to a_timeoutMs, polling device removal via fence12's own device.
+	 *  Trivially kComplete when the fence is unset or a_value is 0 (nothing to wait for).
+	 *  @param a_error Receives the error behind a kFailed outcome: the Win32 error from the wait,
+	 *         or the HRESULT a failed completion registration returned; may be null. */
+	WaitOutcome CpuWaitOutcome(uint64_t a_value, DWORD a_timeoutMs, DWORD* a_error = nullptr) const;
+	/** @brief True only when the fence reached a_value inside the bound. */
+	bool CpuWait(uint64_t a_value, DWORD a_timeoutMs) const { return CpuWaitOutcome(a_value, a_timeoutMs) == WaitOutcome::kComplete; }
+};
+
 struct DXGISwapChainProxy : IDXGISwapChain
 {
 public:
@@ -49,16 +87,16 @@ public:
 	virtual HRESULT STDMETHODCALLTYPE GetDevice(_In_ REFIID riid, _COM_Outptr_ void** ppDevice) override;
 
 	/****IDXGISwapChain****/
-	virtual HRESULT STDMETHODCALLTYPE Present(UINT SyncInterval, UINT Flags);
-	virtual HRESULT STDMETHODCALLTYPE GetBuffer(UINT Buffer, _In_ REFIID riid, _COM_Outptr_ void** ppSurface);
-	virtual HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL Fullscreen, _In_opt_ IDXGIOutput* pTarget);
-	virtual HRESULT STDMETHODCALLTYPE GetFullscreenState(_Out_opt_ BOOL* pFullscreen, _COM_Outptr_opt_result_maybenull_ IDXGIOutput** ppTarget);
-	virtual HRESULT STDMETHODCALLTYPE GetDesc(_Out_ DXGI_SWAP_CHAIN_DESC* pDesc);
-	virtual HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
-	virtual HRESULT STDMETHODCALLTYPE ResizeTarget(_In_ const DXGI_MODE_DESC* pNewTargetParameters);
-	virtual HRESULT STDMETHODCALLTYPE GetContainingOutput(_COM_Outptr_ IDXGIOutput** ppOutput);
-	virtual HRESULT STDMETHODCALLTYPE GetFrameStatistics(_Out_ DXGI_FRAME_STATISTICS* pStats);
-	virtual HRESULT STDMETHODCALLTYPE GetLastPresentCount(_Out_ UINT* pLastPresentCount);
+	virtual HRESULT STDMETHODCALLTYPE Present(UINT SyncInterval, UINT Flags) override;
+	virtual HRESULT STDMETHODCALLTYPE GetBuffer(UINT Buffer, _In_ REFIID riid, _COM_Outptr_ void** ppSurface) override;
+	virtual HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL Fullscreen, _In_opt_ IDXGIOutput* pTarget) override;
+	virtual HRESULT STDMETHODCALLTYPE GetFullscreenState(_Out_opt_ BOOL* pFullscreen, _COM_Outptr_opt_result_maybenull_ IDXGIOutput** ppTarget) override;
+	virtual HRESULT STDMETHODCALLTYPE GetDesc(_Out_ DXGI_SWAP_CHAIN_DESC* pDesc) override;
+	virtual HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) override;
+	virtual HRESULT STDMETHODCALLTYPE ResizeTarget(_In_ const DXGI_MODE_DESC* pNewTargetParameters) override;
+	virtual HRESULT STDMETHODCALLTYPE GetContainingOutput(_COM_Outptr_ IDXGIOutput** ppOutput) override;
+	virtual HRESULT STDMETHODCALLTYPE GetFrameStatistics(_Out_ DXGI_FRAME_STATISTICS* pStats) override;
+	virtual HRESULT STDMETHODCALLTYPE GetLastPresentCount(_Out_ UINT* pLastPresentCount) override;
 };
 
 class DX12SwapChain
@@ -66,8 +104,13 @@ class DX12SwapChain
 public:
 	winrt::com_ptr<ID3D12Device> d3d12Device;
 	winrt::com_ptr<ID3D12CommandQueue> commandQueue;
-	winrt::com_ptr<ID3D12CommandAllocator> commandAllocators[2];
-	winrt::com_ptr<ID3D12GraphicsCommandList4> commandLists[2];
+
+	// 4x DLSS-G generates 3 interpolated frames per real frame; the SL pacer needs those
+	// plus 2 slots of its own slack to avoid oversubscribing the flip-model chain.
+	static constexpr UINT kMaxBackBuffers = 5;
+
+	winrt::com_ptr<ID3D12CommandAllocator> commandAllocators[kMaxBackBuffers];
+	winrt::com_ptr<ID3D12GraphicsCommandList4> commandLists[kMaxBackBuffers];
 
 	IDXGISwapChain4* swapChain;
 
@@ -75,6 +118,7 @@ public:
 
 	WrappedResource* swapChainBufferWrapped;
 	WrappedResource* uiBufferWrapped;
+	WrappedResource* hudLessBufferWrapped = nullptr;
 
 	// D3D12 interop resources for frame generation
 	WrappedResource* depthBufferShared12 = nullptr;
@@ -83,15 +127,13 @@ public:
 	winrt::com_ptr<ID3D11Device5> d3d11Device;
 	winrt::com_ptr<ID3D11DeviceContext4> d3d11Context;
 
-	winrt::com_ptr<ID3D11Fence> d3d11Fence;
-	winrt::com_ptr<ID3D12Fence> d3d12Fence;
+	SharedFence interopFence;
 
-	winrt::com_ptr<ID3D12Resource> swapChainBuffers[2];
+	winrt::com_ptr<ID3D12Resource> swapChainBuffers[kMaxBackBuffers];
 
 	UINT frameIndex = 0;
-	UINT64 fenceValue = 0;
 
-	UINT64 frameFenceValues[2] = {0, 0};
+	UINT64 frameFenceValues[kMaxBackBuffers] = {};
 
 	LARGE_INTEGER qpf;
 
@@ -99,20 +141,31 @@ public:
 
 	DXGISwapChainProxy* swapChainProxy = nullptr;
 
+	bool useDLSSG = false;
+	bool tearingSupported = false;
+	bool hudLessCaptured = false;
+
+	// Actual buffer count the live swap chain was created/resized with (<= kMaxBackBuffers).
+	UINT backBufferCount = 2;
+
 	// Returns the current frame time (in seconds) for accurate FPS calculation when frame generation is active
 	float GetFrameTime() const;
 
 	void CreateD3D12Device(IDXGIAdapter* a_adapter);
 	void CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc);
+	void CreateSwapChainDirect(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc);
 
 	void CreateInterop();
+	/** @brief (Re)creates the D3D11/D3D12-shared swap-chain and UI buffer textures at (re)size time. */
 	void RecreateWrappedResources(const DXGI_SWAP_CHAIN_DESC1& desc);
 
 	DXGISwapChainProxy* GetSwapChainProxy();
 	void SetD3D11Device(ID3D11Device* a_d3d11Device);
 	void SetD3D11DeviceContext(ID3D11DeviceContext* a_d3d11Context);
 
+	/** @brief IDXGISwapChain::GetBuffer equivalent for the wrapped D3D11 swap-chain buffer. Only buffer index 0 is supported. */
 	HRESULT GetBuffer(UINT buffer, REFIID riid, void** ppSurface);
+	/** @brief IDXGISwapChain::ResizeBuffers equivalent; rejects any bufferCount differing from the chain's own backBufferCount. */
 	HRESULT ResizeBuffers(UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags);
 	HRESULT Present(UINT SyncInterval, UINT Flags);
 	HRESULT GetDevice(_In_ REFIID riid, _COM_Outptr_ void** ppDevice);

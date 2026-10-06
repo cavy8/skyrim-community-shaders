@@ -5,6 +5,7 @@
 #include "HDRDisplay.h"
 #include "Hooks.h"
 #include "NeuralRendering.h"
+#include "Menu.h"
 #include "PostProcessing.h"
 #include "State.h"
 #include "Upscaling/DX12SwapChain.h"
@@ -16,6 +17,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <directx/d3dx12.h>
 #include <format>
@@ -31,6 +33,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	frameGenerationMode,
 	frameGenerationForceEnable,
 	frameGenerationAllowInMenus,
+	enableDLSSFrameGen,
+	dlssgFramesToGenerate,
+	dlssgDisableVSync,
+	dlssgWorldCameraConstants,
+	dlssgHudLessCapture,
 	streamlineLogLevel,
 	sharpnessFSR,
 	sharpnessEnabledDLSS,
@@ -136,6 +143,11 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 			shouldProxy = false;
 	}
 
+	if (shouldProxy && Streamline::IsSmoothMotionEnabledForProfile()) {
+		logger::warn("[Frame Generation] NVIDIA Smooth Motion is enabled; disabling this plugin's frame generation to avoid crashing alongside it");
+		shouldProxy = false;
+	}
+
 	upscaling.lowRefreshRate = refreshRate < 120;
 	upscaling.isWindowed = pSwapChainDesc->Windowed;
 
@@ -144,7 +156,31 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	if (shouldProxy) {
 		logger::info("[Frame Generation] Frame Generation enabled, using D3D12 proxy");
 
-		if (upscaling.HasFrameGenModule()) {
+		bool dlssgAvailable = false;
+		if (upscaling.streamlineDX12.initialized && adapterDesc.VendorId == Streamline::kNvidiaVendorId) {
+			auto& sc = upscaling.dx12SwapChain;
+			sc.CreateD3D12Device(pAdapter);
+
+			upscaling.streamlineDX12.SetD3DDevice12(sc.d3d12Device.get());
+			upscaling.streamlineDX12.CheckFeatures(pAdapter);
+			upscaling.streamlineDX12.PostDevice();
+
+			dlssgAvailable = upscaling.streamlineDX12.featureDLSSG && upscaling.settings.enableDLSSFrameGen;
+
+			if (dlssgAvailable && upscaling.streamlineDX12.slUpgradeInterface) {
+				upscaling.streamlineDX12.slUpgradeInterface((void**)&sc.d3d12Device);
+
+				sc.commandQueue = nullptr;
+				D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+				queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+				queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+				queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+				queueDesc.NodeMask = 0;
+				DX::ThrowIfFailed(sc.d3d12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(sc.commandQueue.put())));
+			}
+		}
+
+		if (dlssgAvailable || upscaling.HasFrameGenModule()) {
 			DX::ThrowIfFailed(D3D11CreateDevice(
 				pAdapter,
 				DriverType,
@@ -159,7 +195,16 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 
 			upscaling.SetProxyD3D11Device(*ppDevice);
 			upscaling.SetProxyD3D11DeviceContext(*ppImmediateContext);
-			upscaling.CreateProxySwapChain(pAdapter, *pSwapChainDesc);
+
+			if (dlssgAvailable) {
+				logger::info("[Frame Generation] DLSS-G available, creating direct swap chain");
+				upscaling.CreateProxySwapChainDirect(pAdapter, *pSwapChainDesc);
+				if (upscaling.streamlineDX12.slUpgradeInterface)
+					upscaling.streamlineDX12.slUpgradeInterface((void**)&upscaling.dx12SwapChain.swapChain);
+			} else {
+				upscaling.CreateProxySwapChain(pAdapter, *pSwapChainDesc);
+			}
+
 			upscaling.CreateProxyInterop();
 
 			*ppSwapChain = upscaling.GetProxySwapChain();
@@ -182,7 +227,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 
 			return S_OK;
 		} else {
-			logger::warn("[Frame Generation] FidelityFX DLLs are not loaded, skipping proxy");
+			logger::warn("[Frame Generation] No frame generation module available, skipping proxy");
 			upscaling.fidelityFXMissing = true;
 		}
 	}
@@ -342,82 +387,148 @@ void Upscaling::DrawSettings()
 		}
 	}
 
-	const bool frameGenerationDx12PathActive = IsFrameGenerationDx12PathActive();
-
 	if (ImGui::TreeNodeEx(T(TKEY("frame_generation"), "Frame Generation"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		ImGui::Text("%s", T(TKEY("frame_generation_desc"),
-							  "Frame Generation interpolates real frames with generated ones for a smoother experience"));
-		ImGui::Text("%s", T(TKEY("frame_generation_tech"),
-							  "Uses AMD FSR Frame Generation technology"));
-		if (HasFrameGenModule())
-			ImGui::Text("%s", T(TKEY("frame_generation_available"),
-								  "AMD FSR Frame Generation is available."));
-		ImGui::Text("%s", T(TKEY("frame_generation_proxy_note"),
-							  "Requires a D3D11 to D3D12 proxy which can create compatibility issues"));
-		ImGui::Text("%s", T(TKEY("frame_generation_restart_note"),
-							  "Toggling this setting requires a restart to work correctly"));
-
-		bool onlyRequiresRestart = true;
-
-		if (!isWindowed) {
-			Util::Text::Warning("Warning: Requires windowed mode");
-
-			onlyRequiresRestart = false;
-		}
-
-		if (lowRefreshRate && !settings.frameGenerationForceEnable) {
-			Util::Text::Warning("Warning: Requires a high refresh rate monitor or Force Enable Frame Generation");
-
-			onlyRequiresRestart = false;
-		}
-
-		if (fidelityFXMissing) {
-			Util::Text::Warning("Warning: FidelityFX DLLs are not loaded");
-
-			onlyRequiresRestart = false;
-		}
-
-		if (onlyRequiresRestart && settings.frameGenerationMode && !frameGenerationDx12PathActive)
-			Util::Text::Warning("Warning: Requires restart");
-
-		if (!settings.frameGenerationMode && frameGenerationDx12PathActive)
-			Util::Text::Warning("Warning: Requires restart");
+		ImGui::PushTextWrapPos(0.0f);
 
 		bool fgEnabled = settings.frameGenerationMode != 0;
 		if (ImGui::Checkbox(T(TKEY("frame_generation"), "Frame Generation"), &fgEnabled))
 			settings.frameGenerationMode = fgEnabled ? 1 : 0;
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("frame_generation_tooltip"),
+								  "Enable frame generation for smoother motion. Uses AMD FSR unless NVIDIA DLSS-G is selected and available.\n"
+								  "Requires windowed mode."));
 
-		if (!frameGenerationDx12PathActive)
-			ImGui::BeginDisabled();
+		ImGui::Indent();
+		{
+			auto disabled = Util::DisableGuard(!fgEnabled);
+			ImGui::Checkbox(T(TKEY("prefer_fsr_frame_gen"), "Use NVIDIA DLSS-G"), &settings.enableDLSSFrameGen);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("prefer_fsr_frame_gen_tooltip"),
+									  "Selects NVIDIA DLSS-G instead of AMD FSR on supported hardware.\n"
+									  "Leave off to use AMD FSR."));
 
-		bool flEnabled = settings.frameLimitMode != 0;
-		if (ImGui::Checkbox(T(TKEY("frame_limit_vrr"), "Frame Limit (Variable Refresh Rate)"), &flEnabled))
-			settings.frameLimitMode = flEnabled ? 1 : 0;
+			bool fgForce = settings.frameGenerationForceEnable != 0;
+			if (ImGui::Checkbox(T(TKEY("force_enable_frame_generation"), "Allow frame generation below 120 Hz"), &fgForce))
+				settings.frameGenerationForceEnable = fgForce ? 1 : 0;
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("force_enable_frame_generation_tooltip"),
+									  "Bypass the high-refresh-rate monitor check so Frame Generation can run on lower-Hz\n"
+									  "displays. Useful for laptops and older monitors at the cost of less headroom for the\n"
+									  "generated frames."));
+			ImGui::Text(T(TKEY("frame_limit_refresh_rate"), "Detected refresh rate: %.2f Hz"), refreshRate);
+			if (fgEnabled && lowRefreshRate && !settings.frameGenerationForceEnable)
+				Util::Text::WrappedWarning("%s", T(TKEY("fg_warn_refresh_rate"), "Enable the option above to use frame generation on displays below 120 Hz."));
+		}
+		ImGui::Unindent();
 
-		if (!frameGenerationDx12PathActive)
-			ImGui::EndDisabled();
+		const auto fgMethod = GetFrameGenMethod();
+		const bool methodPending = fgEnabled && fgMethod != FrameGenMethod::kNone &&
+		                           settings.enableDLSSFrameGen != (fgMethod == FrameGenMethod::kDLSSG) &&
+		                           (!settings.enableDLSSFrameGen || streamlineDX12.featureDLSSG);
+		if (fgEnabled != (fgMethod != FrameGenMethod::kNone) || methodPending)
+			Util::Text::WrappedWarning("%s", T(TKEY("fg_restart_required"), "Restart the game to apply the frame generation changes above."));
 
-		ImGui::TextWrapped("Allows frame generation to function on low refresh rate monitors. Detected: %.2f Hz", refreshRate);
-		bool fgForce = settings.frameGenerationForceEnable != 0;
-		if (ImGui::Checkbox(T(TKEY("force_enable_frame_generation"), "Force Enable Frame Generation"), &fgForce))
-			settings.frameGenerationForceEnable = fgForce ? 1 : 0;
+		ImGui::SeparatorText(T(TKEY("fg_current_session"), "Current session"));
+		if (!fgEnabled)
+			ImGui::TextDisabled("%s", T(TKEY("fg_disabled"), "Frame generation is off."));
+		else if (fgMethod == FrameGenMethod::kNone)
+			Util::Text::WrappedWarning("%s", T(TKEY("fg_not_loaded"), "Frame generation is not loaded. Check the setup above and restart."));
 
-		ImGui::Checkbox(T(TKEY("frame_generation_in_menus"), "Frame Generation in Menus"), &settings.frameGenerationAllowInMenus);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted(T(TKEY("frame_generation_in_menus_tooltip_1"), "Keeps frame generation active while game menus are open."));
-			ImGui::TextUnformatted(T(TKEY("frame_generation_in_menus_tooltip_2"), "May feel smoother, but increases menu input latency."));
+		if (fgEnabled && !isWindowed)
+			Util::Text::Warning("%s", T(TKEY("fg_warn_windowed"), "Warning: Requires windowed mode"));
+		if (fgEnabled && fidelityFXMissing)
+			Util::Text::Warning("%s", T(TKEY("fg_warn_fidelityfx_missing"), "Warning: FidelityFX DLLs are not loaded"));
+
+		if (fgMethod == FrameGenMethod::kDLSSG) {
+			ImGui::TextUnformatted(T(TKEY("frame_generation_dlssg_active"), "Method: NVIDIA DLSS-G"));
+			auto disabled = Util::DisableGuard(!fgEnabled);
+			int multiplier = static_cast<int>(settings.dlssgFramesToGenerate) + 1;
+			int maxMultiplier = static_cast<int>(streamlineDX12.dlssgMaxFramesToGenerate) + 1;
+			if (ImGui::SliderInt(T(TKEY("dlssg_frame_multiplier"), "DLSS-G Frame Multiplier"), &multiplier, 2, maxMultiplier, "%dx"))
+				settings.dlssgFramesToGenerate = static_cast<uint>(multiplier - 1);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("dlssg_frame_multiplier_tooltip"), "How many total frames are shown per rendered frame. Higher values generate more frames."));
+
+			ImGui::Checkbox(T(TKEY("dlssg_disable_vsync"), "Present Without V-Sync"), &settings.dlssgDisableVSync);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("dlssg_disable_vsync_tooltip"),
+									  "Ignores the game's V-Sync request while DLSS-G is active, so frames are not held to whole refresh steps.\n"
+									  "Recommended with G-SYNC or FreeSync. Turn off if you see tearing."));
+
+			ImGui::Checkbox(T(TKEY("dlssg_world_camera"), "Use World Camera For Motion"), &settings.dlssgWorldCameraConstants);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("dlssg_world_camera_tooltip"),
+									  "Describes camera motion to DLSS-G with the world camera instead of whichever camera drew last.\n"
+									  "Matters most in first person."));
+
+			{
+				auto hudDisabled = Util::DisableGuard(globals::features::hdrDisplay.loaded);
+				ImGui::Checkbox(T(TKEY("dlssg_hudless"), "Keep HUD Out Of Generated Frames"), &settings.dlssgHudLessCapture);
+			}
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("dlssg_hudless_tooltip"),
+									  "Gives DLSS-G a copy of the frame taken before the HUD is drawn, so the HUD is not warped with the scene.\n"
+									  "Experimental. Only applies with HDR Display off."));
+		} else if (fgMethod == FrameGenMethod::kFSR) {
+			ImGui::TextUnformatted(T(TKEY("frame_generation_fsr_active"), "Method: AMD FSR"));
+			if (fgEnabled && settings.enableDLSSFrameGen && !streamlineDX12.featureDLSSG)
+				Util::Text::WrappedWarning("%s", T(TKEY("fg_dlssg_unavailable"), "DLSS-G is unavailable this session; AMD FSR is in use."));
+			ImGui::Text("%s", T(TKEY("fsr_frame_gen_fixed_multiplier"), "AMD FSR Frame Generation: Fixed 2x"));
+
+			bool flEnabled = settings.frameLimitMode != 0;
+			if (ImGui::Checkbox(T(TKEY("frame_limit_vrr"), "Limit FPS to display refresh rate"), &flEnabled))
+				settings.frameLimitMode = flEnabled ? 1 : 0;
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextUnformatted(T(TKEY("fg_fsr_frame_limit_tooltip"),
+					"Caps FSR's total FPS to the display refresh rate.\n"
+					"When generation pauses, caps rendered FPS instead."));
 		}
 
+		ImGui::SeparatorText(T(TKEY("fg_shared_options"), "Options"));
+		{
+			auto disabled = Util::DisableGuard(!fgEnabled);
+			ImGui::Checkbox(T(TKEY("frame_generation_in_menus"), "Frame Generation in Menus"), &settings.frameGenerationAllowInMenus);
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::TextUnformatted(T(TKEY("frame_generation_in_menus_tooltip_1"), "Keeps frame generation active while game menus are open."));
+				ImGui::TextUnformatted(T(TKEY("frame_generation_in_menus_tooltip_2"), "May feel smoother, but increases menu input latency."));
+			}
+		}
+
+		if (fgMethod == FrameGenMethod::kDLSSG && ImGui::TreeNodeEx(T(TKEY("fg_statistics"), "Frame Generation Statistics"))) {
+			const auto stats = frameGenStats.Get();
+			ImGui::TextDisabled("%s", T(TKEY("fg_statistics_note"), "Sampled during gameplay while this menu is closed."));
+			ImGui::Text(T(TKEY("fg_statistics_frames"), "Rendered frames sampled: %llu"), stats.frames);
+			ImGui::Text(T(TKEY("fg_statistics_generated"), "Frames with a generated frame: %.1f%%"), stats.Share(stats.generated));
+			ImGui::Text(T(TKEY("fg_statistics_frame_time"), "Rendered frame time: %.2f ms average, %.2f ms deviation, %.2f ms longest"), stats.FrameTimeAverage(), stats.FrameTimeDeviation(), stats.frameTimeMax);
+			ImGui::Text(T(TKEY("fg_statistics_hitches"), "Hitches: %.1f%%"), stats.TimedShare(stats.hitches));
+			ImGui::Text(T(TKEY("fg_statistics_refresh_aligned"), "Frame times locked to refresh steps: %.1f%%"), stats.TimedShare(stats.refreshAligned));
+			ImGui::Text(T(TKEY("fg_statistics_present"), "Time blocked in Present: %.2f ms average, %.2f ms longest"), stats.PresentAverage(), stats.presentMax);
+			ImGui::Text(T(TKEY("fg_statistics_reflex"), "Reflex sleep: %.2f ms average, %.2f ms longest"), stats.ReflexSleepAverage(), stats.reflexSleepMax);
+			ImGui::Text(T(TKEY("fg_statistics_vsync"), "Presented with V-Sync: %.1f%%"), stats.Share(stats.vsyncFrames));
+			ImGui::Text(T(TKEY("fg_statistics_camera"), "Another camera published at Present: %.1f%%"), stats.Share(stats.foreignCamera));
+			ImGui::Text(T(TKEY("fg_statistics_world_camera"), "World camera used for motion: %.1f%%"), stats.Share(stats.worldCamera));
+			ImGui::Text(T(TKEY("fg_statistics_hudless"), "HUD-less frame provided: %.1f%%"), stats.Share(stats.hudLess));
+			if (ImGui::Button(T(TKEY("fg_statistics_reset"), "Reset Statistics")))
+				frameGenStats.Reset();
+			ImGui::SameLine();
+			if (ImGui::Button(T(TKEY("fg_statistics_log"), "Write To Log")))
+				LogFrameGenStats();
+			ImGui::TreePop();
+		}
+
+		ImGui::PopTextWrapPos();
 		ImGui::TreePop();
 	}
 
-	if (streamline.reflexSupportedOnCurrentAdapter && ImGui::TreeNodeEx(T(TKEY("nvidia_reflex"), "NVIDIA Reflex"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		const bool reflexBlockedByFrameGeneration = frameGenerationDx12PathActive;
-		const bool reflexAvailable = streamline.initialized && streamline.featureReflex;
-		const bool reflexControlsAvailable = reflexAvailable && !reflexBlockedByFrameGeneration;
-		const bool markerOptimizationAvailable = reflexControlsAvailable && streamline.featurePCL;
-		if (reflexBlockedByFrameGeneration) {
-			ImGui::TextDisabled("%s", T(TKEY("reflex_blocked_by_fg"), "Reflex is unavailable while the DX12 frame-generation swapchain is active."));
+	const bool reflexSupported = streamline.reflexSupportedOnCurrentAdapter || streamlineDX12.reflexSupportedOnCurrentAdapter;
+	if (reflexSupported && ImGui::TreeNodeEx(T(TKEY("nvidia_reflex"), "NVIDIA Reflex"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		const bool usingDX12Reflex = UsesDLSSGFrameGen();
+		const auto& activeReflex = usingDX12Reflex ? streamlineDX12 : streamline;
+		const bool reflexAvailable = activeReflex.initialized && activeReflex.featureReflex;
+		const bool reflexControlsAvailable = reflexAvailable;
+		const bool markerOptimizationAvailable = reflexAvailable && activeReflex.featurePCL;
+		if (usingDX12Reflex) {
+			ImGui::Text("%s", T(TKEY("reflex_via_dx12"), "Reflex is running via DX12 (DLSS Frame Generation active)."));
 		}
 
 		if (!reflexAvailable) {
@@ -502,7 +613,7 @@ void Upscaling::DrawSettings()
 
 		ImGui::Separator();
 		Util::DrawDllVersionTable("AMD FidelityFX DLLs (click to open folder)", FidelityFX::PluginDir, FidelityFX::dllVersions, "ffx_dll_versions");
-		Util::DrawDllVersionTable("NVIDIA Streamline DLLs (click to open folder)", Streamline::PluginDir, Streamline::dllVersions, "sl_dll_versions");
+		Util::DrawDllVersionTable("NVIDIA Streamline DLLs (click to open folder)", streamline.pluginDir.c_str(), Streamline::dllVersions, "sl_dll_versions");
 		ImGui::TreePop();
 	}
 }
@@ -1238,6 +1349,11 @@ void Upscaling::TimerSleepQPC(int64_t targetQPC)
 
 void Upscaling::FrameLimiter()
 {
+	// The SL pacer owns presentation when DLSS-G is active; host-side blocking here
+	// starves its flip queue and every interpolated frame gets dropped.
+	if (UsesDLSSGFrameGen())
+		return;
+
 	if (d3d12SwapChainActive) {
 		// Use frame latency waitable object if available for better frame pacing
 		HANDLE waitableObject = GetFrameLatencyWaitableObject();
@@ -1248,8 +1364,11 @@ void Upscaling::FrameLimiter()
 
 		if (settings.frameLimitMode) {
 			static constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
-			static constexpr double kFrameGenerationRateScale = 0.5;
-			const double frameRateScale = ShouldUseFrameGenerationThisFrame() ? kFrameGenerationRateScale : 1.0;
+			// The real-frame target must scale with the active multiplier or every
+			// configuration paces identically to 2x.
+			const double frameRateScale = ShouldUseFrameGenerationThisFrame() ?
+			                                  1.0 / static_cast<double>(GetFrameGenerationMultiplier()) :
+			                                  1.0;
 			int64_t targetFrameTimeNS = int64_t(static_cast<double>(kNanosecondsPerSecond) / (refreshRate * frameRateScale));
 			int64_t targetFrameTicks = (targetFrameTimeNS * qpf.QuadPart) / kNanosecondsPerSecond;
 
@@ -1332,7 +1451,11 @@ bool Upscaling::IsFrameGenerationDx12PathActive() const
 
 bool Upscaling::IsFrameGenerationActive() const
 {
-	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode && fidelityFX.isFrameGenActive;
+	if (!IsFrameGenerationDx12PathActive() || !settings.frameGenerationMode)
+		return false;
+	if (dx12SwapChain.useDLSSG)
+		return streamlineDX12.featureDLSSG && streamlineDX12.lastDLSSGStatus == sl::DLSSGStatus::eOk;
+	return fidelityFX.isFrameGenActive;
 }
 
 bool Upscaling::ShouldPrepareFrameGeneration() const
@@ -1362,34 +1485,20 @@ bool Upscaling::IsUpscalingActive() const
 	return resolutionScale.x < .99f;
 }
 
-/**
- * @brief Retrieves the current frame time for frame generation.
- *
- * Returns the frame time from the D3D12 swap chain if frame generation is active; otherwise, returns 0.
- *
- * @return float The current frame time in seconds, or 0 if frame generation is inactive.
- */
-float Upscaling::GetFrameGenerationFrameTime() const
-{
-	if (!IsFrameGenerationActive())
-		return 0.0f;
-
-	// Get the current frame time from D3D12 swapchain
-	if (dx12SwapChain.swapChain) {
-		// Get frame time from the D3D12 SwapChain
-		return GetFrameTime();
-	}
-
-	return 0.0f;
-}
-
 // Unified interface methods
 void Upscaling::LoadUpscalingSDKs()
 {
 	// Initialize upscaling SDK components during plugin startup
 	// This ensures all SDKs are available before any D3D device creation
 	streamline.LoadInterposer();
-	fidelityFX.LoadFFX();  // Only for frame generation now
+
+	streamlineDX12.renderAPI = sl::RenderAPI::eD3D12;
+	streamlineDX12.pluginDir = L"Data\\Shaders\\Upscaling\\StreamlineDX12";
+	streamlineDX12.interposerDllName = L"sl.interposer.dll";
+	streamlineDX12.instanceTag = "DX12";
+	streamlineDX12.LoadInterposer();
+
+	fidelityFX.LoadFFX();
 }
 
 HANDLE Upscaling::GetFrameLatencyWaitableObject() const
@@ -1431,7 +1540,165 @@ void Upscaling::PostBackendDevice()
 // Module availability methods
 bool Upscaling::HasFrameGenModule() const
 {
-	return fidelityFX.featureFSR3FG;
+	return fidelityFX.featureFSR3FG || (streamlineDX12.featureDLSSG && settings.enableDLSSFrameGen);
+}
+
+Upscaling::FrameGenMethod Upscaling::GetFrameGenMethod() const
+{
+	if (!d3d12SwapChainActive)
+		return FrameGenMethod::kNone;
+	if (dx12SwapChain.useDLSSG)
+		return FrameGenMethod::kDLSSG;
+	return FrameGenMethod::kFSR;
+}
+
+bool Upscaling::UsesDLSSGFrameGen() const
+{
+	return d3d12SwapChainActive && dx12SwapChain.useDLSSG;
+}
+
+uint Upscaling::GetFrameGenerationMultiplier() const
+{
+	if (!UsesDLSSGFrameGen())
+		return 2;
+	// Clamp to the hardware max like Streamline::ConfigureDLSSG does, or a stale
+	// settings value would desync FrameLimiter's pacing from the real multiplier.
+	const uint32_t clamped = std::clamp<uint32_t>(settings.dlssgFramesToGenerate, 0, streamlineDX12.dlssgMaxFramesToGenerate);
+	return clamped + 1;
+}
+
+json Upscaling::GetFrameGenDiagnostics()
+{
+	json diagnostics = json::object();
+	const auto method = GetFrameGenMethod();
+	diagnostics["frameGenMethod"] = method == FrameGenMethod::kDLSSG ? "DLSSG" :
+	                                method == FrameGenMethod::kFSR   ? "FSR" :
+	                                                                   "None";
+	diagnostics["frameGenActive"] = IsFrameGenerationActive();
+	diagnostics["frameGenMultiplier"] = GetFrameGenerationMultiplier();
+	diagnostics["refreshRate"] = refreshRate;
+	if (method != FrameGenMethod::kDLSSG)
+		return diagnostics;
+
+	diagnostics["dlssgStatus"] = std::string(magic_enum::enum_name(streamlineDX12.lastDLSSGStatus));
+	diagnostics["dlssgFramesPresentedLastQuery"] = streamlineDX12.lastDLSSGFramesPresented;
+	diagnostics["vsyncSupportedWithFG"] = streamlineDX12.dlssgVSyncSupported;
+	diagnostics["tearingSupported"] = dx12SwapChain.tearingSupported;
+	diagnostics["backBufferCount"] = dx12SwapChain.backBufferCount;
+	diagnostics["disableVSync"] = settings.dlssgDisableVSync;
+	diagnostics["worldCameraConstants"] = settings.dlssgWorldCameraConstants;
+	diagnostics["hudLessCapture"] = settings.dlssgHudLessCapture;
+
+	const auto stats = frameGenStats.Get();
+	json recent = json::array();
+	const size_t first = (stats.recentHead + FrameGenStats::kRecentFrames - stats.recentCount) % FrameGenStats::kRecentFrames;
+	for (size_t i = 0; i < stats.recentCount; ++i)
+		recent.push_back(std::round(stats.recentFrameTimes[(first + i) % FrameGenStats::kRecentFrames] * 100.0f) / 100.0f);
+	diagnostics["stats"] = {
+		{ "frames", stats.frames },
+		{ "generatedPercent", stats.Share(stats.generated) },
+		{ "hitchPercent", stats.TimedShare(stats.hitches) },
+		{ "refreshAlignedPercent", stats.TimedShare(stats.refreshAligned) },
+		{ "frameTimeAverageMs", stats.FrameTimeAverage() },
+		{ "frameTimeDeviationMs", stats.FrameTimeDeviation() },
+		{ "frameTimeMaxMs", stats.frameTimeMax },
+		{ "presentAverageMs", stats.PresentAverage() },
+		{ "presentMaxMs", stats.presentMax },
+		{ "reflexSleepAverageMs", stats.ReflexSleepAverage() },
+		{ "reflexSleepMaxMs", stats.reflexSleepMax },
+		{ "vsyncPercent", stats.Share(stats.vsyncFrames) },
+		{ "tearingPercent", stats.Share(stats.tearingFrames) },
+		{ "foreignCameraPercent", stats.Share(stats.foreignCamera) },
+		{ "worldCameraPercent", stats.Share(stats.worldCamera) },
+		{ "hudLessPercent", stats.Share(stats.hudLess) },
+		{ "recentFrameTimesMs", std::move(recent) }
+	};
+	return diagnostics;
+}
+
+void Upscaling::CaptureWorldCamera()
+{
+	worldCameraFrame = globals::game::frameBufferCached;
+	worldCameraFrameValid = true;
+}
+
+const globals::FrameBufferCache& Upscaling::GetConstantsCamera(bool* a_usedWorldCamera) const
+{
+	const bool useWorld = settings.dlssgWorldCameraConstants && worldCameraFrameValid;
+	if (a_usedWorldCamera)
+		*a_usedWorldCamera = useWorld;
+	return useWorld ? worldCameraFrame : globals::game::frameBufferCached;
+}
+
+bool Upscaling::IsForeignCameraPublished() const
+{
+	if (!worldCameraFrameValid)
+		return false;
+	return std::memcmp(&worldCameraFrame.data.CameraViewProjUnjittered, &globals::game::frameBufferCached.data.CameraViewProjUnjittered, sizeof(Matrix)) != 0;
+}
+
+void Upscaling::CaptureHudLessColor()
+{
+	auto& swapChain = dx12SwapChain;
+	swapChain.hudLessCaptured = false;
+	if (!UsesDLSSGFrameGen() || !settings.dlssgHudLessCapture || !frameGenerationPrepared || globals::features::hdrDisplay.loaded)
+		return;
+	if (!swapChain.hudLessBufferWrapped || !swapChain.swapChainBufferWrapped)
+		return;
+
+	globals::d3d::context->CopyResource(swapChain.hudLessBufferWrapped->resource11, swapChain.swapChainBufferWrapped->resource11);
+	swapChain.hudLessCaptured = true;
+}
+
+void Upscaling::RecordFrameGenPresent(double a_presentMs, UINT a_syncInterval, bool a_tearing, bool a_hudLess)
+{
+	static std::chrono::steady_clock::time_point lastPresent{};
+	static constexpr double kMaxFrameGapMs = 250.0;
+	static constexpr uint64_t kLogIntervalFrames = 3600;
+
+	const auto now = std::chrono::steady_clock::now();
+	const double sinceLastMs = lastPresent.time_since_epoch().count() ? std::chrono::duration<double, std::milli>(now - lastPresent).count() : 0.0;
+	lastPresent = now;
+
+	auto* state = globals::state;
+	const bool menuOpen = (state && state->IsPausedOrMenuOpen(globals::game::ui)) || (globals::menu && globals::menu->IsEnabled);
+	static bool wasSampling = false;
+	const bool sampling = frameGenerationPrepared && !menuOpen;
+	const bool continuous = sampling && wasSampling;
+	wasSampling = sampling;
+	if (!sampling)
+		return;
+
+	FrameGenStats::Sample sample;
+	sample.frameTimeMs = (continuous && sinceLastMs < kMaxFrameGapMs) ? sinceLastMs : 0.0;
+	sample.presentMs = a_presentMs;
+	sample.reflexSleepMs = streamlineDX12.lastReflexSleepMs;
+	sample.refreshPeriodMs = refreshRate > 0.0 ? 1000.0 / refreshRate : 0.0;
+	sample.framesPresented = streamlineDX12.lastDLSSGFramesPresented;
+	sample.syncInterval = a_syncInterval;
+	sample.tearing = a_tearing;
+	sample.foreignCamera = IsForeignCameraPublished();
+	sample.worldCamera = constantsUsedWorldCamera;
+	sample.hudLess = a_hudLess;
+	frameGenStats.Record(sample);
+
+	static uint64_t framesSinceLog = 0;
+	if (++framesSinceLog >= kLogIntervalFrames) {
+		framesSinceLog = 0;
+		LogFrameGenStats();
+	}
+}
+
+void Upscaling::LogFrameGenStats()
+{
+	const auto stats = frameGenStats.Get();
+	logger::info(
+		"[Upscaling] DLSS-G stats: frames={} generated={:.1f}% hitches={:.1f}% frameTime avg={:.2f}ms sd={:.2f}ms max={:.2f}ms refreshAligned={:.1f}% present avg={:.2f}ms max={:.2f}ms reflexSleep avg={:.2f}ms max={:.2f}ms vsync={:.1f}% tearing={:.1f}% foreignCamera={:.1f}% worldCamera={:.1f}% hudLess={:.1f}% refresh={:.2f}Hz status={}",
+		stats.frames, stats.Share(stats.generated), stats.TimedShare(stats.hitches),
+		stats.FrameTimeAverage(), stats.FrameTimeDeviation(), stats.frameTimeMax, stats.TimedShare(stats.refreshAligned),
+		stats.PresentAverage(), stats.presentMax, stats.ReflexSleepAverage(), stats.reflexSleepMax,
+		stats.Share(stats.vsyncFrames), stats.Share(stats.tearingFrames), stats.Share(stats.foreignCamera), stats.Share(stats.worldCamera), stats.Share(stats.hudLess),
+		refreshRate, magic_enum::enum_name(streamlineDX12.lastDLSSGStatus));
 }
 
 // Proxy interface methods
@@ -1448,6 +1715,11 @@ void Upscaling::SetProxyD3D11DeviceContext(ID3D11DeviceContext* context)
 void Upscaling::CreateProxySwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc)
 {
 	dx12SwapChain.CreateSwapChain(adapter, swapChainDesc);
+}
+
+void Upscaling::CreateProxySwapChainDirect(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc)
+{
+	dx12SwapChain.CreateSwapChainDirect(adapter, swapChainDesc);
 }
 
 void Upscaling::CreateProxyInterop()
@@ -1768,6 +2040,7 @@ void Upscaling::ApplySharpening()
 
 void Upscaling::Main_UpdateJitter::thunk(RE::BSGraphics::State* a_state)
 {
+	globals::features::upscaling.worldCameraFrameValid = false;
 	globals::features::upscaling.ConfigureTAA();
 	func(a_state);
 	globals::features::upscaling.ConfigureUpscaling(a_state);
@@ -1784,6 +2057,8 @@ void Upscaling::MenuManagerDrawInterfaceStartHook::thunk(int64_t a1)
 	if (!upscaling.d3d12SwapChainActive && globals::features::hdrDisplay.loaded) {
 		globals::features::hdrDisplay.SetUIBuffer();
 	}
+
+	upscaling.CaptureHudLessColor();
 
 	func(a1);
 }

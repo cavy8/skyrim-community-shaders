@@ -2,9 +2,9 @@
 #define EXTENDED_MATERIALS_PARALLAX_CORE_HLSLI
 
 #if defined(LANDSCAPE)
-	float2 GetParallaxCoords(PS_INPUT input, float2 coords, float mipLevel, float maxTexDim, float3 viewDir, float3x3 tbn, float noise, DisplacementParams params[6],
+	float2 GetParallaxCoords(PS_INPUT input, float2 coords, float mipLevel, float maxTexDim, float3 viewDir, float3x3 tbn, float noise, DisplacementParams params[TERRAIN_LAYER_COUNT],
 		StochasticOffsets sharedOffset,
-		out float weights[6])
+		out float weights[TERRAIN_LAYER_COUNT])
 #else
 	float2 GetParallaxCoords(float2 coords, float mipLevel, float3 viewDir, float3x3 tbn, Texture2D<float4> tex, SamplerState texSampler, uint channel, DisplacementParams params, bool applyMeshTV, StochasticOffsets meshOffset)
 #endif
@@ -33,6 +33,12 @@
 		weights[3] = w1.w;
 		weights[4] = w2.x;
 		weights[5] = w2.y;
+#	if defined(LANDSCAPE_SEAMS)
+		weights[6] = LandscapeSeams::ExtraWeights.x;
+		weights[7] = LandscapeSeams::ExtraWeights.y;
+		weights[8] = LandscapeSeams::ExtraWeights.z;
+		weights[9] = LandscapeSeams::ExtraWeights.w;
+#	endif
 
 #	if defined(TRUE_PBR)
 		float scale = TerrainMaxWeightedHeightScaleW(w1, w2, params);

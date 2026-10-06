@@ -40,6 +40,10 @@
 #	endif
 #endif
 
+#if defined(FUR_SHELLS)
+#	include "FurShells/FurShells.hlsli"
+#endif
+
 struct VS_INPUT
 {
 	float4 Position: POSITION0;
@@ -99,6 +103,10 @@ struct VS_OUTPUT
 	float4 FogParam: COLOR1;
 
 	float3 ModelPosition: TEXCOORD12;
+#if defined(FUR_SHELLS)
+	nointerpolation float FurShell: TEXCOORD13;
+	float4 FurRoot: TEXCOORD14;
+#endif
 };
 #ifdef VSHADER
 
@@ -152,7 +160,11 @@ float2 GetTreeShiftVector(float4 position, float4 color)
 }
 #	endif  // TREE_ANIM
 
+#	if defined(FUR_SHELLS)
+VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
+#	else
 VS_OUTPUT main(VS_INPUT input)
+#	endif
 {
 	VS_OUTPUT vsout;
 
@@ -163,6 +175,19 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif  // defined(LODLANDNOISE) || defined(LODLANDSCAPE)                                                                   \
 
 	precise float4 previousInputPosition = inputPosition;
+
+#	if defined(FUR_SHELLS)
+	float furShell = FurShells::GetShell(instanceID);
+	float4 furRootPosition = inputPosition;
+#		if defined(MODELSPACENORMALS)
+	float3 furNormal = FurShells::GetModelNormal(input.TexCoord0.xy * TexcoordOffset.zw + TexcoordOffset.xy);
+#		else
+	float3 furNormal = input.Normal.xyz * 2.0 - 1.0;
+#		endif
+	float3 furOffset = furNormal * (FurShells::Length * furShell);
+	inputPosition.xyz += furOffset;
+	previousInputPosition.xyz += furOffset;
+#	endif
 
 #	if defined(TREE_ANIM)
 	precise float2 treeShiftVector = GetTreeShiftVector(input.Position, input.Color);
@@ -183,6 +208,13 @@ VS_OUTPUT main(VS_INPUT input)
 	float3x4 worldMatrix = Skinned::GetBoneTransformMatrix(Bones, actualIndices, BonesPivot, input.BoneWeights);
 	precise float4 worldPosition = float4(mul(inputPosition, transpose(worldMatrix)), 1);
 
+#		if defined(FUR_SHELLS)
+	float furDroop = FurShells::Droop * furShell * furShell;
+	worldPosition.z -= furDroop;
+	previousWorldPosition.z -= furDroop;
+	float4 furRootViewPos = mul(ViewProj, float4(mul(furRootPosition, transpose(worldMatrix)), 1));
+#		endif
+
 	float4 viewPos = mul(ViewProj, worldPosition);
 #	else   // !SKINNED
 	precise float4 previousWorldPosition = float4(mul(PreviousWorld, inputPosition), 1);
@@ -190,6 +222,14 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4x4 world4x4 = float4x4(World[0], World[1], World[2], float4(0, 0, 0, 1));
 	precise float4x4 modelView = mul(ViewProj, world4x4);
 	float4 viewPos = mul(modelView, inputPosition);
+
+#		if defined(FUR_SHELLS)
+	float furDroop = FurShells::Droop * furShell * furShell;
+	worldPosition.z -= furDroop;
+	previousWorldPosition.z -= furDroop;
+	float4 furRootViewPos = mul(modelView, furRootPosition);
+	viewPos -= furDroop * float4(ViewProj[0].z, ViewProj[1].z, ViewProj[2].z, ViewProj[3].z);
+#		endif
 #	endif  // SKINNED
 
 	const bool reverseProjection = FrameBuffer::IsReverseProjection(Proj);
@@ -289,6 +329,11 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.FogParam.w = fogColorParam;
 
 	vsout.ModelPosition = input.Position.xyz;
+
+#	if defined(FUR_SHELLS)
+	vsout.FurShell = furShell;
+	vsout.FurRoot = furRootViewPos;
+#	endif
 
 	return vsout;
 }
@@ -799,6 +844,22 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #		undef WATER_EFFECTS
 #	endif
 
+#	if defined(CUBEMAP_REFLECTIONS) && !defined(LANDSCAPE)
+#		undef EXTENDED_MATERIALS
+#		undef EXTENDED_TRANSLUCENCY
+#		undef LIGHT_LIMIT_FIX
+#		undef SCREEN_SPACE_SHADOWS
+#		undef SKYLIGHTING
+#		undef SSS
+#		undef TERRAIN_BLENDING
+#		undef VOLUMETRIC_SHADOWS
+#		undef WATER_EFFECTS
+#		undef WETNESS_EFFECTS
+#		undef CS_SKIN
+#		undef CS_HAIR
+#		undef HAIR_BACKLIGHTING
+#	endif
+
 #	if defined(WORLD_MAP)
 #		undef CLOUD_SHADOWS
 #		undef SKYLIGHTING
@@ -836,6 +897,10 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 
 #	if defined(TRUE_PBR)
 #		include "Common/PBR.hlsli"
+#	endif
+
+#	if defined(LANDSCAPE) && defined(LANDSCAPE_SEAMS)
+#		include "LandscapeSeams/LandscapeSeams.hlsli"
 #	endif
 
 #	if defined(EMAT) || defined(EMAT_NMS)
@@ -981,6 +1046,9 @@ bool UseSkylightingShadowVisibility()
 
 #	include "Common/LightingEval.hlsli"
 
+#	if defined(FUR_SHELLS) && !defined(FUR_SHELLS_DEPTH)
+[earlydepthstencil]
+#	endif
 PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 {
 	PS_OUTPUT psout;
@@ -1019,9 +1087,16 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	endif  // defined (SKINNED) || !defined (MODELSPACENORMALS)
 
+#	if defined(LANDSCAPE) && defined(LANDSCAPE_SEAMS)
+	LandscapeSeams::Load(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, input.LandBlendWeights1, input.LandBlendWeights2);
+#	endif
+
 #	if !defined(TRUE_PBR)
 #		if defined(LANDSCAPE)
 	float shininess = dot(input.LandBlendWeights1, LandscapeTexture1to4IsSpecPower) + input.LandBlendWeights2.x * LandscapeTexture5to6IsSpecPower.x + input.LandBlendWeights2.y * LandscapeTexture5to6IsSpecPower.y;
+#			if defined(LANDSCAPE_SEAMS)
+	shininess += dot(LandscapeSeams::ExtraWeights, LandscapeSeams::Data.SpecPower);
+#			endif
 #		else
 	float shininess = HasSpecular() ? SpecularColor.w : 0.0;
 #		endif  // defined (LANDSCAPE)
@@ -1045,6 +1120,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float2 uv = input.TexCoord0.xy;
 	float2 uvOriginal = uv;
+
+#	if defined(FUR_SHELLS)
+	float4 furSample = FurShells::TexShell.SampleBias(SampColorSampler, uv, SharedData::MipBias);
+	bool furRootCovered = FurShells::IsRootCovered(input.FurRoot, fwidth(input.FurRoot.w));
+	if (input.FurShell > 0.0 && (furRootCovered || furSample.w < lerp(FurShells::RootThreshold, FurShells::TipThreshold, input.FurShell)))
+		discard;
+#	endif
 
 	// Lattice cell comes from the geometric UV, before the parallax block below rewrites uv.
 #	if !defined(LANDSCAPE) && (defined(TERRAIN_VARIATION_MESH) || defined(EMAT) || defined(EMAT_NMS))
@@ -1116,6 +1198,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		if defined(LANDSCAPE)
 #			if defined(TRUE_PBR)
 #				define LANDSCAPE_PARALLAX_ENABLED (SharedData::extendedMaterialSettings.EnableParallax)
+#			elif defined(LANDSCAPE_SEAMS)
+#				define LANDSCAPE_PARALLAX_ENABLED                                 \
+					(SharedData::extendedMaterialSettings.EnableTerrainParallax || \
+						(SharedData::extendedMaterialSettings.EnableParallax && (((Permutation::ExtraFeatureDescriptor & Permutation::ExtraFeatureFlags::THLandHasDisplacement) != 0) || LandscapeSeams::HasAnyFlag(LandscapeSeams::AnyParallaxMask))))
 #			else
 #				define LANDSCAPE_PARALLAX_ENABLED                                 \
 					(SharedData::extendedMaterialSettings.EnableTerrainParallax || \
@@ -1145,7 +1231,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(EMAT)
 #		if defined(LANDSCAPE)
-	DisplacementParams displacementParams[6];
+	DisplacementParams displacementParams[TERRAIN_LAYER_COUNT];
 	displacementParams[0].DisplacementScale = 1.f;
 	displacementParams[0].DisplacementOffset = 0.f;
 	displacementParams[0].HeightScale = 1;
@@ -1331,6 +1417,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Normalise blend weights
 	float totalWeight = input.LandBlendWeights1.x + input.LandBlendWeights1.y + input.LandBlendWeights1.z +
 	                    input.LandBlendWeights1.w + input.LandBlendWeights2.x + input.LandBlendWeights2.y;
+#		if defined(LANDSCAPE_SEAMS)
+	totalWeight += dot(LandscapeSeams::ExtraWeights, 1.0);
+	if (totalWeight > 0.0)
+		LandscapeSeams::ExtraWeights /= totalWeight;
+#		endif
 	if (totalWeight > 0.0) {
 		input.LandBlendWeights1 /= totalWeight;
 		input.LandBlendWeights2.xy /= totalWeight;
@@ -1355,6 +1446,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		displacementParams[3] = displacementParams[0];
 		displacementParams[4] = displacementParams[0];
 		displacementParams[5] = displacementParams[0];
+#			if defined(LANDSCAPE_SEAMS)
+		displacementParams[6] = displacementParams[0];
+		displacementParams[7] = displacementParams[0];
+		displacementParams[8] = displacementParams[0];
+		displacementParams[9] = displacementParams[0];
+#			endif
 #			if defined(TRUE_PBR)
 		displacementParams[0].HeightScale *= PBRParams1.y;
 		displacementParams[1].HeightScale *= LandscapeTexture2PBRParams.y;
@@ -1362,10 +1459,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		displacementParams[3].HeightScale *= LandscapeTexture4PBRParams.y;
 		displacementParams[4].HeightScale *= LandscapeTexture5PBRParams.y;
 		displacementParams[5].HeightScale *= LandscapeTexture6PBRParams.y;
+#				if defined(LANDSCAPE_SEAMS)
+		displacementParams[6].HeightScale *= LandscapeSeams::Data.PBRParams[0].y;
+		displacementParams[7].HeightScale *= LandscapeSeams::Data.PBRParams[1].y;
+		displacementParams[8].HeightScale *= LandscapeSeams::Data.PBRParams[2].y;
+		displacementParams[9].HeightScale *= LandscapeSeams::Data.PBRParams[3].y;
+#				endif
 #			endif
 
-		float weights[6];
+		float weights[TERRAIN_LAYER_COUNT];
 		weights[0] = weights[1] = weights[2] = weights[3] = weights[4] = weights[5] = 0.0;
+#			if defined(LANDSCAPE_SEAMS)
+		weights[6] = weights[7] = weights[8] = weights[9] = 0.0;
+#			endif
 
 		const bool doTerrainPom = ExtendedMaterials::TerrainHasAnyDisplacement() &&
 		                          ExtendedMaterials::TerrainMaxWeightedHeightScale(input, displacementParams) > 0.01;
@@ -1386,6 +1492,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			input.LandBlendWeights1.w = weights[3];
 			input.LandBlendWeights2.x = weights[4];
 			input.LandBlendWeights2.y = weights[5];
+#			if defined(LANDSCAPE_SEAMS)
+			LandscapeSeams::ExtraWeights = float4(weights[6], weights[7], weights[8], weights[9]);
+#			endif
 		}
 		hasTerrainParallaxShadow =
 			viewPosition.z < ExtendedMaterials::ParallaxCheapDistance &&
@@ -1460,6 +1569,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	LIGHTING_LANDSCAPE_BLEND_ONE_LAYER(4, TexLandColor5Sampler, SampLandColor5Sampler, TexLandNormal5Sampler, SampLandNormal5Sampler, input.LandBlendWeights2.x, LandscapeTexture5to6IsSnow.x)
 	LIGHTING_LANDSCAPE_BLEND_ONE_LAYER(5, TexLandColor6Sampler, SampLandColor6Sampler, TexLandNormal6Sampler, SampLandNormal6Sampler, input.LandBlendWeights2.y, LandscapeTexture5to6IsSnow.y)
 #		endif
+#		if defined(LANDSCAPE_SEAMS)
+	LANDSCAPE_SEAMS_BLEND_EXTRAS
+#		endif
 #		undef SampleTerrain
 
 	float4 rawBaseColor = float4(blendedRGB, blendedAlpha);
@@ -1471,6 +1583,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	else  // Non-landscape code
 	float4 rawBaseColor;
 	MESH_TV_SAMPLE_BIAS(rawBaseColor, TexColorSampler, SampColorSampler, diffuseUv);
+#		if defined(FUR_SHELLS)
+	if (input.FurShell > 0.0)
+		rawBaseColor.rgb = lerp(rawBaseColor.rgb, furSample.rgb, FurShells::ShellColor) * lerp(FurShells::RootDarkening, 1.0, input.FurShell);
+#		endif
 	baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
 	float4 normalColor;
 	MESH_TV_SAMPLE_BIAS(normalColor, TexNormalSampler, SampNormalSampler, uv);
@@ -2207,7 +2323,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float snowOcclusion = inWorld;
 #		endif
 
-#		if defined(DO_ALPHA_TEST) && defined(LOD_BLENDING)  // should only match object lod trees (ultra trees), they have no special define
+#		if defined(DO_ALPHA_TEST) && defined(LOD_BLENDING) && !defined(TREE_ANIM)  // should only match object lod trees (ultra trees), they have no special define
 	if (HasSoftLighting()) {
 		float rx;
 		float ry;
@@ -2231,7 +2347,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		if defined(TRUE_PBR)
 		if (glintParameters.y < 0.01)
 			material.GlintLogMicrofacetDensity = 1;  // disables glint where there shouldn't be any
-#			if defined(LANDSCAPE)
+#			if defined(TREE_ANIM)
+		float disp = 0;
+#			elif defined(LANDSCAPE)
 		float disp = sh0;  // GetTerrainHeight is already (raw - 0.5) * HeightScale
 #			elif defined(EMAT)
 		float disp = (sh0 - 0.5) * displacementParams.HeightScale;
@@ -2240,7 +2358,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #			endif
 #		elif defined(LANDSCAPE) && defined(EMAT)
 		float disp = sh0;  // GetTerrainHeight is already (raw - 0.5) * HeightScale
-#		elif defined(EMAT)
+#		elif defined(EMAT) && !defined(TREE_ANIM)
 		float disp = (sh0 - 0.5);
 #		else
 		float disp = 0;
@@ -2248,6 +2366,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		float3 snowNormal = worldNormal;
 #		if defined(TREE_ANIM)
 		snowNormal = normalize(snowNormal + float3(0, 0, 0.5));
+		float3 treeSnowNormal = snowNormal;
 		if (SharedData::snowCoverSettings.AffectTreeTint && !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::NoFoliageTint))
 			SnowCover::ApplyFoliageColor(material.BaseColor, SnowCover::GetEnvironmentalMultiplier(adjustedWorldPos));
 #		endif
@@ -2264,6 +2383,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		if defined(MODELSPACENORMALS) && !defined(SKINNED)
 			float3 sd = FrameBuffer::ViewToWorld(-float3(ddx_fine(snowFactor), ddy_fine(snowFactor), 0), false);
 			worldNormal = normalize(lerp(worldNormal, snowNormal, snowFactor * 0.75) + sd);
+#		elif defined(TREE_ANIM)
+			worldNormal = normalize(lerp(worldNormal, treeSnowNormal, snowFactor * 0.75));
 #		else
 			worldNormal = normalize(lerp(worldNormal, normalize(mul(tbn, snowNormal)), snowFactor * 0.75));
 #		endif
@@ -2558,7 +2679,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 	transmissionColor += dirLightOutput.transmission;
 
-#	if !defined(LOD)
+#	if !defined(LOD) && !(defined(CUBEMAP_REFLECTIONS) && !defined(LANDSCAPE))
 #		if !defined(LIGHT_LIMIT_FIX)
 	[loop] for (uint lightIndex = 0; lightIndex < numLights; lightIndex++)
 	{
@@ -3309,6 +3430,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #		if defined(SSS) && defined(SKIN)
 	psout.Masks = float4(saturate(baseColor.a), !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsBeastRace), masksZ, psout.Diffuse.w);
+#			if defined(FUR_SHELLS)
+	if (input.FurShell > 0.0)
+		psout.Masks.x = 0;
+#			endif
 #		else
 	psout.Masks = float4(0, 0, masksZ, psout.Diffuse.w);
 #		endif
@@ -3386,6 +3511,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		undef COMPUTE_TERRAIN_SHADOW_BASE
 #		undef EVAL_TERRAIN_DIR_SHADOW
 #		undef LANDSCAPE_PARALLAX_ENABLED
+#	endif
+
+#	if defined(FUR_SHELLS_DEPTH)
+	psout = (PS_OUTPUT)0;
 #	endif
 
 	return psout;

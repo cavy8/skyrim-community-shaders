@@ -204,7 +204,7 @@ namespace Util
 
 		/**
 		 * Returns the path to the plugin log file in the default SKSE logging folder.
-		 * @return Documents / "My Games" / "Skyrim..." / "SKSE" / "CommunityShaders.log"
+		 * @return Documents / "My Games" / "Skyrim..." / "SKSE" / "BottledShaders.log"
 		 */
 		std::filesystem::path GetLogPath();
 

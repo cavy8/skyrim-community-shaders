@@ -10,6 +10,7 @@
 #include "Features/ExtendedTranslucency.h"
 #include "Features/FootstepParticles.h"
 #include "Features/FoliageLighting.h"
+#include "Features/FurShells.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/GrassOptimizations.h"
@@ -21,6 +22,7 @@
 #include "Features/InteriorSun.h"
 #include "Features/InverseSquareLighting.h"
 #include "Features/LODBlending.h"
+#include "Features/LandscapeSeams.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
 #include "Features/PerformanceOverlay.h"
@@ -117,6 +119,8 @@ namespace globals
 		FootstepParticles footstepParticles{};
 		NeuralRendering neuralRendering{};
 		HairBacklighting hairBacklighting{};
+		FurShells furShells{};
+		LandscapeSeams landscapeSeams{};
 
 		namespace llf
 		{

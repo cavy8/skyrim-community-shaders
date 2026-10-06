@@ -25,7 +25,7 @@ Before running the generation script, you must run Skyrim SE **once** with the f
 
 The required log file will be created at:
 
--   **Skyrim SE**: `%USERPROFILE%\Documents\My Games\Skyrim Special Edition\SKSE\CommunityShaders.log`
+-   **Skyrim SE**: `%USERPROFILE%\Documents\My Games\Skyrim Special Edition\SKSE\BottledShaders.log`
 
 ### Running the Script
 
@@ -50,7 +50,7 @@ The script will:
 You can also generate the files manually using hlslkit:
 
 ```bash
-hlslkit-generate --log "%USERPROFILE%\Documents\My Games\Skyrim Special Edition\SKSE\CommunityShaders.log" --output .\.github\configs\shader-validation.yaml
+hlslkit-generate --log "%USERPROFILE%\Documents\My Games\Skyrim Special Edition\SKSE\BottledShaders.log" --output .\.github\configs\shader-validation.yaml
 ```
 
 ## Usage in CI/CD

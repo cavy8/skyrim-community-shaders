@@ -51,7 +51,7 @@ public:
 		uint UseProceduralGradientWeights;
 		float ProceduralGradientWeightCurve;
 		float LightSpriteCurve;
-		float pad1;
+		uint EnableParticle;
 
 		float ParticleIntensity;
 		float ParticleLightingInfluence;
@@ -166,6 +166,11 @@ public:
 	static_assert(offsetof(PerFrame, CloudsColorFilter) % 16 == 0);
 	static_assert(offsetof(PerFrame, MasserBillboardTan) % 16 == 0);
 
+	struct Settings
+	{
+		bool IgnorePresetParticles = false;
+	} settings;
+
 	bool enableEffect = false;
 
 	ID3D11PixelShader* raymarchVolumetricRaysPS = nullptr;
@@ -199,6 +204,9 @@ public:
 	void UpdateSkyScattering(PerFrame& a_data);
 
 	virtual void DrawSettings() override;
+	virtual void LoadSettings(json& o_json) override;
+	virtual void SaveSettings(json& o_json) override;
+	virtual void RestoreDefaultSettings() override;
 	virtual void SetupResources() override;
 	virtual void Prepass() override;
 	virtual void ClearShaderCache() override;
@@ -244,14 +252,14 @@ public:
 	 */
 	bool RenderTonemap(RE::RENDER_TARGET a_input, RE::RENDER_TARGET a_output);
 
-	/** @brief True when the effect chain replaced ISHDR this frame, leaving an SDR scene for HDR Display to expand. */
+	/** @brief True when the effect chain replaced ISHDR for the frame being presented, leaving an SDR scene for HDR Display to expand. */
 	bool ReplacedTonemapperThisFrame() const;
 
 private:
 	bool EnsureScatteringBlendState();
 	bool EnsureSunRaysResources(uint32_t a_width, uint32_t a_height);
 
-	uint tonemapReplacedFrame = UINT32_MAX;  ///< frameCount when the effect chain last wrote the tonemap output
+	uint tonemapReplacedFrame = UINT32_MAX;  ///< frameCount at which the effect chain's last tonemap output gets presented
 
 	/** @brief Point light settings, resolved once per frame in CheckCommonData since OverridePointLightColor runs per light. */
 	struct PointLightingParams

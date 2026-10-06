@@ -95,6 +95,14 @@ namespace SharedData
 		float4 CubemapColor;
 	};
 
+	struct LODShadowCapture
+	{
+		float4 AxisX;
+		float4 AxisY;
+		float4 AxisZ;
+		float4 Cascades[3];
+	};
+
 	struct TerraOccSettings
 	{
 		bool EnableTerrainShadow;
@@ -104,11 +112,8 @@ namespace SharedData
 		float ZBlur;
 		float LODShadowStrength;
 		float LODShadowResolution;
-		float pad0;
-		float4 LODShadowAxisX;
-		float4 LODShadowAxisY;
-		float4 LODShadowAxisZ;
-		float4 LODShadowCascades[3];
+		float LODShadowBlend;
+		LODShadowCapture LODShadowCaptures[2];
 		float4 LODShadowDepthBias;
 	};
 
@@ -332,7 +337,7 @@ namespace SharedData
 		uint UseProceduralGradientWeights;
 		float ProceduralGradientWeightCurve;
 		float LightSpriteCurve;
-		float pad1;
+		uint EnableParticle;
 
 		float ParticleIntensity;
 		float ParticleLightingInfluence;

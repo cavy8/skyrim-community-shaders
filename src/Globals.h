@@ -49,6 +49,8 @@ struct SnowCover;
 struct FootstepParticles;
 struct NeuralRendering;
 struct HairBacklighting;
+struct FurShells;
+struct LandscapeSeams;
 
 class State;
 class Deferred;
@@ -150,6 +152,8 @@ namespace globals
 		extern FootstepParticles footstepParticles;
 		extern NeuralRendering neuralRendering;
 		extern HairBacklighting hairBacklighting;
+		extern FurShells furShells;
+		extern LandscapeSeams landscapeSeams;
 
 	}
 

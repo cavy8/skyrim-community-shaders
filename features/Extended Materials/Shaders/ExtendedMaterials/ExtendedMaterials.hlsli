@@ -138,6 +138,12 @@ namespace ExtendedMaterials
 		[branch] if (w1.w > 0.01) n += w1.w * float4(TerrainParallaxTexSample(TexLandNormal4Sampler, coords, mipLevel, sharedOffset).xyz, 1.0);
 		[branch] if (w2.x > 0.01) n += w2.x * float4(TerrainParallaxTexSample(TexLandNormal5Sampler, coords, mipLevel, sharedOffset).xyz, 1.0);
 		[branch] if (w2.y > 0.01) n += w2.y * float4(TerrainParallaxTexSample(TexLandNormal6Sampler, coords, mipLevel, sharedOffset).xyz, 1.0);
+#			if defined(LANDSCAPE_SEAMS)
+		[branch] if (LandscapeSeams::ExtraWeights.x > 0.01) n += LandscapeSeams::ExtraWeights.x * float4(TerrainParallaxTexSample(LandscapeSeams::Normal0, coords, mipLevel, sharedOffset).xyz, 1.0);
+		[branch] if (LandscapeSeams::ExtraWeights.y > 0.01) n += LandscapeSeams::ExtraWeights.y * float4(TerrainParallaxTexSample(LandscapeSeams::Normal1, coords, mipLevel, sharedOffset).xyz, 1.0);
+		[branch] if (LandscapeSeams::ExtraWeights.z > 0.01) n += LandscapeSeams::ExtraWeights.z * float4(TerrainParallaxTexSample(LandscapeSeams::Normal2, coords, mipLevel, sharedOffset).xyz, 1.0);
+		[branch] if (LandscapeSeams::ExtraWeights.w > 0.01) n += LandscapeSeams::ExtraWeights.w * float4(TerrainParallaxTexSample(LandscapeSeams::Normal3, coords, mipLevel, sharedOffset).xyz, 1.0);
+#			endif
 		return n.xyz * 2.0 - n.w;
 	}
 

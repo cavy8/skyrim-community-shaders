@@ -19,6 +19,9 @@ namespace
 	constexpr float kRecaptureDistance = 2048.0f;
 	constexpr auto kRefreshInterval = std::chrono::seconds(10);
 	constexpr auto kCaptureTimeout = std::chrono::seconds(3);
+	constexpr float kBlendIntervalFraction = 0.9f;
+	constexpr float kMinBlendSeconds = 0.25f;
+	constexpr float kMaxBlendSeconds = 4.0f;
 	constexpr uint32_t kAllFaces = 0x3F;
 
 	LODShadowMap* g_activeCapture = nullptr;
@@ -125,14 +128,15 @@ void LODShadowMap::ClearShaderCache()
 void LODShadowMap::ReleaseTargets()
 {
 	if (auto* context = globals::d3d::context) {
-		ID3D11ShaderResourceView* nullView = nullptr;
-		context->PSSetShaderResources(61, 1, &nullView);
-		context->CSSetShaderResources(61, 1, &nullView);
+		ID3D11ShaderResourceView* nullViews[kCaptureCount] = {};
+		context->PSSetShaderResources(61, kCaptureCount, nullViews);
+		context->CSSetShaderResources(61, kCaptureCount, nullViews);
 	}
 	targets[0].reset();
 	targets[1].reset();
 	resolution = 0;
 	publishedValid = false;
+	previousValid = false;
 	capturing = false;
 }
 
@@ -247,34 +251,47 @@ LODShadowMap::LightSpace LODShadowMap::MakeLightSpace(const RE::NiPoint3& a_dire
 	return space;
 }
 
-void LODShadowMap::BuildReceiverData(float a_strength)
+LODShadowMap::ReceiverCapture LODShadowMap::MakeReceiverCapture(const LightSpace& a_space)
+{
+	const double depthScale = 0.5 / kDepthHalfRange;
+	ReceiverCapture capture;
+	capture.axisX = { static_cast<float>(a_space.axes[0][0]), static_cast<float>(a_space.axes[0][1]), static_cast<float>(a_space.axes[0][2]), 0.0f };
+	capture.axisY = { static_cast<float>(a_space.axes[1][0]), static_cast<float>(a_space.axes[1][1]), static_cast<float>(a_space.axes[1][2]), 0.0f };
+	capture.axisZ = {
+		static_cast<float>(a_space.axes[2][0] * depthScale),
+		static_cast<float>(a_space.axes[2][1] * depthScale),
+		static_cast<float>(a_space.axes[2][2] * depthScale),
+		static_cast<float>(0.5 - a_space.depthCenter * depthScale)
+	};
+
+	for (uint32_t cascade = 0; cascade < kCascadeCount; ++cascade) {
+		const double scale = 0.5 / kCascadeRadius[cascade];
+		capture.cascades[cascade] = {
+			static_cast<float>(scale),
+			static_cast<float>(0.5 - a_space.cascadeCenter[cascade][0] * scale),
+			static_cast<float>(-scale),
+			static_cast<float>(0.5 + a_space.cascadeCenter[cascade][1] * scale)
+		};
+	}
+	return capture;
+}
+
+void LODShadowMap::BuildReceiverData(float a_strength, float a_blend)
 {
 	receiver.strength = publishedValid ? a_strength : 0.0f;
 	receiver.resolution = static_cast<float>(std::max(resolution, 1u));
+	receiver.blend = previousValid ? a_blend : 1.0f;
 	if (!publishedValid)
 		return;
 
-	const double depthScale = 0.5 / kDepthHalfRange;
-	receiver.axisX = { static_cast<float>(published.axes[0][0]), static_cast<float>(published.axes[0][1]), static_cast<float>(published.axes[0][2]), 0.0f };
-	receiver.axisY = { static_cast<float>(published.axes[1][0]), static_cast<float>(published.axes[1][1]), static_cast<float>(published.axes[1][2]), 0.0f };
-	receiver.axisZ = {
-		static_cast<float>(published.axes[2][0] * depthScale),
-		static_cast<float>(published.axes[2][1] * depthScale),
-		static_cast<float>(published.axes[2][2] * depthScale),
-		static_cast<float>(0.5 - published.depthCenter * depthScale)
-	};
+	receiver.captures[0] = MakeReceiverCapture(published);
+	if (previousValid)
+		receiver.captures[1] = MakeReceiverCapture(previous);
 
+	const double depthScale = 0.5 / kDepthHalfRange;
 	float bias[kCascadeCount]{};
-	for (uint32_t cascade = 0; cascade < kCascadeCount; ++cascade) {
-		const double scale = 0.5 / kCascadeRadius[cascade];
-		receiver.cascades[cascade] = {
-			static_cast<float>(scale),
-			static_cast<float>(0.5 - published.cascadeCenter[cascade][0] * scale),
-			static_cast<float>(-scale),
-			static_cast<float>(0.5 + published.cascadeCenter[cascade][1] * scale)
-		};
+	for (uint32_t cascade = 0; cascade < kCascadeCount; ++cascade)
 		bias[cascade] = static_cast<float>(2.0 * kCascadeRadius[cascade] / resolution * depthScale);
-	}
 	receiver.depthBias = { bias[0], bias[1], bias[2], static_cast<float>(kConstantBias * depthScale) };
 }
 
@@ -306,7 +323,7 @@ void LODShadowMap::Update(bool a_enabled, uint32_t a_resolution)
 	if (reason != 0) {
 		capturing = false;
 		capturePending = false;
-		BuildReceiverData(0.0f);
+		BuildReceiverData(0.0f, 1.0f);
 		return;
 	}
 
@@ -319,8 +336,15 @@ void LODShadowMap::Update(bool a_enabled, uint32_t a_resolution)
 			logger::info("[Terrain Shadows] LOD shadow capture timed out with faces {:#x}, {} draws captured", capturedFaces, capturedDraws);
 	}
 
+	float blend = 1.0f;
+	if (previousValid) {
+		blend = std::clamp(std::chrono::duration<float>(now - publishedTime).count() / blendDuration, 0.0f, 1.0f);
+		previousValid = blend < 1.0f;
+	}
+
 	float strength = 0.0f;
 	bool stale = !publishedValid || publishedWorldSpace != worldSpace;
+	const bool invalid = stale;
 	if (!stale) {
 		auto* camera = RE::Main::WorldRootCamera();
 		const RE::NiPoint3 cameraPosition = camera ? camera->world.translate : published.origin;
@@ -333,8 +357,8 @@ void LODShadowMap::Update(bool a_enabled, uint32_t a_resolution)
 		stale = angle > kRecaptureAngle || distance > kRecaptureDistance || now - publishedTime > kRefreshInterval;
 	}
 
-	capturePending = stale && !capturing;
-	BuildReceiverData(strength);
+	capturePending = stale && !capturing && (invalid || !previousValid);
+	BuildReceiverData(strength, blend);
 }
 
 void LODShadowMap::StartCapture(const RE::NiPoint3& a_origin)
@@ -354,6 +378,8 @@ void LODShadowMap::StartCapture(const RE::NiPoint3& a_origin)
 	skippedCamera = 0;
 	captureRowsValid = false;
 	captureStart = std::chrono::steady_clock::now();
+	previousValid = false;
+	Bind(globals::d3d::context);
 
 	ReverseZ::SetHookPassthrough(true);
 	globals::d3d::context->ClearDepthStencilView(targets[1 - activeTarget]->dsv.get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
@@ -396,11 +422,19 @@ void LODShadowMap::EndFace()
 
 void LODShadowMap::Publish()
 {
+	const auto now = std::chrono::steady_clock::now();
+	auto* worldSpace = GetWorldSpace();
+	previousValid = publishedValid && publishedWorldSpace == worldSpace && receiver.strength >= 1.0f;
+	if (previousValid) {
+		previous = published;
+		blendDuration = std::clamp(kBlendIntervalFraction * std::chrono::duration<float>(now - publishedTime).count(), kMinBlendSeconds, kMaxBlendSeconds);
+	}
+
 	activeTarget = 1 - activeTarget;
 	published = building;
 	publishedValid = true;
-	publishedWorldSpace = GetWorldSpace();
-	publishedTime = std::chrono::steady_clock::now();
+	publishedWorldSpace = worldSpace;
+	publishedTime = now;
 	lastCaptureDraws = capturedDraws;
 	++publishCount;
 	capturing = false;
@@ -410,17 +444,17 @@ void LODShadowMap::Publish()
 			publishCount, capturedDraws, skippedShader, skippedTopology, skippedVertexShader, skippedCamera,
 			published.origin.x, published.origin.y, published.origin.z, published.direction.x, published.direction.y, published.direction.z);
 
-	BuildReceiverData(1.0f);
+	BuildReceiverData(1.0f, 0.0f);
 	Bind(globals::d3d::context);
 }
 
 void LODShadowMap::Bind(ID3D11DeviceContext* a_context) const
 {
-	if (!a_context || !targets[activeTarget])
+	if (!a_context || !targets[activeTarget] || !targets[1 - activeTarget])
 		return;
-	ID3D11ShaderResourceView* view = targets[activeTarget]->srv.get();
-	a_context->PSSetShaderResources(61, 1, &view);
-	a_context->CSSetShaderResources(61, 1, &view);
+	ID3D11ShaderResourceView* views[kCaptureCount] = { targets[activeTarget]->srv.get(), capturing ? nullptr : targets[1 - activeTarget]->srv.get() };
+	a_context->PSSetShaderResources(61, kCaptureCount, views);
+	a_context->CSSetShaderResources(61, kCaptureCount, views);
 }
 
 bool LODShadowMap::UpdateCaptureRows()
@@ -606,7 +640,7 @@ void LODShadowMap::DrawStatus() const
 		return;
 	}
 	const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - publishedTime).count() / 1000.0f;
-	ImGui::Text("LOD shadows: %u captures, last %.1fs ago, %u draws, strength %.2f", publishCount, age, lastCaptureDraws, receiver.strength);
+	ImGui::Text("LOD shadows: %u captures, last %.1fs ago, %u draws, strength %.2f, blend %.2f over %.2fs", publishCount, age, lastCaptureDraws, receiver.strength, receiver.blend, blendDuration);
 	ImGui::Text("Skipped draws: %u shader, %u topology, %u vertex shader, %u camera", skippedShader, skippedTopology, skippedVertexShader, skippedCamera);
 }
 

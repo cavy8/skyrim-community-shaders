@@ -200,7 +200,7 @@ namespace Util
 			if (!path) {
 				return {};
 			}
-			*path /= std::format("{}.log", std::string(Plugin::NAME));
+			*path /= "BottledShaders.log";
 			return *path;
 		}
 	}

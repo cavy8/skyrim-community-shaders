@@ -138,7 +138,7 @@ namespace SIE
 		static void GetLightingShaderDefines(uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)
 		{
 			static REL::Relocation<void(uint32_t, D3D_SHADER_MACRO*)> VanillaGetLightingShaderDefines(RELOCATION_ID(101631, 108698));
-			VanillaGetLightingShaderDefines(descriptor, defines.data());
+			VanillaGetLightingShaderDefines(descriptor & ~static_cast<uint32_t>(ShaderCache::LightingShaderFlags::Reflections), defines.data());
 
 			size_t lastIndex = std::ranges::find_if(defines, [](const D3D_SHADER_MACRO& macro) { return macro.Name == nullptr; }) - defines.begin();
 
@@ -149,6 +149,18 @@ namespace SIE
 				defines[lastIndex++] = { "TRUE_PBR", nullptr };
 				if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::AnisoLighting)) != 0) {
 					defines[lastIndex++] = { "GLINT", nullptr };
+				}
+			}
+			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::LandscapeSeams)) != 0) {
+				defines[lastIndex++] = { "LANDSCAPE_SEAMS", nullptr };
+			}
+			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::Reflections)) != 0) {
+				defines[lastIndex++] = { "CUBEMAP_REFLECTIONS", nullptr };
+			}
+			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::FurShells)) != 0) {
+				defines[lastIndex++] = { "FUR_SHELLS", nullptr };
+				if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::FurShellsDepth)) != 0) {
+					defines[lastIndex++] = { "FUR_SHELLS_DEPTH", nullptr };
 				}
 			}
 

@@ -192,7 +192,8 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif
 
 #		if defined(ENVCUBE) && defined(RAIN) && defined(EFFECTS11)
-	vsout.RaindropData.xy = input.TexCoord1.xy * 0.5 + 0.5;
+	// Corner offsets are +-particle size; their sign is the UV within the quad's atlas cell, so one drop fills each particle
+	vsout.RaindropData.xy = step(0, input.TexCoord1.xy);
 #		endif
 
 	return vsout;
@@ -351,7 +352,7 @@ if (SharedData::enbSettings.EnableRain) {
 	float3 raindropColor = lerp(refractColor, reflectColor, fresnel);
 
 #		if defined(LIGHT_LIMIT_FIX)
-	float pointLightingScale = SharedData::enbSettings.Enable ? SharedData::enbSettings.ParticlePointLightingInfluence : 1.0;
+	float pointLightingScale = SharedData::enbSettings.EnableParticle ? SharedData::enbSettings.ParticlePointLightingInfluence : 1.0;
 	uint lightOffset, lightCount;
 	[branch] if (pointLightingScale > 0.0 && GetLightCluster(posWS.xyz, lightOffset, lightCount))
 	{

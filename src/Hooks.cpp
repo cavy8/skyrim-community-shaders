@@ -16,6 +16,7 @@
 #include "Features/Effects11.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
+#include "Features/LandscapeSeams.h"
 #include "Features/LightLimitFix.h"
 #include "Features/NeuralRendering.h"
 #include "Features/PostProcessing.h"
@@ -164,6 +165,19 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 	auto state = globals::state;
 	auto shaderCache = globals::shaderCache;
 
+	constexpr auto landscapeSeamsFlag = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::LandscapeSeams);
+	if (shader->shaderType.get() == RE::BSShader::Type::Lighting && (pixelDescriptor & landscapeSeamsFlag) != 0) {
+		auto probeVertexDescriptor = vertexDescriptor;
+		auto probePixelDescriptor = pixelDescriptor;
+		state->ModifyShaderLookup(*shader, probeVertexDescriptor, probePixelDescriptor);
+		if (!globals::features::landscapeSeams.IsRenderable() ||
+			shaderCache->GetVertexShader(*shader, probeVertexDescriptor) == nullptr ||
+			shaderCache->GetPixelShader(*shader, probePixelDescriptor) == nullptr) {
+			vertexDescriptor &= ~landscapeSeamsFlag;
+			pixelDescriptor &= ~landscapeSeamsFlag;
+		}
+	}
+
 	state->updateShader = true;
 	state->currentShader = shader;
 
@@ -178,6 +192,16 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 
 	NormalizeLegacyUtilityDescriptors(*shader, state->modifiedVertexDescriptor, state->modifiedPixelDescriptor);
 	state->ModifyShaderLookup(*shader, state->modifiedVertexDescriptor, state->modifiedPixelDescriptor);
+
+	constexpr auto reflectionsFlag = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Reflections);
+	constexpr auto deferredFlag = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred);
+	if (shader->shaderType.get() == RE::BSShader::Type::Lighting && !skipPixelShader &&
+		(state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) != 0 &&
+		(state->modifiedPixelDescriptor & deferredFlag) == 0 &&
+		shaderCache->IsEnabled() && state->ShaderEnabled(RE::BSShader::Type::Lighting) &&
+		shaderCache->GetPixelShader(*shader, state->modifiedPixelDescriptor | reflectionsFlag) != nullptr) {
+		state->modifiedPixelDescriptor |= reflectionsFlag;
+	}
 
 	// Only check against non-shader bits
 	state->permutationData.PixelShaderDescriptor &= ~state->modifiedPixelDescriptor;
@@ -565,7 +589,11 @@ struct BSInputDeviceManager_PollInputDevices
 	{
 		// Reflex sleep/cap runs here by design: this executes before rendering work for the frame.
 		// UpdateReflex() enforces "once per frame" internally in case this hook is hit multiple times.
-		globals::features::upscaling.streamline.UpdateReflex();
+		auto& upscaling = globals::features::upscaling;
+		if (upscaling.UsesDLSSGFrameGen() && upscaling.streamlineDX12.featureReflex)
+			upscaling.streamlineDX12.UpdateReflex();
+		else
+			upscaling.streamline.UpdateReflex();
 
 		bool blockedDevice = true;
 

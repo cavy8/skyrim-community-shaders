@@ -113,6 +113,7 @@ struct UnifiedWater : OverlayFeature
 	virtual void DataLoaded() override;
 
 	virtual bool IsCore() const override { return true; }
+	virtual bool IsDisabledByDefault() const override { return false; }
 
 	/** @brief Installs engine hooks for water mesh replacement and worldspace handling. */
 	virtual void PostPostLoad() override;

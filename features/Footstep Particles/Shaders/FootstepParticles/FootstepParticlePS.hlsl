@@ -120,7 +120,7 @@ float4 main(PS_INPUT input) : SV_Target
 	float3 directional = ShadowSampling::GetDirectionalLighting();
 
 #if defined(EFFECTS11)
-	if (SharedData::enbSettings.Enable) {
+	if (SharedData::enbSettings.EnableParticle) {
 		directional *= SharedData::enbSettings.ParticleLightingInfluence;
 		ambient *= SharedData::enbSettings.ParticleAmbientInfluence;
 	}

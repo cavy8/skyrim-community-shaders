@@ -28,7 +28,7 @@
     .\generate-shader-configs.ps1 -OutputDir "custom/path" -Force
 
 .EXAMPLE
-    .\generate-shader-configs.ps1 -LogFile "C:\Path\To\CommunityShaders.log" -OutputName "my-validation.yaml"
+    .\generate-shader-configs.ps1 -LogFile "C:\Path\To\BottledShaders.log" -OutputName "my-validation.yaml"
 
 .NOTES
     Prerequisites:
@@ -82,7 +82,7 @@ function Find-SkyrimPaths {
         $paths += @{
             Name = "Skyrim Special Edition"
             Path = $sePath
-            LogPath = Join-Path $sePath "SKSE\CommunityShaders.log"
+            LogPath = Join-Path $sePath "SKSE\BottledShaders.log"
             ConfigName = "shader-validation.yaml"
             Type = "SE"
         }

@@ -720,6 +720,13 @@ void AdvancedSettingsRenderer::RenderDeveloperSection()
 		ImGui::Text("%s", T("menu.advanced.frame_annotations_tooltip", "Enable detailed frame annotations for debugging render passes and draw calls."));
 	}
 
+	ImGui::Checkbox(T("menu.advanced.throttle_water_cubemap", "Throttle Water Reflection Cubemap"), &globals::state->throttleWaterCubemap);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T("menu.advanced.throttle_water_cubemap_tooltip",
+							  "Redraws one face of the water reflection cubemap per frame instead of two.\n"
+							  "Halves the cost of reflecting distant LOD; reflections refresh over six frames instead of three."));
+	}
+
 	// Half-precision (partial precision) shader compile flag
 	bool partialPrecision = globals::state->enablePartialPrecision.load(std::memory_order_relaxed);
 	if (ImGui::Checkbox(T("menu.advanced.half_precision", "Half Precision (Partial Precision)"), &partialPrecision)) {

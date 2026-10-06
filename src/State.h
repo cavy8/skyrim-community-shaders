@@ -225,6 +225,7 @@ public:
 	void SetAdapterDescription(const std::wstring& description);
 
 	bool frameAnnotations = false;
+	bool throttleWaterCubemap = true;
 
 	// Pass D3DCOMPILE_PARTIAL_PRECISION to fxc. With explicit min16float types this is
 	// mostly belt-and-braces in SM5, but it lets the compiler downgrade unmarked float

@@ -867,6 +867,8 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 	return reflectionColor;
 }
 
+static const float ShoreFadeDepth = 12.0;
+
 float GetScreenDepthWater(float2 screenPosition)
 {
 	float depth = DepthTex.Load(float3(screenPosition, 0)).x;
@@ -956,6 +958,13 @@ DiffuseOutput GetWaterDiffuseColor(PS_INPUT input, float3 normal, float3 viewDir
 
 	float2 refractionUV = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(refractionUvRaw);
 	float3 refractionColor = RefractionTex.Sample(RefractionSampler, refractionUV).xyz;
+
+#				if defined(UNDERWATER)
+	float refractionMul = 0;
+#				else
+	float refractionMul = 1 - pow(saturate((-distanceMul.x * FogParam.z + FogParam.z) / FogParam.w), FogNearColor.w);
+#				endif
+
 	float3 refractionDiffuseColor;
 
 	if (SharedData::enbSettings.EnableWater) {
@@ -966,17 +975,11 @@ DiffuseOutput GetWaterDiffuseColor(PS_INPUT input, float3 normal, float3 viewDir
 		else
 			shallowColor = 1.0;
 
-		shallowColor = lerp(shallowColor.xyz * refractionColor, ShallowColor.xyz, SharedData::enbSettings.WaterMuddiness);
+		shallowColor = lerp(shallowColor.xyz * refractionColor, ShallowColor.xyz, lerp(SharedData::enbSettings.WaterMuddiness, 1.0, refractionMul));
 		refractionDiffuseColor = lerp(Color::Water(shallowColor.xyz), Color::Water(DeepColor.xyz), distanceMul.y);
 	} else {
 		refractionDiffuseColor = lerp(Color::Water(ShallowColor.xyz), Color::Water(DeepColor.xyz), distanceMul.y);
 	}
-
-#				if defined(UNDERWATER)
-	float refractionMul = 0;
-#				else
-	float refractionMul = 1 - pow(saturate((-distanceMul.x * FogParam.z + FogParam.z) / FogParam.w), FogNearColor.w);
-#				endif
 
 	DiffuseOutput output;
 	output.refractionColor = refractionColor;
@@ -1247,12 +1250,22 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float3 sunColor = GetSunColor(normal, viewDirection, input.WPosition.xyz) * surfaceShadow;
 
-	if (SharedData::enbSettings.EnableWater)
+	float surfaceMul = diffuseOutput.refractionMul;
+	float sunMul = depthControl.w;
+	bool shoreFadedSurface = false;
+
+	if (SharedData::enbSettings.EnableWater) {
 		sunColor *= SharedData::enbSettings.WaterSunSpecularMultiplier;
+#					if defined(DEPTH) && !defined(VERTEX_ALPHA_DEPTH)
+		surfaceMul = saturate(distanceMul.w * FogParam.z / ShoreFadeDepth);
+		sunMul = max(sunMul, surfaceMul);
+		shoreFadedSurface = true;
+#					endif
+	}
 
 #					if defined(VC)
-	float specularFraction = lerp(1, fresnel * diffuseOutput.refractionMul, distanceBlendFactor);
-	float3 finalColorPreFog = lerp(diffuseColor, specularColor, specularFraction) + sunColor * depthControl.w;
+	float specularFraction = lerp(1, fresnel * surfaceMul, distanceBlendFactor);
+	float3 finalColorPreFog = lerp(diffuseColor, specularColor, specularFraction) + sunColor * sunMul;
 
 #						if !defined(UNIFIED_WATER)
 	float fogDistanceFactor = input.FogParam.w;
@@ -1303,7 +1316,13 @@ PS_OUTPUT main(PS_INPUT input)
 
 #					else
 	float specularFraction = lerp(1, fresnel, distanceBlendFactor);
+	float waterOpacity = diffuseOutput.refractionMul;
 	float3 finalColorPreFog = lerp(diffuseOutput.refractionDiffuseColor, specularColor, specularFraction) + sunColor * depthControl.w;
+	if (shoreFadedSurface) {
+		float reflectionWeight = specularFraction * surfaceMul;
+		waterOpacity = lerp(diffuseOutput.refractionMul, 1.0, reflectionWeight);
+		finalColorPreFog = (diffuseOutput.refractionDiffuseColor * (diffuseOutput.refractionMul * (1.0 - reflectionWeight)) + specularColor * reflectionWeight + sunColor * sunMul) / max(waterOpacity, 1e-4);
+	}
 
 #						if !defined(UNIFIED_WATER)
 	float fogDistanceFactor = input.FogParam.w;
@@ -1359,7 +1378,7 @@ PS_OUTPUT main(PS_INPUT input)
 #						endif
 	refractionColor = lerp(refractionColor, fogColor, Color::FogAlpha(fogFactor));
 
-	float3 finalColor = lerp(refractionColor, finalColorPreFog, diffuseOutput.refractionMul);
+	float3 finalColor = lerp(refractionColor, finalColorPreFog, waterOpacity);
 #						if defined(WETNESS_EFFECTS) && defined(DEBUG_WETNESS_EFFECTS)
 	// DEBUG MODE: Override water color with debug visualization
 	float3 debugColor = WetnessEffects::GetDebugWetnessColorStandard(waterData.rippleInfo, 2.0, 3.0);
