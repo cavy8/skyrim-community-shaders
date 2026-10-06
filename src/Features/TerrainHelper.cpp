@@ -79,20 +79,28 @@ bool TerrainHelper::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 		}
 
 		// Assign textures to material
+		ExtendedSlots slot;
+		{
+			const std::shared_lock lock(extendedSlotsMutex);
+			if (const auto it = extendedSlots.find(hashKey); it != extendedSlots.end()) {
+				slot = it->second;
+			}
+		}
+
+		for (uint32_t textureI = 0; textureI < 6; ++textureI) {
+			if (textureSets[textureI] == nullptr) {
+				continue;
+			}
+
+			auto txSet = textureSets[textureI];
+			if (txSet->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(3)) != nullptr) {
+				txSet->SetTexture(static_cast<RE::BSTextureSet::Texture>(3), slot.parallax[textureI]);
+			}
+		}
+
 		{
 			const std::unique_lock lock(extendedSlotsMutex);
-			auto& slot = extendedSlots.try_emplace(hashKey).first->second;
-
-			for (uint32_t textureI = 0; textureI < 6; ++textureI) {
-				if (textureSets[textureI] == nullptr) {
-					continue;
-				}
-
-				auto txSet = textureSets[textureI];
-				if (txSet->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(3)) != nullptr) {
-					txSet->SetTexture(static_cast<RE::BSTextureSet::Texture>(3), slot.parallax[textureI]);
-				}
-			}
+			std::swap(extendedSlots[hashKey], slot);
 		}
 	}
 
@@ -168,11 +176,12 @@ void TerrainHelper::BSLightingShader_SetupMaterial(RE::BSLightingShaderMaterialB
 	{
 		const std::shared_lock lock(extendedSlotsMutex);
 
-		if (!extendedSlots.contains(material->hashKey)) {
+		const auto it = extendedSlots.find(material->hashKey);
+		if (it == extendedSlots.end()) {
 			// hash does not exists
 			return;
 		}
-		materialBase = extendedSlots[material->hashKey];
+		materialBase = it->second;
 	}
 
 	const auto state = globals::state;

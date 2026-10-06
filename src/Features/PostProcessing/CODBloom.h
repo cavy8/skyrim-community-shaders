@@ -6,13 +6,14 @@
 
 struct CODBloom : public PostProcessFeature
 {
+	bool outputReady = false;
 	virtual inline std::string GetType() const override { return "COD Bloom"; }
 	virtual inline std::string GetDisplayName() const override { return T("feature.post_processing.codbloom.name", "COD Bloom"); }
 	virtual inline std::string GetDesc() const override { return T("feature.post_processing.codbloom.description", "Bloom effect used in Call of Duty: Advanced Warfare. Expect HDR linear RGB inputs."); }
 	virtual bool WritesToMainTexture() const override { return false; }
 	virtual inline bool DisableInMainLoadingMenu() const override { return true; }
 
-	TextureInfo GetBloomOutput() const { return { texBloom->resource.get(), texBloomMipSRVs[0].get() }; }
+	TextureInfo GetBloomOutput() const { return outputReady ? TextureInfo{ texBloom->resource.get(), texBloomMipSRVs[0].get() } : TextureInfo{}; }
 
 	constexpr static size_t s_BloomMips = 9;
 

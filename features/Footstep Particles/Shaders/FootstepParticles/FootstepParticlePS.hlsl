@@ -92,8 +92,11 @@ float4 main(PS_INPUT input) : SV_Target
 
 	float shape;
 	if (type == FootstepParticles::TypeClod) {
-		float edge = 0.82 + 0.18 * sin(atan2(uv.y, uv.x) * 5.0 + input.Seed * Math::TAU);
-		shape = saturate((edge - sqrt(radiusSquared)) * 6.0);
+		float lumpScale = snowy ? 2.3 : 1.7;
+		float2 rotatedUV = float2(uv.x * 0.8 - uv.y * 0.6, uv.x * 0.6 + uv.y * 0.8);
+		float lumps = Random::perlinNoise(float3(uv * lumpScale, input.Seed * 23.0)) * 0.7 + Random::perlinNoise(float3(rotatedUV * lumpScale * 2.1, input.Seed * 23.0 + 7.0)) * 0.3;
+		float edge = snowy ? 0.66 + 0.3 * lumps : 0.76 + 0.22 * lumps;
+		shape = saturate((edge - sqrt(radiusSquared)) * (snowy ? 3.5 : 6.0));
 	} else if (type == FootstepParticles::TypeDroplet) {
 		shape = saturate((1.0 - radiusSquared) * 2.5);
 	} else {
@@ -170,8 +173,10 @@ float4 main(PS_INPUT input) : SV_Target
 		float phase = lerp(1.0, (1.0 - g * g) / (denominator * sqrt(denominator)), 0.5);
 		color = input.Color.rgb * (ambient + directional * shadow * phase + pointLighting);
 		if (snowy) {
-			float2 cell = floor(uv * 6.0 + input.Seed * 37.0);
+			float2 cellUV = uv * 6.0 + input.Seed * 37.0;
+			float2 cell = floor(cellUV);
 			float sparkle = step(0.93, FootstepParticles::Hash(asuint(cell.x) * 73856093u ^ asuint(cell.y) * 19349663u, asuint(input.Seed)));
+			sparkle *= 1.0 - smoothstep(0.08, 0.25, length(frac(cellUV) - 0.5));
 			highlight = directional * shadow * sparkle * phase * 0.5;
 		}
 	}

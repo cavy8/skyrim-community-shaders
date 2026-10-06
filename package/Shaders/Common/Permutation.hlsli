@@ -80,15 +80,12 @@ namespace Permutation
 		static const uint IsEye = (1 << 7);
 		static const uint NoSnow = (1 << 8);
 		static const uint NoFoliageTint = (1 << 9);
-		// Bits above are Bottle's, verbatim. Local bits are allocated downward from
-		// bit 31 and must mirror State::ExtraShaderDescriptors (State.h).
-		//
-		// Set on any geometry belonging to a humanoid (ActorTypeNPC) actor;
-		// see NeuralRenderingCategories::Equipment.
+		static const uint IsAurora = (1 << 10);
+		static const uint IsMoon = (1 << 11);
+		// Allocated downward from bit 31; keep in sync with State::ExtraShaderDescriptors (State.h).
+		// Geometry of a humanoid (ActorTypeNPC) actor; see NeuralRenderingCategories::Equipment.
 		static const uint IsHumanoidActor = (1u << 31);
-		// Set on geometry belonging to a hair or facial-hair head part of its
-		// actor, whatever shader type it was authored with; see
-		// NeuralRenderingCategories::Hair.
+		// Hair or facial-hair head part, whatever its shader type; see NeuralRenderingCategories::Hair.
 		static const uint IsHair = (1u << 30);
 	}
 

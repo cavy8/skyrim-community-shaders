@@ -115,7 +115,6 @@ namespace globals
 		Skin skin{};
 		SnowCover snowCover{};
 		FootstepParticles footstepParticles{};
-		// Local (non-Bottle) features follow.
 		NeuralRendering neuralRendering{};
 		HairBacklighting hairBacklighting{};
 

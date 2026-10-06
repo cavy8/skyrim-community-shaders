@@ -148,7 +148,6 @@ namespace globals
 		extern Skin skin;
 		extern SnowCover snowCover;
 		extern FootstepParticles footstepParticles;
-		// Local (non-Bottle) features follow.
 		extern NeuralRendering neuralRendering;
 		extern HairBacklighting hairBacklighting;
 

@@ -469,6 +469,7 @@ void PhysicalGlare::SetupResources()
 
 void PhysicalGlare::ClearShaderCache()
 {
+	outputReady = false;
 	BumpShaderGeneration();
 	auto const shaderPtrs = std::array{
 		&thresholdCS, &apertureCS, &tearFilmCS, &psfCS, &multiplyCS, &packCS, &compositeCS
@@ -1046,4 +1047,5 @@ void PhysicalGlare::Draw(TextureInfo& inout_tex)
 	globals::profiler->EndPass();
 
 	state->EndPerfEvent();
+	outputReady = true;
 }

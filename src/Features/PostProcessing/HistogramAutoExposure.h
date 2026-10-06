@@ -69,7 +69,7 @@ struct HistogramAutoExposure : public PostProcessFeature
 
 	/// Get the adaptation structured buffer SRV (contains a single float: adapted luminance).
 	/// Used by the Composite pass to apply exposure.
-	ID3D11ShaderResourceView* GetAdaptationSRV() const { return adaptationSB ? adaptationSB->SRV() : nullptr; }
+	ID3D11ShaderResourceView* GetAdaptationSRV() const { return adaptationSB && !resetAdaptation ? adaptationSB->SRV() : nullptr; }
 
 	/// Get the constant buffer containing exposure parameters (for Composite pass).
 	ID3D11Buffer* GetConstantBuffer() const { return autoExposureCB ? autoExposureCB->CB() : nullptr; }
@@ -83,4 +83,5 @@ struct HistogramAutoExposure : public PostProcessFeature
 	int histogramReadbackRequestFrame = -1;
 
 	bool hasMeasuredAdaptation = false;
+	bool resetAdaptation = true;
 };

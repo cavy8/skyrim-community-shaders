@@ -15,7 +15,7 @@ static const int kNeuralBandTaps = 17;
 static const int kNeuralBandHalfTaps = kNeuralBandTaps / 2;
 // Gaussian sigma in tap units; outer taps retain about 4% of the center weight.
 static const float kNeuralBandSigma = 4.0;
-// Edge weight: exp(-sharpness * abs(delta log luminance)); matches Open Shaders.
+// Edge weight: exp(-sharpness * abs(delta log luminance)).
 static const float kNeuralBandEdgeSharpness = 2.0;
 
 Texture2D<float2> SourceToneData : register(t0);
@@ -36,9 +36,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 	int2 limit = int2(work) - 1;
 	float2 centreData = SourceToneData[centre];
 
-	// Band Radius is in model texels at native scale, so it has to shrink with the model
-	// raster to cover the same part of the screen. ActiveSize is the colour region the model
-	// raster stands for; their ratio is the scale.
+	// Band Radius is in model texels at native scale; scale it by the WorkSize/ActiveSize ratio to cover
+	// the same screen area.
 	float2 modelScale = float2(work) / max(float2(ActiveSize), 1.0);
 #ifdef VERTICAL
 	float axisScale = modelScale.y;

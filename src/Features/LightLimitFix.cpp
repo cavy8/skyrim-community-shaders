@@ -1232,8 +1232,9 @@ void LightLimitFix::ScheduleLocalShadowCasters()
 	if (!loaded || REL::Module::IsVR())
 		return;
 
-	MatchShadowDistanceToLightFade(settings.EnableLocalShadows && Util::IsInterior());
-	if (!settings.EnableLocalShadows)
+	const bool cacheActive = settings.EnableLocalShadows && localShadowCache;
+	MatchShadowDistanceToLightFade(cacheActive && Util::IsInterior());
+	if (!cacheActive)
 		return;
 
 	auto smState = globals::game::smState;

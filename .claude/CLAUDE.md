@@ -55,28 +55,6 @@ harness instead: capture one frame, swap just that shader, diff against the ship
 -   New features: start from `docs/new-feature-template/`; `NewFeatureReadme.md` there lists the required registration edits. GPU-heavy features need a user toggle.
 -   Changing a feature's settings structure requires a version bump in its `.ini`.
 
-## Maintenance Baseline and Provenance (Personal branch)
-
-Bottle-Compendium (InTheBottle/Bottled-Shaders), pinned in `docs/development/upstreams.yaml`,
-is the primary maintenance baseline. Since the 2026-09-26 simplification, Personal is Bottle
-plus exactly: the Neural Rendering feature (and its seams/hotkeys), the Screenshot SDR fix,
-`BuildPersonal.bat`, and its own docs/tooling (Hair Backlighting and the "Show Background Compile
-Overlay" toggle are Bottle's now), plus
-owner-approved changes to Bottle features: Upscaling fix F1 (Streamline `motionVectorsDilated`)
-and Post Processing P1 (feature on, every effect off by default) and P2 (DoF target focus only
-while actively targeting). Everything else that used to differ is listed in `docs/development/removed-features.md`.
-See `docs/development/maintainability.md`.
-
-Before modifying a shared feature:
-
-1. read its entries in `docs/development/feature-provenance.yaml` and `maintenance-policy.yaml`;
-2. compare actual current source against the pinned Bottle SHA (`tools/bottle_sync.py`);
-3. preserve every documented component, seam and `shared_integrations` hunk;
-4. never infer provenance from repository path, commit author, or a generic "feat:" subject;
-5. Upscaling must stay Bottle + the documented NR seam and fix F1 only;
-6. prefer Bottle: record every new deviation in `maintenance-policy.yaml` in the same change
-   (`bottle_sync.py` fails on any unclaimed file or unattributed shared-file hunk).
-
 ## SE/AE runtime targeting (CommonLibSSE-NG)
 
 The default `ALL` preset builds one binary for SE and AE. Resolve addresses and offsets per runtime with the SE/AE pair form used throughout `src/`:

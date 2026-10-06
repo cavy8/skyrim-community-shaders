@@ -269,20 +269,11 @@ public:
 		IsEye = 1 << 7,
 		NoSnow = 1 << 8,
 		NoFoliageTint = 1 << 9,
-		// Bits above are Bottle's, verbatim and in Bottle's order (new Bottle bits are
-		// appended upward). Local (non-Bottle) bits are allocated downward from bit 31.
-		// Mirror every change in Permutation::ExtraFlags (Permutation.hlsli).
-		//
-		// Set by NeuralRendering::SetupGeometryCategory when the drawn
-		// geometry belongs to a humanoid (ActorTypeNPC) actor. Skin, hair and
-		// eyes are claimed by their own permutations first, so this only
-		// resolves to armor, clothing and weapons - see
-		// NeuralRenderingCategories::Equipment.
+		IsAurora = 1 << 10,
+		IsMoon = 1 << 11,
+		// Humanoid (ActorTypeNPC) geometry, set by NeuralRendering::SetupGeometryCategory.
 		IsHumanoidActor = 1u << 31,
-		// Set by NeuralRendering::SetupGeometryCategory when the drawn
-		// geometry belongs to a hair or facial-hair head part of its actor,
-		// whatever shader type the piece was authored with - see
-		// NeuralRenderingCategories::Hair.
+		// Hair or facial-hair head part, set by NeuralRendering::SetupGeometryCategory.
 		IsHair = 1u << 30
 	};
 
@@ -350,6 +341,7 @@ public:
 	 * @param a_pass The render pass to inspect.
 	 */
 	void UpdateSkyShaderPermutation(RE::BSRenderPass* a_pass);
+	void UpdateEffectShaderPermutation(RE::BSRenderPass* a_pass);
 	/**
 	 * @brief Checks whether directional shadows are available for the current scene.
 	 * @returns true if directional shadows are present, false otherwise.

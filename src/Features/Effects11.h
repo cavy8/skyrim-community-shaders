@@ -138,8 +138,24 @@ public:
 
 		float3 VolumetricRaysSkyColor;
 		float VolumetricRaysPad0;
+
+		float StarsCurve;
+		float StarsIntensity;
+		float MoonCurve;
+		uint EnableAnimatedStars;
+
+		float StarsAnimationTime;
+		float StarsAnimationDensity;
+		float StarsAnimationIntensity;
+		float AuroraIntensity;
+
+		float AuroraCurve;
+		uint FixBlackCrush;
+		float NightSkyPad0;
+		float NightSkyPad1;
 	};
 	static_assert(sizeof(PerFrame) % 16 == 0);
+	static_assert(offsetof(PerFrame, StarsCurve) % 16 == 0);
 	static_assert(offsetof(PerFrame, VolumetricFogColorFilter) % 16 == 0);
 	static_assert(offsetof(PerFrame, VolumetricRaysSkyColor) % 16 == 0);
 	static_assert(offsetof(PerFrame, EnableCloudsScattering) % 16 == 0);
@@ -237,16 +253,17 @@ private:
 
 	uint tonemapReplacedFrame = UINT32_MAX;  ///< frameCount when the effect chain last wrote the tonemap output
 
-	// The feature buffer is rebuilt several times per frame, so GetCommonBufferData's lookups are replayed from here
-	PerFrame perFrameCache{};
-	Util::FrameChecker perFrameCacheChecker;
-
+	/** @brief Point light settings, resolved once per frame in CheckCommonData since OverridePointLightColor runs per light. */
 	struct PointLightingParams
 	{
 		float curve = 1.0f;
 		float desaturation = 0.0f;
 		float intensity = 1.0f;
 	} pointLighting;
+
+	// The feature buffer is rebuilt several times per frame, so GetCommonBufferData's lookups are replayed from here
+	PerFrame perFrameCache{};
+	Util::FrameChecker perFrameCacheChecker;
 };
 
 #pragma warning(pop)

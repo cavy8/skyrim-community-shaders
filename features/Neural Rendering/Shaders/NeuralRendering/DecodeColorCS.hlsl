@@ -1,5 +1,6 @@
 #include "Common/NeuralRenderingCategories.hlsli"
 #include "NeuralRendering/ColorTransfer.hlsli"
+#include "NeuralRendering/TemporalReprojection.hlsli"
 #include "NeuralRendering/TransferParams.hlsli"
 
 Texture2D<float4> ModelColor : register(t0);                   // Feature 18 answer, display-referred proxy domain.
@@ -11,6 +12,7 @@ Texture2D<float2> VanillaAdaptation : register(t5);            // Same inputs En
 StructuredBuffer<float> PostProcessAdaptation : register(t6);  // so a stale proxy can be compared with a fresh encode.
 Texture2D<float2> MotionVectors : register(t7);                // Game motion vectors at the guide resolution (current -> previous, normalised UV).
 Texture2D<float2> ToneLow : register(t8);                      // y: the edge-aware blur of the edit (FilterToneDataCS); x unused here.
+Texture2D<float4> PreviousGuides : register(t9);               // Previous raw motion, depth, and material category.
 RWTexture2D<float4> DestinationColor : register(u0);
 // Debug statistics: clamp count, sample count, and asuint peak luminance. Sampled on an 8x8 grid when
 // enabled.
@@ -112,11 +114,21 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 	// the clean input.
 	float2 answerUV = uv;
 	bool answerOnScreen = true;
+	float temporalWeight = 1.0;
 	if (StaleAnswer != 0 && all(GuideSize > 0)) {
 		float2 motionCoord = NeuralGuidePosition(dispatchThreadID.xy, GuideSize, ActiveSize, GuideJitterOffset) - 0.5;
 		int2 motionTexel = clamp((int2)round(motionCoord), int2(0, 0), int2(GuideSize) - 1);
 		answerUV = uv + MotionVectors.Load(int3(motionTexel, 0));
-		answerOnScreen = all(answerUV >= 0.0) && all(answerUV <= 1.0);
+		int2 previousTexel;
+		answerOnScreen = NeuralPreviousGuideTexel(answerUV, GuideSize, PreviousGuideJitter.xy, previousTexel);
+		temporalWeight = 0.0;
+		if (answerOnScreen) {
+			float4 previous = PreviousGuides.Load(int3(previousTexel, 0));
+			uint category = NeuralRenderingCategories::Unpack(MaterialCategories.Load(int3(motionTexel, 0)));
+			temporalWeight = NeuralTemporalSurfaceWeight(GuideDepth.Load(int3(motionTexel, 0)), category, previous);
+		}
+		if (!answerOnScreen)
+			answerUV = uv;  // Never pass a non-finite motion coordinate to a texture sampler.
 	}
 	float4 model = ModelColor.SampleLevel(LinearClampSampler, answerUV, 0);
 	float4 proxy = ProxyColor.SampleLevel(LinearClampSampler, answerUV, 0);
@@ -177,8 +189,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 		categoryHueGuardAmount /= max(totalTapWeight, 1e-5);
 	}
 
-	// Category controls shape the local result first. The existing global sliders
-	// remain a final multiplier over every category.
+	// Category controls shape the local result; the global sliders multiply on top.
 	float editWeight = categoryTransferStrength * TransferStrength;
 	// Fade stale edits where reprojected content differs. Match proxy exposure for comparison; undo it for
 	// scene-domain debug views.
@@ -190,18 +201,15 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 			ProxyCurve);
 		displayExposure = display.exposure;
 		if (StaleAnswer != 0)
-			editWeight *= answerOnScreen ? NeuralStaleEditWeight(proxy, original, ColorDomain, modelSpace, display) : 0.0;
+			editWeight *= temporalWeight * NeuralStaleEditWeight(proxy, original, ColorDomain, modelSpace, display);
 	}
 	if (DepthAwareResolve != 0 && all(GuideSize > 0)) {
-		// Left fractional (not rounded to a texel) so NeuralSilhouetteWeight can
-		// bilinearly blend across the guide/active resolution mismatch instead of
-		// aliasing on thin silhouettes.
+		// Left fractional so NeuralSilhouetteWeight can blend across the guide/active resolution mismatch.
 		float2 guideTexel = NeuralGuidePosition(dispatchThreadID.xy, GuideSize, ActiveSize, GuideJitterOffset);
 		editWeight *= NeuralSilhouetteWeight(GuideDepth, LinearClampSampler, guideTexel, GuideSize);
 	}
 
-	// The band split is sampled at the same (possibly reprojected) model position as the
-	// answer it belongs to, so a reused answer carries its own band data with it.
+	// Sample the band split at the same (possibly reprojected) model position as the answer.
 	NeuralResolveInputs resolveInputs;
 	resolveInputs.modelColor = model;
 	resolveInputs.proxyColor = proxy;
@@ -240,8 +248,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint groupIndex : SV_Gro
 		DestinationColor[dispatchThreadID.xy] = NeuralBandDebugColor(resolveDebug.highBand, displayExposure, ColorDomain, original.a);
 		return;
 	}
-	// "Show Guard Clamping": tint the pixels the guard caught, leaving the rest of the frame
-	// readable underneath so it is obvious *what* is being clamped.
+	// Tint the pixels the guard clamped, leaving the rest of the frame readable.
 	if ((DebugFlags & kNeuralDebugGuardClamp) != 0 && resolveDebug.clamped != 0) {
 		float3 marker = resolveDebug.clamped > 0 ? float3(1.0, 0.0, 0.0) : float3(0.0, 0.3, 1.0);
 		if (ColorDomain != kNeuralColorDomainDisplayGamma)

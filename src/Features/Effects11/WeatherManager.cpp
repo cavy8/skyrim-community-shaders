@@ -167,7 +167,7 @@ void WeatherManager::LoadLocationWeather()
 
 		uint32_t worldSpaceID = 0;
 		try {
-			worldSpaceID = ParseHexID(sectionName);
+			worldSpaceID = ParseHexID(sectionName) & LocalFormIDMask;
 		} catch (...) {
 			continue;
 		}
@@ -197,7 +197,7 @@ void WeatherManager::LoadLocationWeather()
 			std::string weatherStr = entry.substr(eqPos + 1);
 
 			try {
-				uint32_t locationID = ParseHexID(locationStr);
+				uint32_t locationID = ParseHexID(locationStr) & LocalFormIDMask;
 				uint32_t fakeWeatherID = ParseHexID(weatherStr);
 				if (locationID != 0 && fakeWeatherID != 0) {
 					locationWeatherMap[worldSpaceID][locationID] = fakeWeatherID;
@@ -243,11 +243,11 @@ uint32_t WeatherManager::GetEffectiveWeatherID(uint32_t actualWeatherID)
 
 	try {
 		if (auto worldSpace = parentCell->GetRuntimeData().worldSpace) {
-			worldSpaceID = worldSpace->GetFormID() & 0x00FFFFFF;
+			worldSpaceID = worldSpace->GetFormID() & LocalFormIDMask;
 		}
 
 		if (auto location = parentCell->GetLocation()) {
-			locationID = location->GetFormID() & 0x00FFFFFF;
+			locationID = location->GetFormID() & LocalFormIDMask;
 		}
 	} catch (...) {
 		return actualWeatherID;

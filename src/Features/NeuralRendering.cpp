@@ -180,8 +180,7 @@ namespace
 		SanitizeFloat(a_values.detailLuminosity, 1.0f, 0.0f, 2.0f);
 		SanitizeFloat(a_values.bandRadius, 8.0f, 2.0f, 32.0f);
 		SanitizeFloat(a_values.maxRatio, 2.0f, 1.0f, 8.0f);
-		// Out of range (including the retired HDR Linear, 3) falls back to the proxy the default
-		// preset uses.
+		// Out of range falls back to the default preset's proxy.
 		if (a_values.proxyCurve >= static_cast<uint>(ProxyCurve::kCount))
 			a_values.proxyCurve = static_cast<uint>(ProxyCurve::kDisplayMatched);
 		for (auto& category : a_values.categories) {
@@ -839,7 +838,7 @@ void NeuralRendering::DrawSettings()
 
 	ImGui::SliderFloat(T(TKEY("intensity"), "NR Intensity"), &settings.intensity, 0.0f, 2.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted(T(TKEY("intensity_tooltip"), "Adjust the overall enhancement intensity. Changes apply when the slider settles."));
+		ImGui::TextUnformatted(T(TKEY("intensity_tooltip"), "Adjust the overall enhancement intensity. Changes apply on the next Neural Rendering evaluation."));
 	}
 
 	// Runtime-only comparison controls.
@@ -1292,57 +1291,7 @@ void NeuralRendering::SaveSettings(json& o_json)
 
 void NeuralRendering::LoadSettings(json& o_json)
 {
-	// Record key presence before deserialization for settings migration.
-	const bool hasPreset = o_json.is_object() && o_json.contains("preset");
-	const bool hasShowAdvanced = o_json.is_object() && o_json.contains("showAdvanced");
-	const bool hasBandStrengths = o_json.is_object() &&
-	                              (o_json.contains("broadLuminosity") || o_json.contains("detailLuminosity"));
-	float legacyLuminosity = 1.0f;
-	bool hasLegacyLuminosity = false;
-	if (o_json.is_object()) {
-		if (const auto entry = o_json.find("luminosityStrength");
-			entry != o_json.end() && entry->is_number()) {
-			legacyLuminosity = entry->get<float>();
-			hasLegacyLuminosity = true;
-		}
-	}
-	// The same split per category, keyed by each block's JSON name (kCategoryKeys).
-	std::array<std::optional<float>, kMaterialCategoryCount> legacyCategoryLuminosity{};
-	if (o_json.is_object()) {
-		for (std::size_t index = 0; index < kMaterialCategoryCount; ++index) {
-			const auto block = o_json.find(kCategoryKeys[index]);
-			if (block == o_json.end() || !block->is_object() || block->contains("broadLuminosity") ||
-				block->contains("detailLuminosity"))
-				continue;
-			if (const auto entry = block->find("luminosityStrength"); entry != block->end() && entry->is_number())
-				legacyCategoryLuminosity[index] = entry->get<float>();
-		}
-	}
-
 	settings = o_json;
-
-	// A category block written before the split carried one luminosityStrength; Broad = Detail
-	// = that value is the same edit, exactly as for the global pair below.
-	{
-		const auto categories = CategorySettings();
-		for (std::size_t index = 0; index < kMaterialCategoryCount; ++index) {
-			if (legacyCategoryLuminosity[index]) {
-				categories[index]->broadLuminosity = *legacyCategoryLuminosity[index];
-				categories[index]->detailLuminosity = *legacyCategoryLuminosity[index];
-			}
-		}
-	}
-
-	// Preserve legacy luminosity by assigning it to both bands; omit the old key on save.
-	if (hasLegacyLuminosity && !hasBandStrengths) {
-		settings.broadLuminosity = legacyLuminosity;
-		settings.detailLuminosity = legacyLuminosity;
-	}
-
-	// A config from before presets existed keeps every value it stored; it is labelled Full and,
-	// wherever it differs, "Full (modified)". Nobody's look changes silently on upgrade.
-	if (!hasPreset)
-		settings.preset = static_cast<uint>(Preset::kFull);
 
 	{
 		auto values = CapturePresetValues();
@@ -1351,7 +1300,7 @@ void NeuralRendering::LoadSettings(json& o_json)
 	}
 	if (settings.resolutionMode > 1)
 		settings.resolutionMode = 1;
-	// Scales above native (model supersampling) are no longer offered; a saved one runs at native.
+	// Scales above native are not offered; a saved one runs at native.
 	SanitizeFloat(settings.resolutionScale, 1.0f, 0.25f, 1.0f);
 	SanitizeFloat(settings.resolutionScaleX, 1.0f, 0.25f, 1.0f);
 	SanitizeFloat(settings.resolutionScaleY, 1.0f, 0.25f, 1.0f);
@@ -1365,10 +1314,6 @@ void NeuralRendering::LoadSettings(json& o_json)
 		logger::info("[NeuralRendering] Preset '{}' no longer exists; keeping its values", settings.userPreset);
 		settings.userPreset.clear();
 	}
-
-	// Keep Advanced visible for migrated settings that differ from Full.
-	if (!hasShowAdvanced)
-		settings.showAdvanced = !MatchesPreset(static_cast<Preset>(settings.preset));
 }
 
 void NeuralRendering::RestoreDefaultSettings()
@@ -1378,30 +1323,6 @@ void NeuralRendering::RestoreDefaultSettings()
 	settings.showAdvanced = false;
 }
 
-void NeuralRendering::MigrateLegacyUpscalingSettings(json& a_root)
-{
-	const std::string name = globals::features::neuralRendering.GetName();
-	if (!a_root.is_object() || a_root.contains(name))
-		return;
-	auto upscaling = a_root.find(globals::features::upscaling.GetName());
-	if (upscaling == a_root.end() || !upscaling->is_object())
-		return;
-
-	constexpr std::string_view kLegacyPrefix = "neuralRendering";
-	json migrated = json::object();
-	for (const auto& [key, value] : upscaling->items()) {
-		if (key.size() <= kLegacyPrefix.size() || !key.starts_with(kLegacyPrefix))
-			continue;
-		std::string newKey = key.substr(kLegacyPrefix.size());
-		newKey[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(newKey[0])));
-		migrated[newKey] = value;
-	}
-	if (migrated.empty())
-		return;
-
-	logger::info("[NeuralRendering] Migrated {} legacy settings from the Upscaling section", migrated.size());
-	a_root[name] = std::move(migrated);
-}
 // Lifecycle and hooks
 
 void NeuralRendering::DataLoaded()
@@ -1612,7 +1533,7 @@ void NeuralRendering::ResolveUpscaledFrame(Texture2D* a_upscaled)
 			resourcesActive = true;
 			auto renderer = globals::game::renderer;
 			auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-			// The category snapshot (opaque categories captured before decals, forward categories added after), not the live Masks2 - see CaptureCategories.
+			// The category snapshot, not the live Masks2 (see CaptureCategories).
 			auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 			auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 			// After the upscaler the colour input is display resolution, but depth and
@@ -1731,9 +1652,8 @@ void NeuralRendering::CaptureCategories()
 	// from a frame that never reached Main_PostProcessing.
 	forwardCaptureActive = false;
 
-	// Only paid for when Neural Rendering can actually consume it: DLSS-only.
-	// The decode shader always samples the category texture now, since each
-	// category's hue guard toggle needs to know which material a pixel is.
+	// Needed only when Neural Rendering can consume it (DLSS only). The decode always samples categories
+	// for the per-category hue guard.
 	if (!settings.enabled)
 		return;
 	if (!IsDLSSActive())
@@ -2040,7 +1960,7 @@ bool NeuralRendering::EvaluateFinishedImage(ID3D11Texture2D* a_colorIn, ID3D11Sh
 		return false;
 	}
 
-	// The category snapshot (opaque categories captured before decals, forward categories added after), not the live Masks2 - see CaptureCategories.
+	// The category snapshot, not the live Masks2 (see CaptureCategories).
 	auto* materialCategoriesSRV = materialCategoriesSnapshot ? materialCategoriesSnapshot->srv.get() : nullptr;
 
 	// Color is resolved at display resolution; depth, motion, and categories remain jittered at render
@@ -2331,7 +2251,8 @@ void NeuralRendering::ServiceComparison(bool a_framePhaseStart)
 			                        IsAvailable() &&
 			                        globals::features::screenshotFeature.loaded;
 			if (!canCompare) {
-				ShowHUDMessageDeferred("Neural Rendering comparison needs DLSS active and Frame Generation off");
+				ShowHUDMessageDeferred(T("feature.neural_rendering.comparison_requirements",
+					"Neural Rendering comparison needs DLSS active and Frame Generation off"));
 				return;
 			}
 
@@ -2371,7 +2292,8 @@ void NeuralRendering::ServiceComparison(bool a_framePhaseStart)
 		settings.enabled = compareUserSetting;  // restore
 		RequestHistoryReset();
 		compareStep = 0;
-		ShowHUDMessageDeferred("Saved Neural Rendering comparison to Data/DLSS 5 Screenshots");
+		ShowHUDMessageDeferred(T("feature.neural_rendering.comparison_saved",
+			"Saved Neural Rendering comparison to Data/DLSS 5 Screenshots"));
 		break;
 	default:
 		break;

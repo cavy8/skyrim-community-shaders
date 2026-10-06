@@ -1,3 +1,4 @@
+// Derived in part from YtzyFvra/skyrim-community-shaders (feature/dlssnr-vr), GPL-3.0-or-later.
 #include "Runtime.h"
 
 #include "Utils/FileSystem.h"
@@ -50,6 +51,9 @@ namespace NeuralRenderingNGX
 			const char*, const wchar_t*, ID3D12Device*, NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo*);
 		using InitD3D12WithApplicationId = NVSDK_NGX_Result(NVSDK_CONV*)(unsigned long long, const wchar_t*,
 			ID3D12Device*, NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo*);
+		// The snippet's Init_Ext takes an NGX parameter block, unlike the core's feature-path info.
+		using InitD3D12Snippet = NVSDK_NGX_Result(NVSDK_CONV*)(unsigned long long, const wchar_t*,
+			ID3D12Device*, NVSDK_NGX_Version, const NVSDK_NGX_Parameter*);
 		using ShutdownD3D12 = NVSDK_NGX_Result(NVSDK_CONV*)(ID3D12Device*);
 		using AllocateParameters = NVSDK_NGX_Result(NVSDK_CONV*)(NVSDK_NGX_Parameter**);
 		using DestroyParameters = NVSDK_NGX_Result(NVSDK_CONV*)(NVSDK_NGX_Parameter*);
@@ -310,17 +314,7 @@ namespace NeuralRenderingNGX
 			return false;
 		}
 		const auto version = Util::GetDllVersion(path_.wstring());
-		if (!version) {
-			status_ = RuntimeStatus::VersionUnavailable;
-			detail_ = "DLL version resource is unavailable";
-			return false;
-		}
-		version_ = Util::GetFormattedVersion(*version);
-		if (version->major() != 310 || version->minor() != 8) {
-			status_ = RuntimeStatus::UnsupportedVersion;
-			detail_ = std::format("expected DLSSNR 310.8.x, found {}", version_);
-			return false;
-		}
+		version_ = version ? Util::GetFormattedVersion(*version) : "unavailable";
 		module_ = LoadLibraryExW(path_.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 		if (!module_) {
 			status_ = RuntimeStatus::LoadFailed;
@@ -397,6 +391,11 @@ namespace NeuralRenderingNGX
 		discovery.Identifier.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Application_Id;
 		discovery.Identifier.v.ApplicationId = applicationId_;
 		NVSDK_NGX_FeatureRequirement requirement{};
+		SignedRuntimePathScope scope(static_cast<HMODULE>(module_), path_.parent_path() / L"nvngx.dll");
+		if (!scope.IsInstalled()) {
+			logger::warn("[DLSSNR] GetFeatureRequirements(18) caller-path scope could not be installed");
+			return;
+		}
 		const auto result = query(adapter.get(), &discovery, &requirement);
 		if (result != NVSDK_NGX_Result_Success) {
 			logger::info("[DLSSNR] GetFeatureRequirements(18) failed 0x{:08X}", static_cast<std::uint32_t>(result));
@@ -423,7 +422,7 @@ namespace NeuralRenderingNGX
 		if (writablePath.empty()) {
 			wchar_t tempPath[MAX_PATH]{};
 			GetTempPathW(MAX_PATH, tempPath);
-			writablePath = std::filesystem::path(tempPath) / L"OpenShaders-NGX";
+			writablePath = std::filesystem::path(tempPath) / L"BottledShaders-NGX";
 		}
 		std::error_code error;
 		std::filesystem::create_directories(writablePath, error);
@@ -484,6 +483,33 @@ namespace NeuralRenderingNGX
 			return false;
 		}
 		parameters_ = parameters;
+
+		// Core initialization supplies the allocator and DLSS-SR loader. Direct calls into the NR snippet
+		// also require its own per-device initialization; core success alone does not establish that state.
+		auto initializeSnippet = reinterpret_cast<InitD3D12Snippet>(
+			GetProcAddress(static_cast<HMODULE>(module_), "NVSDK_NGX_D3D12_Init_Ext"));
+		std::uint32_t proxyHits = 0;
+		{
+			SignedRuntimePathScope scope(static_cast<HMODULE>(module_), path_.parent_path() / L"nvngx.dll");
+			if (scope.IsInstalled()) {
+				ngxResult_ = static_cast<std::uint32_t>(initializeSnippet(applicationId_,
+					writablePath.c_str(), device, NVSDK_NGX_Version_API, parameters));
+			} else {
+				ngxResult_ = static_cast<std::uint32_t>(NVSDK_NGX_Result_FAIL_PlatformError);
+			}
+			proxyHits = scope.Hits();
+		}
+		if (ngxResult_ != NVSDK_NGX_Result_Success) {
+			const auto initializationResult = ngxResult_;
+			Shutdown();
+			status_ = RuntimeStatus::InitializationFailed;
+			ngxResult_ = initializationResult;
+			detail_ = std::format("DLSSNR snippet D3D12 init failed 0x{:08X} proxyHits={}", initializationResult, proxyHits);
+			return false;
+		}
+		snippetInitialized_ = true;
+		logger::info("[DLSSNR] DLSSNR snippet D3D12 initialized sdk=0x{:X} proxyHits={}",
+			static_cast<std::uint32_t>(NVSDK_NGX_Version_API), proxyHits);
 		status_ = RuntimeStatus::Initialized;
 		LogFeatureRequirements(device);
 		return true;
@@ -522,8 +548,8 @@ namespace NeuralRenderingNGX
 			parameters->Set("CreationNodeMask", 1u);
 			parameters->Set("VisibilityNodeMask", 1u);
 
-			// Tuning is latched at creation. The backend drains and resets the feature before applying settled
-			// changes.
+			// The render preset is creation-time state. Initial tuning is also supplied for compatibility
+			// with the private Feature 18 interface; evaluation writes below are the live tuning path.
 			parameters->Set("DLSSNR.Hint.Render.Preset", 0u);
 			parameters->Set("DLSSNR.Intensity", tuning.intensity);
 			parameters->Set("DLSSNR.Style", tuning.style);
@@ -532,9 +558,7 @@ namespace NeuralRenderingNGX
 			parameters->Set("DLSSNR.SkinStructureStrength", tuning.skinStructureStrength);
 			parameters->Set("DLSSNR.UseAutoMask", tuning.useAutoMask ? 1u : 0u);
 			parameters->Set("DLSSNR.UICorrection", tuning.uiCorrection ? 1u : 0u);
-			// No creation flags and no HDR/SDR/auto-exposure selectors: setting the ones the
-			// other DLSS-NR projects use made no difference to the answer (see
-			// docs/development/neural-rendering.md, "Creation contract").
+			// No creation flags or HDR/SDR/auto-exposure selectors: setting them made no difference to the answer.
 			NVSDK_NGX_Handle* handle = nullptr;
 			ngxResult_ = static_cast<std::uint32_t>(create(commandList, kFeatureDlssNr, parameters, &handle));
 			if (ngxResult_ != NVSDK_NGX_Result_Success || !handle) {
@@ -744,6 +768,19 @@ namespace NeuralRenderingNGX
 	{
 		if (device_ && module_) {
 			ResetFeature();
+			if (snippetInitialized_) {
+				SignedRuntimePathScope scope(static_cast<HMODULE>(module_), path_.parent_path() / L"nvngx.dll");
+				auto shutdownSnippet = reinterpret_cast<ShutdownD3D12>(
+					GetProcAddress(static_cast<HMODULE>(module_), "NVSDK_NGX_D3D12_Shutdown1"));
+				if (scope.IsInstalled()) {
+					const auto result = shutdownSnippet(device_);
+					if (result != NVSDK_NGX_Result_Success)
+						logger::warn("[DLSSNR] DLSSNR snippet shutdown failed result=0x{:08X}",
+							static_cast<std::uint32_t>(result));
+				} else {
+					logger::warn("[DLSSNR] DLSSNR snippet shutdown caller-path scope could not be installed");
+				}
+			}
 			HMODULE core = FindNgxCoreModule();
 			if (core) {
 				auto destroy = reinterpret_cast<DestroyParameters>(GetProcAddress(core, "NVSDK_NGX_D3D12_DestroyParameters"));
@@ -773,6 +810,7 @@ namespace NeuralRenderingNGX
 		detail_.clear();
 		hasFeatureRequirements_ = false;
 		featureRequirementsLogged_ = false;
+		snippetInitialized_ = false;
 		ngxResult_ = applicationId_ = apiVersion_ = 0;
 		successfulFrames_ = 0;
 	}

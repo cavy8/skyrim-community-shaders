@@ -472,14 +472,12 @@ RE::NiPoint3 DoF::GetCameraPos()
 
 bool DoF::GetTargetLockEnabled()
 {
-	return g_TDM && g_TDM->GetTargetLockState() && g_TDM->GetCurrentTarget();  // Personal fix P2: an active lock, not TDM's last target
+	return g_TDM && g_TDM->GetCurrentTarget();
 }
 
 bool DoF::GetInDialogue()
 {
-	// Personal fix P2: the Dialogue Menu on the UI stack, not lastSpeaker or MenuTopicManager::menuOpen
-	auto* menuTopicManager = RE::MenuTopicManager::GetSingleton();
-	return globals::game::ui && globals::game::ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) && menuTopicManager && (menuTopicManager->speaker || menuTopicManager->lastSpeaker);
+	return RE::MenuTopicManager::GetSingleton()->speaker || RE::MenuTopicManager::GetSingleton()->lastSpeaker;
 }
 
 float DoF::GetDistanceToReference(RE::TESObjectREFR* a_ref)
@@ -566,7 +564,7 @@ void DoF::Draw(TextureInfo& inout_tex)
 				target = RE::MenuTopicManager::GetSingleton()->lastSpeaker.get().get();
 			}
 		}
-		if (!target || target->IsDisabled() || target->IsDeleted() || !target->Is3DLoaded())  // Personal fix P2
+		if (!target)
 			return;
 
 		targetFocusDistanceGame = GetDistanceToReference(target);

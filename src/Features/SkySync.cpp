@@ -747,7 +747,8 @@ RE::NiPoint3 SkySync::ShadowFader::LerpDirection(const RE::NiPoint3& from, const
 		std::lerp(from.y, to.y, t),
 		std::lerp(from.z, to.z, t)
 	};
-	dir.Unitize();
+	if (dir.Unitize() <= FLT_EPSILON)
+		dir = { 0.0f, 0.0f, 1.0f };
 	return dir;
 }
 

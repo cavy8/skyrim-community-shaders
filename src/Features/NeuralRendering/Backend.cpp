@@ -1,3 +1,7 @@
+// Interop and runtime plumbing derived in part from YtzyFvra/skyrim-community-shaders
+// (feature/dlssnr-vr), GPL-3.0-or-later. Model-resolution scaling follows xenmods/DLSSNR-Cost-Scaler
+// (MIT, see Shaders/NeuralRendering/DLSSNR-Cost-Scaler.MIT.LICENSE).
+
 #include "Backend.h"
 
 #include "D3D12Interop.h"
@@ -59,8 +63,10 @@ namespace
 		std::uint32_t debugFlags = 0;         ///< kNeuralDebug* bits (ColorTransfer.hlsli).
 		/// x Detail Luminosity, y band radius in model texels, z band data present, w spare.
 		float bandParams[4]{ 1.0f, 8.0f, 0.0f, 0.0f };
+		/// xy: preceding guide raster's absolute jitter in guide texels; zw: spare.
+		float previousGuideJitter[4]{};
 	};
-	static_assert(sizeof(TransferParams) == 304);
+	static_assert(sizeof(TransferParams) == 320);
 
 	/// kNeuralDebug* in ColorTransfer.hlsli; keep the two in sync.
 	constexpr std::uint32_t kDebugFlagGuardClamp = 1u << 0;
@@ -84,8 +90,6 @@ namespace
 	/// Stable frames required before rebuilding the model raster; avoids draining the queue on each slider
 	/// step.
 	constexpr std::uint32_t kModelRasterDebounceFrames = 12;
-	/// Stable frames required before recreating the feature for changed tuning.
-	constexpr std::uint32_t kTuningDebounceFrames = 12;
 	/// Effectively disables the shader ratio clamp without a separate enabled flag.
 	constexpr float kNeuralRatioGuardDisabledValue = 1.0e6f;
 
@@ -109,6 +113,8 @@ namespace
 	constexpr const wchar_t* kCopyDepthGuidePath = L"Data\\Shaders\\NeuralRendering\\CopyDepthGuideCS.hlsl";
 	constexpr const wchar_t* kEncodeResidualPath = L"Data\\Shaders\\NeuralRendering\\EncodeResidualCS.hlsl";
 	constexpr const wchar_t* kApplyResidualPath = L"Data\\Shaders\\NeuralRendering\\ApplyResidualCS.hlsl";
+	constexpr const wchar_t* kCaptureTemporalGuidesPath = L"Data\\Shaders\\NeuralRendering\\CaptureTemporalGuidesCS.hlsl";
+	constexpr const wchar_t* kComposeMotionPath = L"Data\\Shaders\\NeuralRendering\\ComposeMotionCS.hlsl";
 
 	bool GetTextureDesc(ID3D11Resource* resource, D3D11_TEXTURE2D_DESC& desc)
 	{
@@ -169,6 +175,8 @@ struct NeuralRenderingBackend::State
 	winrt::com_ptr<ID3D11ComputeShader> prepareToneDataCS;
 	winrt::com_ptr<ID3D11ComputeShader> filterToneDataHorizontalCS;
 	winrt::com_ptr<ID3D11ComputeShader> filterToneDataVerticalCS;
+	winrt::com_ptr<ID3D11ComputeShader> captureTemporalGuidesCS;
+	winrt::com_ptr<ID3D11ComputeShader> composeMotionCS;
 	winrt::com_ptr<ID3D11Buffer> transferParamsCB;
 	/// Linear clamp sampler for the jitter-compensating resample in both colour passes.
 	winrt::com_ptr<ID3D11SamplerState> linearClampSampler;
@@ -180,6 +188,13 @@ struct NeuralRenderingBackend::State
 	bool prepareToneDataAttempted = false;
 	bool filterToneDataHorizontalAttempted = false;
 	bool filterToneDataVerticalAttempted = false;
+	bool captureTemporalGuidesAttempted = false;
+	bool composeMotionAttempted = false;
+	winrt::com_ptr<ID3D11Texture2D> temporalGuides;
+	winrt::com_ptr<ID3D11ShaderResourceView> temporalGuidesSRV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> temporalGuidesUAV;
+	std::uint64_t temporalGuideFrameIndex = 0;
+	float previousGuideJitter[2]{};
 
 	/**
 	 * D3D11 band scratch: toneData stores log proxy luminance and edit stops; horizontal filtering writes
@@ -258,18 +273,15 @@ struct NeuralRenderingBackend::State
 	std::uint32_t requestedModelHeight = 0;
 	std::uint32_t requestedModelStableFrames = 0;
 
-	/// Requested tuning and debounce count versus tuning latched into the live feature.
-	NeuralRenderingNGX::Tuning requestedTuning{};
-	NeuralRenderingNGX::Tuning appliedTuning{};
-	std::uint32_t requestedTuningStableFrames = 0;
-	bool tuningInitialized = false;
-
-	/// Counts Run() calls; odd frames are skipped in alternating-frame mode.
+	/// Counts Run() calls; skips must immediately follow a successful evaluation.
 	std::uint64_t evaluateFrameIndex = 0;
+	std::uint32_t previousRenderFrame = 0;
 	/// evaluateFrameIndex of the last frame Feature 18 actually ran on (zero: none since
 	/// the resources were built). Tells an evaluation how many frames of motion the
 	/// model's temporal history has to bridge.
 	std::uint64_t lastEvaluatedFrameIndex = 0;
+	/// Style supplied to the last successful Feature 18 evaluation; valid when lastEvaluatedFrameIndex is nonzero.
+	std::uint32_t previousEvaluatedStyle = 0;
 
 	bool loggedProbeFailure = false;
 	bool loggedInvalidInputs = false;
@@ -370,34 +382,6 @@ struct NeuralRenderingBackend::State
 		if (allocated && activeUnchanged && requestedModelStableFrames < kModelRasterDebounceFrames)
 			return { color.desc.Width, color.desc.Height };
 		return { desiredWidth, desiredHeight };
-	}
-
-	/**
-	 * @brief Report a settled tuning change once. The caller must drain the interop queue, reset the
-	 * feature, and update appliedTuning before recreation.
-	 *
-	 * @return True exactly once per settled change; the caller must then drain
-	 *         the interop queue, call Runtime::ResetFeature(), and update
-	 *         appliedTuning - never release the handle without draining first.
-	 */
-	bool SettleTuning(const NeuralRenderingNGX::Tuning& desired)
-	{
-		if (!(desired == requestedTuning)) {
-			requestedTuning = desired;
-			requestedTuningStableFrames = 0;
-		} else if (requestedTuningStableFrames < kTuningDebounceFrames) {
-			++requestedTuningStableFrames;
-		}
-		if (!tuningInitialized) {
-			tuningInitialized = true;
-			appliedTuning = requestedTuning;
-			return false;
-		}
-		if (requestedTuningStableFrames >= kTuningDebounceFrames && !(requestedTuning == appliedTuning)) {
-			appliedTuning = requestedTuning;
-			return true;
-		}
-		return false;
 	}
 
 	/**
@@ -788,8 +772,45 @@ struct NeuralRenderingBackend::State
 		return colorOutUAV.get();
 	}
 
-	/// Most SRVs any transfer pass binds (DecodeColorCS: t0-t8).
-	static constexpr std::size_t kMaxTransferSources = 9;
+	/** @brief Allocate raw motion/depth/category history for alternating-frame reprojection. */
+	bool EnsureTemporalResources(ID3D11Device* device, std::uint32_t width, std::uint32_t height)
+	{
+		D3D11_TEXTURE2D_DESC desc{};
+		if (temporalGuides) {
+			temporalGuides->GetDesc(&desc);
+			if (desc.Width == width && desc.Height == height && temporalGuidesSRV && temporalGuidesUAV)
+				return true;
+		}
+		temporalGuides = nullptr;
+		temporalGuidesSRV = nullptr;
+		temporalGuidesUAV = nullptr;
+		temporalGuideFrameIndex = 0;
+		desc = {};
+		desc.Width = width;
+		desc.Height = height;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+		HRESULT result = device->CreateTexture2D(&desc, nullptr, temporalGuides.put());
+		if (FAILED(result))
+			return LatchFailure("temporal guide creation", result);
+		Util::SetResourceName(temporalGuides.get(), "NeuralRendering::TemporalGuides");
+		result = device->CreateShaderResourceView(temporalGuides.get(), nullptr, temporalGuidesSRV.put());
+		if (FAILED(result))
+			return LatchFailure("temporal guide SRV creation", result);
+		Util::SetResourceName(temporalGuidesSRV.get(), "NeuralRendering::TemporalGuides SRV");
+		result = device->CreateUnorderedAccessView(temporalGuides.get(), nullptr, temporalGuidesUAV.put());
+		if (FAILED(result))
+			return LatchFailure("temporal guide UAV creation", result);
+		Util::SetResourceName(temporalGuidesUAV.get(), "NeuralRendering::TemporalGuides UAV");
+		return true;
+	}
+
+	/// Most SRVs any transfer pass binds (DecodeColorCS: t0-t9).
+	static constexpr std::size_t kMaxTransferSources = 10;
 	/// The colour destination, plus the decode's optional debug-stats buffer.
 	static constexpr std::size_t kMaxTransferDestinations = 2;
 
@@ -850,8 +871,7 @@ struct NeuralRenderingBackend::State
 		                    std::ranges::all_of(inputs.display.tint, [](float value) { return std::isfinite(value); }) &&
 		                    std::isfinite(inputs.display.postProcessExposureScale) &&
 		                    std::ranges::all_of(inputs.display.postProcessAdaptationRange, [](float value) { return std::isfinite(value); });
-		// Per-category hue guard needs the material category on every pixel, so unlike the
-		// old opt-in per-category strengths this guide is now unconditionally required.
+		// The per-category hue guard needs the material category on every pixel.
 		if (inputs.colorIn && inputs.colorOut && inputs.depth && inputs.depthSRV && inputs.motionVectors &&
 			inputs.materialCategoriesSRV && distinct && finite && inputs.width && inputs.height)
 			return true;
@@ -866,13 +886,12 @@ struct NeuralRenderingBackend::State
 	/**
 	 * @brief Encode color and guides and submit Feature 18; failures latch. The caller decodes the result.
 	 *
-	 * @param motionFrames Frames elapsed since the model's previous evaluation; the
-	 *        one-frame game motion vectors are scaled by it (see Run).
+	 * @param bridgedSkip Compose the skipped frame's motion with the current field.
 	 */
 	bool EvaluateModel(const FrameInputs& inputs, ID3D11DeviceContext* context,
 		ID3D11ComputeShader* encodeShader, ID3D11ComputeShader* guideShader, ID3D11ShaderResourceView* colorInView,
 		std::uint32_t modelWidth, std::uint32_t modelHeight, std::uint32_t guideWidth, std::uint32_t guideHeight,
-		float motionFrames)
+		bool bridgedSkip)
 	{
 		// Encode onto the unjittered model grid; decode maps the edit back to the source raster. Adaptation
 		// inputs may be null.
@@ -888,13 +907,23 @@ struct NeuralRenderingBackend::State
 		if (inputs.staticMotion) {
 			const float zeroMotion[4]{};
 			context->ClearUnorderedAccessViewFloat(motionVectors.uav11.Get(), zeroMotion);
+		} else if (bridgedSkip) {
+			DispatchTransfer(context, composeMotionCS.get(),
+				{ inputs.motionVectorsSRV, temporalGuidesSRV.get(), inputs.depthSRV, inputs.materialCategoriesSRV },
+				motionVectors.uav11.Get(), transferParamsCB.get(), linearClampSampler.get(), guideWidth, guideHeight);
 		} else {
 			const D3D11_BOX motionBox{ 0, 0, 0, guideWidth, guideHeight, 1 };
 			context->CopySubresourceRegion(motionVectors.resource11.Get(), 0, 0, 0, 0, inputs.motionVectors, 0, &motionBox);
 		}
 
-		// Run() has settled tuning and reset the feature if recreation is needed.
-		const NeuralRenderingNGX::Tuning& tuning = appliedTuning;
+		NeuralRenderingNGX::Tuning tuning;
+		tuning.intensity = inputs.intensity;
+		tuning.localToneStrength = inputs.localToneStrength;
+		tuning.localStructureStrength = inputs.localStructureStrength;
+		tuning.skinStructureStrength = inputs.skinStructureStrength;
+		tuning.style = inputs.style;
+		tuning.useAutoMask = inputs.automaticMask;
+		tuning.uiCorrection = false;  // Neural Rendering never runs after the UI composite.
 
 		ID3D12GraphicsCommandList* commandList = nullptr;
 		if (!interop.BeginD3D12(&commandList) || !commandList)
@@ -915,12 +944,11 @@ struct NeuralRenderingBackend::State
 		}
 		commandList->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
 
-		// Convert normalized motion to guide pixels, scaled by frames since evaluation. Resource subrects
-		// already account for model/guide resolution differences.
+		// Composed motion already spans both frames; NGX only needs the UV-to-pixel scale.
 		const bool executed = NeuralRenderingNGX::Runtime::Instance().Execute(commandList,
 			color.resource12.Get(), depth.resource12.Get(), motionVectors.resource12.Get(), output.resource12.Get(),
 			modelWidth, modelHeight, guideWidth, guideHeight, output.desc.Width, output.desc.Height,
-			static_cast<float>(guideWidth) * motionFrames, static_cast<float>(guideHeight) * motionFrames,
+			static_cast<float>(guideWidth), static_cast<float>(guideHeight),
 			tuning, inputs.reset || resetPending, inputs.depthInverted);
 
 		for (auto& barrier : barriers)
@@ -937,6 +965,12 @@ struct NeuralRenderingBackend::State
 	bool Run(const FrameInputs& inputs, ID3D11Device* device, ID3D11DeviceContext* context)
 	{
 		++evaluateFrameIndex;
+		const auto renderFrame = globals::state->frameCount;
+		if (evaluateFrameIndex > 1 && renderFrame - previousRenderFrame != 1u) {
+			resetPending = true;
+			temporalGuideFrameIndex = 0;
+		}
+		previousRenderFrame = renderFrame;
 		if (!interop.IsInitialized() && !InitializeInterop(device, context))
 			return false;
 		if (NeuralRenderingNGX::Runtime::Instance().Status() != NeuralRenderingNGX::RuntimeStatus::Initialized &&
@@ -976,29 +1010,25 @@ struct NeuralRenderingBackend::State
 			lastColorInput = inputs.colorIn;
 		}
 
-		// Tuning is latched at creation. Drain the GPU queue before resetting the feature for a settled
-		// change.
-		NeuralRenderingNGX::Tuning desiredTuning;
-		desiredTuning.intensity = inputs.intensity;
-		desiredTuning.localToneStrength = inputs.localToneStrength;
-		desiredTuning.localStructureStrength = inputs.localStructureStrength;
-		desiredTuning.skinStructureStrength = inputs.skinStructureStrength;
-		desiredTuning.style = inputs.style;
-		desiredTuning.useAutoMask = inputs.automaticMask;
-		desiredTuning.uiCorrection = false;  // Cav's Unity Shaders never runs Neural Rendering after the UI composite.
-		if (SettleTuning(desiredTuning)) {
-			if (!interop.WaitForIdle())
-				return LatchFailure("tuning change", interop.LastError());
-			NeuralRenderingNGX::Runtime::Instance().ResetFeature();
-			separateResetPending = true;
-			separateResidualReady = false;
+		// A new style invalidates temporal history and must not be deferred by alternating-frame skips.
+		if (lastEvaluatedFrameIndex != 0 && inputs.style != previousEvaluatedStyle)
 			resetPending = true;
-		}
 
-		// Skipped frames reuse the previous proxy/answer pair through motion reprojection. Always evaluate
-		// after resets, raster changes, failures, or without motion guides.
-		const bool skipFrame = inputs.alternateFrames && inputs.motionVectorsSRV && !inputs.staticMotion &&
-		                       featureAvailable && !resetPending && !inputs.reset && (evaluateFrameIndex % 2) == 1;
+		const bool alternateFrames = inputs.alternateFrames && inputs.motionVectorsSRV && !inputs.staticMotion && !inputs.rawModelOutput;
+		if (alternateFrames &&
+			(!EnsureTemporalResources(device, guideWidth, guideHeight) ||
+				!GetShader(captureTemporalGuidesCS, captureTemporalGuidesAttempted, kCaptureTemporalGuidesPath, "CaptureTemporalGuidesCS") ||
+				!GetShader(composeMotionCS, composeMotionAttempted, kComposeMotionPath, "ComposeMotionCS")))
+			return false;
+		const bool consecutiveGuides = temporalGuideFrameIndex != 0 && temporalGuideFrameIndex + 1 == evaluateFrameIndex;
+		// Never skip twice or reuse an answer after a failed call or a missing guide capture.
+		const bool skipFrame = alternateFrames && consecutiveGuides && featureAvailable && !resetPending && !inputs.reset &&
+		                       lastEvaluatedFrameIndex + 1 == evaluateFrameIndex;
+		const bool bridgedSkip = alternateFrames && consecutiveGuides && !resetPending && !inputs.reset &&
+		                         lastEvaluatedFrameIndex != 0 && lastEvaluatedFrameIndex + 2 == evaluateFrameIndex;
+		// Without a complete motion chain a temporal model cannot safely reuse its history.
+		if (!skipFrame && lastEvaluatedFrameIndex != 0 && evaluateFrameIndex - lastEvaluatedFrameIndex > 1 && !bridgedSkip)
+			resetPending = true;
 
 		auto* encodeShader = GetShader(encodeColorCS, encodeColorAttempted, kEncodeColorPath, "EncodeColorCS");
 		auto* decodeShader = GetShader(decodeColorCS, decodeColorAttempted, kDecodeColorPath, "DecodeColorCS");
@@ -1045,12 +1075,11 @@ struct NeuralRenderingBackend::State
 		transferParams.workSize[1] = modelHeight;
 		transferParams.guideSize[0] = guideWidth;
 		transferParams.guideSize[1] = guideHeight;
-		// Silhouette fading only addresses the bilinear upsample of a reduced-
-		// resolution edit; at native scale there is nothing to bleed, so leave the
-		// resolve exactly as before (the proxy likewise bypasses at 1.0).
+		// Silhouette fading only addresses the bilinear upsample of a reduced-resolution edit; none at native scale.
 		const bool modelBelowNative = modelWidth < colorWidth || modelHeight < colorHeight;
 		transferParams.depthAwareResolve = inputs.depthAwareResolve && modelBelowNative ? 1u : 0u;
 		transferParams.staleAnswer = skipFrame ? 1u : 0u;
+		std::copy_n(previousGuideJitter, 2, transferParams.previousGuideJitter);
 		// Only 0 (scene linear) and 1 (display gamma) exist; anything else falls back to the
 		// original scene-linear behaviour rather than an undefined shader branch.
 		transferParams.colorDomain = inputs.colorDomain <= 2u ? inputs.colorDomain : 0u;
@@ -1123,14 +1152,11 @@ struct NeuralRenderingBackend::State
 		context->UpdateSubresource(transferParamsCB.get(), 0, nullptr, &transferParams, 0, 0);
 
 		if (!skipFrame) {
-			// Extrapolate motion only across a single alternating-frame skip, never across resets or longer gaps.
-			const bool historyValid = !resetPending && !inputs.reset && lastEvaluatedFrameIndex != 0;
-			const bool bridgedSkip = inputs.alternateFrames && historyValid &&
-			                         evaluateFrameIndex - lastEvaluatedFrameIndex == 2;
 			if (!EvaluateModel(inputs, context, encodeShader, guideShader, colorInView,
-					modelWidth, modelHeight, guideWidth, guideHeight, bridgedSkip ? 2.0f : 1.0f))
+					modelWidth, modelHeight, guideWidth, guideHeight, bridgedSkip))
 				return false;
 			lastEvaluatedFrameIndex = evaluateFrameIndex;
+			previousEvaluatedStyle = inputs.style;
 
 			// Prepare log luminance and edit stops once per evaluation, then filter the edit horizontally and
 			// vertically.
@@ -1152,9 +1178,20 @@ struct NeuralRenderingBackend::State
 		DispatchTransfer(context, decodeShader,
 			{ outputSRV.get(), colorInView, colorSRV.get(), inputs.depthSRV, inputs.materialCategoriesSRV,
 				inputs.display.vanillaAdaptationSRV, inputs.display.postProcessAdaptationSRV, inputs.motionVectorsSRV,
-				transferParams.bandParams[2] > 0.5f ? toneDataSRV.get() : nullptr },
+				transferParams.bandParams[2] > 0.5f ? toneDataSRV.get() : nullptr, skipFrame ? temporalGuidesSRV.get() : nullptr },
 			colorOutView, transferParamsCB.get(), linearClampSampler.get(), colorWidth, colorHeight,
 			(transferParams.debugFlags & kDebugFlagStats) != 0 ? debugStatsUAV.get() : nullptr);
+		if (alternateFrames) {
+			// Capture only after decode/composition has finished reading the preceding frame.
+			DispatchTransfer(context, captureTemporalGuidesCS.get(),
+				{ inputs.motionVectorsSRV, inputs.depthSRV, inputs.materialCategoriesSRV }, temporalGuidesUAV.get(),
+				transferParamsCB.get(), nullptr, guideWidth, guideHeight);
+			temporalGuideFrameIndex = evaluateFrameIndex;
+			previousGuideJitter[0] = transferParams.jitterOffset[0] * guideWidth / colorWidth + transferParams.guideJitterOffset[0];
+			previousGuideJitter[1] = transferParams.jitterOffset[1] * guideHeight / colorHeight + transferParams.guideJitterOffset[1];
+		} else {
+			temporalGuideFrameIndex = 0;
+		}
 
 		resetPending = false;
 		featureAvailable = true;
@@ -1382,6 +1419,13 @@ struct NeuralRenderingBackend::State
 		prepareToneDataCS = nullptr;
 		filterToneDataHorizontalCS = nullptr;
 		filterToneDataVerticalCS = nullptr;
+		captureTemporalGuidesCS = nullptr;
+		composeMotionCS = nullptr;
+		temporalGuides = nullptr;
+		temporalGuidesSRV = nullptr;
+		temporalGuidesUAV = nullptr;
+		temporalGuideFrameIndex = 0;
+		std::fill_n(previousGuideJitter, 2, 0.0f);
 		transferParamsCB = nullptr;
 		linearClampSampler = nullptr;
 		encodeColorAttempted = false;
@@ -1392,6 +1436,8 @@ struct NeuralRenderingBackend::State
 		prepareToneDataAttempted = false;
 		filterToneDataHorizontalAttempted = false;
 		filterToneDataVerticalAttempted = false;
+		captureTemporalGuidesAttempted = false;
+		composeMotionAttempted = false;
 
 		toneData = nullptr;
 		toneDataSRV = nullptr;
@@ -1431,7 +1477,9 @@ struct NeuralRenderingBackend::State
 		requestedModelHeight = 0;
 		requestedModelStableFrames = 0;
 		evaluateFrameIndex = 0;
+		previousRenderFrame = 0;
 		lastEvaluatedFrameIndex = 0;
+		previousEvaluatedStyle = 0;
 
 		loggedInvalidInputs = false;
 		loggedShaderFailure = false;

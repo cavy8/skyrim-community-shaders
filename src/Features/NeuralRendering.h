@@ -18,8 +18,7 @@
 class NeuralRenderingBackend;
 
 /**
- * @brief DLSS Neural Rendering (NGX Feature 18), using a D3D11/D3D12 backend. Integration points and
- * ownership are documented in docs/development/neural-rendering.md.
+  * @brief DLSS Neural Rendering (NGX Feature 18), using a D3D11/D3D12 backend.
  */
 struct NeuralRendering : Feature
 {
@@ -47,9 +46,8 @@ struct NeuralRendering : Feature
 		/// luminance edit.
 		float broadLuminosity = 1.0f;
 		float detailLuminosity = 1.0f;
-		/// Restrict this category's chroma change to a saturation change on
-		/// renderer-neutral pixels (see ColorTransfer.hlsli, ResolveNeuralColor).
-		/// Off by default; Hair defaults this on (see Settings).
+		/// Limit this category's chroma change to saturation on renderer-neutral pixels (see ResolveNeuralColor).
+		/// Off by default; Hair enables it.
 		bool hueGuard = false;
 	};
 
@@ -93,7 +91,7 @@ struct NeuralRendering : Feature
 	enum class Preset : uint32_t
 	{
 		kFull = 0,         ///< The model's own answer applied in full; the default.
-		kVanillaPlus = 1,  ///< Faithful recreation of the 2026-09-09 build (5947cf63).
+		kVanillaPlus = 1,  ///< Legacy proxy, luminance-only edit capped at one stop.
 		kCount
 	};
 
@@ -108,8 +106,8 @@ struct NeuralRendering : Feature
 	enum class ProxyCurve : uint32_t
 	{
 		kDisplayMatched = 0,  ///< The ISHDR replica, or the ACES fallback when grading cannot be captured.
-		kNeutwo = 1,          ///< Exposed scene linear through Open Shaders' Neutwo curve, then the domain encode.
-		kLegacy = 2,          ///< The 2026-09-09 proxy: per-channel Reinhard, no exposure, no Linear Lighting decode.
+		kNeutwo = 1,          ///< Exposed scene linear through the RenoDX Neutwo curve, then the domain encode.
+		kLegacy = 2,          ///< Per-channel Reinhard, no exposure, no Linear Lighting decode.
 		kCount
 	};
 
@@ -138,9 +136,7 @@ struct NeuralRendering : Feature
 		uint32_t style = 3;
 		float intensity = 0.8f;
 		float colorStrength = 1.0f;
-		/// Overall weight of the model's edit on the frame (0..2). Zero leaves the
-		/// frame untouched, one applies the model's change exactly, two doubles its
-		/// relative luminance change (still inside the resolve's ratio guard).
+		/// Weight of the model's edit (0..2): zero leaves the frame untouched, one applies it exactly.
 		float transferStrength = 1.0f;
 		/// Multiplier on the edge-aware low-frequency luminance edit; does not affect chroma.
 		float broadLuminosity = 1.0f;
@@ -171,12 +167,9 @@ struct NeuralRendering : Feature
 		/// Write raw model output, retaining renderer alpha. Supported only in display gamma; bypasses
 		/// strengths and guards.
 		bool rawModelOutput = false;
-		/// Debug view: mark every pixel the ratio guard actually clamped - red where it
-		/// stopped a brighten, blue where it stopped a darken - over the normal image.
-		/// Pairs with the clamped-pixel percentage in the settings UI.
+		/// Debug view: mark pixels the ratio guard clamped (red brighten, blue darken).
 		bool debugGuardClamp = false;
-		/// Debug views of the two luminosity bands, mid-grey at no change and scaled
-		/// to +-2 stops. Only meaningful while the bands are actually separated.
+		/// Debug views of the luminosity bands (mid-grey = no change, +-2 stops). Only meaningful while the bands differ.
 		bool debugBroadBand = false;
 		bool debugDetailBand = false;
 		/// Enable staged peak-luminance readback for the settings UI.
@@ -222,8 +215,7 @@ struct NeuralRendering : Feature
 		/// The frame is a held one (Frame Hold): hand the model zero motion.
 		bool staticMotion = false;
 
-		/// DLSS-SR quality/preset selections mirrored from Upscaling settings when
-		/// Separate Upscaling is active. They are ignored by the other placements.
+		/// DLSS-SR quality/preset mirrored from Upscaling for Separate Upscaling; ignored otherwise.
 		uint32_t superResolutionQualityMode = 1;
 		uint32_t superResolutionPreset = 0;
 	};
@@ -254,15 +246,12 @@ struct NeuralRendering : Feature
 		float resolutionScaleX = 1.0f;
 		float resolutionScaleY = 1.0f;
 		float transferStrength = 1.0f;
-		/// The two halves of the old single Luminosity Strength; equal values reproduce it
-		/// exactly (see Options::broadLuminosity).
+		/// Smooth and remaining halves of the luminance edit (see Options::broadLuminosity).
 		float broadLuminosity = 1.0f;
 		float detailLuminosity = 1.0f;
 		float bandRadius = 8.0f;  // Model texels; only used while the two above differ.
 		float maxRatio = 2.0f;    // Two-sided guard on the model/proxy luminance ratio (1/x..x).
-		// Off by default: the guard above is not applied at all, so a correct large
-		// light/dark swing (e.g. a lit surface the model puts fully into shadow)
-		// is never capped. On, Max Ratio governs the swing as before.
+		// Off by default: Max Ratio is not applied, so a large, correct light/dark swing is never capped.
 		bool ratioGuardEnabled = false;
 		CategoryStrengths everythingElseStrengths;
 		// Full damps skin colour: the model's own skin tint is its most visible overreach.
@@ -275,8 +264,7 @@ struct NeuralRendering : Feature
 		CategoryStrengths equipmentStrengths;
 		bool depthAwareResolve = false;  // Experimental; see Options::depthAwareResolve.
 		bool alternateFrames = false;
-		/// Debug view: render each pixel's classified material category as a flat colour instead
-		/// of the model's edit. See Options::debugCategoryView.
+		/// Debug view: render the classified material category instead of the model's edit.
 		bool debugCategoryView = false;
 		bool rawModelOutput = false;  // Diagnostic: skip the resolve, write Feature 18's answer directly (Finished Image only).
 	};
@@ -312,8 +300,8 @@ struct NeuralRendering : Feature
 	static const PresetValues& GetPreset(Preset a_preset);
 
 	/**
-	 * @brief Apply preset values and record the selection. The backend recreates the feature after latched
-	 * tuning settles.
+	 * @brief Apply preset values and record the selection. Artistic tuning updates on the next evaluation;
+	 * model-raster changes follow the backend's resolution debounce.
 	 */
 	void ApplyPreset(Preset a_preset);
 
@@ -377,8 +365,7 @@ struct NeuralRendering : Feature
 	bool DeleteUserPreset(const std::string& a_name);
 
 	/**
-	 * Runtime-only comparison aids - never saved, so neither can be left on by accident
-	 * across sessions. See neural-rendering.md, "Comparison aids".
+	  * Runtime-only comparison aids; never saved.
 	 */
 	struct CompareView
 	{
@@ -391,8 +378,7 @@ struct NeuralRendering : Feature
 	CompareView compareView;
 
 	/**
-	 * Runtime-only debug views and readbacks, never saved. See
-	 * docs/development/neural-rendering.md, "Debug views and readback".
+	  * Runtime-only debug views and readbacks; never saved.
 	 */
 	struct DebugState
 	{
@@ -416,14 +402,6 @@ struct NeuralRendering : Feature
 	virtual void RestoreDefaultSettings() override;
 	virtual void DataLoaded() override;
 	virtual void PostPostLoad() override;
-
-	/**
-	 * @brief Migrate legacy neuralRendering* keys from Upscaling when no Neural Rendering section exists.
-	 * Called before features load; stale keys disappear on the next save.
-	 *
-	 * @param a_root The whole settings JSON.
-	 */
-	static void MigrateLegacyUpscalingSettings(json& a_root);
 
 	// ---- Backend (NGX Feature 18) ----
 

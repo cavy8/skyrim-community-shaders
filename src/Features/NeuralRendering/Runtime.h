@@ -1,3 +1,4 @@
+// Derived in part from YtzyFvra/skyrim-community-shaders (feature/dlssnr-vr), GPL-3.0-or-later.
 #pragma once
 
 #include <cstdint>
@@ -11,8 +12,8 @@ struct ID3D12Resource;
 namespace NeuralRenderingNGX
 {
 	/**
-	 * @brief Feature 18 DLSSNR.* tuning parameters, latched at creation and supplied by Neural Rendering
-	 * settings.
+	 * @brief Feature 18 DLSSNR.* tuning parameters supplied from current Neural Rendering settings on
+	 * every evaluation. Style changes require a temporal reset, not feature recreation.
 	 */
 	struct Tuning
 	{
@@ -23,10 +24,6 @@ namespace NeuralRenderingNGX
 		std::uint32_t style = 3;
 		bool useAutoMask = true;
 		bool uiCorrection = false;
-
-		/// Every field here is latched at feature-create time (see Execute()), so
-		/// this is how Execute() notices a slider changed and rebuilds the feature.
-		friend bool operator==(const Tuning&, const Tuning&) = default;
 	};
 
 	/** @brief Result of recording the private DLSS-SR residual pass. */
@@ -67,8 +64,8 @@ namespace NeuralRenderingNGX
 		Runtime& operator=(const Runtime&) = delete;
 
 		/**
-		 * @brief Load the supported 310.8.x runtime series and its identity exports. On success Status() is
-		 * Ready.
+		 * @brief Load a runtime exposing the required D3D12 and identity exports. The file version is
+		 * diagnostic; initialization and feature creation establish compatibility. On success Status() is Ready.
 		 *
 		 * @param explicitPath Optional DLL path, or a directory containing the DLL.
 		 *                     When empty the Streamline plugin folders under Data are searched.
@@ -77,8 +74,8 @@ namespace NeuralRenderingNGX
 		bool Probe(const std::filesystem::path& explicitPath = {});
 
 		/**
-		 * @brief Initialize NGX and allocate parameters from the resident core. Probe if needed; reinitialize
-		 * when the device changes.
+		 * @brief Initialize the resident NGX core and the NR snippet, using parameters allocated by the core.
+		 * Probe if needed; reinitialize when the device changes.
 		 *
 		 * @param device The D3D12 device the feature will be evaluated on.
 		 * @param dataPath Writable directory for NGX logs/caches; a temporary folder is used when empty.
@@ -198,6 +195,7 @@ namespace NeuralRenderingNGX
 		std::string detail_;
 		bool hasFeatureRequirements_ = false;
 		bool featureRequirementsLogged_ = false;
+		bool snippetInitialized_ = false;
 		std::uint32_t ngxResult_ = 0;
 		std::uint32_t applicationId_ = 0;
 		std::uint32_t apiVersion_ = 0;

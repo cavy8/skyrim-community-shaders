@@ -41,6 +41,17 @@ namespace WaterEffects
 		return mipLevel;
 	}
 
+	static const uint MaxParallaxSteps = 64;
+
+	float GetParallaxAmount(float currBound, float currHeight, float prevHeight, float stepSize)
+	{
+		float prevBound = currBound - stepSize;
+		float delta2 = prevBound - prevHeight;
+		float delta1 = currBound - currHeight;
+		float intersection = (currBound * delta2 - prevBound * delta1) / (delta2 - delta1);
+		return currHeight > currBound ? currBound : intersection;
+	}
+
 	float GetHeight(PS_INPUT input, float2 currentOffset, float3 normalsAmplitude, float3 normalScalesRcp, float3 mipLevels)
 	{
 		float3 heights;
@@ -72,21 +83,14 @@ namespace WaterEffects
 		float currHeight = 1.0;
 		float prevHeight = 1.0;
 
-		[loop] while (currHeight > currBound)
+		[loop] for (uint i = 0; i < MaxParallaxSteps && currHeight > currBound; i++)
 		{
 			prevHeight = currHeight;
 			currBound += stepSize;
 			currHeight = GetHeight(input, currBound * parallaxOffsetTS.xy, normalsAmplitude, normalScalesRcp, mipLevels);
 		}
 
-		float prevBound = currBound - stepSize;
-
-		float delta2 = prevBound - prevHeight;
-		float delta1 = currBound - currHeight;
-		float denominator = delta2 - delta1;
-		float parallaxAmount = (currBound * delta2 - prevBound * delta1) / denominator;
-
-		return parallaxOffsetTS.xy * parallaxAmount;
+		return any(normalsAmplitude) ? parallaxOffsetTS.xy * GetParallaxAmount(currBound, currHeight, prevHeight, stepSize) : 0.0;
 	}
 
 #if defined(FLOWMAP)
@@ -174,20 +178,14 @@ namespace WaterEffects
 		float currHeight = 1.0;
 		float prevHeight = 1.0;
 
-		[loop] while (currHeight > currBound)
+		[loop] for (uint i = 0; i < MaxParallaxSteps && currHeight > currBound; i++)
 		{
 			prevHeight = currHeight;
 			currBound += stepSize;
 			currHeight = GetFlowmapParallaxHeight(input, currBound * parallaxOffsetTS.xy, normalsAmplitude, normalScalesRcp, mipLevel);
 		}
 
-		float prevBound = currBound - stepSize;
-		float delta2 = prevBound - prevHeight;
-		float delta1 = currBound - currHeight;
-		float denominator = delta2 - delta1;
-		float parallaxAmount = (currBound * delta2 - prevBound * delta1) / denominator;
-
-		return parallaxOffsetTS.xy * parallaxAmount;
+		return normalsAmplitude != 0.0 ? parallaxOffsetTS.xy * GetParallaxAmount(currBound, currHeight, prevHeight, stepSize) : 0.0;
 	}
 
 	float2 GetFlowmapParallaxOffset(PS_INPUT input, float2 flowmapDimensions, float3 viewDirection, float normalsAmplitude, float3 normalScalesRcp)

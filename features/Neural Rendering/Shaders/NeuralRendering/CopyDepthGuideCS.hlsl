@@ -1,3 +1,5 @@
+// Derived from YtzyFvra/skyrim-community-shaders (feature/dlssnr-vr), GPL-3.0-or-later.
+
 Texture2D<float> SourceDepth : register(t0);
 RWTexture2D<float> DestinationDepth : register(u0);
 

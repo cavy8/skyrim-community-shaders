@@ -29,6 +29,10 @@ namespace Util::ShaderPatches
 					Replacement rep;
 					rep.find = r.at("find").get<std::string>();
 					rep.replace = r.at("replace").get<std::string>();
+					if (rep.find.empty()) {
+						logger::warn("[ShaderPatches] Skipping a patch with an empty 'find' for {}", entry.file);
+						continue;
+					}
 					entry.replacements.push_back(std::move(rep));
 				}
 				entries.push_back(std::move(entry));

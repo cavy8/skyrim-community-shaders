@@ -3,12 +3,12 @@
 #include "Deferred.h"
 #include "Features/CloudShadows.h"
 #include "Features/DynamicCubemaps.h"
-#include "Globals.h"
 #include "Features/IBL.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
 #include "Features/Skylighting.h"
 #include "Features/TerrainShadows.h"
+#include "Globals.h"
 #include "I18n/I18n.h"
 #include "State.h"
 #include "Utils/D3D.h"
@@ -597,7 +597,6 @@ void ExponentialHeightFog::Prepass()
 		return;
 	}
 
-	// Shaders ignore the fog volume while suppressed, so skip building it but keep the resources
 	if (IsSuppressed())
 		return;
 

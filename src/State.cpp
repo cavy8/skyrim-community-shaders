@@ -12,12 +12,12 @@
 #include "Features/ExponentialHeightFog.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
-#include "Features/NeuralRendering.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/PostProcessing.h"
 #include "Features/Skin.h"
 #include "Features/SkySync.h"
 #include "Features/Skylighting.h"
+#include "Features/SnowCover.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainHelper.h"
 #include "Features/Upscaling.h"
@@ -54,6 +54,7 @@ void State::UpdateLightingShaderPermutation(RE::BSRenderPass* a_pass)
 void State::UpdateSkyShaderPermutation(RE::BSRenderPass* a_pass)
 {
 	permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsSun);
+	permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsMoon);
 
 	if (!a_pass || !a_pass->shaderProperty)
 		return;
@@ -62,6 +63,9 @@ void State::UpdateSkyShaderPermutation(RE::BSRenderPass* a_pass)
 	if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_SUN ||
 		skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_SUN_GLARE) {
 		permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::IsSun);
+	}
+	if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_MOON) {
+		permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::IsMoon);
 	}
 
 	// The glare VS fades itself by scene depth coverage around the sun
@@ -72,6 +76,28 @@ void State::UpdateSkyShaderPermutation(RE::BSRenderPass* a_pass)
 		// The sky draws with the z-prepass copy as its DSV, which would null an SRV of it; kMAIN holds the same depth
 		auto* depthSRV = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].depthSRV;
 		context->VSSetShaderResources(17, 1, &depthSRV);
+	}
+}
+
+void State::UpdateEffectShaderPermutation(RE::BSRenderPass* a_pass)
+{
+	constexpr auto isAurora = static_cast<uint32_t>(ExtraShaderDescriptors::IsAurora);
+	permutationData.ExtraShaderDescriptor &= ~isAurora;
+
+	if (!a_pass || !a_pass->geometry)
+		return;
+	if (!(currentVertexDescriptor & static_cast<uint32_t>(SIE::ShaderCache::EffectShaderFlags::SkyObject)))
+		return;
+
+	const auto sky = globals::game::sky;
+	if (!sky || !sky->auroraRoot)
+		return;
+
+	for (const RE::NiAVObject* node = a_pass->geometry; node; node = node->parent) {
+		if (node == sky->auroraRoot.get()) {
+			permutationData.ExtraShaderDescriptor |= isAurora;
+			return;
+		}
 	}
 }
 
@@ -623,10 +649,6 @@ void State::LoadFromJson(nlohmann::json& settings)
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const auto shaderCache = globals::shaderCache;
 
-	// One-off shim: Neural Rendering settings used to live inside the Upscaling section.
-	// Runs before any feature loads (State::Load calls this before Feature::Load).
-	NeuralRendering::MigrateLegacyUpscalingSettings(settings);
-
 	// Load Menu settings
 	if (settings.contains("Menu") && settings["Menu"].is_object()) {
 		globals::menu->Load(settings["Menu"]);
@@ -932,6 +954,28 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::DefShadow |
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::CharacterLight |
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::BaseObjectIsSnow);
+
+				{
+					uint32_t technique = 0x3F & (a_pixelDescriptor >> 24);
+					if (technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODLand &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODLandNoise &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjects &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjectHD)
+						a_pixelDescriptor &= ~((uint32_t)SIE::ShaderCache::LightingShaderFlags::Specular |
+											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::SoftLighting |
+											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::RimLighting |
+											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::BackLighting);
+
+					if (globals::features::snowCover.loaded &&
+						(a_pixelDescriptor & (uint32_t)SIE::ShaderCache::LightingShaderFlags::TruePbr) &&
+						!(a_pixelDescriptor & (uint32_t)SIE::ShaderCache::LightingShaderFlags::Skinned) &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Facegen &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::FacegenRGBTint &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Hair &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::Eye)
+						a_pixelDescriptor &= ~(uint32_t)SIE::ShaderCache::LightingShaderFlags::AnisoLighting;
+				}
+
 				if (a_pixelDescriptor & (uint32_t)SIE::ShaderCache::LightingShaderFlags::AdditionalAlphaMask) {
 					a_pixelDescriptor |= (uint32_t)SIE::ShaderCache::LightingShaderFlags::DoAlphaTest;
 					a_pixelDescriptor &= ~(uint32_t)SIE::ShaderCache::LightingShaderFlags::AdditionalAlphaMask;

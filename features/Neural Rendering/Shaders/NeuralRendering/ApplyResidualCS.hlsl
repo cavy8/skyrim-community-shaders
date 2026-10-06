@@ -1,5 +1,6 @@
 // Decode the signed SR carrier onto the clean DLSS result. Clamp away from inverse poles; invalid
-// samples leave color unchanged. Preserve renderer alpha.
+// samples leave color unchanged. Preserve renderer alpha. Follows wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass
+// (GPL-3.0).
 
 Texture2D<float4> CleanColor : register(t0);
 Texture2D<float4> ResidualCarrier : register(t1);

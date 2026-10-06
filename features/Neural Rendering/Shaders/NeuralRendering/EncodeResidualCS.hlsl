@@ -1,5 +1,5 @@
 // Encode signed scene-linear NR residuals around neutral gray for private DLSS-SR. Skyrim uses unit
-// pre-exposure.
+// pre-exposure. Carrier encoding follows wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass (GPL-3.0).
 
 Texture2D<float4> OriginalColor : register(t0);
 Texture2D<float4> EditedColor : register(t1);

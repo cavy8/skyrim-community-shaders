@@ -449,9 +449,7 @@ void Deferred::EndDeferred()
 
 	DeferredPasses();  // Perform deferred passes and composite forward buffers
 
-	// Forward lighting draws still tag Neural Rendering categories into Masks2
-	// (see NeuralRendering::RestoreCategories); hand it back clean now
-	// that the composite has consumed the decal-blended AO.
+	// The composite has consumed the decal-blended AO; restore Masks2 for forward lighting categories.
 	if (globals::features::neuralRendering.loaded)
 		globals::features::neuralRendering.RestoreCategories();
 
@@ -698,8 +696,7 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumula
 			terrainBlending.RenderTerrainBlendingPasses();
 		}
 
-		// Snapshot Masks2's material categories now, before the blended decals
-		// below alpha-blend into it and corrupt the packed category bits.
+		// Snapshot Masks2 categories before the blended decals alpha-blend into them.
 		auto& neuralRendering = globals::features::neuralRendering;
 		if (neuralRendering.loaded)
 			neuralRendering.CaptureCategories();
