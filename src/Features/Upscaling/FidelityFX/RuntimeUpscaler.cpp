@@ -194,7 +194,9 @@ namespace
 
 		// Pre-RDNA "HD"-branded GCN cards (e.g. "Radeon HD 7970") fall in the same 7000-7999
 		// numeric range as RX 7000 without being FSR 4.1.1-capable; reject them before the scan.
-		if (description.find("RADEON HD") != std::string::npos)
+		if (description.find("RADEON HD") != std::string::npos ||
+			description.find("PRO WX") != std::string::npos ||
+			description.find("FIREPRO") != std::string::npos)
 			return FidelityFX::Fsr4AdapterSupport::Unsupported;
 
 		// Only accept explicit discrete RDNA3 dies here, never a bare "RDNA 3"/"RDNA3" marker --
@@ -549,12 +551,12 @@ bool FidelityFX::IsRuntimeUpscalerProviderMatchingRequestedVersion() const
 
 bool FidelityFX::IsRuntimeUpscalerFailureLatched() const
 {
-	return runtimeUpscalerFailureLatched;
+	return runtimeUpscalerFailureLatched || runtimeUpscalerQuarantined;
 }
 
 bool FidelityFX::IsRuntimeFsr4FailureLatched() const
 {
-	return runtimeFsr4FailureLatched;
+	return runtimeFsr4FailureLatched || runtimeUpscalerQuarantined;
 }
 
 const std::string& FidelityFX::GetHostFsrSdkLabel()
@@ -1002,7 +1004,7 @@ void FidelityFX::DestroyRuntimeUpscalerContexts(bool a_waitForIdle)
 		WaitForRuntimeUpscalerIdle();
 
 	for (uint32_t i = 0; i < std::size(runtimeUpscalerContexts); ++i) {
-		if (runtimeUpscalerContexts[i])
+		if (runtimeUpscalerContexts[i] && !runtimeUpscalerQuarantined)
 			(void)ffx::DestroyContext(runtimeUpscalerContexts[i]);
 		runtimeUpscalerContexts[i] = nullptr;
 	}
@@ -1538,11 +1540,13 @@ bool FidelityFX::DispatchRuntimeUpscalerSingle(uint32_t a_contextIndex, ID3D11Re
 			return true;
 		};
 
-		if (!copyIntoShared(a_color, runtimeColorShared[a_contextIndex], colorDesc.Width, colorDesc.Height, runtimeColorSharedDesc.Width, runtimeColorSharedDesc.Height) ||
-			!copyIntoShared(a_depth, runtimeDepthShared[a_contextIndex], depthDesc.Width, depthDesc.Height, runtimeDepthSharedDesc.Width, runtimeDepthSharedDesc.Height) ||
-			!copyIntoShared(a_motionVectors, runtimeMotionShared[a_contextIndex], motionDesc.Width, motionDesc.Height, runtimeMotionSharedDesc.Width, runtimeMotionSharedDesc.Height) ||
-			!copyIntoShared(a_reactiveMask, runtimeReactiveShared[a_contextIndex], reactiveDesc.Width, reactiveDesc.Height, runtimeReactiveSharedDesc.Width, runtimeReactiveSharedDesc.Height) ||
-			!copyIntoShared(a_transparencyCompositionMask, runtimeTransparencyShared[a_contextIndex], transparencyDesc.Width, transparencyDesc.Height, runtimeTransparencySharedDesc.Width, runtimeTransparencySharedDesc.Height)) {
+		const uint32_t inputCopyWidth = a_renderWidth + 1;
+		const uint32_t inputCopyHeight = a_renderHeight + 1;
+		if (!copyIntoShared(a_color, runtimeColorShared[a_contextIndex], std::min(colorDesc.Width, inputCopyWidth), std::min(colorDesc.Height, inputCopyHeight), runtimeColorSharedDesc.Width, runtimeColorSharedDesc.Height) ||
+			!copyIntoShared(a_depth, runtimeDepthShared[a_contextIndex], std::min(depthDesc.Width, inputCopyWidth), std::min(depthDesc.Height, inputCopyHeight), runtimeDepthSharedDesc.Width, runtimeDepthSharedDesc.Height) ||
+			!copyIntoShared(a_motionVectors, runtimeMotionShared[a_contextIndex], std::min(motionDesc.Width, inputCopyWidth), std::min(motionDesc.Height, inputCopyHeight), runtimeMotionSharedDesc.Width, runtimeMotionSharedDesc.Height) ||
+			!copyIntoShared(a_reactiveMask, runtimeReactiveShared[a_contextIndex], std::min(reactiveDesc.Width, inputCopyWidth), std::min(reactiveDesc.Height, inputCopyHeight), runtimeReactiveSharedDesc.Width, runtimeReactiveSharedDesc.Height) ||
+			!copyIntoShared(a_transparencyCompositionMask, runtimeTransparencyShared[a_contextIndex], std::min(transparencyDesc.Width, inputCopyWidth), std::min(transparencyDesc.Height, inputCopyHeight), runtimeTransparencySharedDesc.Width, runtimeTransparencySharedDesc.Height)) {
 			logger::error("[FidelityFX] Runtime upscaler shared-resource copy failed for eye {}", a_contextIndex);
 			dispatchOk = false;
 		} else {

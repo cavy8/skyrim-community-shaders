@@ -165,7 +165,7 @@ public:
 
 	/** @brief IDXGISwapChain::GetBuffer equivalent for the wrapped D3D11 swap-chain buffer. Only buffer index 0 is supported. */
 	HRESULT GetBuffer(UINT buffer, REFIID riid, void** ppSurface);
-	/** @brief IDXGISwapChain::ResizeBuffers equivalent; rejects any bufferCount differing from the chain's own backBufferCount. */
+	/** @brief IDXGISwapChain::ResizeBuffers equivalent; always resizes with the chain's own backBufferCount, whatever count is requested. */
 	HRESULT ResizeBuffers(UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags);
 	HRESULT Present(UINT SyncInterval, UINT Flags);
 	HRESULT GetDevice(_In_ REFIID riid, _COM_Outptr_ void** ppDevice);

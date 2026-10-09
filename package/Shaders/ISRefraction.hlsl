@@ -46,7 +46,11 @@ PS_OUTPUT main(PS_INPUT input)
 	float4 colorRefracted = Src0Tex.Sample(Src0Sampler, texCoordRefracted);
 	float4 colorResulting = lerp(colorOriginal, colorRefracted, refractedMask);
 
-	psout.Color.xyz = colorResulting.xyz;
+	if (normalOriginal.w > 0.8 && normalOriginal.w < 1) {
+		psout.Color.xyz = lerp(colorResulting.xyz, Tint.xyz * Color::RGBToLuminance2(colorRefracted.xyz), Tint.w);
+	} else {
+		psout.Color.xyz = colorResulting.xyz;
+	}
 	psout.Color.w = colorResulting.w;
 
 	return psout;

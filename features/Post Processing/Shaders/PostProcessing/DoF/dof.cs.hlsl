@@ -280,9 +280,19 @@ float CalculateBlurDiscSize(FocusInfo focusInfo)
 
 float3 AccentuateWhites(float3 fragment)
 {
-	// apply small tow to the incoming fragment, so the whitepoint gets slightly lower than max.
-	// We don't need to de-tonemap since we are under HDR.
-	return fragment / (HighlightBoost > 0.f ? max((1.001 - (HighlightBoost * fragment)), 0.001) : 1.0f);
+	if (HighlightBoost <= 0.f)
+		return fragment;
+	float3 x = max(fragment, 0.0f);
+	return x * (1.0f + HighlightBoost * x / (1.0f + x));
+}
+
+float3 CorrectForWhiteAccentuation(float3 fragment)
+{
+	if (HighlightBoost <= 0.f)
+		return fragment;
+	float3 y = max(fragment, 0.0f);
+	float k = 1.0f + HighlightBoost;
+	return (y - 1.0f + sqrt((1.0f - y) * (1.0f - y) + 4.0f * k * y)) / (2.0f * k);
 }
 
 // returns 2 vectors, (x,y) are up vector, (z,w) are right vector.
@@ -1076,6 +1086,7 @@ float4 GatherMedianAt(Texture2D<float4> inputTexture, uint2 pixel)
 	float4 color;
 	color = lerp(originalFragment, farFragment, blendFactor);
 	color.rgb = lerp(color.rgb, nearFragment.rgb, nearFragment.a * (NearPlaneMaxBlur != 0));
+	color.rgb = CorrectForWhiteAccentuation(color.rgb);
 	color.a = 1.0;
 	RWTexOut[DTid] = color;
 }

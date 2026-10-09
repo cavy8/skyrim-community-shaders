@@ -371,6 +371,7 @@ private:
 	void LoadSettings();
 	void ShowSettingsWindow();
 	void Load();
+	void ResetCellLightingWidget();
 	json j;
 	std::string settingsFilename = "EditorSettings";
 	bool showSettingsWindow = false;

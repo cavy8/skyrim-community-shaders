@@ -47,20 +47,39 @@ namespace
 
 		explicit D3D11MultithreadGuard(ID3D11DeviceContext* context)
 		{
-			if (context && SUCCEEDED(context->QueryInterface(multithread.put()))) {
-				multithread->SetMultithreadProtected(TRUE);
+			if (context && SUCCEEDED(context->QueryInterface(multithread.put())))
 				multithread->Enter();
-			}
 		}
 
 		~D3D11MultithreadGuard()
 		{
-			if (multithread) {
+			if (multithread)
 				multithread->Leave();
-				multithread->SetMultithreadProtected(FALSE);
-			}
 		}
 	};
+
+	bool MapStagingTexture(ID3D11DeviceContext* context, ID3D11Texture2D* stagingTexture, D3D11_MAPPED_SUBRESOURCE& mapped)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (true) {
+			HRESULT hr;
+			{
+				D3D11MultithreadGuard guard(context);
+				hr = context->Map(stagingTexture, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+			}
+			if (SUCCEEDED(hr))
+				return true;
+			if (hr != DXGI_ERROR_WAS_STILL_DRAWING || std::chrono::steady_clock::now() > deadline)
+				return false;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+	}
+
+	void UnmapStagingTexture(ID3D11DeviceContext* context, ID3D11Texture2D* stagingTexture)
+	{
+		D3D11MultithreadGuard guard(context);
+		context->Unmap(stagingTexture, 0);
+	}
 
 	bool PopulateScratchImageFromStagingTexture(
 		ID3D11DeviceContext* context,
@@ -70,26 +89,23 @@ namespace
 		uint32_t height,
 		DirectX::ScratchImage& image)
 	{
-		D3D11MultithreadGuard guard(context);
-
-		D3D11_MAPPED_SUBRESOURCE mapped{};
-		if (FAILED(context->Map(stagingTexture, 0, D3D11_MAP_READ, 0, &mapped))) {
-			return false;
-		}
-		if (!mapped.pData || mapped.RowPitch == 0) {
-			context->Unmap(stagingTexture, 0);
-			return false;
-		}
-
 		const HRESULT initHr = image.Initialize2D(format, width, height, 1, 1);
 		if (FAILED(initHr)) {
-			context->Unmap(stagingTexture, 0);
 			return false;
 		}
 
 		const auto* destImage = image.GetImage(0, 0, 0);
 		if (!destImage) {
-			context->Unmap(stagingTexture, 0);
+			return false;
+		}
+
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		if (!MapStagingTexture(context, stagingTexture, mapped)) {
+			return false;
+		}
+
+		if (!mapped.pData || mapped.RowPitch == 0) {
+			UnmapStagingTexture(context, stagingTexture);
 			return false;
 		}
 
@@ -121,7 +137,7 @@ namespace
 				bytesPerRow);
 		}
 
-		context->Unmap(stagingTexture, 0);
+		UnmapStagingTexture(context, stagingTexture);
 		return true;
 	}
 
@@ -204,6 +220,17 @@ namespace
 		return sourceImage.GetImage(0, 0, 0);
 	}
 
+	std::filesystem::path Utf8Path(const std::string& text)
+	{
+		return std::filesystem::path(std::u8string(text.begin(), text.end()));
+	}
+
+	std::string PathToUtf8(const std::filesystem::path& path)
+	{
+		const auto text = path.u8string();
+		return std::string(text.begin(), text.end());
+	}
+
 	// Game-root-relative paths (e.g. "Screenshots") must be absolute for CF_HDROP / Discord.
 	std::filesystem::path ResolveToAbsoluteGamePath(const std::filesystem::path& path)
 	{
@@ -283,11 +310,11 @@ namespace
 		const auto absolutePath = ResolveToAbsoluteGamePath(path);
 		std::error_code ec;
 		if (!std::filesystem::exists(absolutePath, ec)) {
-			logger::warn("Screenshot not found for clipboard: {}", absolutePath.string());
+			logger::warn("Screenshot not found for clipboard: {}", PathToUtf8(absolutePath));
 			return;
 		}
 		if (std::filesystem::file_size(absolutePath, ec) == 0) {
-			logger::warn("Screenshot file is empty, skipping clipboard: {}", absolutePath.string());
+			logger::warn("Screenshot file is empty, skipping clipboard: {}", PathToUtf8(absolutePath));
 			return;
 		}
 
@@ -390,6 +417,14 @@ namespace
 				}
 			}
 
+			if (!globals::features::upscaling.d3d12SwapChainActive && hdr.hdrOutputCS && hdr.outputTexture && hdr.outputTexture->resource) {
+				src.texture = hdr.outputTexture->resource.get();
+				src.srv = hdr.outputTexture->srv.get();
+				src.needsPreviewCache = false;
+				src.description = "HDR display composite";
+				return src;
+			}
+
 			src.texture = ResolveDisplayedBackBuffer(holder);
 			src.needsPreviewCache = true;
 			src.description = "Swap chain back buffer (HDR display composite)";
@@ -450,7 +485,7 @@ namespace
 			st.wHour, st.wMinute, st.wSecond,
 			st.wMilliseconds,
 			extension);
-		return ResolveToAbsoluteGamePath(std::filesystem::path(screenshotPath) / buf);
+		return ResolveToAbsoluteGamePath(Utf8Path(screenshotPath) / buf);
 	}
 
 	struct HdrFormatInfo
@@ -684,9 +719,10 @@ void ScreenshotFeature::DrawSettings()
 	const bool canOpen = !screenshotPath.empty();
 	ImGui::BeginDisabled(!canOpen);
 	if (ImGui::Button(T(TKEY("open"), "Open"))) {
+		const auto folder = ResolveToAbsoluteGamePath(Utf8Path(screenshotPath));
 		std::error_code ec;
-		std::filesystem::create_directories(screenshotPath, ec);
-		ShellExecuteA(nullptr, "open", screenshotPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+		std::filesystem::create_directories(folder, ec);
+		ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
@@ -777,8 +813,36 @@ void ScreenshotFeature::Reset()
 {
 }
 
-void ScreenshotFeature::ProcessCaptureRequest()
+void ScreenshotFeature::RaiseMultithreadProtection()
 {
+	if (multithreadProtectionRaised || !globals::d3d::context)
+		return;
+	winrt::com_ptr<REX::W32::ID3D11Multithread> multithread;
+	if (FAILED(globals::d3d::context->QueryInterface(multithread.put())))
+		return;
+	previousMultithreadProtection = multithread->SetMultithreadProtected(TRUE);
+	multithreadProtectionRaised = true;
+}
+
+void ScreenshotFeature::RestoreMultithreadProtection()
+{
+	if (!multithreadProtectionRaised || !globals::d3d::context)
+		return;
+	winrt::com_ptr<REX::W32::ID3D11Multithread> multithread;
+	if (SUCCEEDED(globals::d3d::context->QueryInterface(multithread.put())))
+		multithread->SetMultithreadProtected(previousMultithreadProtection);
+	multithreadProtectionRaised = false;
+}
+
+void ScreenshotFeature::ProcessCaptureRequest(bool presented)
+{
+	if (presented && screenshotsInFlight.load(std::memory_order_acquire) == 0)
+		RestoreMultithreadProtection();
+
+	const bool sourceIsSwapChainBuffer = !globals::features::upscaling.d3d12SwapChainActive && !IsFlatHdrScreenshotCapture();
+	if (sourceIsSwapChainBuffer == presented)
+		return;
+
 	if (captureRequested.exchange(false)) {
 		try {
 			Capture();
@@ -849,42 +913,60 @@ void ScreenshotFeature::ScreenshotWorkerLoop()
 		}
 
 		DirectX::ScratchImage image;
-		if (!PopulateScratchImageFromStagingTexture(
+		bool populated = false;
+		try {
+			populated = PopulateScratchImageFromStagingTexture(
 				context,
 				screenshot.stagingTexture.get(),
 				screenshot.format,
 				screenshot.width,
 				screenshot.height,
-				image)) {
+				image);
+		} catch (const std::exception& e) {
+			logger::error("Screenshot readback failed: {}", e.what());
+		}
+		{
+			D3D11MultithreadGuard guard(context);
+			screenshot.stagingTexture = nullptr;
+		}
+		screenshotsInFlight.fetch_sub(1, std::memory_order_release);
+
+		if (!populated) {
 			logger::error("Failed to map screenshot staging texture.");
+			ShowInGameNotification("Screenshot failed - see BottledShaders.log");
 			continue;
 		}
 
-		Util::FileHelpers::EnsureDirectoryExists(screenshot.outputPath.parent_path());
+		try {
+			Util::FileHelpers::EnsureDirectoryExists(screenshot.outputPath.parent_path());
 
-		const bool saveOk = SaveScreenshotToDisk(
-			image,
-			screenshot.outputPath,
-			screenshot.format,
-			screenshot.hdrPngBitDepth,
-			screenshot.saveAsHdrPng,
-			screenshot.saveAsSdrPng);
-		if (!saveOk) {
-			logger::error(
-				"Failed to save {} screenshot.",
-				screenshot.saveAsHdrPng ? "HDR PNG" : "SDR");
-		}
+			const bool saveOk = SaveScreenshotToDisk(
+				image,
+				screenshot.outputPath,
+				screenshot.format,
+				screenshot.hdrPngBitDepth,
+				screenshot.saveAsHdrPng,
+				screenshot.saveAsSdrPng);
+			if (!saveOk) {
+				logger::error(
+					"Failed to save {} screenshot.",
+					screenshot.saveAsHdrPng ? "HDR PNG" : "SDR");
+			}
 
-		if (saveOk) {
-			CopySavedPathToClipboard(screenshot.copyToClipboard, screenshot.outputPath);
-		}
+			if (saveOk) {
+				CopySavedPathToClipboard(screenshot.copyToClipboard, screenshot.outputPath);
+			}
 
-		if (!saveOk) {
+			if (!saveOk) {
+				ShowInGameNotification("Screenshot failed - see BottledShaders.log");
+			} else {
+				logger::info("Saved screenshot to {}", PathToUtf8(screenshot.outputPath));
+				ShowInGameNotification(std::format("Screenshot saved: {}",
+					PathToUtf8(screenshot.outputPath.filename())));
+			}
+		} catch (const std::exception& e) {
+			logger::error("Screenshot save failed: {}", e.what());
 			ShowInGameNotification("Screenshot failed - see BottledShaders.log");
-		} else {
-			logger::info("Saved screenshot to {}", screenshot.outputPath.string());
-			ShowInGameNotification(std::format("Screenshot saved: {}",
-				screenshot.outputPath.filename().string()));
 		}
 	}
 	CoUninitialize();
@@ -988,6 +1070,8 @@ void ScreenshotFeature::Capture(std::filesystem::path overridePath, bool forceCl
 		screenshot.outputPath = ResolveToAbsoluteGamePath(overridePath);
 		screenshot.copyToClipboard = false;
 	}
+	RaiseMultithreadProtection();
+	screenshotsInFlight.fetch_add(1, std::memory_order_acq_rel);
 	EnqueueScreenshot(std::move(screenshot));
 }
 #undef I18N_KEY_PREFIX

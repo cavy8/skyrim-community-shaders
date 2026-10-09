@@ -102,6 +102,8 @@ public:
 	};
 	ReflexOptionsCache reflexOptionsCache{};
 	uint32_t lastReflexSleepFrame = UINT32_MAX;
+	uint32_t lastConstantsFrame = UINT32_MAX;
+	bool constantsResetPending = false;
 
 	/**
 	 * @brief Executes DLSS evaluation for a single viewport with the given resources.
@@ -116,7 +118,7 @@ public:
 	 * @param extentOut Output resolution extent.
 	 * @param outputWidth Target output width for DLSS options.
 	 */
-	void EvaluateDLSS(sl::ViewportHandle vp,
+	bool EvaluateDLSS(sl::ViewportHandle vp,
 		ID3D11Resource* colorIn, ID3D11Resource* colorOut, ID3D11Resource* depth,
 		ID3D11Resource* mvec, ID3D11Resource* reactiveMask, ID3D11Resource* transparencyMask,
 		const sl::Extent& extentIn, const sl::Extent& extentOut, uint32_t outputWidth);
@@ -142,7 +144,7 @@ public:
 
 	bool BindFeatureFunction(sl::Feature a_feature, const char* a_functionName, void*& a_function);
 	void RequestFeatureLoad(sl::Feature a_feature, const char* a_featureName);
-	void BindReflexAndPCL();
+	void BindReflexAndPCL(bool a_reflexSupported, bool a_pclSupported);
 
 	void ConfigureDLSSG(bool enabled);
 	void EmitPCLMarker(sl::PCLMarker a_marker);
@@ -152,6 +154,8 @@ public:
 
 	/** @brief Acquires a new frame token from Streamline for the current frame. */
 	bool EnsureFrameToken();
+	/** @brief Acquires the frame token for an explicit frame index; reuses the cached token when the index is unchanged. */
+	bool EnsureFrameToken(uint32_t a_frameIndex);
 	/**
 	 * @brief Sets camera and jitter constants on the Streamline viewport for the current frame.
 	 * @param p_viewport The viewport handle to configure.
@@ -180,7 +184,7 @@ public:
 	 * @param a_transparencyCompositionMask Mask for transparency handling.
 	 * @param a_motionVectors Per-pixel motion vectors for temporal reprojection.
 	 */
-	void Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors);
+	bool Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors);
 	/** @brief Updates Reflex latency reduction state and performs the Reflex sleep call. */
 	void UpdateReflex();
 

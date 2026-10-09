@@ -103,7 +103,7 @@ namespace Util::Moon
 		if (!moon || !moon->root)
 			return { 0.0f, 0.0f, 1.0f };
 
-		auto dir = GetFacingAxis(moon->root->world.rotate);
+		auto dir = moon->root->world.rotate.GetVectorY();
 		dir.Unitize();
 		return dir;
 	}

@@ -4,12 +4,12 @@ namespace WaterEffects
 {
 	float2 PanCausticsUV(float2 uv, float speed, float tiling)
 	{
-		return frac((float2(1, 0) * SharedData::Timer * speed) + (uv * tiling));
+		return float2(1, 0) * frac(SharedData::Timer * speed) + uv * tiling;
 	}
 
 	float SampleCaustics(float2 uv)
 	{
-		return WaterCaustics.Sample(SampColorSampler, uv).x;
+		return WaterCaustics.SampleGrad(SampColorSampler, frac(uv), ddx(uv), ddy(uv)).x;
 	}
 
 	// Approximate wavelength-dependent refraction by offsetting red/blue around green.

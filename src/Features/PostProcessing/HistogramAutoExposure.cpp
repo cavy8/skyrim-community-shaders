@@ -66,7 +66,7 @@ void HistogramAutoExposure::DrawSettings()
 		const float adaptedEV100 = log2(adaptedLum) + 3.0f;
 		const float compensationEV = settings.ExposureCompensation;
 		const float compensationScale = exp2(compensationEV);
-		const float clampedAdaptedLum = std::clamp(adaptedLum, exp2(settings.AdaptationRange.x - 3.0f), exp2(settings.AdaptationRange.y - 3.0f));
+		const float clampedAdaptedLum = std::min(std::max(adaptedLum, exp2(settings.AdaptationRange.x - 3.0f)), exp2(settings.AdaptationRange.y - 3.0f));
 		const float compensatedTargetLum = clampedAdaptedLum / std::max(compensationScale, 1e-5f);
 		const float compensatedTargetEV100 = log2(compensatedTargetLum) + 3.0f;
 		const float finalExposure = kMiddleGray * compensationScale / clampedAdaptedLum;

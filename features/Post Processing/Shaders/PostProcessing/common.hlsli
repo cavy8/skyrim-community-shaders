@@ -40,10 +40,10 @@ float4 DownsampleCODFirstMip(Texture2D tex, SamplerState samp, float2 uv, float2
 
 	[unroll] for (x = 0; x < 2; ++x)
 		[unroll] for (y = 0; y < 2; ++y)
-			fetches2x2[x * 2 + y] = tex.SampleLevel(samp, uv + (int2(x, y) * 2 - 1) * out_px_size, 0);
+			fetches2x2[x * 2 + y] = tex.SampleLevel(samp, uv + (int2(x, y) - .5) * out_px_size, 0);
 	[unroll] for (x = 0; x < 3; ++x)
 		[unroll] for (y = 0; y < 3; ++y)
-			fetches3x3[x * 3 + y] = tex.SampleLevel(samp, uv + (int2(x, y) - 1) * 2 * out_px_size, 0);
+			fetches3x3[x * 3 + y] = tex.SampleLevel(samp, uv + (int2(x, y) - 1) * out_px_size, 0);
 
 	retval += 0.5 * KarisAverage(fetches2x2[0], fetches2x2[1], fetches2x2[2], fetches2x2[3]);
 

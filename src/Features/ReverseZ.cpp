@@ -132,12 +132,14 @@ namespace
 	{
 		if (std::abs(a_proj.m[3][3]) > 1e-4f)
 			return ZAxis::kUnknown;
-		const bool col2 = std::abs(std::abs(a_proj.m[3][2]) - 1.0f) < 1e-3f;
-		const bool row2 = std::abs(std::abs(a_proj.m[2][3]) - 1.0f) < 1e-3f;
-		if (col2 && !row2)
-			return ZAxis::kCol2;
-		if (row2 && !col2)
+		const float colDeviation = std::abs(std::abs(a_proj.m[3][2]) - 1.0f);
+		const float rowDeviation = std::abs(std::abs(a_proj.m[2][3]) - 1.0f);
+		const bool col2 = colDeviation < 1e-3f;
+		const bool row2 = rowDeviation < 1e-3f;
+		if (row2 && (!col2 || rowDeviation <= colDeviation))
 			return ZAxis::kRow2;
+		if (col2)
+			return ZAxis::kCol2;
 		return ZAxis::kUnknown;
 	}
 
@@ -432,7 +434,7 @@ ID3D11DepthStencilState* ReverseZ::GetReversedState(ID3D11DepthStencilState* a_s
 
 void ReverseZ::ApplyReverseProjection(void* a_cameraStateEntry, const RE::NiCamera* a_camera)
 {
-	if (!activeThisBoot || !a_cameraStateEntry || !a_camera)
+	if (!activeThisBoot || !a_cameraStateEntry || !a_camera || !IsConvertedDepthTarget(static_cast<uint32_t>(RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN)))
 		return;
 
 	constexpr std::ptrdiff_t kViewDataOffset = 0x10;
@@ -475,7 +477,7 @@ bool ReverseZ::ExpectPublishedReversal(const RE::NiCamera* a_camera, bool a_rend
 	if (!activeThisBoot || !a_camera || !g_reversalActive.load(std::memory_order_relaxed))
 		return false;
 	if (a_camera == RE::Main::WorldRootCamera())
-		return true;
+		return IsConvertedDepthTarget(static_cast<uint32_t>(RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN));
 	if (a_renderingCubemap)
 		return false;
 	auto* shadowState = globals::game::shadowState;
@@ -531,6 +533,22 @@ namespace
 			a_matrix.m[row][3] += z;
 		}
 	}
+}
+
+bool ReverseZ::IsReversedUploadedProjection(const Matrix& a_projection)
+{
+	const bool perspective = std::abs(a_projection.m[3][3]) < 1e-4f && std::abs(std::abs(a_projection.m[3][2]) - 1.0f) < 1e-3f;
+	return perspective && a_projection.m[2][2] * a_projection.m[3][2] < 0.0f;
+}
+
+void ReverseZ::FlipUploadedProjection(Matrix& a_matrix)
+{
+	ReverseUploadedProjection(a_matrix);
+}
+
+void ReverseZ::FlipUploadedInverse(Matrix& a_matrix)
+{
+	ReverseUploadedInverse(a_matrix);
 }
 
 void ReverseZ::FixupMappedFrameBuffer(globals::FrameBuffer& a_frameBuffer)

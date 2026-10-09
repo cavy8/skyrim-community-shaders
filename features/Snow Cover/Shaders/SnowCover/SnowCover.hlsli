@@ -103,7 +103,12 @@ namespace SnowCover
 		if (mult < 0.01)
 			return;
 		float2 uv = frac(SharedData::snowCoverSettings.UVScale * (p.xy + worldNormal.xy) / 100);
-		float3 diffuse = Color::LinearToSrgb(SnowAlbedo.Sample(SampColorSampler, uv).rgb) * SharedData::snowCoverSettings.MainTint.rgb * Color::PBRLightingScale;
+		float3 snowSample = SnowAlbedo.Sample(SampColorSampler, uv).rgb;
+#	if defined(TRUE_PBR)
+		float3 diffuse = Color::Diffuse(snowSample) * SharedData::snowCoverSettings.MainTint.rgb * Color::PBRLightingScale;
+#	else
+		float3 diffuse = Color::Diffuse(Color::LinearToSrgb(snowSample)) * SharedData::snowCoverSettings.MainTint.rgb * Color::PBRLightingScale;
+#	endif
 
 		color = lerp(color, diffuse, mult);
 	}
@@ -129,7 +134,7 @@ namespace SnowCover
 			mult *= 1 - GetFireMelt(p);
 		if (mult <= 0) {
 			alt = false;
-			return mult;
+			return 0;
 		}
 		float main_mult = (1 - abs(worldNormal.z - SharedData::snowCoverSettings.peakMainAngle)) + min(0, weatherMult) * SharedData::snowCoverSettings.minAngle;
 		float alt_mult = (1 - abs(worldNormal.z - SharedData::snowCoverSettings.peakAltAngle)) + sin(p.z * 0.01 + cos(p.x * p.y * 0.01) * 0.025) * 0.05;
@@ -190,7 +195,7 @@ namespace SnowCover
 		float4 rmaos;
 		if (alt) {
 			float3 albedo = IceAlbedo.Sample(SampColorSampler, uv).rgb;
-			albedo = Color::LinearToSrgb(albedo) * SharedData::snowCoverSettings.AltTint.rgb * Color::PBRLightingScale;
+			albedo = Color::Diffuse(Color::LinearToSrgb(albedo)) * SharedData::snowCoverSettings.AltTint.rgb * Color::PBRLightingScale;
 			rmaos = IceRmaos.Sample(SampColorSampler, uv);
 			material.Roughness = lerp(material.Roughness, rmaos.x, mult);
 			material.Shininess = lerp(material.Shininess, 25 * 500 * SharedData::snowCoverSettings.altSpec * rmaos.w, mult);
@@ -200,7 +205,7 @@ namespace SnowCover
 			material.F0 = lerp(material.F0, rmaos.w * SharedData::snowCoverSettings.altSpec, mult);
 		} else {
 			float3 albedo = SnowAlbedo.Sample(SampColorSampler, uv).rgb;
-			albedo = Color::LinearToSrgb(albedo) * SharedData::snowCoverSettings.MainTint.rgb * Color::PBRLightingScale;
+			albedo = Color::Diffuse(Color::LinearToSrgb(albedo)) * SharedData::snowCoverSettings.MainTint.rgb * Color::PBRLightingScale;
 			rmaos = SnowRmaos.Sample(SampColorSampler, uv);
 			material.Roughness = lerp(material.Roughness, rmaos.x, mult);
 			material.Shininess = lerp(material.Shininess, 25 * 500 * SharedData::snowCoverSettings.mainSpec * rmaos.w, mult);

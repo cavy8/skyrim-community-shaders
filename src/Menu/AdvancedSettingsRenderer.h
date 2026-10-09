@@ -32,7 +32,7 @@ public:
 	 * @brief Queues a utility feature's sub-tab to be activated on the next Advanced render.
 	 *
 	 * Utility features have no entry in the feature list, so navigation requests aimed at
-	 * them (for example the CSEditor link in Wetness Effects) are routed here.
+	 * them are routed here.
 	 *
 	 * @param featureShortName Short name of the utility feature to focus.
 	 */

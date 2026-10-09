@@ -154,6 +154,8 @@ void CloudShadows::SkyShaderHacks()
 		UINT sampleMask = 0xffffffff;
 
 		context->OMSetBlendState(cloudShadowBlendState, blendFactor, sampleMask);
+		globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+		globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
 
 		auto cubemapDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kCUBEMAP_REFLECTIONS];
 		context->PSSetShaderResources(17, 1, &cubemapDepth.depthSRV);
@@ -217,6 +219,18 @@ void CloudShadows::ReflectionsPrepass()
 		return;
 
 	auto context = globals::d3d::context;
+
+	if (!sky->clouds || sky->clouds->numLayers == 0) {
+		if (!occlusionClearedWithoutClouds) {
+			float black[4] = { 0, 0, 0, 0 };
+			for (int face = 0; face < 6; ++face)
+				context->ClearRenderTargetView(occlusionBaseRTVs[face], black);
+			context->CopyResource(texCubemapCloudOcc->resource.get(), texOcclusionBase->resource.get());
+			occlusionClearedWithoutClouds = true;
+		}
+	} else {
+		occlusionClearedWithoutClouds = false;
+	}
 
 	context->CopyResource(texCubemapCloudOccCopy->resource.get(), texCubemapCloudOcc->resource.get());
 

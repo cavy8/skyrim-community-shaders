@@ -210,6 +210,7 @@ void DoF::UpdateProceduralBokehSamples(bool force)
 
 void DoF::SetupResources()
 {
+	focusPrimed = false;
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 
@@ -623,7 +624,7 @@ void DoF::Draw(TextureInfo& inout_tex)
 	const float nearMaxReachPx = tileDilateRadius > 0u ? std::min(wantNearRadiusPx, (float)(tileDilateRadius - 1u) * conservativeTileStepPx) : 0.0f;
 
 	DoFCB dofData = {
-		.TransitionSpeed = settings.TransitionSpeed,
+		.TransitionSpeed = focusPrimed ? settings.TransitionSpeed : 1.0f,
 		.FocusCoord = focusCoord,
 		.ManualFocusPlane = manualFocus,
 		.FocalLength = focusLen,
@@ -690,6 +691,7 @@ void DoF::Draw(TextureInfo& inout_tex)
 
 		context->CSSetShader(UpdateFocusCS.get(), nullptr, 0);
 		context->Dispatch(1, 1, 1);
+		focusPrimed = true;
 	}
 
 	resetViews();

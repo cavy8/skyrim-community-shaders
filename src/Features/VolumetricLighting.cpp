@@ -98,7 +98,7 @@ void VolumetricLighting::DrawVolumetricLightingSettings(int32_t& quality, Textur
 		T(TKEY("quality_custom"), "Custom")
 	};
 
-	if (ImGui::SliderInt(isInterior ? T(TKEY("interior_quality"), "Interior Quality") : T(TKEY("exterior_quality"), "Exterior Quality"), &quality, 0, static_cast<uint8_t>(Quality::Count) - 1, qualityNames[quality])) {
+	if (ImGui::SliderInt(isInterior ? T(TKEY("interior_quality"), "Interior Quality") : T(TKEY("exterior_quality"), "Exterior Quality"), &quality, 0, static_cast<uint8_t>(Quality::Count) - 1, qualityNames[std::clamp(quality, 0, static_cast<int32_t>(Quality::Count) - 1)], ImGuiSliderFlags_AlwaysClamp)) {
 		if (inLocationType)
 			SetupVL();
 	}
@@ -194,6 +194,11 @@ void VolumetricLighting::LoadSettings(json& o_json)
 	settings.ExteriorShaftDefinition = std::clamp(settings.ExteriorShaftDefinition, -1.0f, 1.0f);
 	settings.InteriorShaftDefinition = std::clamp(settings.InteriorShaftDefinition, -1.0f, 1.0f);
 	settings.Effects11Priority = std::clamp(settings.Effects11Priority, 0, static_cast<int32_t>(GodRayPriority::Count) - 1);
+	for (auto* size : { &settings.ExteriorCustomSize, &settings.InteriorCustomSize }) {
+		size->Width = std::clamp(size->Width, 32, 640);
+		size->Height = std::clamp(size->Height, 32, 640);
+		size->Depth = std::clamp(size->Depth, 10, 640);
+	}
 }
 
 void VolumetricLighting::SaveSettings(json& o_json)
@@ -257,12 +262,14 @@ void VolumetricLighting::EarlyPrepass()
 	const auto interiorCell = RE::TES::GetSingleton()->interiorCell;
 	const bool currentlyInInterior = interiorCell != nullptr;
 
-	if (initialised && currentlyInInterior == inInterior)
+	const bool currentlyInInteriorWithSun = InteriorSun::IsInteriorWithSun(interiorCell);
+
+	if (initialised && currentlyInInterior == inInterior && currentlyInInteriorWithSun == inInteriorWithSun)
 		return;
 
 	initialised = true;
 	inInterior = currentlyInInterior;
-	inInteriorWithSun = InteriorSun::IsInteriorWithSun(interiorCell);
+	inInteriorWithSun = currentlyInInteriorWithSun;
 	SetupVL();
 }
 

@@ -903,11 +903,14 @@ bool FurShells::CopySceneDepth()
 
 void FurShells::RenderDeferredShells()
 {
+	auto* state = globals::state;
+	if (!state->inWorld || (state->permutationData.ExtraShaderDescriptor & ReflectionsFlag) != 0)
+		return;
+
 	deferralClosed = true;
 	if (deferredPasses.empty())
 		return;
 
-	auto* state = globals::state;
 	if (state->frameAnnotations)
 		state->BeginPerfEvent("Fur Shells - Deferred Shells");
 

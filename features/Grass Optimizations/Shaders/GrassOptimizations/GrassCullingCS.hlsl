@@ -126,9 +126,6 @@ float WindScalar(float basis, float timer)
     // Use the source index to keep dither decisions stable across slice changes.
     const uint idx = slice.x + (compactIdx - slice.y);
 
-    // Generate independent density and LOD dither values with one hash.
-    const uint2 rand = Random::pcg2d(uint2(idx, 0u));
-
     const uint base = idx * 32;
     const uint4 raw0 = Instances.Load4(base);
     const uint4 raw1 = Instances.Load4(base + 16);
@@ -138,6 +135,9 @@ float WindScalar(float basis, float timer)
 
     const float4 og = Origins[idx];
     const float3 world = float3(localXY, localZ) + og.xyz;
+
+    // Generate independent density and LOD dither values with one hash.
+    const uint2 rand = Random::pcg2d(asuint(world.xy));
 
     const float3 dv = world - FrameBuffer::CameraPosAdjust.xyz;
     const float distSq = dot(dv, dv);
@@ -261,7 +261,7 @@ float WindScalar(float basis, float timer)
     const float edgeFade = saturate((maxDist - dist) / max(maxDist - edgeStart, 1e-4));
 
     const float4 clip = mul(FrameBuffer::CameraViewProj, float4(dv, 1.0));
-    const float distFade = 1.0 - saturate((length(clip.xyz) - AlphaParam1) / AlphaParam2);
+    const float distFade = 1.0 - saturate((length(FrameBuffer::ToStandardClip(clip)) - AlphaParam1) / AlphaParam2);
     const float spawnFade = saturate((FadeNow - og.w) * FadeInTimeRcp);
     
     const float fade = distFade * spawnFade * lodFade * edgeFade;

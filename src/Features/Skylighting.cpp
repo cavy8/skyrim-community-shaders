@@ -5,6 +5,7 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include "Utils/D3D.h"
+#include "Utils/MathUtils.h"
 #include "Utils/VersionedRelocation.h"
 
 #include <numbers>
@@ -17,22 +18,18 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MinDiffuseVisibility,
 	MinSpecularVisibility,
 	OcclusionUpdateInterval,
-	OcclusionDistanceCulling)
+	OcclusionDistanceCulling,
+	OcclusionMinRadius)
 
 void Skylighting::LoadSettings(json& o_json)
 {
 	settings = o_json;
 
-	if (!std::isfinite(settings.OcclusionUpdateInterval))
-		settings.OcclusionUpdateInterval = Settings{}.OcclusionUpdateInterval;
-	if (!std::isfinite(settings.OcclusionDistanceCulling))
-		settings.OcclusionDistanceCulling = Settings{}.OcclusionDistanceCulling;
-	if (!std::isfinite(settings.MaxZenith))
-		settings.MaxZenith = Settings{}.MaxZenith;
-
-	settings.OcclusionUpdateInterval = std::clamp(settings.OcclusionUpdateInterval, 0.f, 100.f);
-	settings.OcclusionDistanceCulling = std::clamp(settings.OcclusionDistanceCulling, 0.f, 1.f);
-	settings.MaxZenith = std::clamp(settings.MaxZenith, 0.f, std::numbers::pi_v<float> / 2.f);
+	const Settings defaults{};
+	settings.OcclusionUpdateInterval = Util::ClampFinite(settings.OcclusionUpdateInterval, defaults.OcclusionUpdateInterval, 0.f, 100.f);
+	settings.OcclusionDistanceCulling = Util::ClampFinite(settings.OcclusionDistanceCulling, defaults.OcclusionDistanceCulling, 0.f, 1.f);
+	settings.MaxZenith = Util::ClampFinite(settings.MaxZenith, defaults.MaxZenith, 0.f, std::numbers::pi_v<float> / 2.f);
+	settings.OcclusionMinRadius = Util::ClampFinite(settings.OcclusionMinRadius, defaults.OcclusionMinRadius, kEngineMinOccluderRadius, 512.f);
 }
 
 void Skylighting::SaveSettings(json& o_json)
@@ -91,6 +88,10 @@ void Skylighting::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("occlusion_distance_culling"), "Occlusion Distance Culling"), &settings.OcclusionDistanceCulling, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextWrapped("%s", T(TKEY("occlusion_distance_culling_tooltip"), "Drops small distant objects from the occlusion height map, lowering the cost of each render rather than how often it runs. Large occluders such as mountains and buildings are kept at any distance. 0 captures everything, as before."));
+
+	ImGui::SliderFloat(T(TKEY("occlusion_min_radius"), "Occlusion Min Radius"), &settings.OcclusionMinRadius, kEngineMinOccluderRadius, 512.f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextWrapped("%s", T(TKEY("occlusion_min_radius_tooltip"), "Objects with a smaller bounding radius are left out of the skylighting occlusion height map at any distance; the rain occlusion map keeps the engine default of 32. 128 drops most clutter and roughly halves the objects drawn into the map."));
 }
 
 void Skylighting::SetupResources()
@@ -241,7 +242,7 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 
 	return {
 		.OcclusionViewProj = OcclusionTransform,
-		.OcclusionDir = OcclusionDir,
+		.OcclusionDir = float4{ OcclusionDir.x, OcclusionDir.y, OcclusionDir.z, occlusionFresh ? 1.0f : 0.0f },
 		.PosOffset = cellOrigin - eyePos,
 		.ArrayOrigin = {
 			((int)cellID.x - probeArrayDims[0] / 2) % probeArrayDims[0],
@@ -300,6 +301,7 @@ void Skylighting::Prepass()
 			context->Dispatch((probeArrayDims[0] + 7u) >> 3, (probeArrayDims[1] + 7u) >> 3, probeArrayDims[2]);
 			globals::profiler->EndPass();
 		}
+		occlusionFresh = false;
 
 		// Reset
 		{
@@ -443,7 +445,7 @@ RE::BSShaderProperty::RenderPassArray* Skylighting::BSLightingShaderProperty_Get
 	const bool validOccluder = property->flags.any(kZBufferWrite) &&
 		property->flags.none(kRefraction, kTempRefraction, kLODLandscape, kEyeReflect, kDecal, kDynamicDecal) &&
 		(skylighting.inOcclusion || property->flags.none(kMultiTextureLandscape, kNoLODLandBlend));
-	float minOccluderRadius = 32.f;
+	float minOccluderRadius = skylighting.inOcclusion ? skylighting.settings.OcclusionMinRadius : kEngineMinOccluderRadius;
 	if (skylighting.inOcclusion && skylighting.settings.OcclusionDistanceCulling > 0.f) {
 		const float distance = geometry->worldBound.center.GetDistance(skylighting.occlusionEyePosition);
 		minOccluderRadius += skylighting.settings.OcclusionDistanceCulling * 256.f * std::min(distance / skylighting.occlusionDistance, 1.f);
@@ -667,7 +669,7 @@ void Skylighting::RenderOcclusion()
 					}
 
 					// disc transformation
-					vPoint.x = sqrt(vPoint.x * sin(settings.MaxZenith));
+					vPoint.x = sqrt(vPoint.x) * sin(settings.MaxZenith);
 					vPoint.y *= 6.28318530718f;
 
 					vPoint = { vPoint.x * cos(vPoint.y), vPoint.x * sin(vPoint.y) };
@@ -696,6 +698,7 @@ void Skylighting::RenderOcclusion()
 
 				OcclusionDir = -float4{ PrecipitationShaderDirectionF.x, PrecipitationShaderDirectionF.y, PrecipitationShaderDirectionF.z, 0 };
 				OcclusionTransform = ((RE::BSParticleShaderRainEmitter*)rain)->occlusionProjection;
+				occlusionFresh = true;
 
 				delete rain;
 

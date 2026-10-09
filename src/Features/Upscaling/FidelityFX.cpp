@@ -325,8 +325,9 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 
 		ffx::DispatchDescFrameGenerationPrepareCameraInfo cameraConfig{};
 
-		auto viewMatrix = globals::game::frameBufferCached.GetCameraViewInverse().Transpose();
-		auto cameraViewToClip = globals::game::frameBufferCached.GetCameraProjUnjittered().Transpose();
+		const auto& cameraFrame = globals::features::upscaling.GetConstantsCamera();
+		auto viewMatrix = cameraFrame.GetCameraViewInverse().Transpose();
+		auto cameraViewToClip = cameraFrame.GetCameraProjUnjittered().Transpose();
 
 		cameraConfig.cameraRight[0] = viewMatrix._11;
 		cameraConfig.cameraRight[1] = viewMatrix._12;
@@ -340,9 +341,9 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 		cameraConfig.cameraForward[1] = viewMatrix._32;
 		cameraConfig.cameraForward[2] = viewMatrix._33;
 
-		cameraConfig.cameraPosition[0] = globals::game::frameBufferCached.GetCameraPosAdjust().x;
-		cameraConfig.cameraPosition[1] = globals::game::frameBufferCached.GetCameraPosAdjust().y;
-		cameraConfig.cameraPosition[2] = globals::game::frameBufferCached.GetCameraPosAdjust().z;
+		cameraConfig.cameraPosition[0] = cameraFrame.GetCameraPosAdjust().x;
+		cameraConfig.cameraPosition[1] = cameraFrame.GetCameraPosAdjust().y;
+		cameraConfig.cameraPosition[2] = cameraFrame.GetCameraPosAdjust().z;
 
 		if (ffx::Dispatch(frameGenContext, dispatchParameters, cameraConfig) != ffx::ReturnCode::Ok) {
 			logger::critical("[FidelityFX] Failed to dispatch frame generation!");
@@ -430,7 +431,7 @@ void FidelityFX::DestroyFSRResources()
 	WaitForHostFsrIdle();
 	ResetFSRIdleFence();
 
-	if (ffxFsr3ContextDestroy(&fsrContext[0]) != FFX_OK)
+	if (fsrScratchBuffer && ffxFsr3ContextDestroy(&fsrContext[0]) != FFX_OK)
 		logger::critical("[FidelityFX] Failed to destroy FSR3 context!");
 
 	// Free the scratch buffer to prevent memory leak
@@ -482,8 +483,10 @@ void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_d
 		a_reactiveMask, a_transparencyCompositionMask, a_upscalingTexture,
 		(uint32_t)renderSize.x, (uint32_t)renderSize.y, (uint32_t)screenSize.x, (uint32_t)screenSize.y,
 		renderSize.x, renderSize.y, a_sharpness);
-	if (!dispatched)
+	static bool dispatchFailureLogged = false;
+	if (!dispatched && !dispatchFailureLogged)
 		logger::critical("[FidelityFX] Failed to dispatch upscaling!");
+	dispatchFailureLogged = !dispatched;
 
 	if (state->frameAnnotations)
 		state->EndPerfEvent();

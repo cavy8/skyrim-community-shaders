@@ -7,6 +7,7 @@
 
 #include "BackgroundBlur.h"
 #include "FeatureConstraints.h"
+#include "Features/ReverseZ.h"
 #include "Features/ScreenshotFeature.h"
 #include "FontSelector.h"
 #include "Fonts.h"
@@ -332,12 +333,18 @@ void SettingsTabRenderer::RenderShadersTab()
 	if (BeginTabItemWithFont(tabLabel.c_str(), Menu::FontRole::Heading)) {
 		auto shaderCache = globals::shaderCache;
 
+		const bool reverseZActive = globals::features::reverseZ.IsActive();
 		bool useCustomShaders = shaderCache->IsEnabled();
-		if (ImGui::Checkbox(T("menu.settings.use_custom_shaders", "Use Custom Shaders"), &useCustomShaders)) {
-			shaderCache->SetEnabled(useCustomShaders);
+		{
+			auto _disabled = Util::DisableGuard(reverseZActive);
+			if (ImGui::Checkbox(T("menu.settings.use_custom_shaders", "Use Custom Shaders"), &useCustomShaders)) {
+				shaderCache->SetEnabled(useCustomShaders);
+			}
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T("menu.settings.use_custom_shaders_tooltip", "Disabling this effectively disables all features."));
+			if (reverseZActive)
+				ImGui::Text("%s", T("menu.settings.use_custom_shaders_reverse_z", "Always on while Reverse Z is active: vanilla shaders cannot render reversed depth."));
 		}
 
 		bool useDiskCache = shaderCache->IsDiskCache();

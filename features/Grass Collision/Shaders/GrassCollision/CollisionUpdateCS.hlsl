@@ -48,9 +48,9 @@ groupshared BoundingBoxPacked SharedBoundingBoxes[64];
 	cellCentreMS = cellCentreMS / TEXTURE_SIZE * WORLD_SIZE + PosOffset.xy;
 
 	// Check if the cell is newly added
-	uint2 validMin = (uint2)max(0, ValidMargin.xy);
-	uint2 validMax = TEXTURE_SIZE - 1 + (uint2)min(0, ValidMargin.xy);
-	bool isValid = all(cellID >= validMin) && all(cellID <= validMax);
+	int2 validMin = max(0, ValidMargin.xy);
+	int2 validMax = (int)TEXTURE_SIZE - 1 + min(0, ValidMargin.xy);
+	bool isValid = all((int2)cellID >= validMin) && all((int2)cellID <= validMax);
 
 	float2 collision = max(ZRANGE.x, ZRANGE.y);
 	float2 previousCollision = collision;

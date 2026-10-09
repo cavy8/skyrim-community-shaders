@@ -113,7 +113,7 @@ void ENBDepthOfField::UpdateEffectVariables()
 	}
 
 	ID3D11ShaderResourceView* adaptationSRV = nullptr;
-	if (idEnableAdaptation != 0xFFFFFFFF && settingManager.GetValue<bool>(idEnableAdaptation)) {
+	if (idEnableAdaptation != 0xFFFFFFFF && settingManager.GetValue<bool>(idEnableAdaptation) && EffectManager::GetSingleton().enbAdaptation.IsCompiled()) {
 		const char* previousAdaptation = (TextureManager::GetSingleton().GetTextureSwap() & 1) ? "TextureAdaptationSwap" : "TextureAdaptation";
 		auto* texture = TextureManager::GetSingleton().FindCommonTexture(previousAdaptation);
 		adaptationSRV = texture ? texture->srv.get() : nullptr;

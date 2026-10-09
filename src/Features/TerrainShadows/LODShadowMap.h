@@ -115,6 +115,7 @@ private:
 	uint32_t skippedTopology = 0;
 	uint32_t skippedVertexShader = 0;
 	uint32_t skippedCamera = 0;
+	uint32_t handledTransitionGeneration = 0;
 	int inactiveReason = -1;
 	int debugCascade = 0;
 	std::unique_ptr<Texture2D> debugView;

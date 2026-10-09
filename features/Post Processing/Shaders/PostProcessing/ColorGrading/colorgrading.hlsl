@@ -837,7 +837,7 @@ float3 ColorGrading(float3 color)
 		shadowsHighlightsRange.x, shadowsHighlightsRange.y, shadowsHighlightsRange.z, shadowsHighlightsRange.w);
 
 	// Contrast
-	color = logType ? LogContrast(color, contrast.xyz, pivot.xyz) : LinearContrast(color, contrast.xyz, pivot.xyz);
+	color = logType ? LogContrast(color, contrast.xyz, pivot.xyz) : LinearContrast(color, contrast.xyz, max(pivot.xyz, 1e-4));
 
 	if (logType & LogType::Invert) {
 		color = LogToLinearSpace(color, logType);

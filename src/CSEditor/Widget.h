@@ -223,6 +223,8 @@ public:
 	/** @brief Save widget-specific settings to the internal JSON object. Must be implemented by subclasses. */
 	virtual void SaveSettings() = 0;
 
+	virtual json CaptureUndoSnapshot() const { return js; }
+
 	/** @brief Apply the current widget settings to the live game form. Must be implemented by subclasses. */
 	virtual void ApplyChanges() = 0;
 

@@ -76,7 +76,7 @@ namespace GrassLighting
 			float NdotH = saturate(dot(N, H));
 			float VdotH = saturate(dot(V, H));
 
-			float D = BRDF::D_GGX(roughness, NdotH);
+			float D = BRDF::D_GGX(max(roughness, 0.04), NdotH);
 			float G = BRDF::Vis_SmithJointApprox(roughness, NdotL, NdotV);
 			float3 F = BRDF::F_Schlick(F0, VdotH);
 			float3 specular = D * G * F;
@@ -84,7 +84,7 @@ namespace GrassLighting
 		}
 #endif
 		float shininess = (1.0 - roughness) * 100.f;
-		float HdotN = saturate(dot(H, N));
+		float HdotN = max(saturate(dot(H, N)), 1e-6);
 		float lightColorMultiplier = exp2(shininess * log2(HdotN)) * saturate(dot(N, L));
 		return lightColor * lightColorMultiplier.xxx;
 	}

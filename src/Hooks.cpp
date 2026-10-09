@@ -15,6 +15,7 @@
 
 #include "Features/Effects11.h"
 #include "Features/HDRDisplay.h"
+#include "Features/HiZOcclusion.h"
 #include "Features/InteriorSun.h"
 #include "Features/LandscapeSeams.h"
 #include "Features/LightLimitFix.h"
@@ -24,6 +25,7 @@
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
 #include "Features/SkySync.h"
+#include "Features/Skylighting.h"
 #include "Features/Upscaling.h"
 #include "Features/VolumetricLighting.h"
 
@@ -205,6 +207,10 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 
 	// Only check against non-shader bits
 	state->permutationData.PixelShaderDescriptor &= ~state->modifiedPixelDescriptor;
+
+	if (shader->shaderType.get() == RE::BSShader::Type::Sky && globals::features::reverseZ.IsActive() &&
+		(!state->ShaderEnabled(RE::BSShader::Type::Sky) || !shaderCache->GetVertexShader(*shader, state->modifiedVertexDescriptor)))
+		return false;
 
 	bool shaderFound = func(shader, vertexDescriptor, pixelDescriptor, skipPixelShader);
 
@@ -440,6 +446,8 @@ struct IDXGISwapChain_Present
 	{
 		globals::state->Reset();
 
+		globals::features::screenshotFeature.ProcessCaptureRequest(false);
+
 		HRESULT retval = globals::features::hdrDisplay.HandleSwapChainPresent(
 			This,
 			SyncInterval,
@@ -448,7 +456,7 @@ struct IDXGISwapChain_Present
 				return func(swapChain, syncInterval, presentFlags);
 			});
 
-		globals::features::screenshotFeature.ProcessCaptureRequest();
+		globals::features::screenshotFeature.ProcessCaptureRequest(true);
 
 		TracyD3D11Collect(globals::state->tracyCtx);
 
@@ -933,6 +941,66 @@ namespace Hooks
 	};
 #endif
 
+	struct BSAccumProcess_RegisterObject
+	{
+		static uint64_t thunk(RE::BSGraphics::BSShaderAccumulator* accum, RE::NiAVObject* object, uint64_t flags)
+		{
+			auto& hiz = globals::features::hiZOcclusion;
+			if (hiz.loaded && hiz.settings.enableHiZCulling) {
+				auto* geo = netimmerse_cast<RE::BSGeometry*>(object);
+
+				if (!geo || geo->worldBound.radius <= 0.0f) {
+					return func(accum, object, flags);
+				}
+
+				auto* refr = object->GetUserData();
+				if (!refr) {
+					return func(accum, object, flags);
+				}
+
+				hiz.stats.accumRegisterCalls.fetch_add(1, std::memory_order_relaxed);
+
+				const uint32_t renderMode = accum->GetRuntimeData().renderMode;
+
+				if (renderMode >= 30) {
+					return func(accum, object, flags);
+				}
+
+				hiz.stats.renderModeCalls[renderMode].fetch_add(1, std::memory_order_relaxed);
+
+				const uint8_t pass = HiZOcclusion::GetPassKind(renderMode);
+				const bool allowCulling = pass != 0 && hiz.settings.cullRenderMode[renderMode] &&
+				                          (pass != HiZOcclusion::kCameraPass || HiZOcclusion::IsMainViewRegistration(renderMode, accum)) &&
+				                          !globals::features::skylighting.inOcclusion &&
+				                          !(globals::state->permutationData.ExtraShaderDescriptor & static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections)) &&
+				                          !hiz.IsPlayerAttachedGeometry(geo, refr);
+
+				if (allowCulling) {
+					// Initialize the thread-local registration if this thread is calling the hook for the first time
+					[[maybe_unused]] static thread_local bool threadRegistered = [&hiz]() {
+						std::lock_guard<std::mutex> lock(hiz.threadVectorsMutex);
+						hiz.allThreadVectors.push_back(&HiZOcclusion::localPendingGeometry);
+						return true;
+					}();
+
+					// Append to local list with zero thread synchronization
+					HiZOcclusion::localPendingGeometry.push_back({ geo, pass });
+
+					if (pass == HiZOcclusion::kSunShadowPass)
+						hiz.CaptureSunShadowDirection(accum->camera);
+
+					if (pass == HiZOcclusion::kCameraPass ? hiz.IsGeometryOccluded(geo) : hiz.IsShadowCasterOccluded(geo)) {
+						hiz.stats.earlyCulledCount.fetch_add(1, std::memory_order_relaxed);
+						return 0;
+					}
+				}
+			}
+
+			return func(accum, object, flags);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	namespace CSShadersSupport
 	{
 		RE::BSImagespaceShader* CurrentlyDispatchedShader = nullptr;
@@ -1166,6 +1234,17 @@ namespace Hooks
 		}
 
 		stl::write_thunk_call<BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights>(REL::RelocationID(100565, 107300).address() + Util::VersionedRelocation::Select(0x523, 0xB0E, 0xB30));
+
+		// Hook engine primary object registration for HIZ Occlusion
+		if (REL::Module::IsAE() && !Util::VersionedRelocation::IsAtLeastAE1799()) {
+			const auto registerObjectCall = REL::RelocationID(0, 76558).address() + 0xD3;
+			if (*reinterpret_cast<const std::uint8_t*>(registerObjectCall) == 0xE8) {
+				logger::info("Hooking BSAccumProcess::RegisterObject for HiZ Occlusion");
+				stl::write_thunk_call<BSAccumProcess_RegisterObject>(registerObjectCall);
+			} else {
+				logger::warn("HiZ Occlusion: unexpected code at BSAccumProcess::RegisterObject call site, early culling disabled");
+			}
+		}
 	}
 
 	void InstallEarlyHooks()

@@ -6,7 +6,9 @@
 #include <format>
 #include <imgui_stdlib.h>
 
+#include "CSEditor/EditorWindow.h"
 #include "EditorWidgets.h"
+#include "Features/CSEditor.h"
 #include "Features/Effects11.h"
 #include "Features/Effects11/EffectManager.h"
 #include "Features/Effects11/PresetManager.h"
@@ -81,6 +83,7 @@ namespace
 		{ "BLOOM", Group::Camera },
 		{ "LENS", Group::Camera },
 		{ "DEPTHOFFIELD", Group::Camera },
+		{ "NIGHTEYE", Group::Camera },
 		{ "WATER", Group::WaterAndRain },
 		{ "RAIN", Group::WaterAndRain },
 	};
@@ -164,6 +167,8 @@ namespace
 			return { T("feature.effects11.category.lens", "Lens"), T("feature.effects11.category.lens_desc", "Overall lens effect amount handed to the shaders.") };
 		if (a_category == "DEPTHOFFIELD")
 			return { T("feature.effects11.category.depthoffield", "Depth of Field"), T("feature.effects11.category.depthoffield_desc", "How quickly focus and aperture follow the scene.") };
+		if (a_category == "NIGHTEYE")
+			return { T("feature.effects11.category.nighteye", "Night Eye"), T("feature.effects11.category.nighteye_desc", "Tint, exposure and contrast applied while a Night Eye power (Khajiit, vampire, werewolf or modded) is active on the player.") };
 		if (a_category == "WATER")
 			return { T("feature.effects11.category.water", "Water"), T("feature.effects11.category.water_desc", "Waves, color, reflections and lighting of water.") };
 		if (a_category == "RAIN")
@@ -374,6 +379,26 @@ void Effects11Editor::Toggle()
 		Open(globals::menu->IsEnabled);
 }
 
+void Effects11Editor::OpenCSEditor()
+{
+	CSEditor::OpenEditorWindow();
+	if (!EditorWindow::GetSingleton()->open)
+		return;
+	const bool toMenu = returnToMenu;
+	Close(false);
+	resumeAfterCSEditor = true;
+	resumeReturnToMenu = toMenu;
+}
+
+void Effects11Editor::ResumeAfterCSEditor()
+{
+	if (!resumeAfterCSEditor || EditorWindow::GetSingleton()->open)
+		return;
+	resumeAfterCSEditor = false;
+	if (!globals::menu->IsEnabled && EditorWindow::CanBeOpen())
+		Open(resumeReturnToMenu);
+}
+
 bool Effects11Editor::ShouldHandleEscapeKey()
 {
 	if (suppressNextEscape) {
@@ -495,14 +520,26 @@ void Effects11Editor::DrawToolbar()
 	}
 
 	// Shader panel toggle, right-aligned on the same line
+	const char* csEditorLabel = T(TKEY("open_cs_editor"), "Open CS Editor");
 	const char* panelLabel = showShaderPanel ? T(TKEY("hide_shader_panel"), "Hide Shader Parameters") : T(TKEY("show_shader_panel"), "Show Shader Parameters");
-	const float panelWidth = ImGui::CalcTextSize(panelLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+	const auto& style = ImGui::GetStyle();
+	const float csEditorWidth = ImGui::CalcTextSize(csEditorLabel).x + style.FramePadding.x * 2.0f;
+	const float panelWidth = ImGui::CalcTextSize(panelLabel).x + style.FramePadding.x * 2.0f;
+	const float buttonsWidth = csEditorWidth + style.ItemSpacing.x + panelWidth;
 	ImGui::SameLine();
 	const float avail = ImGui::GetContentRegionAvail().x;
-	if (avail >= panelWidth)
-		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - panelWidth);
+	if (avail >= buttonsWidth)
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonsWidth);
 	else
 		ImGui::NewLine();
+	{
+		auto _ = Util::DisableGuard(!EditorWindow::CanBeOpen());
+		if (ImGui::Button(std::format("{}###csEditor", csEditorLabel).c_str()))
+			OpenCSEditor();
+	}
+	Util::AddTooltip(T(TKEY("open_cs_editor_tip"), "Switch to the CS Editor to change weather and time of day.\nThis editor comes back when you close it."), ImGuiHoveredFlags_AllowWhenDisabled);
+
+	ImGui::SameLine();
 	if (ImGui::Button(std::format("{}###shaderPanel", panelLabel).c_str()))
 		showShaderPanel = !showShaderPanel;
 	Util::AddTooltip(T(TKEY("shader_panel_tip"), "Show or hide the panel with the .fx shader parameters."));
@@ -833,6 +870,12 @@ void Effects11Editor::DrawCategory(const std::string& a_category, const char* a_
 	if (!usable) {
 		const auto unavailable = I18n::GetSingleton()->Format(TKEY("rain_unavailable"), { { "reason", raindropStatus } }, "Rain is unavailable: {reason}");
 		Util::Text::WrappedWarning("%s", unavailable.c_str());
+	}
+
+	if (a_category == "NIGHTEYE") {
+		if (EffectManager::GetSingleton().enbEffect.PresetHandlesNightEye())
+			Util::Text::WrappedInfo("%s", T(TKEY("nighteye_preset"), "This preset's enbeffect.fx handles Night Eye itself (KNActive), so these values are not applied."));
+		Util::TextUnformattedDisabled(globals::features::effects11.IsNightEyeActive() ? T(TKEY("nighteye_active"), "A Night Eye effect is active on the player.") : T(TKEY("nighteye_inactive"), "No Night Eye effect is active on the player."));
 	}
 
 	if (isParticle)

@@ -176,6 +176,9 @@ void LUT::ReadTexture(std::filesystem::path path)
 		} else {
 			errMsg = std::format("Invalid texture dimension: {}! Only 2D/3D textures are supported.", magic_enum::enum_name(texType));
 			logger::warn("Invalid texture dimension: {}! Only 2D/3D textures are supported.", magic_enum::enum_name(texType));
+			pRsrc->Release();
+			if (pSrv)
+				pSrv->Release();
 			return;
 		}
 	} else {

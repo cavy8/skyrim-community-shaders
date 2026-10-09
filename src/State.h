@@ -56,7 +56,8 @@ public:
 	spdlog::level::level_enum logLevel = spdlog::level::info;
 	bool enableDeveloperMode = false;  ///< Explicit developer mode toggle; also enabled when log level is debug/trace.
 	std::string shaderDefinesString = "";
-	std::vector<std::pair<std::string, std::string>> shaderDefines{};  // data structure to parse string into; needed to avoid dangling pointers
+	std::shared_ptr<const std::vector<std::pair<std::string, std::string>>> shaderDefines = std::make_shared<const std::vector<std::pair<std::string, std::string>>>();  // data structure to parse string into; needed to avoid dangling pointers
+	std::mutex shaderDefinesMutex;
 
 	float timer = 0;
 	double smoothDrawCalls[RE::BSShader::Type::Total + 1];
@@ -161,7 +162,7 @@ public:
 	 * @param defines Semicolon-separated define string (e.g. "FOO=1;BAR=2").
 	 */
 	void SetDefines(std::string defines);
-	std::vector<std::pair<std::string, std::string>>* GetDefines();
+	std::shared_ptr<const std::vector<std::pair<std::string, std::string>>> GetDefines();
 
 	/**
 	 * @brief Checks whether the given shader type is enabled.
@@ -272,6 +273,7 @@ public:
 		NoFoliageTint = 1 << 9,
 		IsAurora = 1 << 10,
 		IsMoon = 1 << 11,
+		NoSkyScattering = 1 << 12,
 		// Humanoid (ActorTypeNPC) geometry, set by NeuralRendering::SetupGeometryCategory.
 		IsHumanoidActor = 1u << 31,
 		// Hair or facial-hair head part, set by NeuralRendering::SetupGeometryCategory.
@@ -361,7 +363,7 @@ public:
 
 		bool operator==(const PermutationCB& other) const
 		{
-			return PixelShaderDescriptor == other.PixelShaderDescriptor &&
+			return VertexShaderDescriptor == other.VertexShaderDescriptor && PixelShaderDescriptor == other.PixelShaderDescriptor &&
 			       ExtraShaderDescriptor == other.ExtraShaderDescriptor &&
 			       ExtraFeatureDescriptor == other.ExtraFeatureDescriptor && EffectRadius == other.EffectRadius;
 		}

@@ -55,6 +55,8 @@ public:
 	/** @brief Moves both panels back to their default positions on the next frame. */
 	void RequestLayoutReset() { resetLayout = true; }
 
+	void ResumeAfterCSEditor();
+
 private:
 	Effects11Editor() = default;
 
@@ -76,6 +78,7 @@ private:
 
 	// Settings window parts
 	void DrawToolbar();
+	void OpenCSEditor();
 	void DrawTonemapWarning();
 	void DrawStatus();
 	void DrawSearchBar(std::string& a_filter, const char* a_hint, bool& a_focusRequest);
@@ -120,6 +123,8 @@ private:
 
 	std::atomic<bool> open{ false };
 	bool returnToMenu = false;
+	bool resumeAfterCSEditor = false;
+	bool resumeReturnToMenu = false;
 	bool showShaderPanel = true;
 	bool resetLayout = false;
 	bool dirty = false;

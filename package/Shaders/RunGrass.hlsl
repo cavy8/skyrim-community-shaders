@@ -560,7 +560,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 					continue;
 				float attenuation = 1 - distanceFactor * distanceFactor;
 #					endif
-				float3 lightColor = Color::PointLight(light.color.xyz) * attenuation * light.fade;
+				float3 lightColor = Color::PointLight(light.color.xyz, (light.lightFlags & LightLimitFix::LightFlags::Linear) != 0) * attenuation * light.fade;
 				float lightShadow = 1.0;
 				[branch] if (light.lightFlags & LightLimitFix::LightFlags::LocalShadow)
 					lightShadow = LightLimitFix::GetLocalShadow(LinearSampler, light.localShadowIndex, input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz, float3(0.0, 0.0, 0.0), false, grassShadowRotation);
@@ -902,7 +902,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				float intensityMultiplier = 1 - intensityFactor * intensityFactor;
 #				endif
 
-				float3 lightColor = Color::PointLight(light.color.xyz) * intensityMultiplier * light.fade;
+				float3 lightColor = Color::PointLight(light.color.xyz, (light.lightFlags & LightLimitFix::LightFlags::Linear) != 0) * intensityMultiplier * light.fade;
 				float lightShadow = 1.0;
 
 				float shadowComponent = 1.0;
@@ -952,7 +952,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #			if defined(IBL)
 	if (SharedData::iblSettings.EnableIBL)
-		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
+		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -ambientNormal);
 #			endif
 
 	directionalAmbientColor *= grassAO;

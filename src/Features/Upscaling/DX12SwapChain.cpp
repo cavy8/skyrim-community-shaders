@@ -281,16 +281,17 @@ HRESULT DX12SwapChain::ResizeBuffers(UINT bufferCount, UINT width, UINT height, 
 	if (!swapChain)
 		return DXGI_ERROR_INVALID_CALL;
 
-	// DXGI defines zero as "preserve the current buffer count". FidelityFX's
-	// frame-generation swap-chain stores the supplied value verbatim and uses it
-	// as its replacement-buffer count, so forwarding zero leaves it with no valid
-	// source resource at the next Present.
-	const UINT effectiveBufferCount = bufferCount ? bufferCount : swapChainDesc.BufferCount;
-	if (!bufferCount)
-		logger::warn("[FidelityFX] Normalized ResizeBuffers count from 0 to {} to preserve replacement buffers", effectiveBufferCount);
-	if (effectiveBufferCount != backBufferCount) {
-		logger::error("[DX12SwapChain] Rejected unsupported resize buffer count change {} -> {}", backBufferCount, effectiveBufferCount);
-		return DXGI_ERROR_UNSUPPORTED;
+	// FidelityFX's frame-generation swap-chain stores the supplied value verbatim
+	// and uses it as its replacement-buffer count, so zero (DXGI's "preserve")
+	// would leave it with no valid source resource at the next Present. The caller's
+	// count describes its own D3D11 chain, not this one, so the chain keeps its own.
+	const UINT effectiveBufferCount = backBufferCount;
+	if (bufferCount && bufferCount != backBufferCount) {
+		static bool loggedCountOverride = false;
+		if (!loggedCountOverride) {
+			loggedCountOverride = true;
+			logger::info("[DX12SwapChain] ResizeBuffers requested {} buffers; keeping {}", bufferCount, backBufferCount);
+		}
 	}
 
 	// These references are to FidelityFX replacement buffers. They must not keep
@@ -354,7 +355,14 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	// Wait for D3D11 to finish (includes ApplyHDR scene encoding AND UIBrightnessCS)
 	const uint64_t d3d11SignalValue = interopFence.Next();
 	DX::ThrowIfFailed(d3d11Context->Signal(interopFence.fence11.get(), d3d11SignalValue));
+	d3d11Context->Flush();
 	DX::ThrowIfFailed(commandQueue->Wait(interopFence.fence12.get(), d3d11SignalValue));
+
+	// Null only after a resize failure severe enough that even the pre-resize
+	// buffers couldn't be re-fetched (e.g. device removed) -- skip this frame's
+	// copy/present rather than pass a null resource to D3D12.
+	if (!swapChainBuffers[frameIndex])
+		return DXGI_ERROR_DEVICE_REMOVED;
 
 	// New frame, reset
 	if (frameFenceValues[frameIndex])
@@ -366,11 +374,6 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	{
 		auto fakeSwapChain = swapChainBufferWrapped->resource.get();
 		auto realSwapChain = swapChainBuffers[frameIndex].get();
-		// Null only after a resize failure severe enough that even the pre-resize
-		// buffers couldn't be re-fetched (e.g. device removed) -- skip this frame's
-		// copy/present rather than pass a null resource to D3D12.
-		if (!realSwapChain)
-			return DXGI_ERROR_DEVICE_REMOVED;
 		{
 			std::vector<D3D12_RESOURCE_BARRIER> barriers;
 			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE));
@@ -403,7 +406,7 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 				depthBufferShared12 ? depthBufferShared12->resource.get() : nullptr,
 				motionVectorBufferShared12 ? motionVectorBufferShared12->resource.get() : nullptr,
 				hudLess ? hudLessBufferWrapped->resource.get() : (swapChainBufferWrapped ? swapChainBufferWrapped->resource.get() : nullptr),
-				hudLess ? nullptr : (uiBufferWrapped ? uiBufferWrapped->resource.get() : nullptr),
+				nullptr,
 				swapChainDesc.Width, swapChainDesc.Height);
 			streamlineDX12.ConfigureDLSSG(upscaling.ShouldUseFrameGenerationThisFrame());
 		} else {
@@ -477,6 +480,7 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 HRESULT DX12SwapChain::GetDevice(REFIID uuid, void** ppDevice)
 {
 	if (uuid == __uuidof(ID3D11Device) || uuid == __uuidof(ID3D11Device1) || uuid == __uuidof(ID3D11Device2) || uuid == __uuidof(ID3D11Device3) || uuid == __uuidof(ID3D11Device4) || uuid == __uuidof(ID3D11Device5)) {
+		d3d11Device->AddRef();
 		*ppDevice = d3d11Device.get();
 		return S_OK;
 	}
@@ -681,10 +685,16 @@ DXGISwapChainProxy::DXGISwapChainProxy(IDXGISwapChain4* a_swapChain)
 /****IUknown****/
 HRESULT STDMETHODCALLTYPE DXGISwapChainProxy::QueryInterface(REFIID riid, void** ppvObj)
 {
-	auto ret = swapChain->QueryInterface(riid, ppvObj);
-	if (*ppvObj)
-		*ppvObj = this;
-	return ret;
+	if (!ppvObj)
+		return E_POINTER;
+
+	*ppvObj = nullptr;
+	if (riid != __uuidof(IUnknown) && riid != __uuidof(IDXGIObject) && riid != __uuidof(IDXGIDeviceSubObject) && riid != __uuidof(IDXGISwapChain))
+		return E_NOINTERFACE;
+
+	AddRef();
+	*ppvObj = this;
+	return S_OK;
 }
 
 ULONG STDMETHODCALLTYPE DXGISwapChainProxy::AddRef()

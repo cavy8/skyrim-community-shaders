@@ -32,7 +32,7 @@ public:
 	struct Settings
 	{
 		bool EnableTerrainShadow = true;
-		bool EnableLODShadow = true;
+		bool EnableLODShadow = false;
 		uint32_t LODShadowResolution = 2048;
 	} settings;
 

@@ -299,6 +299,13 @@ void LODShadowMap::Update(bool a_enabled, uint32_t a_resolution)
 {
 	enabled = false;
 
+	if (const auto generation = Util::GetCompletedCelestialTransitionGeneration(); generation != handledTransitionGeneration) {
+		handledTransitionGeneration = generation;
+		publishedValid = false;
+		previousValid = false;
+		capturing = false;
+	}
+
 	auto* worldSpace = GetWorldSpace();
 	auto* sky = globals::game::sky;
 	RE::NiPoint3 direction;
@@ -416,8 +423,14 @@ void LODShadowMap::EndFace()
 	faceActive = false;
 	g_activeCapture = nullptr;
 	capturedFaces |= faceMask;
-	if (capturedFaces == kAllFaces)
+	if (capturedFaces != kAllFaces)
+		return;
+
+	RE::NiPoint3 direction;
+	if (GetLightDirection(direction) && AngleDegrees(direction, building.direction) <= kFadeStartAngle)
 		Publish();
+	else
+		capturing = false;
 }
 
 void LODShadowMap::Publish()

@@ -39,10 +39,10 @@ struct ScreenshotFeature : public Feature
 	 */
 	void Capture(std::filesystem::path overridePath = {}, bool forceCleanNoUI = false);
 	/**
-	 * @brief Checks for a pending capture request and executes Capture() if one is pending.
-	 * Called after HDR Present processing, and must run before the wrapped buffers are cleared.
+	 * @brief Checks for a pending capture request and executes Capture() when `presented` matches the source's capture phase.
+	 * Must run before the wrapped buffers are cleared.
 	 */
-	void ProcessCaptureRequest();
+	void ProcessCaptureRequest(bool presented);
 
 	/**
 	 * @brief Builds the (extension-less, game-root-relative) path for one half of a Neural Rendering
@@ -83,6 +83,9 @@ private:
 	std::queue<PendingScreenshot> screenshotQueue;
 	std::thread screenshotWorker;
 	bool screenshotWorkerRunning = false;
+	std::atomic<uint32_t> screenshotsInFlight{ 0 };
+	bool multithreadProtectionRaised = false;
+	BOOL previousMultithreadProtection = FALSE;
 	Util::Subrect::Controller subrect;
 
 	// SRV-readable copy used when the capture source's own SRV can't be sampled
@@ -95,5 +98,7 @@ private:
 	void EnqueueScreenshot(PendingScreenshot&& screenshot);
 	void ScreenshotWorkerLoop();
 	void EnsurePreviewCache(ID3D11Texture2D* sourceTexture);
+	void RaiseMultithreadProtection();
+	void RestoreMultithreadProtection();
 	static void ShowInGameNotification(std::string message);
 };

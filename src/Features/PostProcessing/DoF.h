@@ -99,6 +99,7 @@ struct DoF : public PostProcessFeature
 	eastl::unique_ptr<Texture2D> texPostSmooth2 = nullptr;
 	eastl::unique_ptr<Texture2D> texFocus = nullptr;
 	eastl::unique_ptr<Texture2D> texPreFocus = nullptr;
+	bool focusPrimed = false;
 	eastl::unique_ptr<Texture2D> texCoC = nullptr;
 	eastl::unique_ptr<Texture2D> texCoCHalf = nullptr;
 	eastl::unique_ptr<Texture2D> texCoCTile = nullptr;

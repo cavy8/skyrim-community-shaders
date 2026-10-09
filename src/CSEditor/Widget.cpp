@@ -285,6 +285,8 @@ bool Widget::BeginWidgetWindow()
 		m_pendingFocus = false;
 	}
 	bool result = Util::BeginWithRoundedClose(GetWindowTitle().c_str(), &open, ImGuiWindowFlags_NoSavedSettings | kStickyHeaderFlags);
+	if (result && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+		EditorWindow::GetSingleton()->lastFocusedWidget = this;
 	UpdateWidgetTypeSize(GetWidgetTypeName());
 	return result;
 }
@@ -293,8 +295,10 @@ void Widget::ForceWeatherReinit(RE::TESWeather* weather)
 {
 	auto* sky = globals::game::sky;
 	if (weather && sky && sky->currentWeather == weather) {
+		const bool hadOverride = sky->overrideWeather != nullptr;
 		Util::ForceWeather(sky, weather, true);
-		sky->ReleaseWeatherOverride();
+		if (!hadOverride)
+			sky->ReleaseWeatherOverride();
 	}
 }
 
@@ -302,8 +306,10 @@ void Widget::ForceCurrentWeatherReinit()
 {
 	auto* sky = globals::game::sky;
 	if (sky && sky->currentWeather) {
+		const bool hadOverride = sky->overrideWeather != nullptr;
 		Util::ForceWeather(sky, sky->currentWeather, true);
-		sky->ReleaseWeatherOverride();
+		if (!hadOverride)
+			sky->ReleaseWeatherOverride();
 	}
 }
 

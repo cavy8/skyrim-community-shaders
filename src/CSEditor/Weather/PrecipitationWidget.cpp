@@ -151,7 +151,7 @@ void PrecipitationWidget::DrawWidget()
 			ImGui::EndTabBar();
 		}
 
-		if (changed && EditorWindow::GetSingleton()->settings.autoApplyChanges)
+		if (changed && EditorWindow::GetSingleton()->settings.autoApplyChanges && !RequiresManualApply())
 			ApplyChanges();
 	}
 	ImGui::End();
@@ -239,22 +239,34 @@ void PrecipitationWidget::LoadFromGameSettings()
 	settings.particleTexture = particleTexture.textureName.c_str();
 }
 
+void PrecipitationWidget::WriteSettingsJson(json& out) const
+{
+	out["gravityVelocity"] = settings.gravityVelocity;
+	out["rotationVelocity"] = settings.rotationVelocity;
+	out["particleSizeX"] = settings.particleSizeX;
+	out["particleSizeY"] = settings.particleSizeY;
+	out["centerOffsetMin"] = settings.centerOffsetMin;
+	out["centerOffsetMax"] = settings.centerOffsetMax;
+	out["startRotationRange"] = settings.startRotationRange;
+	out["numSubtexturesX"] = settings.numSubtexturesX;
+	out["numSubtexturesY"] = settings.numSubtexturesY;
+	out["particleType"] = settings.particleType;
+	out["boxSize"] = settings.boxSize;
+	out["particleDensity"] = settings.particleDensity;
+	out["particleTexture"] = settings.particleTexture;
+}
+
 void PrecipitationWidget::SaveSettings()
 {
-	js["gravityVelocity"] = settings.gravityVelocity;
-	js["rotationVelocity"] = settings.rotationVelocity;
-	js["particleSizeX"] = settings.particleSizeX;
-	js["particleSizeY"] = settings.particleSizeY;
-	js["centerOffsetMin"] = settings.centerOffsetMin;
-	js["centerOffsetMax"] = settings.centerOffsetMax;
-	js["startRotationRange"] = settings.startRotationRange;
-	js["numSubtexturesX"] = settings.numSubtexturesX;
-	js["numSubtexturesY"] = settings.numSubtexturesY;
-	js["particleType"] = settings.particleType;
-	js["boxSize"] = settings.boxSize;
-	js["particleDensity"] = settings.particleDensity;
-	js["particleTexture"] = settings.particleTexture;
+	WriteSettingsJson(js);
 	originalSettings = settings;
+}
+
+json PrecipitationWidget::CaptureUndoSnapshot() const
+{
+	json snapshot;
+	WriteSettingsJson(snapshot);
+	return snapshot;
 }
 
 void PrecipitationWidget::ApplyChanges()
@@ -279,7 +291,8 @@ void PrecipitationWidget::ApplyChanges()
 	auto& particleTexture = precipitation->GetRuntimeData().particleTexture;
 	particleTexture.textureName = settings.particleTexture.c_str();
 	ApplyLiveParticleTexture(settings.particleTexture);
-	Widget::ForceCurrentWeatherReinit();
+	if (auto* sky = globals::game::sky; sky && sky->currentWeather && sky->currentWeather->precipitationData == precipitation)
+		Widget::ForceCurrentWeatherReinit();
 }
 
 void PrecipitationWidget::ApplyLiveParticleTexture(const std::string& path)
@@ -295,7 +308,7 @@ void PrecipitationWidget::ApplyLiveParticleTexture(const std::string& path)
 	}
 
 	auto* sky = globals::game::sky;
-	if (!sky || !sky->precip)
+	if (!sky || !sky->precip || !sky->currentWeather || sky->currentWeather->precipitationData != precipitation)
 		return;
 
 	if (path == lastAppliedTexture &&

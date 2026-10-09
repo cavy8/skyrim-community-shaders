@@ -1,5 +1,7 @@
 #include "AlphaGeometryGroupCeilingFix.h"
 
+#include "Features/Skylighting.h"
+
 namespace
 {
 	constexpr std::uint32_t CAPACITY_FLAT = 512;
@@ -50,7 +52,8 @@ void AlphaGeometryGroupCeilingFix::Install()
 
 void* AlphaGeometryGroupCeilingFix::BSBatchRenderer_StartGroupingAlphas::thunk(RE::BSBatchRenderer* a_this, void* a_bound, RE::NiCamera* a_camera, bool a_sortByClosestPoint)
 {
-	if (groupCount && a_camera && *groupCount >= groupLimit) {
+	const std::uint32_t limit = std::max(groupLimit, Skylighting::BSShaderAccumulator_StartGroupingAlphas::poolCapacity - RESERVE);
+	if (groupCount && a_camera && *groupCount >= limit) {
 		const std::uint64_t count = refused.fetch_add(1, std::memory_order_relaxed) + 1;
 		if (count == 1u || (count % 10000u) == 0u)
 			logger::warn("[Engine Fixes] Alpha GeometryGroup ceiling reached ({} live, {} refused)", *groupCount, count);

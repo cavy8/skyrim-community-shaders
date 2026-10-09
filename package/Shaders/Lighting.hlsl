@@ -561,6 +561,7 @@ Texture2D<float4> TexShadowMaskSampler : register(t14);
 Texture2D<float4> TexSkinExtraSampler : register(t71);
 Texture2D<float4> TexSkinWetnessSampler : register(t74);
 Texture2D<float4> TexSkinWetnessNormalSampler : register(t75);
+Texture2D<float4> TexSkinSkSampler : register(t99);
 #	endif
 
 cbuffer PerTechnique : register(b0)
@@ -1073,8 +1074,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #		if !defined(TREE_ANIM) && !defined(LOD)
 	// Fix incorrect vertex normals on double-sided meshes
-	if (!frontFace)
-		tbn = lerp(tbn, -tbn, nearFactor);
+	if (!frontFace && nearFactor > 0.5)
+		tbn = -tbn;
 #		endif
 
 	float3x3 tbnTr = transpose(tbn);
@@ -1211,14 +1212,16 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(LANDSCAPE)
-#		if defined(EMAT)
-	float terrainMipLevel = 0;
-	float terrainShadowMipLevel = 0;
+#		if defined(TERRAIN_VARIATION) || defined(EMAT)
 #			if defined(TERRAIN_VARIATION)
 	StochasticOffsets sharedOffset = ComputeStochasticOffsets(input.TexCoord0.zw);
 #			else
 	StochasticOffsets sharedOffset = (StochasticOffsets)0;
 #			endif
+#		endif
+#		if defined(EMAT)
+	float terrainMipLevel = 0;
+	float terrainShadowMipLevel = 0;
 	float cachedDirectionalTerrainParallaxShadow = 1.0;
 	bool hasCachedDirectionalTerrainParallaxShadow = false;
 	bool hasCachedTerrainShadowBaseHeight = false;
@@ -1643,7 +1646,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	bool hasSkinExtra = false;
 	bool hasSkinWetness = false;
 	if (skinEnabled) {
-		skinsk = TexRimSoftLightWorldMapOverlaySampler.Sample(SampRimSoftLightWorldMapOverlaySampler, uv);
+		skinsk = TexSkinSkSampler.Sample(SampColorSampler, uv);
 		TexSkinExtraSampler.GetDimensions(skinExtraDimensions.x, skinExtraDimensions.y);
 		TexSkinWetnessSampler.GetDimensions(wetnessDimensions.x, wetnessDimensions.y);
 		hasSkinExtra = skinExtraDimensions.x > 32 && skinExtraDimensions.y > 32;
@@ -1960,7 +1963,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #			endif  // SNOW
 	} else {
 		if (projWeight > 0) {
+#			if defined(TRUE_PBR)
+			baseColor.xyz = Color::ColorToLinear(ProjectedUVParams2.xyz);
+#			else
 			baseColor.xyz = Color::Diffuse(ProjectedUVParams2.xyz);
+#			endif
 #			if defined(SNOW)
 			useSnowDecalSpecular = true;
 #			endif  // SNOW
@@ -2803,7 +2810,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			}
 		}
 
-		float lightAngle = dot(worldNormal.xyz, normalizedLightDirection.xyz);
+		float3 shadowGateNormal = worldNormal.xyz;
+#			if defined(CS_HAIR_SHADING)
+		if (SharedData::hairSpecularSettings.Enabled)
+			shadowGateNormal = vertexNormal.xyz;
+#			endif
+		float lightAngle = dot(shadowGateNormal, normalizedLightDirection.xyz);
 
 #			if defined(DEFERRED)
 		[branch] if (contactShadowSteps > 0 && shadowComponent > 0.0 && lightAngle > 0.0 && !(light.lightFlags & LightLimitFix::LightFlags::Simple))
@@ -3050,10 +3062,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float3 reflectionDiffuseColor = diffuseColor + directionalAmbientColor;
 
-#	if defined(TRUE_PBR) && defined(LOD_LAND_BLEND) && !defined(DEFERRED)
-	lodLandDiffuseColor += directionalAmbientColor;
-#	endif
-
 	float2 screenMotionVector = MotionBlur::GetSSMotionVector(input.WorldPosition, input.PreviousWorldPosition);
 
 #	if defined(WETNESS_EFFECTS)
@@ -3175,6 +3183,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float3 outputAlbedo = indirectLobeWeights.diffuse * vertexColor.xyz;
 
+	const float3 ambientIrradiance = directionalAmbientColor;
 	directionalAmbientColor *= outputAlbedo;
 
 #	if defined(SKYLIGHTING)
@@ -3205,7 +3214,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif
 #			endif
 #		else
-		color.xyz += indirectLobeWeights.specular * directionalAmbientColor;
+		color.xyz += indirectLobeWeights.specular * ambientIrradiance;
 #		endif
 
 	color.xyz = Color::IrradianceToGamma(color.xyz);

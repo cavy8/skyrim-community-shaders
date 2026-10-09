@@ -318,6 +318,11 @@ void LightingTemplateWidget::SaveSettings()
 	originalSettings = settings;
 }
 
+json LightingTemplateWidget::CaptureUndoSnapshot() const
+{
+	return json(settings);
+}
+
 bool LightingTemplateWidget::HasUnsavedChanges() const
 {
 	return !(settings == originalSettings);

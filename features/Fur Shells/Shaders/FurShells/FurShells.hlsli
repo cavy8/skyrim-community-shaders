@@ -24,7 +24,7 @@ namespace FurShells
 		float2 uv = rootPosition.xy / rootPosition.w * float2(0.5, -0.5) + 0.5;
 		float sceneDepth = SharedData::GetScreenDepth(TexDepth.Load(SharedData::ConvertUVToSampleCoord(uv)).x);
 		float bias = 0.03 + rootSlope + 2e-8 * rootPosition.w * rootPosition.w;
-		return RootTest > 0.0 && sceneDepth < rootPosition.w - bias;
+		return RootTest > 0.0 && rootPosition.w > 0.0 && all(uv == saturate(uv)) && sceneDepth < rootPosition.w - bias;
 	}
 #endif
 

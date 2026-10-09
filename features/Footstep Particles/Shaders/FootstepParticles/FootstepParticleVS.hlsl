@@ -15,6 +15,7 @@ struct VS_OUTPUT
 	nointerpolation float Seed : TEXCOORD2;
 	nointerpolation float Softness : TEXCOORD3;
 	float ViewDepth : TEXCOORD4;
+	float2 SphereCoord : TEXCOORD5;
 };
 
 VS_OUTPUT main(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
@@ -44,6 +45,7 @@ VS_OUTPUT main(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	float3 up = FrameBuffer::ViewToWorld(float3(0.0, 1.0, 0.0), false);
 
 	float3 offset = (right * corner.x + up * corner.y) * size;
+	float2 sphereCoord = corner;
 	if (type == FootstepParticles::TypeDroplet) {
 		float3 viewDirection = normalize(center);
 		float3 axis = particle.Velocity - dot(particle.Velocity, viewDirection) * viewDirection;
@@ -61,12 +63,14 @@ VS_OUTPUT main(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 		sincos(angle, s, c);
 		float2 rotated = float2(corner.x * c - corner.y * s, corner.x * s + corner.y * c);
 		offset = (right * rotated.x + up * rotated.y) * size;
+		sphereCoord = rotated;
 	}
 
 	float3 positionWS = center + offset;
 	output.Position = mul(FrameBuffer::CameraViewProj, float4(positionWS, 1.0));
 	output.ViewDepth = output.Position.w;
 	output.TexCoord = corner;
+	output.SphereCoord = sphereCoord;
 	output.Color = float4(particle.Color, particle.Opacity * fade * smoothstep(8.0, 48.0, output.Position.w));
 	output.WorldPosition = positionWS;
 	output.Type = particle.Type;

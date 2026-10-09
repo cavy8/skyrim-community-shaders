@@ -290,6 +290,7 @@ void EditorWindow::ShowObjectsWindow()
 
 			if (m_selectedCategory == "Light Editor") {
 				BeginScrollableContent("##LightEditorScroll");
+				WeatherUtils::SetCurrentWidget(nullptr);
 				lightEditor.DrawSettings();
 				EndScrollableContent();
 				ImGui::EndChild();
@@ -395,6 +396,7 @@ void EditorWindow::ShowObjectsWindow()
 									currentCellLightingWidget->SetOpen(true);
 									currentCellLightingWidget->RequestFocus();
 								} else {
+									ResetCellLightingWidget();
 									currentCellLightingWidget = std::make_unique<CellLightingWidget>(cell);
 									currentCellLightingWidget->CacheFormData();
 									currentCellLightingWidget->Load(false);
@@ -699,6 +701,7 @@ void EditorWindow::ShowObjectsWindow()
 									if (currentCellLightingWidget && currentCellLightingWidget->cell == cell) {
 										currentCellLightingWidget->SetOpen(true);
 									} else {
+										ResetCellLightingWidget();
 										currentCellLightingWidget = std::make_unique<CellLightingWidget>(cell);
 										currentCellLightingWidget->CacheFormData();
 										currentCellLightingWidget->Load();
@@ -857,11 +860,11 @@ void EditorWindow::ShowObjectsWindow()
 
 					// Form ID column
 					ImGui::TableNextColumn();
-					ImGui::Text(sortedWidgets[i]->GetFormID().c_str());
+					ImGui::TextUnformatted(sortedWidgets[i]->GetFormID().c_str());
 
 					// File column
 					ImGui::TableNextColumn();
-					ImGui::Text(sortedWidgets[i]->GetFilename().c_str());
+					ImGui::TextUnformatted(sortedWidgets[i]->GetFilename().c_str());
 
 					// Status column
 					ImGui::TableNextColumn();
@@ -953,14 +956,11 @@ void EditorWindow::ShowWidgetWindow()
 
 	// Draw all open widgets using WidgetFactory template
 	for (auto* collection : GetWidgetCollections())
-		WidgetFactory::DrawOpenWidgets(*collection, lastFocusedWidget);
+		WidgetFactory::DrawOpenWidgets(*collection);
 
 	// Draw current cell lighting widget if open
-	if (currentCellLightingWidget && currentCellLightingWidget->IsOpen()) {
+	if (currentCellLightingWidget && currentCellLightingWidget->IsOpen())
 		currentCellLightingWidget->DrawWidget();
-		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
-			lastFocusedWidget = currentCellLightingWidget.get();
-	}
 }
 
 void EditorWindow::RenderUI()
@@ -979,7 +979,7 @@ void EditorWindow::RenderUI()
 	}
 
 	// Check for Ctrl+Z to undo
-	if ((ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl)) && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+	if (!io.WantTextInput && (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl)) && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
 		if (CanUndo()) {
 			PerformUndo();
 		}
@@ -1046,6 +1046,7 @@ void EditorWindow::RenderUI()
 
 					if (!found) {
 						// Create new widget for current cell
+						ResetCellLightingWidget();
 						currentCellLightingWidget = std::make_unique<CellLightingWidget>(player->parentCell);
 						currentCellLightingWidget->CacheFormData();
 						currentCellLightingWidget->Load();
@@ -1478,6 +1479,8 @@ void EditorWindow::UpdateOpenState()
 		BackgroundBlur::SetCSEditorActive(IsViewportActive());
 
 	} else if (!open && wasOpen) {
+		if (IsInPreviewMode())
+			ExitPreviewMode();
 		lightEditor.ResetOverrides();
 		RestoreVanityCamera();
 		ShowGameMenus();
@@ -2038,7 +2041,7 @@ void EditorWindow::PauseTime()
 		return;
 	auto calendar = GetCalendar();
 	if (calendar && calendar->timeScale) {
-		savedTimeScale = calendar->timeScale->value;
+		savedTimeScale = calendar->timeScale->value > 0.0f ? calendar->timeScale->value : kVanillaTimeScale;
 		calendar->timeScale->value = 0.0f;
 		timePaused = true;
 		logger::info("Time paused (saved timescale: {})", savedTimeScale);
@@ -2374,7 +2377,7 @@ void EditorWindow::PushUndoState(Widget* widget)
 	UndoState state;
 	state.widget = widget;
 	state.widgetId = widget->GetEditorID();
-	state.settings = widget->js;
+	state.settings = widget->CaptureUndoSnapshot();
 
 	undoStack.push_back(state);
 
@@ -2413,6 +2416,19 @@ void EditorWindow::PerformUndo()
 			Menu::GetSingleton()->GetSettings().Theme.StatusPalette.InfoColor,
 			2.0f);
 	}
+}
+
+void EditorWindow::ResetCellLightingWidget()
+{
+	Widget* oldWidget = currentCellLightingWidget.get();
+	if (!oldWidget)
+		return;
+
+	std::erase_if(undoStack, [oldWidget](const UndoState& state) { return state.widget == oldWidget; });
+	if (lastFocusedWidget == oldWidget)
+		lastFocusedWidget = nullptr;
+	WeatherUtils::SetCurrentWidget(nullptr);
+	currentCellLightingWidget.reset();
 }
 
 void EditorWindow::ShowNotification(const std::string& message, const ImVec4& color, float duration)

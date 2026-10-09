@@ -1512,8 +1512,10 @@ namespace SIE
 				cache.AddCompletedShader(shaderClass, shader, descriptor, nullptr);
 				return nullptr;
 			}
-			if (errorBlob)
+			if (errorBlob) {
 				logger::debug("Shader logs:\n{}", static_cast<char*>(errorBlob->GetBufferPointer()));
+				errorBlob->Release();
+			}
 			logger::debug("Compiled shader {}:{}:{:X}", magic_enum::enum_name(type), magic_enum::enum_name(shaderClass), descriptor);
 
 #ifdef TRACY_ENABLE
@@ -1824,13 +1826,9 @@ namespace SIE
 				return false;
 			}
 			static constexpr std::string_view reverseZOnly[] = { "BSImagespaceShaderWorldMap", "BSImagespaceShaderWorldMapNoSkyBlur" };
-			static constexpr std::string_view standardZOnly[] = { "BGSLensFlareVisibilityPass" };
 			auto& reverseZ = globals::features::reverseZ;
 			const bool reverseZImageSpace = reverseZ.loaded && reverseZ.HasShaderDefine(RE::BSShader::Type::ImageSpace);
 			if (!reverseZImageSpace && std::ranges::find(reverseZOnly, it->first) != std::end(reverseZOnly)) {
-				return false;
-			}
-			if (reverseZImageSpace && std::ranges::find(standardZOnly, it->first) != std::end(standardZOnly)) {
 				return false;
 			}
 			descriptor = it->second;
@@ -2336,7 +2334,7 @@ namespace SIE
 
 	bool ShaderCache::IsEnabled() const
 	{
-		return isEnabled;
+		return isEnabled || globals::features::reverseZ.IsActive();
 	}
 
 	void ShaderCache::SetEnabled(bool value)
@@ -3569,7 +3567,6 @@ namespace SIE
 	{
 		std::scoped_lock lock(compilationMutex);
 		availableTasks.clear();
-		pendingAuxTasks.clear();
 		tasksInProgress.clear();
 		processedTasks.clear();
 		totalTasks = 0;

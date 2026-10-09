@@ -62,6 +62,7 @@ public:
 
 	int chainLastDeck[6] = { -1, -1, -1, -1, -1, -1 };
 	int previouslyRenderedSide = -1;
+	bool occlusionClearedWithoutClouds = false;
 
 	ID3D11BlendState* cloudShadowBlendState = nullptr;
 

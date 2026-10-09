@@ -49,6 +49,8 @@ public:
 
 	//////////////////////////////////////////////////////////////////////////////////
 
+	static constexpr float kEngineMinOccluderRadius = 32.f;
+
 	struct Settings
 	{
 		float MaxZenith = 3.1415926f / 2.f;  // 90 deg
@@ -56,6 +58,7 @@ public:
 		float MinSpecularVisibility = 0.1f;
 		float OcclusionUpdateInterval = 33.f;
 		float OcclusionDistanceCulling = 0.f;
+		float OcclusionMinRadius = kEngineMinOccluderRadius;
 	} settings;
 
 	struct SkylightingCB
@@ -108,6 +111,7 @@ public:
 	float probeGridBottomZ = -FLT_MAX;
 	REX::W32::XMFLOAT4X4 OcclusionTransform;
 	float4 OcclusionDir;
+	bool occlusionFresh = false;
 	uint frameCount = 0;
 
 	static constexpr uint OcclusionConvergenceFrames = 16;

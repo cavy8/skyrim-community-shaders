@@ -1543,6 +1543,12 @@ void LightLimitFix::EnsureLocalShadowResources(ID3D11Texture2D* a_engineShadowMa
 	localShadowEngineMipLevels = std::max(engineDesc.MipLevels, 1u);
 	localShadowEngineSlices = engineDesc.ArraySize;
 
+	if (!localShadowDirectCopy && (!localShadowCopyCS || !localShadowCopyCB)) {
+		if (localShadowCache)
+			ReleaseLocalShadowResources();
+		return;
+	}
+
 	if (requestedSlots == localShadowRequestedSlots && cacheResolution == localShadowCacheResolution && engineResolution == localShadowEngineResolution && cacheFormat == localShadowCacheFormat)
 		return;
 

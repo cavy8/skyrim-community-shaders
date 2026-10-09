@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -22,5 +23,10 @@ namespace Util
 	inline float QuantizeFloat(float f, float step) noexcept
 	{
 		return std::round(f / step) * step;
+	}
+
+	inline float ClampFinite(float value, float fallback, float min, float max) noexcept
+	{
+		return std::clamp(std::isfinite(value) ? value : fallback, min, max);
 	}
 }

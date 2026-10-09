@@ -61,14 +61,20 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	float alpha = roughness * roughness;
 	ao = SpecularOcclusion(saturate(NdotV), alpha, ao);
 
-	float4 ssgiIlYSh = SsgiYTexture[pixCoord];
-	float ssgiIlY = SphericalHarmonics::FuncProductIntegral(ssgiIlYSh, lobe);
-	float2 ssgiIlCoCg = SsgiCoCgTexture[pixCoord].xy;
+	uint hqSpecWidth, hqSpecHeight;
+	SsgiSpecularTexture.GetDimensions(hqSpecWidth, hqSpecHeight);
 
-	// pi to compensate for the /pi in specularLobe
-	// i don't think there really should be a 1/PI but without it the specular is too strong
-	// reflectance being ambient reflectance doesn't help either
-	il = max(0, Color::YCoCgToRGB(float3(ssgiIlY, ssgiIlCoCg / Math::PI)));
+	il = 0;
+	if (hqSpecWidth == 0) {
+		float4 ssgiIlYSh = SsgiYTexture[pixCoord];
+		float ssgiIlY = SphericalHarmonics::FuncProductIntegral(ssgiIlYSh, lobe);
+		float2 ssgiIlCoCg = SsgiCoCgTexture[pixCoord].xy;
+
+		// pi to compensate for the /pi in specularLobe
+		// i don't think there really should be a 1/PI but without it the specular is too strong
+		// reflectance being ambient reflectance doesn't help either
+		il = max(0, Color::YCoCgToRGB(float3(ssgiIlY, ssgiIlCoCg / Math::PI)));
+	}
 
 	// HQ spec
 	float4 hq_spec = SsgiSpecularTexture[pixCoord];
@@ -205,6 +211,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 #	if defined(SKYLIGHTING)
 		float3 positionMS = positionWS.xyz;
+		positionMS.z = min(positionMS.z, SharedData::skylightingSettings.PosOffset.z + Skylighting::ARRAY_SIZE.z * 0.5 - Skylighting::CELL_SIZE.z);
 
 		sh2 skylightingSH = Skylighting::Sample(positionMS.xyz, R);
 		float skylightingSpecular = Skylighting::EvaluateSpecular(skylightingSH, specularLobe);

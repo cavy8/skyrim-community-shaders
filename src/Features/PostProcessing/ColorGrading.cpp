@@ -95,7 +95,7 @@ struct TonemapperInfo
 {
 	std::string_view name;
 	std::string_view func_name;
-	std::string_view desc;
+	std::string desc;
 	int nativeInputSpace;      // color space the tonemapper expects as input
 	int nativeOutputSpace;     // color space the tonemapper produces as output
 	bool supportsHDR;          // whether this tonemapper supports HDR output
@@ -440,12 +440,12 @@ void ColorGrading::DrawSettings()
 					}
 
 					if (auto _tt = Util::HoverTooltipWrapper())
-						ImGui::Text(tonemappers[i].desc.data());
+						ImGui::TextUnformatted(tonemappers[i].desc.c_str());
 				}
 				ImGui::EndCombo();
 			}
 			ImGui::Spacing();
-			ImGui::TextWrapped(tonemappers[tonemapperType].desc.data());
+			ImGui::TextWrapped("%s", tonemappers[tonemapperType].desc.c_str());
 			ImGui::Spacing();
 			if (ImGui::Button(T(TKEY("reset"), "Reset"), { -1, 0 }))
 				settings.tonemapParams = tonemappers[tonemapperType].default_settings;
@@ -1041,7 +1041,11 @@ void ColorGrading::Draw(TextureInfo& inout_tex)
 
 	if (saveImagesFlag) {
 		saveImagesFlag = false;
-		OutputTextures();
+		try {
+			OutputTextures();
+		} catch (const std::exception& e) {
+			logger::warn("Failed to save color grading textures: {}", e.what());
+		}
 	}
 
 	inout_tex = { texColor->resource.get(), texColor->srv.get() };

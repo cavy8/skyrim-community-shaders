@@ -145,7 +145,7 @@ float3 PurkinjeShift(float3 c, float nightAdaptation)
 
 	float3 lmsr_w_terms = float3(k5, k5, k6) * lmsr.w;
 	float3 denominator = 1 + (.33 / m) * (lmsr.xyz + lmsr_w_terms);
-	float3 g = rsqrt(denominator);
+	float3 g = rsqrt(max(denominator, 1e-4));
 
 	float g_x_over_m_x = g.x / m.x;
 	float g_y_over_m_y = g.y / m.y;

@@ -49,6 +49,7 @@ struct PS_INPUT
 	nointerpolation float Seed : TEXCOORD2;
 	nointerpolation float Softness : TEXCOORD3;
 	float ViewDepth : TEXCOORD4;
+	float2 SphereCoord : TEXCOORD5;
 };
 
 float3 GetPointLighting(float3 positionWS)
@@ -150,7 +151,7 @@ float4 main(PS_INPUT input) : SV_Target
 
 	float3 right = FrameBuffer::ViewToWorld(float3(1.0, 0.0, 0.0), false);
 	float3 up = FrameBuffer::ViewToWorld(float3(0.0, 1.0, 0.0), false);
-	float3 sphereNormal = normalize(right * uv.x + up * uv.y - viewDirection * sqrt(saturate(1.0 - radiusSquared)));
+	float3 sphereNormal = normalize(right * input.SphereCoord.x + up * input.SphereCoord.y - viewDirection * sqrt(saturate(1.0 - radiusSquared)));
 
 	float3 pointLighting = GetPointLighting(positionWS);
 	float3 color;

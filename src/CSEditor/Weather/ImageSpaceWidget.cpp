@@ -180,6 +180,13 @@ void ImageSpaceWidget::SaveSettings()
 	originalSettings = settings;
 }
 
+json ImageSpaceWidget::CaptureUndoSnapshot() const
+{
+	json snapshot;
+	snapshot["Settings"] = settings;
+	return snapshot;
+}
+
 void ImageSpaceWidget::SetImageSpaceValues()
 {
 	if (!imageSpace)

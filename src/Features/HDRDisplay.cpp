@@ -566,6 +566,10 @@ void HDRDisplay::LoadSettings(json& o_json)
 	bool oldEnableHDR = settings.enableHDR;
 
 	settings = o_json;
+	settings.hdrPeakNits = std::clamp(settings.hdrPeakNits, kHdrPeakNitsMin, kHdrPeakNitsMax);
+	settings.hdrPaperWhite = std::clamp(settings.hdrPaperWhite, 80u, settings.hdrPeakNits - 1);
+	if (!std::isfinite(settings.hdrUIBrightness))
+		settings.hdrUIBrightness = 1.0f;
 
 	// Defer auto-detection to SetupResources where the swap chain is available.
 	// DetectHDR() needs globals::d3d::swapChain which isn't valid during early plugin init.
@@ -1619,8 +1623,8 @@ HDRDisplay::HDRDataCB HDRDisplay::BuildHDRData() const
 	// Without it, ISHDR gamma-encodes its output even in HDR mode. Linear Lighting stands down on the flat world map
 	// and whenever Effects11 is on (LinearLighting::GetCommonBufferData).
 	auto& effects11 = globals::features::effects11;
-	bool isSceneLinear = globals::features::linearLighting.settings.enableLinearLighting && !globals::state->IsFlatWorldMapOpen() &&
-	                     !(effects11.loaded && effects11.enableEffect);
+	bool isSceneLinear = globals::features::linearLighting.loaded && globals::features::linearLighting.settings.enableLinearLighting &&
+	                     !globals::state->IsMainLoadingOrFlatMapOpen() && !(effects11.loaded && effects11.enableEffect);
 
 	const bool applyAutoHDR = effects11.ReplacedTonemapperThisFrame();
 	float effectivePeakNits = static_cast<float>(applyAutoHDR ? std::min(settings.hdrPeakNits, kAutoHDRMaxNits) : settings.hdrPeakNits);

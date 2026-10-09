@@ -64,7 +64,7 @@ uint2 GetVelocitySamplePosition(uint2 targetPixel, uint2 velocityDimensions)
 		float2 velocity = TexVelocity[velocityPixel].xy;
 
 		// Apply velocity scale
-		velocity *= g_VelocityParams.x;
+		velocity *= g_VelocityParams.x * float2(1.0f, g_TargetResolution.y / max(g_TargetResolution.x, 1.0f));
 
 		// Keep largest velocity
 		float velocityMagnitude = length(velocity);

@@ -319,10 +319,14 @@ std::vector<std::string> PostProcessing::LoadPresets()
 		return o_presets;
 	}
 
-	for (const auto& entry : std::filesystem::directory_iterator(ppPresetPath)) {
-		if (entry.is_regular_file() && entry.path().extension() == ".json") {
-			o_presets.push_back(entry.path().stem().string());
+	try {
+		for (const auto& entry : std::filesystem::directory_iterator(ppPresetPath)) {
+			if (entry.is_regular_file() && entry.path().extension() == ".json") {
+				o_presets.push_back(entry.path().stem().string());
+			}
 		}
+	} catch (const std::exception& e) {
+		logger::warn("Error listing presets ({}) : {}", ppPresetPath, e.what());
 	}
 
 	return o_presets;

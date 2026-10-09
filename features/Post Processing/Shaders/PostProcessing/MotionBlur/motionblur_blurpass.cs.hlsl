@@ -123,7 +123,8 @@ float VelocityToBlurPixels(float velocityLength)
 	float centerDepth = SharedData::GetScreenDepth(TexDepth.SampleLevel(PointSampler, texCoord, 0));
 	float2 centerVelocity = TexVelocity.SampleLevel(PointSampler, GetVelocityTexCoord(texCoord), 0).xy;
 
-	centerVelocity *= g_VelocityParams.x;
+	const float2 velocityAspect = float2(1.0f, (float)dimensions.y / (float)dimensions.x);
+	centerVelocity *= g_VelocityParams.x * velocityAspect;
 
 	// Calculate tile coordinates
 	uint2 gridCoord;
@@ -178,8 +179,8 @@ float VelocityToBlurPixels(float velocityLength)
 		float4 rawVelocityDepthFwd = TexVelocity.SampleLevel(PointSampler, GetVelocityTexCoord(sampleTexCoordsFwd), 0);
 		float4 rawVelocityDepthBck = TexVelocity.SampleLevel(PointSampler, GetVelocityTexCoord(sampleTexCoordsBck), 0);
 
-		float2 sampleVelocityFwd = rawVelocityDepthFwd.xy * g_VelocityParams.x;
-		float2 sampleVelocityBck = rawVelocityDepthBck.xy * g_VelocityParams.x;
+		float2 sampleVelocityFwd = rawVelocityDepthFwd.xy * g_VelocityParams.x * velocityAspect;
+		float2 sampleVelocityBck = rawVelocityDepthBck.xy * g_VelocityParams.x * velocityAspect;
 
 		float sampleVelocityLenFwd = VelocityToBlurPixels(length(sampleVelocityFwd));
 		float sampleVelocityLenBck = VelocityToBlurPixels(length(sampleVelocityBck));

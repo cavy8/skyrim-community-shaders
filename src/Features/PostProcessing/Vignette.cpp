@@ -10,6 +10,7 @@
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Vignette::Settings,
 	FocalLength,
+	Anamorphism,
 	Power)
 
 void Vignette::DrawSettings()
@@ -128,7 +129,7 @@ void Vignette::Draw(TextureInfo& inout_tex)
 	res = Util::ConvertToDynamic(res);
 	VignetteCB data = {
 		.settings = settings,
-		.AspectRatio = res.y / res.x / settings.Anamorphism,
+		.AspectRatio = res.y / res.x / std::max(settings.Anamorphism, 0.1f),
 		.RcpDynRes = float2(1.f) / res
 	};
 	vignetteCB->Update(data);
