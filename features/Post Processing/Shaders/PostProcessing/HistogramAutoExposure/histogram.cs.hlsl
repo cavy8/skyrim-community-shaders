@@ -116,7 +116,6 @@ float4 ComputeBoxBounds(float2 dims)
 			float highCut = totalWeight * HighPercent;
 			float weightedLogLum = 0.0;
 			float keptWeight = 0.0;
-			float highLogLum = MinLogLum;
 
 			[loop] for (uint bin = FirstLuminanceBin; bin < HistogramBins; ++bin)
 			{
@@ -134,13 +133,11 @@ float4 ComputeBoxBounds(float2 dims)
 				float logLum = histogramPos * LogLumRange + MinLogLum;
 				weightedLogLum += logLum * binWeight;
 				keptWeight += binWeight;
-				if (binWeight > 0.0)
-					highLogLum = logLum;
 			}
 
 			if (keptWeight > 0.0) {
 				float avgLogLum = weightedLogLum / keptWeight;
-				avgLogLum += max(highLogLum - log2(HighlightLimit) - avgLogLum, 0.0) * HighlightProtection;
+				avgLogLum -= max(avgLogLum - BrightSceneKneeLogLum, 0.0) * BrightSceneCompression;
 				avgLum = exp2(avgLogLum);
 			}
 		}

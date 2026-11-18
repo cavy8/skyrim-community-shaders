@@ -198,6 +198,18 @@ void FurShells::RestoreDefaultSettings()
 void FurShells::LoadSettings(json& o_json)
 {
 	settings = o_json;
+
+	// The sliders clamp, a hand-edited settings file does not: 0 shells or a negative length would hide or invert all fur.
+	settings.ShellCount = std::clamp(settings.ShellCount, 1u, MaxShells);
+	settings.Length = std::clamp(settings.Length, 0.1f, 6.0f);
+	settings.BodyLength = std::clamp(settings.BodyLength, 0.05f, 3.0f);
+	settings.Droop = std::clamp(settings.Droop, 0.0f, 2.0f);
+	settings.RootThreshold = std::clamp(settings.RootThreshold, 0.0f, 1.0f);
+	settings.TipThreshold = std::clamp(settings.TipThreshold, 0.0f, 1.0f);
+	settings.RootDarkening = std::clamp(settings.RootDarkening, 0.0f, 1.0f);
+	settings.ShellColor = std::clamp(settings.ShellColor, 0.0f, 1.0f);
+	settings.FadeStart = std::clamp(settings.FadeStart, 0.0f, 8000.0f);
+	settings.FadeEnd = std::clamp(settings.FadeEnd, 0.0f, 8000.0f);
 }
 
 void FurShells::SaveSettings(json& o_json)

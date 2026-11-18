@@ -9,6 +9,6 @@ cbuffer AutoExposureCB : register(b1)
 	float PurkinjeStrength;
 	float ExposureTarget;
 
-	float HighlightLimit;
-	float HighlightProtection;
+	float BrightSceneKneeLogLum;
+	float BrightSceneCompression;
 };

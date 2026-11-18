@@ -6,6 +6,7 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include "Util.h"
+#include "Utils/MathUtils.h"
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	HistogramAutoExposure::Settings,
@@ -13,11 +14,17 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	AdaptationRange,
 	AdaptArea,
 	AdaptSpeed,
-	HighlightProtection,
-	HighlightLimitEV,
+	BrightSceneCompression,
+	BrightSceneKneeEV,
 	PurkinjeStartEV,
 	PurkinjeMaxEV,
 	PurkinjeStrength)
+
+namespace
+{
+	constexpr float kMinBrightSceneKneeEV = -10.f;
+	constexpr float kMaxBrightSceneKneeEV = 21.f;
+}
 
 bool HistogramAutoExposure::IsActive() const
 {
@@ -135,14 +142,16 @@ void HistogramAutoExposure::DrawSettings()
 				"Turning up the minimum, for example, makes it adapt less to darkness and therefore prevents over-brightening of dark scenes."));
 	ImGui::EndDisabled();
 
-	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.highlight_protection", "Highlight Protection"), &settings.HighlightProtection, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::BeginDisabled(cam != nullptr);
+	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.bright_scene_compression", "Bright Scene Compression"), &settings.BrightSceneCompression, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.highlight_protection_tooltip",
-			"Lowers exposure when large bright surfaces such as snow would overexpose because darker parts of the view dominate the average. 0 disables it."));
-	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.highlight_limit", "Highlight Limit"), &settings.HighlightLimitEV, 0.5f, 5.f, "%+.2f EV", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.bright_scene_compression_tooltip",
+			"How much of the brightness above the knee exposure ignores, so bright sky and snow keep the view bright instead of darkening everything around them. Local Exposure then holds the brightest areas back. 0 adapts fully, 1 stops adapting at the knee."));
+	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.bright_scene_knee", "Bright Scene Knee"), &settings.BrightSceneKneeEV, kMinBrightSceneKneeEV, kMaxBrightSceneKneeEV, "%.2f EV100", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.highlight_limit_tooltip",
-			"Stops above middle grey that the 90th percentile of the metering area may reach before Highlight Protection lowers exposure. Lower values keep snow and bright cloud darker."));
+		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.bright_scene_knee_tooltip",
+			"Average scene brightness above which Bright Scene Compression starts. Compare it with the green Adapted EV100 marker in the histogram."));
+	ImGui::EndDisabled();
 
 	ImGui::SeparatorText(T("feature.post_processing.histogram_auto_exposure.purkinje_effect", "Purkinje Effect"));
 	Util::SettingHint(
@@ -225,20 +234,9 @@ void HistogramAutoExposure::DrawSettings()
 		drawMarker(log2(parameters.LuminanceRange.y) + 3.0f, IM_COL32(255, 200, 0, 255));
 		drawMarker(adaptedEV100, IM_COL32(0, 255, 0, 255));
 		drawMarker(compensatedTargetEV100, IM_COL32(0, 220, 255, 255));
-		if (settings.HighlightProtection > 0.f) {
-			float totalSamples = 0.f;
-			for (int i = kFirstLuminanceBin; i < kHistogramBins; i++)
-				totalSamples += static_cast<float>(histogramData[i]);
-			float cumulativeSamples = 0.f;
-			for (int i = kFirstLuminanceBin; i < kHistogramBins && totalSamples > 0.f; i++) {
-				cumulativeSamples += static_cast<float>(histogramData[i]);
-				if (cumulativeSamples >= totalSamples * 0.9f) {
-					const float histogramPos = static_cast<float>(i - kFirstLuminanceBin) / static_cast<float>(kLastLuminanceBin - kFirstLuminanceBin);
-					drawMarker(histogramPos * (kMaxEV100 - kMinEV100) + kMinEV100, IM_COL32(255, 80, 220, 255));
-					break;
-				}
-			}
-		}
+		const bool showKnee = settings.BrightSceneCompression > 0.f && !cam;
+		if (showKnee)
+			drawMarker(std::clamp(settings.BrightSceneKneeEV, kMinBrightSceneKneeEV, kMaxBrightSceneKneeEV), IM_COL32(255, 80, 220, 255));
 
 		if (ImGui::IsItemHovered()) {
 			const float mouseX = ImGui::GetIO().MousePos.x;
@@ -262,8 +260,8 @@ void HistogramAutoExposure::DrawSettings()
 		ImGui::TextColored(ImVec4(0, 0.86f, 1, 1), T("feature.post_processing.histogram_auto_exposure.cyan_compensation_target", "Cyan: Compensation Target"));
 		ImGui::SameLine();
 		ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), T("feature.post_processing.histogram_auto_exposure.yellow_adaptation_range", "Yellow: Adaptation Range"));
-		if (settings.HighlightProtection > 0.f)
-			ImGui::TextColored(ImVec4(1, 0.31f, 0.86f, 1), T("feature.post_processing.histogram_auto_exposure.magenta_highlight_percentile", "Magenta: 90th Percentile (Highlight Protection)"));
+		if (showKnee)
+			ImGui::TextColored(ImVec4(1, 0.31f, 0.86f, 1), T("feature.post_processing.histogram_auto_exposure.magenta_bright_scene_knee", "Magenta: Bright Scene Knee"));
 	} else {
 		histogramReadbackRequested = false;
 	}
@@ -277,6 +275,9 @@ void HistogramAutoExposure::RestoreDefaultSettings()
 void HistogramAutoExposure::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	const Settings defaults{};
+	settings.BrightSceneCompression = Util::ClampFinite(settings.BrightSceneCompression, defaults.BrightSceneCompression, 0.f, 1.f);
+	settings.BrightSceneKneeEV = Util::ClampFinite(settings.BrightSceneKneeEV, defaults.BrightSceneKneeEV, kMinBrightSceneKneeEV, kMaxBrightSceneKneeEV);
 }
 
 void HistogramAutoExposure::SaveSettings(json& o_json)
@@ -389,8 +390,8 @@ void HistogramAutoExposure::Draw(TextureInfo& inout_tex)
 		.PurkinjeMaxEV = settings.PurkinjeMaxEV,
 		.PurkinjeStrength = settings.PurkinjeStrength,
 		.ExposureTarget = parameters.ExposureTarget,
-		.HighlightLimit = exp2(std::clamp(settings.HighlightLimitEV, 0.5f, 5.f)),
-		.HighlightProtection = std::clamp(settings.HighlightProtection, 0.f, 1.f),
+		.BrightSceneKneeLogLum = std::clamp(settings.BrightSceneKneeEV, kMinBrightSceneKneeEV, kMaxBrightSceneKneeEV) - 3.0f,
+		.BrightSceneCompression = owner && owner->GetActivePhysicalCameraState() ? 0.f : std::clamp(settings.BrightSceneCompression, 0.f, 1.f),
 	};
 	autoExposureCB->Update(cbData);
 

@@ -1210,14 +1210,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	if defined(FUR_SHELLS)
 	float4 furSample = FurShells::TexShell.SampleBias(SampColorSampler, uv, SharedData::MipBias);
 	bool furRootCovered = FurShells::IsRootCovered(input.FurRoot, fwidth(input.FurRoot.w));
-#		if defined(MODELSPACENORMALS)
+#		if !defined(MODELSPACENORMALS)
+	float furFacing = abs(dot(tbnTr[2], viewDirection));
+#		elif !defined(SKINNED)
 	float3 furFacingNormal = cross(ddx(input.WorldPosition.xyz), ddy(input.WorldPosition.xyz));
-#		else
-	float3 furFacingNormal = tbnTr[2];
-#		endif
 	float furFacing = abs(dot(furFacingNormal, viewDirection)) * rsqrt(max(dot(furFacingNormal, furFacingNormal), 1e-12));
-	float furCoverage = FurShells::GetCoverage(furSample.w, lerp(FurShells::RootThreshold, FurShells::TipThreshold, input.FurShell), uv);
-	if (input.FurShell > 0.0 && (furRootCovered || furCoverage < screenNoise))
+#		endif
+	FurShells::Coverage furCoverage = FurShells::GetCoverage(furSample.w, FurShells::GetThreshold(input.FurShell), uv);
+	if (input.FurShell > 0.0 && (furRootCovered || furCoverage.Value < screenNoise))
 		discard;
 #	endif
 
@@ -1858,8 +1858,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif  // FACEGEN
 
 #	if defined(FUR_SHELLS)
-	if (input.FurShell > 0.0)
-		baseColor.xyz *= FurShells::GetDarkening(input.FurShell, furFacing);
+	float furOcclusion = 1.0;
+	if (input.FurShell > 0.0) {
+#		if defined(MODELSPACENORMALS) && defined(SKINNED)
+		// The model-space normal map is smooth across triangles; screen derivatives of the shell would show its facets.
+		float furFacing = abs(dot(normalize(mul(tbn, normal.xyz)), viewDirection));
+#		endif
+		furOcclusion = FurShells::GetDarkening(input.FurShell, furFacing);
+		baseColor.xyz *= furOcclusion;
+	}
 #	endif
 
 #	if defined(CS_SKIN_SHADING)
@@ -2193,8 +2200,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif  // WORLD_MAP
 
 #	if defined(FUR_SHELLS)
-	if (input.FurShell > 0.0)
+	if (input.FurShell > 0.0) {
+		worldNormal = FurShells::GetStrandNormal(worldNormal, input.WorldPosition.xyz, input.TexCoord0.xy, furCoverage.StrandOffset);
 		worldNormal = normalize(worldNormal - viewDirection * (min(dot(worldNormal, viewDirection), 0.0) - 1e-3));
+	}
 #	endif
 
 #	if defined(DEFERRED) && defined(LIGHT_LIMIT_FIX)
@@ -3582,6 +3591,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	color.xyz *= Color::PBRLightingScale;
 	specularColor *= Color::PBRLightingScale;
 	indirectLobeWeights.diffuse *= Color::PBRLightingScale;
+#	endif
+
+#	if defined(FUR_SHELLS)
+	// Strands shade each other's sheen as well as their color: occlude specular toward the roots too.
+	specularColor *= furOcclusion;
+	indirectLobeWeights.specular *= furOcclusion;
 #	endif
 
 #	if defined(NIGHT_EYE)
