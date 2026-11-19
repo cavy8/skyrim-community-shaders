@@ -3,7 +3,7 @@ name: "Neural Rendering: Automatic Prerelease"
 on:
   push:
     branches:
-      - "PR/NeuralRendering"
+      - "PR/NeuralRendering-Dev"
 
 permissions:
   contents: read
