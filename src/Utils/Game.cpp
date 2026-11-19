@@ -1,6 +1,7 @@
 #include "Game.h"
 
 #include <atomic>
+#include <cmath>
 #include <limits>
 
 #include "Globals.h"
@@ -409,9 +410,10 @@ namespace Util
 
 		const auto& bound = a_billboard->worldBound;
 		const float distance = bound.center.GetDistance(a_viewer);
-		if (bound.radius <= 0.0f || distance <= bound.radius)
+		if (!std::isfinite(bound.radius) || !std::isfinite(distance) || bound.radius <= 0.0f || distance <= 0.0f)
 			return a_fallback;
 
+		// The bound sphere encloses the square billboard, so its half-width is radius / sqrt(2)
 		return bound.radius * 0.70710678f / distance;
 	}
 

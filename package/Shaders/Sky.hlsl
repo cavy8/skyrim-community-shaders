@@ -106,6 +106,21 @@ VS_OUTPUT main(VS_INPUT input)
 
 	float4 inputPosition = float4(input.Position.xyz, 1.0);
 
+#	if defined(PHYSICAL_SKY) && (defined(TEX) || defined(MOONMASK))
+	if (SharedData::physSkyData.enabled) {
+		float scale = 1.0;
+#		if !defined(MOONMASK)
+		if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsMoon)
+#		endif
+			scale = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSecunda) ? SharedData::physSkyData.diskBillboardScale.z : SharedData::physSkyData.diskBillboardScale.y;
+#		if !defined(DITHER) && !defined(MOONMASK)
+		else if (SharedData::physSkyData.sunDiskCos > 0.0 && (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSun))
+			scale = SharedData::physSkyData.diskBillboardScale.x;
+#		endif
+		inputPosition.xyz *= scale;
+	}
+#	endif
+
 #	if defined(PHYSICAL_SKY) && defined(DITHER) && !defined(TEX)
 	if (SharedData::physSkyData.enabled) {
 		// The atmosphere mesh ends at the equator; the LUT covers the whole sky.
@@ -364,7 +379,8 @@ PS_OUTPUT main(PS_INPUT input)
 #		if defined(HDR_OUTPUT)
 	float hdrSunGain = HDRSun::GetHdrSunGain(input.TexCoord0.xy, baseColor);
 	baseColor.xyz *= hdrSunGain;
-	if (HDRSun::IsHdrSunActive() && !enableProceduralSun) {
+	const bool physicalSkyHdrSun = HDRSun::IsHdrSunActive() && SharedData::physSkyData.enabled && !enableProceduralSun;
+	if (physicalSkyHdrSun) {
 		// Dither bright output to reduce banding in high-boost sun path.
 		// Same baseColor/skyScale treatment for DITHER and non-DITHER; DITHER adds noiseGrad later.
 		baseColor.xyz += (Random::InterleavedGradientNoise(input.Position.xy) - 0.5f) *
@@ -373,7 +389,7 @@ PS_OUTPUT main(PS_INPUT input)
 	}
 
 #			if defined(CLOUD_SHADOWS)
-	if (HDRSun::IsHdrSunActive() && !enableProceduralSun) {
+	if (physicalSkyHdrSun) {
 		float cloudMult = CloudShadows::GetCloudShadowMult(input.WorldPosition.xyz, SampBaseSampler);
 		baseColor.xyz *= cloudMult;
 #				if defined(ENABLE_LL)

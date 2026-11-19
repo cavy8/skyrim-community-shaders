@@ -8,9 +8,6 @@
 #include "State.h"
 #include "Util.h"
 
-#include <DDSTextureLoader.h>
-#include <DirectXTex.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -239,91 +236,38 @@ namespace
 		return desc.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE3D && NdfManager::IsLinearFormat(desc.Format, 4);
 	}
 
-	bool LoadProfileImage(const wchar_t* path, DirectX::ScratchImage& image, bool* hasGreen = nullptr)
-	{
-		DirectX::ScratchImage source;
-		if (FAILED(DirectX::LoadFromDDSFile(path, DirectX::DDS_FLAGS_NONE, nullptr, source)))
-			return false;
-		const auto* base = source.GetImage(0, 0, 0);
-		if (!base || source.GetMetadata().dimension != DirectX::TEX_DIMENSION_TEXTURE2D || source.GetMetadata().arraySize != 1)
-			return false;
-		if (!NdfManager::IsLinearFormat(base->format, 1))
-			return false;
-		if (hasGreen)
-			*hasGreen = NdfManager::IsLinearFormat(base->format, 2);
-		if (base->format == DXGI_FORMAT_R32G32B32A32_FLOAT) {
-			image = std::move(source);
-			return true;
-		}
-		if (DirectX::IsCompressed(base->format))
-			return SUCCEEDED(DirectX::Decompress(*base, DXGI_FORMAT_R32G32B32A32_FLOAT, image));
-		return SUCCEEDED(DirectX::Convert(*base, DXGI_FORMAT_R32G32B32A32_FLOAT, DirectX::TEX_FILTER_DEFAULT, 0.f, image));
-	}
+	constexpr DXGI_FORMAT kHistoryRadianceFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
-	float ProfileSample(const DirectX::Image& image, float u, float v, uint32_t channel = 0)
+	/** @brief Creates a single-mip 2D texture with an SRV and a UAV. */
+	eastl::unique_ptr<Texture2D> CreateCloudTexture(uint32_t a_width, uint32_t a_height, DXGI_FORMAT a_format, const char* a_name)
 	{
-		const float x = u * static_cast<float>(image.width) - 0.5f;
-		const float y = v * static_cast<float>(image.height) - 0.5f;
-		const int ix = static_cast<int>(std::floor(x));
-		const int iy = static_cast<int>(std::floor(y));
-		const auto sample = [&](int px, int py) {
-			px = std::clamp(px, 0, static_cast<int>(image.width) - 1);
-			py = std::clamp(py, 0, static_cast<int>(image.height) - 1);
-			return reinterpret_cast<const float*>(image.pixels + py * image.rowPitch)[px * 4 + channel];
+		D3D11_TEXTURE2D_DESC tex_desc = {
+			.Width = a_width,
+			.Height = a_height,
+			.MipLevels = 1,
+			.ArraySize = 1,
+			.Format = a_format,
+			.SampleDesc = { .Count = 1, .Quality = 0 },
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
+			.CPUAccessFlags = 0,
+			.MiscFlags = 0
 		};
-		return std::lerp(std::lerp(sample(ix, iy), sample(ix + 1, iy), x - ix),
-			std::lerp(sample(ix, iy + 1), sample(ix + 1, iy + 1), x - ix), y - iy);
-	}
+		D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {
+			.Format = tex_desc.Format,
+			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+			.Texture2D = { .MostDetailedMip = 0, .MipLevels = 1 }
+		};
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {
+			.Format = tex_desc.Format,
+			.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
+			.Texture2D = { .MipSlice = 0 }
+		};
 
-	void CreateProfileFallbacks(winrt::com_ptr<ID3D11ShaderResourceView>& profile, winrt::com_ptr<ID3D11ShaderResourceView>& adjustment)
-	{
-		if (profile && adjustment)
-			return;
-		DirectX::ScratchImage topImage, bottomImage;
-		bool hasTopProfile = false;
-		const bool hasTop = LoadProfileImage(L"Data\\Textures\\PhysicalSky\\top_lut.dds", topImage, &hasTopProfile);
-		const bool hasBottom = LoadProfileImage(L"Data\\Textures\\PhysicalSky\\bottom_lut.dds", bottomImage);
-		constexpr uint32_t size = 64;
-		std::array<float4, size * size> profiles, adjustments;
-		const auto smooth = [](float a, float b, float value) {
-			const float t = std::clamp((value - a) / (b - a), 0.f, 1.f);
-			return t * t * (3.f - 2.f * t);
-		};
-		for (uint32_t y = 0; y < size; ++y) {
-			const float height = (y + 0.5f) / size;
-			for (uint32_t x = 0; x < size; ++x) {
-				const float type = (x + 0.5f) / size;
-				const float top = hasTop && hasTopProfile ? ProfileSample(*topImage.GetImage(0, 0, 0), type, 1.f - height, 1) :
-				                                            1.f - smooth(0.04f + type * 0.45f, 0.12f + type * 0.9f, height);
-				const float bottom = hasBottom ? ProfileSample(*bottomImage.GetImage(0, 0, 0), type, 1.f - height) :
-				                                 smooth(0.f, 0.08f + type * 0.22f, height);
-				const float expansion = hasTop ? ProfileSample(*topImage.GetImage(0, 0, 0), type, 1.f - height) :
-				                                 1.f - smooth(0.1f + type * 0.35f, 0.25f + type * 0.75f, height);
-				profiles[y * size + x] = { bottom, top, 0.f, 1.f };
-				adjustments[y * size + x] = { expansion, 0.5f, 0.5f, 1.f };
-			}
-		}
-		const auto upload = [&](const auto& pixels, winrt::com_ptr<ID3D11ShaderResourceView>& srv, const char* name) {
-			D3D11_TEXTURE2D_DESC desc{};
-			desc.Width = desc.Height = size;
-			desc.MipLevels = 7;
-			desc.ArraySize = desc.SampleDesc.Count = 1;
-			desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-			desc.Usage = D3D11_USAGE_DEFAULT;
-			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-			desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
-			winrt::com_ptr<ID3D11Texture2D> texture;
-			DX::ThrowIfFailed(globals::d3d::device->CreateTexture2D(&desc, nullptr, texture.put()));
-			globals::d3d::context->UpdateSubresource(texture.get(), 0, nullptr, pixels.data(), size * sizeof(float4), 0);
-			DX::ThrowIfFailed(globals::d3d::device->CreateShaderResourceView(texture.get(), nullptr, srv.put()));
-			globals::d3d::context->GenerateMips(srv.get());
-			Util::SetResourceName(texture.get(), "%s", name);
-		};
-		if (!profile)
-			upload(profiles, profile, "PhysicalSky::FallbackCloudProfile");
-		if (!adjustment)
-			upload(adjustments, adjustment, "PhysicalSky::FallbackCloudAdjustment");
-		logger::info("Cloud profile fallback: top {}, bottom {}", hasTop ? "texture" : "analytic", hasBottom ? "texture" : "analytic");
+		auto texture = eastl::make_unique<Texture2D>(tex_desc, a_name);
+		texture->CreateSRV(srv_desc);
+		texture->CreateUAV(uav_desc);
+		return texture;
 	}
 }
 
@@ -392,8 +336,8 @@ void PhysicalSky::LoadCloudTextures()
 		importedShapeNoiseSrv = nullptr;
 	}
 
-	loadDDS(L"Data\\Textures\\PhysicalSky\\NubisVerticalProfile.dds", cloudProfileLutSrv);
-	loadDDS(L"Data\\Textures\\PhysicalSky\\NubisVerticalAdjustment.dds", importedAdjustmentLutSrv);
+	loadDDS(L"Data\\Textures\\PhysicalSky\\NubisVerticalProfile.dds", cloudProfileLutSrv, true);
+	loadDDS(L"Data\\Textures\\PhysicalSky\\NubisVerticalAdjustment.dds", importedAdjustmentLutSrv, true);
 	if (cloudProfileLutSrv && !NdfManager::IsTextureNdf(cloudProfileLutSrv.get(), 2)) {
 		logger::warn("Cloud profile DDS must be a linear 2D texture with at least RG channels.");
 		cloudProfileLutSrv = nullptr;
@@ -402,49 +346,9 @@ void PhysicalSky::LoadCloudTextures()
 		logger::warn("Cloud adjustment DDS must be a linear 2D texture with at least RGB channels.");
 		importedAdjustmentLutSrv = nullptr;
 	}
-	cloudProfileGenerated = !cloudProfileLutSrv;
-	cloudAdjustmentGenerated = !importedAdjustmentLutSrv;
-	CreateProfileFallbacks(cloudProfileLutSrv, importedAdjustmentLutSrv);
-	for (const auto* filename : { "top_lut.dds", "bottom_lut.dds" }) {
-		const auto path = std::filesystem::path("Data/Textures/PhysicalSky") / filename;
-		std::error_code error;
-		if (std::filesystem::exists(path, error))
-			ndfTexManager.LoadTexture(path);
-	}
 	baseShapeNoiseSrv = importedShapeNoiseSrv;
 	cloudAdjustmentLutSrv = importedAdjustmentLutSrv;
 	cloudCrossSectionDirty = true;
-}
-
-static eastl::unique_ptr<Texture2D> CreateCloudTexture(uint32_t a_width, uint32_t a_height, DXGI_FORMAT a_format, const char* a_name)
-{
-	D3D11_TEXTURE2D_DESC tex_desc = {
-		.Width = a_width,
-		.Height = a_height,
-		.MipLevels = 1,
-		.ArraySize = 1,
-		.Format = a_format,
-		.SampleDesc = { .Count = 1, .Quality = 0 },
-		.Usage = D3D11_USAGE_DEFAULT,
-		.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
-		.CPUAccessFlags = 0,
-		.MiscFlags = 0
-	};
-	D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {
-		.Format = tex_desc.Format,
-		.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
-		.Texture2D = { .MostDetailedMip = 0, .MipLevels = 1 }
-	};
-	D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {
-		.Format = tex_desc.Format,
-		.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
-		.Texture2D = { .MipSlice = 0 }
-	};
-
-	auto texture = eastl::make_unique<Texture2D>(tex_desc, a_name);
-	texture->CreateSRV(srv_desc);
-	texture->CreateUAV(uav_desc);
-	return texture;
 }
 
 void PhysicalSky::SetupVolumetricResources()
@@ -569,11 +473,10 @@ void PhysicalSky::SetupVolumetricResources()
 	D3D11_TEXTURE2D_DESC mainDesc;
 	mainTex.texture->GetDesc(&mainDesc);
 
-	const auto createCloudTexture = &CreateCloudTexture;
-	texCloudAmbientLighting = createCloudTexture(512, 7, DXGI_FORMAT_R32G32B32A32_FLOAT, "PhysicalSky::CloudAmbientLighting");
-	texCloudAmbientBoundary = createCloudTexture(26, 15, DXGI_FORMAT_R32G32B32A32_FLOAT, "PhysicalSky::CloudAmbientBoundary");
+	texCloudAmbientLighting = CreateCloudTexture(512, 7, DXGI_FORMAT_R32G32B32A32_FLOAT, "PhysicalSky::CloudAmbientLighting");
+	texCloudAmbientBoundary = CreateCloudTexture(26, 15, DXGI_FORMAT_R32G32B32A32_FLOAT, "PhysicalSky::CloudAmbientBoundary");
 	for (uint32_t i = 0; i < texCloudAmbientLayout.size(); ++i)
-		texCloudAmbientLayout[i] = createCloudTexture(5, kCloudAmbientCascadeCount, DXGI_FORMAT_R32G32B32A32_FLOAT, fmt::format("PhysicalSky::CloudAmbientLayout{}", i).c_str());
+		texCloudAmbientLayout[i] = CreateCloudTexture(5, kCloudAmbientCascadeCount, DXGI_FORMAT_R32G32B32A32_FLOAT, fmt::format("PhysicalSky::CloudAmbientLayout{}", i).c_str());
 	{
 		auto createVolume = [](uint32_t width, uint32_t height, uint32_t depth, DXGI_FORMAT format, const std::string& name) {
 			D3D11_TEXTURE3D_DESC desc = {
@@ -612,16 +515,15 @@ void PhysicalSky::SetupVolumetricResources()
 		cloudAmbientValid = false;
 	}
 
-	constexpr DXGI_FORMAT historyRadianceFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	const uint32_t lowW = std::max(1u, (mainDesc.Width + 3u) / 4u);
 	const uint32_t lowH = std::max(1u, (mainDesc.Height + 3u) / 4u);
-	texVolLowTr = createCloudTexture(lowW, lowH, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::CloudTraceTr");
-	texVolLowLum = createCloudTexture(lowW, lowH, historyRadianceFormat, "PhysicalSky::CloudTraceLum");
-	texVolLowAux = createCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::CloudTraceAux");
-	texLightningTrace = createCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::LightningTrace");
-	texVolStormMotion = createCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::CloudStormMotion");
-	texStormTiles = createCloudTexture((lowW + 7u) / 8u, (lowH + 7u) / 8u, DXGI_FORMAT_R32_UINT, "PhysicalSky::StormTiles");
-	texUpperTiles = createCloudTexture((lowW + 7u) / 8u, (lowH + 7u) / 8u, DXGI_FORMAT_R32_UINT, "PhysicalSky::UpperCloudTiles");
+	texVolLowTr = CreateCloudTexture(lowW, lowH, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::CloudTraceTr");
+	texVolLowLum = CreateCloudTexture(lowW, lowH, kHistoryRadianceFormat, "PhysicalSky::CloudTraceLum");
+	texVolLowAux = CreateCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::CloudTraceAux");
+	texLightningTrace = CreateCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::LightningTrace");
+	texVolStormMotion = CreateCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::CloudStormMotion");
+	texStormTiles = CreateCloudTexture((lowW + 7u) / 8u, (lowH + 7u) / 8u, DXGI_FORMAT_R32_UINT, "PhysicalSky::StormTiles");
+	texUpperTiles = CreateCloudTexture((lowW + 7u) / 8u, (lowH + 7u) / 8u, DXGI_FORMAT_R32_UINT, "PhysicalSky::UpperCloudTiles");
 	{
 		D3D11_TEXTURE2D_DESC desc = texVolLowAux->desc;
 		desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
@@ -678,7 +580,7 @@ void PhysicalSky::SetupVolumetricResources()
 		cloudBoundaryDepth = nullptr;
 		DX::ThrowIfFailed(device->CreateDepthStencilState(&depth, cloudBoundaryDepth.put()));
 	}
-	texUpperSunDepth = createCloudTexture(256, 256, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::UpperSunDepth");
+	texUpperSunDepth = CreateCloudTexture(256, 256, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::UpperSunDepth");
 	{
 		D3D11_TEXTURE2D_DESC desc{};
 		desc.Width = desc.Height = kMiddleBoundsSize;
@@ -708,11 +610,11 @@ void PhysicalSky::SetupVolumetricResources()
 		}
 		middleBoundsDirty = true;
 	}
-	texVoxelTraceTr = createCloudTexture(lowW, lowH, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::VoxelTraceTr");
-	texVoxelTraceLum = createCloudTexture(lowW, lowH, historyRadianceFormat, "PhysicalSky::VoxelTraceLum");
-	texVoxelTraceAux = createCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::VoxelTraceAux");
-	texVoxelTraceMotion = createCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::VoxelTraceMotion");
-	texVoxelTraceLightning = createCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::VoxelTraceLightning");
+	texVoxelTraceTr = CreateCloudTexture(lowW, lowH, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::VoxelTraceTr");
+	texVoxelTraceLum = CreateCloudTexture(lowW, lowH, kHistoryRadianceFormat, "PhysicalSky::VoxelTraceLum");
+	texVoxelTraceAux = CreateCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::VoxelTraceAux");
+	texVoxelTraceMotion = CreateCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::VoxelTraceMotion");
+	texVoxelTraceLightning = CreateCloudTexture(lowW, lowH, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::VoxelTraceLightning");
 
 	auto createCube = [](uint32_t size, DXGI_FORMAT format, const char* name) {
 		D3D11_TEXTURE2D_DESC desc = {
@@ -756,14 +658,12 @@ void PhysicalSky::SetupVolumetricResources()
 	texLightningCubeHistory = createCube(kVolCubeSize, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::LightningCubeHistory");
 	texLightningCubeLum = createCube(kVolCubeSize, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::LightningCubeRadiance");
 	texVolCubeStormMotion = createCube(kVolCubeSize / 4u, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::VolCubeStormMotion");
-	const float clearTr[4] = { 1.f, 1.f, 1.f, 1.f };
-	const float clearLum[4] = {};
 	for (auto* texture : { texLightningTrace.get(), texLightningCubeTrace.get(), texLightningCubeMask.get(), texLightningCubeHistory.get(), texLightningCubeLum.get() })
-		context->ClearUnorderedAccessViewFloat(texture->uav.get(), clearLum);
+		context->ClearUnorderedAccessViewFloat(texture->uav.get(), kClearLuminance);
 	lightning.SetupResources();
-	context->ClearUnorderedAccessViewFloat(texVolCubeTr->uav.get(), clearTr);
-	context->ClearUnorderedAccessViewFloat(texVolCubeLum->uav.get(), clearLum);
-	context->ClearUnorderedAccessViewFloat(texVolCubeAux->uav.get(), clearLum);
+	context->ClearUnorderedAccessViewFloat(texVolCubeTr->uav.get(), kClearTransmittance);
+	context->ClearUnorderedAccessViewFloat(texVolCubeLum->uav.get(), kClearLuminance);
+	context->ClearUnorderedAccessViewFloat(texVolCubeAux->uav.get(), kClearLuminance);
 	volMainHistoryValid = false;
 
 	// Shadow volume 3D texture
@@ -797,12 +697,11 @@ void PhysicalSky::SetupVolumetricResources()
 		texShadowVolumeRaw->CreateSRV(srv_desc);
 		texShadowVolumeRaw->CreateUAV(uav_desc);
 
-		const FLOAT shadowVolumeClr[4] = { 1.f, 0.f, 0.f, 0.f };
-		context->ClearUnorderedAccessViewFloat(texShadowVolume->uav.get(), shadowVolumeClr);
-		context->ClearUnorderedAccessViewFloat(texShadowVolumeRaw->uav.get(), shadowVolumeClr);
+		context->ClearUnorderedAccessViewFloat(texShadowVolume->uav.get(), kClearShadowVolume);
+		context->ClearUnorderedAccessViewFloat(texShadowVolumeRaw->uav.get(), kClearShadowVolume);
 		// Metadata row plus endpoint-inclusive vertical mean transmittance profile.
-		texCloudShadowMean = createCloudTexture(1, kShadowMeanHeights + 1u, DXGI_FORMAT_R32G32B32A32_FLOAT, "PhysicalSky::CloudShadowMean");
-		context->ClearUnorderedAccessViewFloat(texCloudShadowMean->uav.get(), clearLum);
+		texCloudShadowMean = CreateCloudTexture(1, kShadowMeanHeights + 1u, DXGI_FORMAT_R32G32B32A32_FLOAT, "PhysicalSky::CloudShadowMean");
+		context->ClearUnorderedAccessViewFloat(texCloudShadowMean->uav.get(), kClearLuminance);
 	}
 
 	// Load textures and NDF
@@ -813,48 +712,53 @@ void PhysicalSky::SetupVolumetricResources()
 	midCloudMapManager.SetupResources();
 	cloudStormManager.SetupResources();
 	cloudNoiseGenerator.SetupResources();
-	volumetricScreenResourcesReady = false;
-	volumetricNeutralCleared = false;
 }
 
-void PhysicalSky::SetupVolumetricScreenResources()
+/** @brief Full-resolution cloud targets, created together on first use. */
+static constexpr struct
 {
-	if (volumetricScreenResourcesReady)
-		return;
+	eastl::unique_ptr<Texture2D> PhysicalSky::* texture;
+	DXGI_FORMAT format;
+	const char* name;
+} kScreenTargets[] = {
+	{ &PhysicalSky::texLightningMask, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::LightningMask" },
+	{ &PhysicalSky::texLightningHistory, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::LightningHistory" },
+	{ &PhysicalSky::texLightningChannels, kHistoryRadianceFormat, "PhysicalSky::LightningChannels" },
+	{ &PhysicalSky::texVolFilteredTr, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::CloudFilteredTr" },
+	{ &PhysicalSky::texVolFilteredLum, kHistoryRadianceFormat, "PhysicalSky::CloudFilteredLum" },
+	{ &PhysicalSky::texVolFilteredAux, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::CloudFilteredAux" },
+	{ &PhysicalSky::texVolTr, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::CloudTr" },
+	{ &PhysicalSky::texVolLum, kHistoryRadianceFormat, "PhysicalSky::CloudLum" },
+	{ &PhysicalSky::texVolAux, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::CloudAux" },
+	{ &PhysicalSky::texVolHistoryTr, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::CloudHistoryTr" },
+	{ &PhysicalSky::texVolHistoryLum, kHistoryRadianceFormat, "PhysicalSky::CloudHistoryLum" },
+	{ &PhysicalSky::texVolHistoryAux, DXGI_FORMAT_R16G16B16A16_FLOAT, "PhysicalSky::CloudHistoryAux" },
+};
+
+bool PhysicalSky::EnsureVolumetricScreenResources()
+{
+	if (texVolTr) {
+		assert(std::ranges::all_of(kScreenTargets, [this](const auto& target) { return this->*target.texture != nullptr; }));
+		return true;
+	}
 
 	D3D11_TEXTURE2D_DESC mainDesc;
 	globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture->GetDesc(&mainDesc);
-
-	constexpr DXGI_FORMAT radianceFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	try {
-		texLightningMask = CreateCloudTexture(mainDesc.Width, mainDesc.Height, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::LightningMask");
-		texLightningHistory = CreateCloudTexture(mainDesc.Width, mainDesc.Height, DXGI_FORMAT_R16G16_FLOAT, "PhysicalSky::LightningHistory");
-		texLightningChannels = CreateCloudTexture(mainDesc.Width, mainDesc.Height, radianceFormat, "PhysicalSky::LightningChannels");
-		texVolFilteredTr = CreateCloudTexture(mainDesc.Width, mainDesc.Height, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::CloudFilteredTr");
-		texVolFilteredLum = CreateCloudTexture(mainDesc.Width, mainDesc.Height, radianceFormat, "PhysicalSky::CloudFilteredLum");
-		texVolFilteredAux = CreateCloudTexture(mainDesc.Width, mainDesc.Height, radianceFormat, "PhysicalSky::CloudFilteredAux");
-		texVolTr = CreateCloudTexture(mainDesc.Width, mainDesc.Height, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::CloudTr");
-		texVolLum = CreateCloudTexture(mainDesc.Width, mainDesc.Height, radianceFormat, "PhysicalSky::CloudLum");
-		texVolAux = CreateCloudTexture(mainDesc.Width, mainDesc.Height, radianceFormat, "PhysicalSky::CloudAux");
-		texVolHistoryTr = CreateCloudTexture(mainDesc.Width, mainDesc.Height, DXGI_FORMAT_R16_FLOAT, "PhysicalSky::CloudHistoryTr");
-		texVolHistoryLum = CreateCloudTexture(mainDesc.Width, mainDesc.Height, radianceFormat, "PhysicalSky::CloudHistoryLum");
-		texVolHistoryAux = CreateCloudTexture(mainDesc.Width, mainDesc.Height, radianceFormat, "PhysicalSky::CloudHistoryAux");
+		for (const auto& target : kScreenTargets)
+			this->*target.texture = CreateCloudTexture(mainDesc.Width, mainDesc.Height, target.format, target.name);
 	} catch (const std::exception& e) {
-		logger::error("[PhysicalSky] Failed to create the volumetric cloud targets ({}), turning volumetric clouds off", e.what());
-		for (auto* texture : { &texLightningMask, &texLightningHistory, &texLightningChannels, &texVolFilteredTr, &texVolFilteredLum, &texVolFilteredAux,
-				 &texVolTr, &texVolLum, &texVolAux, &texVolHistoryTr, &texVolHistoryLum, &texVolHistoryAux })
-			texture->reset();
-		settings.enableVolumetricClouds = false;
-		return;
+		logger::error("[PhysicalSky] Failed to create the volumetric cloud screen targets ({}), disabling volumetric clouds for this session", e.what());
+		for (const auto& target : kScreenTargets)
+			(this->*target.texture).reset();
+		volumetricScreenResourcesFailed = true;
+		return false;
 	}
 
-	const float clearLum[4] = {};
-	for (auto* texture : { texLightningMask.get(), texLightningHistory.get(), texLightningChannels.get() })
-		globals::d3d::context->ClearUnorderedAccessViewFloat(texture->uav.get(), clearLum);
-
+	// New targets are read before the first cloud pass writes them.
+	ClearVolumetricToNeutral();
 	volMainHistoryValid = false;
-	volumetricNeutralCleared = false;
-	volumetricScreenResourcesReady = true;
+	return true;
 }
 
 void PhysicalSky::CompileVolumetricShaders()
@@ -900,8 +804,8 @@ void PhysicalSky::CompileVolumetricShaders()
 		ShaderInfo{ &csVolCubemapVolcanic, "Volumetrics.cs.hlsl", { { "CLOUD_REFLECTION", "" }, { "VOLCANIC_STORMS_ONLY", "" } }, "renderCubemap" },
 		ShaderInfo{ &csVolShadowVolcanic, "Volumetrics.cs.hlsl", { { "VOLCANIC_STORMS_ONLY", "" } }, "renderShadowVolume" },
 		ShaderInfo{ &csCloudAmbientDensityVolcanic, "Volumetrics.cs.hlsl", { { "VOLCANIC_STORMS_ONLY", "" } }, "buildCloudAmbientDensity" },
-		ShaderInfo{ &csVoxelView, "Volumetrics.cs.hlsl", { { "CLOUD_VOXELS", "" }, { "CLOUD_VOXEL_VIEW", "" }, { "NO_CLOUD_STORMS", "" } }, "renderVoxelView" },
-		ShaderInfo{ &csVoxelViewSingle, "Volumetrics.cs.hlsl", { { "CLOUD_VOXELS", "" }, { "CLOUD_VOXEL_SINGLE", "" }, { "CLOUD_VOXEL_VIEW", "" }, { "NO_CLOUD_STORMS", "" } }, "renderVoxelView" },
+		ShaderInfo{ &csVoxelView, "Volumetrics.cs.hlsl", { { "CLOUD_AP_SHADOW", "" }, { "CLOUD_VOXELS", "" }, { "CLOUD_VOXEL_VIEW", "" }, { "NO_CLOUD_STORMS", "" } }, "renderVoxelView" },
+		ShaderInfo{ &csVoxelViewSingle, "Volumetrics.cs.hlsl", { { "CLOUD_AP_SHADOW", "" }, { "CLOUD_VOXELS", "" }, { "CLOUD_VOXEL_SINGLE", "" }, { "CLOUD_VOXEL_VIEW", "" }, { "NO_CLOUD_STORMS", "" } }, "renderVoxelView" },
 		ShaderInfo{ &csVoxelLighting, "Volumetrics.cs.hlsl", { { "CLOUD_VOXELS", "" } }, "buildVoxelLighting" },
 		ShaderInfo{ &csVolCubemapVoxel, "Volumetrics.cs.hlsl", { { "CLOUD_REFLECTION", "" }, { "CLOUD_VOXELS", "" }, { "CLOUD_VOXEL_COARSE", "" } }, "renderCubemap" },
 		ShaderInfo{ &csVolShadowVoxel, "Volumetrics.cs.hlsl", { { "CLOUD_VOXELS", "" } }, "renderShadowVolume" },
@@ -1088,6 +992,46 @@ void PhysicalSky::UpdateCloudWind()
 	volWind.disturbance = std::lerp(volWind.disturbance, CloudUnitParameter(layer.wind.disturbance), static_cast<float>(-std::expm1(-elapsed / 2.0)));
 }
 
+void PhysicalSky::UpdateDiskPhaseLut()
+{
+	if (!csDiskPhaseLutGen || !texDiskPhaseLut || !diskPhaseCb)
+		return;
+	const auto& lighting = settings.cloudLayer.lighting;
+	const auto fit = CloudMiePhase(lighting.dropletDiameter).coefficients;
+	const std::array<float, 12> parameters = {
+		fit.x, fit.y, fit.z, fit.w,
+		cbData.diskAngularRadius.x, cbData.diskAngularRadius.y, cbData.diskAngularRadius.z, 0.f,
+		std::clamp(lighting.phaseForwardG, 0.f, .95f), std::clamp(lighting.phaseBackwardG, -.95f, 0.f),
+		std::clamp(settings.aerosolPhaseG, -.999f, .999f), std::lerp(.82f, .94f, std::clamp(1.f - std::abs(settings.silverLiningSpread), 0.f, 1.f))
+	};
+	auto* context = globals::d3d::context;
+	if (!diskPhaseValid || parameters != diskPhaseParameters) {
+		ID3D11ShaderResourceView* nullSrv = nullptr;
+		context->PSSetShaderResources(57, 1, &nullSrv);
+		context->CSSetShaderResources(106, 1, &nullSrv);
+		diskPhaseCb->Update(parameters);
+		auto* constants = diskPhaseCb->CB();
+		winrt::com_ptr<ID3D11Buffer> previousConstants;
+		context->CSGetConstantBuffers(0, 1, previousConstants.put());
+		context->CSSetConstantBuffers(0, 1, &constants);
+		auto* uav = texDiskPhaseLut->uav.get();
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+		context->CSSetShader(csDiskPhaseLutGen.get(), nullptr, 0);
+		globals::profiler->BeginPass("PhysicalSky::DiskPhaseLut");
+		context->Dispatch((kDiskPhaseLutSize + 63u) / 64u, 3, 1);
+		globals::profiler->EndPass();
+		uav = nullptr;
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+		context->CSSetShader(nullptr, nullptr, 0);
+		constants = previousConstants.get();
+		context->CSSetConstantBuffers(0, 1, &constants);
+		diskPhaseParameters = parameters;
+		diskPhaseValid = true;
+	}
+	auto* srv = texDiskPhaseLut->srv.get();
+	context->CSSetShaderResources(106, 1, &srv);
+}
+
 void PhysicalSky::RenderVolumetricClouds(VolumetricCloudPass a_pass)
 {
 	if (a_pass == VolumetricCloudPass::kMainViewAndCubemap) {
@@ -1100,8 +1044,6 @@ void PhysicalSky::RenderVolumetricClouds(VolumetricCloudPass a_pass)
 	if (!ShadersOK())
 		return;
 	if (!baseShapeNoiseSrv || !cloudProfileLutSrv || !cloudAdjustmentLutSrv)
-		return;
-	if (!volumetricScreenResourcesReady)
 		return;
 	volumetricNeutralCleared = false;
 
@@ -1892,14 +1834,12 @@ void PhysicalSky::RenderVolumetricClouds(VolumetricCloudPass a_pass)
 				context->CSSetShaderResources(29, (uint)resultSrvs.size(), nullTemporalSrvs);
 			}
 		} else {
-			constexpr FLOAT clearTr[4] = { 1.f, 1.f, 1.f, 1.f };
-			constexpr FLOAT clearLum[4] = {};
-			context->ClearUnorderedAccessViewFloat(texVolTr->uav.get(), clearTr);
-			context->ClearUnorderedAccessViewFloat(texVolLum->uav.get(), clearLum);
-			context->ClearUnorderedAccessViewFloat(texVolAux->uav.get(), clearLum);
-			context->ClearUnorderedAccessViewFloat(texVolFilteredTr->uav.get(), clearTr);
-			context->ClearUnorderedAccessViewFloat(texVolFilteredLum->uav.get(), clearLum);
-			context->ClearUnorderedAccessViewFloat(texVolFilteredAux->uav.get(), clearLum);
+			context->ClearUnorderedAccessViewFloat(texVolTr->uav.get(), kClearTransmittance);
+			context->ClearUnorderedAccessViewFloat(texVolLum->uav.get(), kClearLuminance);
+			context->ClearUnorderedAccessViewFloat(texVolAux->uav.get(), kClearLuminance);
+			context->ClearUnorderedAccessViewFloat(texVolFilteredTr->uav.get(), kClearTransmittance);
+			context->ClearUnorderedAccessViewFloat(texVolFilteredLum->uav.get(), kClearLuminance);
+			context->ClearUnorderedAccessViewFloat(texVolFilteredAux->uav.get(), kClearLuminance);
 		}
 		outputSrvs[0] = texVolFilteredTr->srv.get();
 		outputSrvs[1] = texVolFilteredLum->srv.get();

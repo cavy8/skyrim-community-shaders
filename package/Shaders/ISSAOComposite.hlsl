@@ -183,25 +183,26 @@ PS_OUTPUT main(PS_INPUT input)
 		composedColor.xyz = PreExposure::Decode(composedColor.xyz);
 		float fogDistanceFactor = (2 * CameraNearFar.x * CameraNearFar.y) / ((CameraNearFar.y + CameraNearFar.x) - (2 * (1.01 * depth - 0.01) - 1) * (CameraNearFar.y - CameraNearFar.x));
 		float fogFactor = min(FogParam.w, pow(saturate(fogDistanceFactor * FogParam.y - FogParam.x), FogParam.z));
+		// The engine writes these constants straight into the buffer, bypassing any C++ conversion hook.
 		float3 fogColor = lerp(ColorManagement::SRGBToWorking(FogNearColor.xyz), ColorManagement::SRGBToWorking(FogFarColor.xyz), fogFactor);
-#		if defined(IBL)
-		if (SharedData::iblSettings.EnableIBL) {
-			float2 fogUV = input.TexCoord.xy;
-			float4 fogPositionWS = float4(2 * float2(fogUV.x, -fogUV.y + 1) - 1, nativeDepth, 1);
-			fogPositionWS = mul(FrameBuffer::CameraViewProjInverse, fogPositionWS);
-			fogPositionWS.xyz /= fogPositionWS.w;
-			fogColor = ImageBasedLighting::GetFogIBLColor(fogColor, fogPositionWS.xyz);
-		}
-#		endif
-#		if defined(EXP_HEIGHT_FOG)
-		bool exponentialHeightFogEnabled = SharedData::exponentialHeightFogSettings.enabled;
+#		if defined(IBL) || defined(EXP_HEIGHT_FOG)
 		float2 monoUV = input.TexCoord.xy;
 		float4 positionWS = float4(2 * float2(monoUV.x, -monoUV.y + 1) - 1, nativeDepth, 1);
 		positionWS = mul(FrameBuffer::CameraViewProjInverse, positionWS);
 		positionWS.xyz = positionWS.xyz / positionWS.w;
+#		endif
+#		if defined(IBL)
+		if (SharedData::iblSettings.EnableIBL) {
+			fogColor = ImageBasedLighting::GetFogIBLColor(fogColor, positionWS.xyz);
+		}
+#		endif
+#		if defined(EXP_HEIGHT_FOG)
+		bool exponentialHeightFogEnabled = SharedData::exponentialHeightFogSettings.enabled;
 		float4 exponentialHeightFog = (float4)0;
 		if (exponentialHeightFogEnabled) {
 #			if defined(HORIZON_FIX)
+			// The HorizonFix plugin's far water meets the sky at its own horizon, far beyond the far
+			// plane, so the sky is fogged out to that distance to match the water it sits on.
 			if (!isGeometryDepth) {
 				float skyRayLength = length(positionWS.xyz);
 				positionWS.xyz *= max(skyRayLength, SharedData::horizonFixSettings.farWaterDistance) / max(skyRayLength, 1e-4);

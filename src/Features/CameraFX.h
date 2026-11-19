@@ -25,7 +25,7 @@ struct CameraFX : Feature
 
 	struct Settings
 	{
-		bool Enabled = true;
+		bool Enabled = false;
 		bool ReplaceModifiers = true;
 		bool ColdFrost = true;
 		float FrostStrength = 1.0f;

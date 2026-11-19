@@ -434,6 +434,7 @@ public:
 		NightEyeAlly = 1 << 20,
 		ProjectedTextureIsSRGB = 1 << 21,
 		GrassPBR = 1 << 22,
+		IsSecunda = 1 << 23,
 	};
 
 	/** @brief Bitflags describing extra feature-specific properties related to terrain displacement and material models. */

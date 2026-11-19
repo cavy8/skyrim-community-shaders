@@ -1354,6 +1354,37 @@ void FeatureListRenderer::DrawMenuVisitor::operator()(Feature* feat)
 	DrawConstraintWarningDialog(pendingFeatureSelection);
 }
 
+void FeatureListRenderer::DrawMenuVisitor::DrawFeatureContent(Feature* feat)
+{
+	const bool isDisabled = globals::state->IsFeatureDisabled(feat->GetShortName());
+	const bool isLoaded = feat->loaded;
+	const bool hasFailedMessage = !feat->failedLoadedMessage.empty();
+
+	if (hooks.onFeatureShown)
+		hooks.onFeatureShown(feat);
+
+	RenderFeatureHeader(feat, isDisabled, isLoaded);
+	RenderFeatureSettings(feat, isDisabled, isLoaded, hasFailedMessage);
+}
+
+void FeatureListRenderer::DrawEmbeddedFeaturePage(Feature* feat)
+{
+	static const Hooks noHooks{};
+	std::string pendingFeatureSelection;
+	DrawMenuVisitor{ pendingFeatureSelection, g_activeHooks ? *g_activeHooks : noHooks }.DrawFeatureContent(feat);
+	DrawConstraintWarningDialog(pendingFeatureSelection);
+	if (!pendingFeatureSelection.empty())
+		globals::menu->SelectFeatureMenu(pendingFeatureSelection);
+}
+
+void FeatureListRenderer::RunFeatureCommand(Feature* feat, const std::function<void()>& command)
+{
+	if (g_activeHooks && g_activeHooks->runFeatureCommand)
+		g_activeHooks->runFeatureCommand(feat, command);
+	else
+		command();
+}
+
 namespace
 {
 	/** @brief Table of a feature's edited settings with their current and base values, for the Modified chip's tooltip. */

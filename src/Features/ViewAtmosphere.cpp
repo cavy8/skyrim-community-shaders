@@ -89,7 +89,7 @@ void ViewAtmosphere::DrawSettings()
 		settings.enabled = enabled;
 		lastFrame = UINT32_MAX;
 	}
-	ImGui::TextWrapped("%s", T(TKEY("shared_hint"), "The shared volume requires active Physical Sky. Otherwise AP uses its LUT and volumetric fog uses separate volumes. Quality settings below also apply to standalone volumetric fog. Reflections use a separate low-resolution atmosphere and fog cache when the shared volume is enabled."));
+	ImGui::TextWrapped("%s", T(TKEY("shared_hint"), "The shared volume requires active Physical Sky. Otherwise aerial perspective uses its LUT and volumetric fog uses separate volumes. Quality settings below also apply to standalone volumetric fog. Reflections use a separate low-resolution atmosphere and fog cache when the shared volume is enabled."));
 	ImGui::TextUnformatted(IsReady() ? T(TKEY("status_shared"), "Active: shared atmosphere and fog volume") : T(TKEY("status_separate"), "Active: separate rendering paths"));
 
 	const uint32_t minPixels = 4, maxPixels = 64, minSlices = 16, maxSlices = 160;
@@ -126,12 +126,17 @@ void ViewAtmosphere::DrawSettings()
 		ImGui::SliderFloat(T(TKEY("lookup_jitter"), "Lookup Jitter"), &settings.lookupJitter, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::TreePop();
 	}
-	if (Util::ShowDebugSections() && ImGui::TreeNode(T(TKEY("debug"), "Shared Volume Debug"))) {
-		preview.Draw(Luminance(), "luminance", T(TKEY("debug_luminance"), "Integrated Luminance"), 1.0f);
-		preview.Draw(Transmittance(), "transmittance", T(TKEY("debug_transmittance"), "RGB Transmittance"), 1.0f);
-		preview.Draw(Source(), "source", T(TKEY("debug_source"), "Local Light Source / Fog Extinction"), 1.0f);
-		ImGui::TreePop();
-	}
+}
+
+void ViewAtmosphere::DrawDebugSection()
+{
+	Util::DebugSection section;
+	if (!section)
+		return;
+
+	preview.Draw(Luminance(), "luminance", T(TKEY("debug_luminance"), "Integrated Luminance"), 1.0f);
+	preview.Draw(Transmittance(), "transmittance", T(TKEY("debug_transmittance"), "RGB Transmittance"), 1.0f);
+	preview.Draw(Source(), "source", T(TKEY("debug_source"), "Local Light Source / Fog Extinction"), 1.0f);
 }
 
 #undef I18N_KEY_PREFIX

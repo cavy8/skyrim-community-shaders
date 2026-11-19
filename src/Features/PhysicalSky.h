@@ -24,9 +24,9 @@ struct PhysicalSky final : public Feature
 	inline std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return {
-			T("feature.physical_sky.description", "Physically-based sky model for realistic sky gradients and other astronomical effects."),
+			T("feature.physical_sky.description", "Physically based sky model for realistic sky gradients and other astronomical effects."),
 			{
-				T("feature.physical_sky.key_feature_1", "Physically-based atmosphere and aerial perspective."),
+				T("feature.physical_sky.key_feature_1", "Physically based atmosphere and aerial perspective."),
 				T("feature.physical_sky.key_feature_2", "Procedural sun disk and celestial lighting controls."),
 				T("feature.physical_sky.key_feature_3", "Worldspace whitelist and interior override support."),
 				T("feature.physical_sky.key_feature_4", "Cloud relighting and silver lining controls."),
@@ -44,7 +44,16 @@ struct PhysicalSky final : public Feature
 	void LoadSettings(json& o_json) override;
 	void SaveSettings(json& o_json) override;
 
+	/** @brief Whether Physical Sky is loaded, enabled, and not owned by Effects 11 (unless handed back through the Scene Manager). */
+	bool IsActive() const;
+	/** @brief Whether Physical Sky rendered this frame. */
+	bool IsRendering() const { return loaded && cbData.enabled; }
+	/** @brief Whether volumetric clouds are enabled and their screen targets have not failed to allocate. */
+	bool VolumetricCloudsEnabled() const { return settings.enableVolumetricClouds && !volumetricScreenResourcesFailed; }
+
 	void DrawSettings() override;
+	bool HasDebugSection() const override { return true; }
+	void DrawDebugSection() override;
 	void SettingsGeneral();
 	void SettingsCelestials();
 	void SettingsAtmosphere();
@@ -65,7 +74,6 @@ struct PhysicalSky final : public Feature
 	void DrawCirrusSection();
 	void DrawCloudQualitySection();
 	void DrawVanillaCloudSection();
-	void SettingsDebug();
 
 	// Resources
 	void SetupResources() override;
@@ -87,6 +95,9 @@ struct PhysicalSky final : public Feature
 
 	////////////////////////////////////////////////// Feature Specific Data
 	constexpr static std::wstring_view kShaderDir = L"Data\\Shaders\\PhysicalSky";
+	constexpr static float kClearTransmittance[4] = { 1.f, 1.f, 1.f, 1.f };
+	constexpr static float kClearLuminance[4] = {};
+	constexpr static float kClearShadowVolume[4] = { 1.f, 0.f, 0.f, 0.f };
 	constexpr static uint16_t kTrLutW = 256;
 	constexpr static uint16_t kTrLutH = 64;
 	constexpr static uint16_t kMsLutW = 32;
@@ -125,6 +136,8 @@ struct PhysicalSky final : public Feature
 
 		bool proceduralSun = true;
 		float sunDiskRad = DirectX::XMConvertToRadians(0.53f);
+		float masserDiskRad = DirectX::XMConvertToRadians(8.f);
+		float secundaDiskRad = DirectX::XMConvertToRadians(4.f);
 
 		std::map<std::string, WorldspaceInfo> worldspaceWhitelist = {
 			{ "Tamriel", { -14500.f } },
@@ -277,10 +290,22 @@ struct PhysicalSky final : public Feature
 		float4 lightningChannelEmitter;  // centroid and equivalent projected-area radius, game units
 		float4 lightningPreparationPositionRadius;
 		float4 lightningPreparationControl;  // base mode, history valid, active mask lane, preparing
+		float4 diskAngularRadius;            // Sun, Masser, Secunda, directional light, in radians, independent of disc rendering mode.
+		float3 dirLightBodyDir;              // towards the body lighting the scene, blended while the light swings between two
+		uint dirLightDiskIndex;              // body whose disc phase the clouds show
+		float4 dirLightDisc;                 // world direction to that body, and its glow weight fading out and back in across a swap
+		float4 diskBillboardScale;
 	} cbData;
 	STATIC_ASSERT_ALIGNAS_16(CbData);
 
 	eastl::unique_ptr<Texture2D> texTrLut = nullptr;  // transmittance
+	constexpr static uint32_t kDiskPhaseLutSize = 2048;
+	eastl::unique_ptr<Texture2D> texDiskPhaseLut;
+	eastl::unique_ptr<ConstantBuffer> diskPhaseCb;
+	std::array<float, 12> diskPhaseParameters = {};
+	bool diskPhaseValid = false;
+	/** @brief Rebuilds normalized finite-disc scattering responses when angular radii or particle optics change. */
+	void UpdateDiskPhaseLut();
 	eastl::unique_ptr<Texture2D> texMsLut = nullptr;  // multiscattering
 	eastl::unique_ptr<Texture2D> texSvLut = nullptr;  // sky view
 	eastl::unique_ptr<Texture2D> texSkyTail = nullptr;
@@ -372,8 +397,6 @@ struct PhysicalSky final : public Feature
 	winrt::com_ptr<ID3D11ShaderResourceView> importedShapeNoiseSrv = nullptr;
 	winrt::com_ptr<ID3D11ShaderResourceView> importedAdjustmentLutSrv = nullptr;
 	CloudNoiseGenerator cloudNoiseGenerator;
-	bool cloudProfileGenerated = true;
-	bool cloudAdjustmentGenerated = false;
 	TextureManager ndfTexManager{ "Cloud Map" };
 	bool SetLocalCloudState(const LocalNdfState& state);
 	NdfManager ndfManager;
@@ -608,9 +631,12 @@ struct PhysicalSky final : public Feature
 		kMainViewAndCubemap
 	};
 	void SetupVolumetricResources();
-	void SetupVolumetricScreenResources();
-	bool volumetricScreenResourcesReady = false;
-	bool volumetricNeutralCleared = false;
+	/** @brief Creates the full-resolution cloud targets on first use; on failure disables volumetric clouds for the session. @return True when they exist. */
+	bool EnsureVolumetricScreenResources();
+	bool volumetricScreenResourcesFailed = false;
+	/** @brief Clears every cloud output to white transmittance and black luminance. */
+	void ClearVolumetricToNeutral();
+	bool volumetricNeutralCleared = false;  ///< Disabled-cloud targets already hold neutral values.
 	/** @brief Queues every volumetric cloud shader, including the cloud managers'. */
 	void CompileVolumetricShaders();
 	Util::AsyncShaderSet shaders;  ///< Every Physical Sky shader; compiled off the render thread.
@@ -636,6 +662,7 @@ struct PhysicalSky final : public Feature
 	winrt::com_ptr<ID3D11SamplerState> sampNoise = nullptr;
 
 	winrt::com_ptr<ID3D11ComputeShader> csTrLutGen = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> csDiskPhaseLutGen;
 	winrt::com_ptr<ID3D11ComputeShader> csMsLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csSvLutGen = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> csSkyTailGen = nullptr;

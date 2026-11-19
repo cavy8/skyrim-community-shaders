@@ -9,22 +9,45 @@ float CloudLightProbeJitter(float2 positionMeters)
 }
 
 // Jendersie and d'Eon, An Approximate Mie Scattering Function (2023).
-float CloudLowPhase(float cosine)
+float CloudLowPhase(float3 viewDir)
 {
-	const float4 fit = VolumetricCloudBuffer[0].lowCloudPhase;
-	const float mu = clamp(cosine, -1.0, 1.0);
-	const float2 g = fit.xy;
-	const float2 oneMinusG = 1.0 - g;
-	const float2 denominator = oneMinusG * oneMinusG + 2.0 * g * (1.0 - mu);
-	const float2 hg = oneMinusG * (1.0 + g) / (denominator * sqrt(denominator));
-	const float draine = hg.y * (1.0 + fit.z * mu * mu) / (1.0 + fit.z * (1.0 + 2.0 * g.y * g.y) / 3.0);
-	return 0.25 * RCP_PI * lerp(hg.x, draine, fit.w);
+	return SampleLightDiscPhase(viewDir, CloudDisc(), CloudDiskIndex()).x;
 }
 
-float CloudCirrusPhase(float cosine)
+#if defined(CLOUD_MAIN_DISPATCH) || defined(CLOUD_VOXEL_VIEW)
+/** @brief Fraction of the cloud light disc's screen neighbourhood showing sky, the same test as the sun glare. */
+float GetCloudLightScreenVisibility()
 {
-	const VolumetricCloudData info = VolumetricCloudBuffer[0];
-	return Phase::HGDualLobe(cosine, info.phaseForwardG, info.phaseBackwardG, 0.5);
+	const float4 lightCS = mul(FrameBuffer::CameraViewProj, float4(CloudDisc().xyz, 0.0));
+	if (lightCS.w <= 0.0)
+		return 1.0;
+	const float2 lightUV = lightCS.xy / lightCS.w * float2(0.5, -0.5) + 0.5;
+	uint visibleSamples = 0;
+	[unroll] for (uint i = 0; i < FlareOcclusion::SampleCount; i++)
+	{
+		const float2 sampleUV = lightUV + FlareOcclusion::GetSampleOffset(i);
+		visibleSamples += FrameBuffer::IsOutsideFrame(sampleUV) || TexDepth.Load(SharedData::ConvertUVToSampleCoord(sampleUV)) >= 1.0;
+	}
+	return FlareOcclusion::GetVisibility(visibleSamples);
+}
+#endif
+
+/** @brief Low-cloud phase with its forward peak, the part above the phase 5 deg past the disc edge, faded out while geometry hides the light. */
+float ApplyCloudForwardPeakOcclusion(float phase)
+{
+#if defined(CLOUD_MAIN_DISPATCH) || defined(CLOUD_VOXEL_VIEW)
+	static const float kPeakWidth = 0.08726646;  // 5 deg past the disc edge
+	const uint index = CloudDiskIndex();
+	const float edgeCosine = cos(SharedData::physSkyData.diskAngularRadius[index] + kPeakWidth);
+	const float peakFloor = lerp(DISK_PHASE_ISOTROPIC.x, SampleDiskPhase(edgeCosine, index).x, CloudDisc().w);
+	[branch] if (phase > peakFloor) return lerp(peakFloor, phase, GetCloudLightScreenVisibility());
+#endif
+	return phase;
+}
+
+float CloudCirrusPhase(float3 viewDir)
+{
+	return SampleLightDiscPhase(viewDir, CloudDisc(), CloudDiskIndex()).y;
 }
 
 struct CloudAmbient
@@ -272,7 +295,7 @@ float3 ShadeCloudLighting(float3 pos, NDFInfo ndf, float extinction, float viewD
 	const float transportExtinction = CloudTransportExtinction(ndf);
 	const float directional = albedo * phase * exp(-opticalDepth);
 	const float3 planetPosition = pos + float3(-FrameBuffer::CameraPosAdjust.xy, info.planetRadius);
-	const float3 sunlight = SampleAtmosphereLightTr(TexTransmittance, TransmittanceSampler, planetPosition, info.dirlightDir) * GetCloudDirectionalLightColor();
+	const float3 sunlight = SampleAtmosphereLightTr(TexTransmittance, TransmittanceSampler, planetPosition, info.dirlightDir, SharedData::physSkyData.diskAngularRadius[CloudDiskIndex()]) * GetCloudDirectionalLightColor();
 	float densityGate = saturate(extinction / info.scatterDensityThreshold);
 	[branch] if (info.scatterDensityPower != 1.0)
 		densityGate = pow(densityGate, info.scatterDensityPower);
@@ -285,7 +308,20 @@ float3 ShadeCloudLighting(float3 pos, NDFInfo ndf, float extinction, float viewD
 
 float3 ShadeCloudLighting(float3 pos, NDFInfo ndf, float extinction, float viewDepth, float viewOpacity, float phase, float opticalDepth, float multipleScattering)
 {
-	return ShadeCloudLighting(pos, ndf, extinction, viewDepth, viewOpacity, phase, opticalDepth, multipleScattering, UpperSunTransmission(pos));
+	float sunTransmission = UpperSunTransmission(pos);
+#ifdef CLOUD_AP_SHADOW
+	// Scene shadows follow the ground light, which can be clamped or lunar while clouds remain sunlit.
+	// Both directions are normalized; allow only floating-point error when matching them.
+	[branch] if (dot(VolumetricCloudBuffer[0].dirlightDir, SharedData::DirLightDirection.xyz) > 0.999999)
+	{
+		// Cloud-space z is relative to bottomZ; the heightmap is in world z.
+		const float3 worldPos = pos + float3(0, 0, VolumetricCloudBuffer[0].bottomZ);
+		sunTransmission *= TerrainShadows::GetTerrainShadow(worldPos, TransmittanceSampler);
+		[branch] if (sunTransmission > 0.0)
+			sunTransmission *= AtmosphereShadow::SampleCascadeShadow(worldPos - FrameBuffer::CameraPosAdjust.xyz);
+	}
+#endif
+	return ShadeCloudLighting(pos, ndf, extinction, viewDepth, viewOpacity, phase, opticalDepth, multipleScattering, sunTransmission);
 }
 
 float3 ShadeCloudLighting(float3 pos, NDFInfo ndf, float extinction, float viewDepth, float viewOpacity, float phase, float opticalDepth)

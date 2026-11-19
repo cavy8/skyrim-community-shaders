@@ -15,7 +15,8 @@ namespace E11Handoff
 			"CloudShadows",
 			"ExponentialHeightFog",
 			"ScreenSpaceGI",
-			"ScreenSpaceReflections"
+			"ScreenSpaceReflections",
+			"PhysicalSky"
 		};
 
 		/** @brief An Effects 11 setting a feature replaces; an empty key covers its whole category. */
