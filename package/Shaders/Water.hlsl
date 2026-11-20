@@ -89,6 +89,7 @@ PS_OUTPUT main(PS_INPUT input)
 #	include "Common/Shading.hlsli"
 #	include "Common/ColorManagement.hlsli"
 #	include "Common/BRDF.hlsli"
+#	include "Common/LightDisk.hlsli"
 #	include "Common/Game.hlsli"
 
 #	define WATER
@@ -983,7 +984,7 @@ float3 GetLdotN(float3 normal)
 #			else
 	if (Permutation::PixelShaderDescriptor & Permutation::WaterFlags::Interior)
 		return 1;
-	return saturate(dot(SunDir.xyz, normal));
+	return LightDisk::DiffuseCosine(dot(SunDir.xyz, normal), LightDisk::DirectionalSource());
 #			endif
 }
 
@@ -1306,7 +1307,10 @@ PS_OUTPUT main(PS_INPUT input)
 
 #				if !defined(UNDERWATER)
 	if (SharedData::enbSettings.EnableWater) {
-		float3 dirScatter = saturate(dot(normal.xyz, SharedData::DirLightDirection.xyz) * 0.5 + 0.5) * saturate(dot(viewDirection.xyz, SharedData::DirLightDirection.xyz) * 0.5 + 0.5) * ShadowSampling::GetDirectionalLighting();
+		const float2 lightDisk = LightDisk::DirectionalSource();
+		const float normalScatter = LightDisk::WrappedCosine(dot(normal.xyz, SharedData::DirLightDirection.xyz), 1.0, 0.5, lightDisk);
+		const float viewScatter = LightDisk::WrappedCosine(dot(viewDirection.xyz, SharedData::DirLightDirection.xyz), 1.0, 0.5, lightDisk);
+		float3 dirScatter = normalScatter * viewScatter * ShadowSampling::GetDirectionalLighting();
 		diffuseOutput.refractionDiffuseColor += DeepColor.xyz * dirScatter * surfaceShadow * SharedData::enbSettings.WaterSunLightingMultiplier;
 	}
 #				endif
@@ -1341,15 +1345,17 @@ PS_OUTPUT main(PS_INPUT input)
 
 			float3 normalizedLightDirection = normalize(lightDirection);
 
-			float lightShadow = 1.0;
-			[branch] if (localShadow)
-				lightShadow = LightLimitFix::GetLocalShadowWithLightFade(DepthSampler, light.localShadowIndex, input.WPosition.xyz, FrameBuffer::CameraPosAdjust.xyz, normalizedLightDirection, false, Random::InterleavedGradientNoise(input.HPosition.xy, SharedData::FrameCount));
-
 			float3 H = normalize(normalizedLightDirection - viewDirection);
 			float HdotN = saturate(dot(H, normal));
 
-			float3 lightColor = Color::PointLight(light.color.xyz) * (FresnelRI.z > 0 ? pow(HdotN, FresnelRI.z) : 1.0) * light.fade;
-			specularLighting += lightColor * intensityMultiplier * lightShadow;
+			float3 lightColor = Color::PointLight(light.color.xyz) * (FresnelRI.z > 0 ? pow(HdotN, FresnelRI.z) : 1.0) * light.fade * intensityMultiplier;
+
+			// Water lights only with its narrow specular lobe, which a lamp's reflection fills on a few pixels: the local
+			// shadow (a filtered cube map lookup) is only read where the lobe adds something.
+			[branch] if (localShadow && max(lightColor.x, max(lightColor.y, lightColor.z)) > 1e-4)
+				lightColor *= LightLimitFix::GetLocalShadowWithLightFade(DepthSampler, light.localShadowIndex, input.WPosition.xyz, FrameBuffer::CameraPosAdjust.xyz, normalizedLightDirection, false, Random::InterleavedGradientNoise(input.HPosition.xy, SharedData::FrameCount));
+
+			specularLighting += lightColor;
 		}
 	}
 	specularColor += specularLighting * 3;

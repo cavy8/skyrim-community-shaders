@@ -149,15 +149,14 @@ struct ColorGrading : public PostProcessFeature
 	};
 	std::unique_ptr<ConstantBuffer> colorCB = nullptr;
 
-	std::unique_ptr<Texture2D> texColor = nullptr;
 	std::unique_ptr<Texture3D> texLUT = nullptr;
 
 	static constexpr int LUTDim = 64;
 
 	bool recompileFlag = true;
 	bool saveImagesFlag = false;
+	winrt::com_ptr<ID3D11VertexShader> colorgradingVS = nullptr;
 	winrt::com_ptr<ID3D11PixelShader> colorgradingPS = nullptr;
-	winrt::com_ptr<ID3D11PixelShader> colorgradingLutPS = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> lutgenCS = nullptr;
 
 	winrt::com_ptr<ID3D11SamplerState> linearSampler = nullptr;
@@ -178,6 +177,12 @@ struct ColorGrading : public PostProcessFeature
 	virtual void DrawSettings() override;
 
 	virtual void Draw(TextureInfo&) override;
+	/// @brief Refreshes the active shaders if needed and checks whether grading can run.
+	bool PrepareDraw();
+	/// @brief Updates grading constants and regenerates the LUT when its inputs change.
+	void UpdateConstantsAndLUT();
+	/// @brief Runs requested diagnostic captures after the graded output is ready.
+	void FinishDraw(const Texture2D& colorOutput);
 	void UpdateColorSpaceTransforms(bool hdrEnabled = false);
 
 	/**
@@ -186,7 +191,7 @@ struct ColorGrading : public PostProcessFeature
 	 */
 	bool WantsAutoHDR() const;
 
-	void OutputTextures();
+	void OutputTextures(const Texture2D& colorOutput);
 
 	// Debug: tonemapping curve via GPU evaluation
 	static constexpr int CurveSamples = 256;

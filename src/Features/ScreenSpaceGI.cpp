@@ -1029,6 +1029,7 @@ void ScreenSpaceGI::DrawSSGI()
 
 		envIBLSrv = nullptr;
 		context->CSSetShaderResources(76, 1, &envIBLSrv);
+		resetViews();
 	}
 
 	// REBLUR diffuse denoising via core NRD service

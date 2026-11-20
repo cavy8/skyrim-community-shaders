@@ -15,6 +15,7 @@ namespace SharedData
 	static const uint TonemapOwnerVanilla = 0;
 	static const uint TonemapOwnerPostProcessing = 1;
 	static const uint TonemapOwnerEffects11 = 2;
+	static const uint TonemapOwnerPostProcessingFallback = 3;
 
 	cbuffer SharedData : register(b5)
 	{
@@ -460,7 +461,8 @@ namespace SharedData
 		float FireCurve;
 		float LightSpriteIntensity;
 		float LightSpriteCurve;
-		float3 pad0;
+		float FireColorPreservation;
+		float2 pad0;
 	};
 
 	struct ViewAtmosphereSettings

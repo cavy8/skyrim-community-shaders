@@ -138,7 +138,7 @@ float ProceduralNightSky::GetAuroraVisibility(const RE::Sky* a_sky)
 			timeWeight = 0.0f;
 		} else if (hour <= inEnd && hour >= outStart) {
 			const float fade = (hour <= inStart || inEnd <= hour) ? (hour - outEnd) / (outStart - outEnd) : (hour - inStart) / (inEnd - inStart);
-			timeWeight = std::clamp(fade, 0.0f, 1.0f);
+			timeWeight = std::isfinite(fade) ? std::clamp(fade, 0.0f, 1.0f) : 1.0f;
 		}
 	}
 

@@ -692,10 +692,10 @@ float GetSoftLightMultiplier(float angle)
 	return softLigtMul;
 }
 
-float GetRimLightMultiplier(float3 L, float3 V, float3 N)
+float GetRimLightMultiplier(float3 V, float3 N, float backlight)
 {
 	float NdotV = saturate(dot(N, V));
-	return exp2(LightingEffectParams.y * log2(1 - NdotV)) * saturate(dot(V, -L));
+	return exp2(LightingEffectParams.y * log2(1 - NdotV)) * backlight;
 }
 
 #	if !defined(TRUE_PBR)
@@ -3015,7 +3015,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	DirectLightingOutput dirLightOutput;
 #	if defined(TRUE_PBR)
 	dirLightContext = CreateDirectLightingContext(worldNormal.xyz, coatWorldNormal, vertexNormal.xyz, refractedViewDirection, viewDirection, refractedDirLightDirection, DirLightDirection, dirLightColor, dirDetailedShadow, dirSoftShadow);
-	dirLightContext.lightDisk = LightDisk::DirectionalSource();
 	float directNdotV = dot(dirLightContext.worldNormal, dirLightContext.viewDir);
 	if (!isThinSurface)
 		material.DirectSpecularEnergyCompensation = SharedData::truePBRSettings.EnableMultiScatter != 0 ? BRDF::GGXEnergyCompensation(material.Roughness, PBR::GetDirectSpecularNdotV(directNdotV), material.F0) : 1.0;
@@ -3041,6 +3040,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #		endif
 #	endif
+	dirLightContext.lightDisk = LightDisk::DirectionalSource();
 
 	EvaluateLighting(dirLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, dirLightOutput);
 	dirLightOutput.transmission *= dirTransmissionContactShadow;
@@ -3054,7 +3054,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	if defined(TRUE_PBR)
 	coatLightsDiffuseColor += dirLightOutput.coatDiffuse;
 #		if defined(LOD_LAND_BLEND)
-	lodLandDiffuseColor += dirLightColor / Math::PI * saturate(dirLightAngle) * dirDetailedShadow;
+	lodLandDiffuseColor += dirLightColor / Math::PI * LightDisk::DiffuseCosine(dirLightAngle, dirLightContext.lightDisk) * dirDetailedShadow;
 #		endif
 #	endif
 	transmissionColor += dirLightOutput.transmission;
@@ -3876,8 +3876,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #		if defined(WETNESS_EFFECTS)
 	indirectLobeWeights.specular += wetnessReflectance;
-	if (waterRoughnessSpecular < 1) {
-		// Reflection is from the water film surface; wetnessReflectance scales intensity by wetness amount.
+	// The G-buffer holds one reflection lobe, so only let the water film take over when it is the smoother surface.
+	if (waterRoughnessSpecular < material.Roughness) {
 		screenSpaceNormal = normalize(FrameBuffer::WorldToView(wetnessNormal, false));
 		material.Roughness = waterRoughnessSpecular;
 	}

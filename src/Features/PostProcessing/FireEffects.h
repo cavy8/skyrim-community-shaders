@@ -16,6 +16,7 @@ struct FireEffects : public PostProcessFeature
 		float FireCurve = 1.0f;
 		float LightSpriteIntensity = 1.0f;
 		float LightSpriteCurve = 1.0f;
+		float FireColorPreservation = 0.0f;
 	} settings;
 
 	virtual void SetupResources() override {}

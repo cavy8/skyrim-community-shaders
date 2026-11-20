@@ -159,6 +159,7 @@ bool ExtendedMaterials::HasShaderDefine(RE::BSShader::Type shaderType)
 {
 	switch (shaderType) {
 	case RE::BSShader::Type::Lighting:
+	case RE::BSShader::Type::Grass:
 		return true;
 	default:
 		return false;

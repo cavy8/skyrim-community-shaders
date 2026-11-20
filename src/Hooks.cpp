@@ -31,9 +31,9 @@
 #include "Features/ProceduralNightSky.h"
 #include "Features/RainRefraction.h"
 #include "Features/RemoteControl/FrameRecorder.h"
-#include "Features/ReverseZ.h"
 #include "Features/RemoteControl/NvPerf.h"
 #include "Features/RenderDoc.h"
+#include "Features/ReverseZ.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/Skin.h"
 #include "Features/SkySync.h"
@@ -496,13 +496,17 @@ namespace PostProcessingExtensions
 				return;
 			}
 
-			// Post Processing runs its pipeline into kMAIN/kMAIN_COPY, then lets the vanilla
-			// pass run so ISHDR can take its POSTPROCESS passthrough branch.
 			auto& postProcessing = globals::features::postProcessing;
-			if (postProcessing.loaded)
-				postProcessing.PreProcess(input);
-
-			func(a1, a2, a3, a4, a5);
+			const bool renderToUI = state->permutationData.RenderToUI;
+			const bool previousFallback = state->IsPostProcessingFallback();
+			const auto fallback = postProcessing.loaded ? postProcessing.PreProcess(input) : std::nullopt;
+			state->SetPostProcessingFallback(fallback.has_value());
+			// On failure the scene is still in its original target. Refraction may
+			// have routed it through kMAIN_COPY independently of the hook input.
+			const auto source = fallback && *fallback != output ? static_cast<uint32_t>(*fallback) : a3;
+			func(a1, a2, source, a4, a5);
+			if (renderToUI)
+				state->SetPostProcessingFallback(previousFallback);
 
 			// Capture vanilla grading for next frame's Neural Rendering proxy.
 			auto& neuralRendering = globals::features::neuralRendering;

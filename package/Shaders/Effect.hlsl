@@ -933,9 +933,26 @@ PS_OUTPUT main(PS_INPUT input)
 	[branch] if (SharedData::postProcessingSettings.EnableFire)
 	{
 		const uint additiveClass = GetEffectClass();
-		if (additiveClass == EffectClass::Fire)
-			baseColor.xyz = pow(max(baseColor.xyz, 0.0), SharedData::postProcessingSettings.FireCurve) * SharedData::postProcessingSettings.FireIntensity;
-		else if (additiveClass == EffectClass::LightSprite)
+		if (additiveClass == EffectClass::Fire) {
+			const float3 fireColor = max(baseColor.xyz, 0.0);
+			baseColor.xyz = pow(fireColor, SharedData::postProcessingSettings.FireCurve) * SharedData::postProcessingSettings.FireIntensity;
+			const float fireColorPreservation = SharedData::postProcessingSettings.FireColorPreservation;
+			[branch] if (fireColorPreservation > 0.0)
+			{
+#	if defined(ENABLE_ACESCG)
+				float3 authoredFire = max(AP1TosRGB(fireColor), 0.0);
+#	else
+				float3 authoredFire = fireColor;
+#	endif
+#	if defined(ENABLE_LL)
+				authoredFire = pow(authoredFire, 1.0 / ColorManagement::LEGACY_TEXTURE_GAMMA);
+#	endif
+				const float3 displayedFire = Color::LinearSRGBToWorking(pow(saturate(authoredFire * pow(max(SharedData::postProcessingSettings.FireIntensity, 0.0), 1.0 / 2.2)), 2.2));
+				const float displayedLuminance = Color::RGBToLuminance(displayedFire);
+				const float3 matchedFire = displayedLuminance > 1e-6 ? displayedFire * (Color::RGBToLuminance(baseColor.xyz) / displayedLuminance) : baseColor.xyz;
+				baseColor.xyz = lerp(baseColor.xyz, matchedFire, fireColorPreservation);
+			}
+		} else if (additiveClass == EffectClass::LightSprite)
 			baseColor.xyz = pow(max(baseColor.xyz, 0.0), SharedData::postProcessingSettings.LightSpriteCurve) * SharedData::postProcessingSettings.LightSpriteIntensity;
 	}
 

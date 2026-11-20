@@ -86,12 +86,18 @@ bool NRDReblurIntegration::Init(uint32_t halfWidth, uint32_t halfHeight, nrd::De
 		return false;
 	}
 
-	CreatePipelines();
-	CreateSamplers();
-	CreatePoolTextures(halfWidth, halfHeight);
+	try {
+		CreatePipelines();
+		CreateSamplers();
+		CreatePoolTextures(halfWidth, halfHeight);
 
-	const auto& instanceDesc = *nrd::GetInstanceDesc(*m_instance);
-	CreateConstantBuffer(instanceDesc.constantBufferMaxDataSize);
+		const auto& instanceDesc = *nrd::GetInstanceDesc(*m_instance);
+		CreateConstantBuffer(instanceDesc.constantBufferMaxDataSize);
+	} catch (const std::exception& e) {
+		logger::error("NRDReblurIntegration: {} resource creation failed at {}x{}: {}", m_label, halfWidth, halfHeight, e.what());
+		Shutdown();
+		return false;
+	}
 
 	logger::info("NRDReblurIntegration: initialized {}x{}", halfWidth, halfHeight);
 	return true;

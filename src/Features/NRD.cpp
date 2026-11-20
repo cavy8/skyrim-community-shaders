@@ -147,8 +147,10 @@ void NRD::EnsureResourceExtent(bool a_fullExtent)
 		texNRDViewZ = nullptr;
 		texNRDNormalRoughness = nullptr;
 		resourceExtent[0] = resourceExtent[1] = 0;
+		guideResourcesFailed = true;
 		return;
 	}
+	guideResourcesFailed = false;
 	resourceExtent[0] = width;
 	resourceExtent[1] = height;
 }
@@ -322,11 +324,12 @@ void NRD::ApplyReblurSettings(nrd::ReblurSettings& out, const REBLURSettings& in
 	out.fastHistoryClampingSigmaScale = std::clamp(in.FastHistoryClampingSigmaScale, 1.0f, 3.0f);
 	out.diffusePrepassBlurRadius = 0.0f;
 	out.minHitDistanceWeight = std::clamp(in.MinHitDistanceWeight, 0.0001f, 0.2f);
-	out.minBlurRadius = std::max(in.MinBlurRadius, 0.0f);
-	out.maxBlurRadius = std::max(in.MaxBlurRadius, out.minBlurRadius);
+	const auto finite = [](float a_value, float a_fallback) { return std::isfinite(a_value) ? a_value : a_fallback; };
+	out.minBlurRadius = std::clamp(finite(in.MinBlurRadius, 1.0f), 0.0f, 200.0f);
+	out.maxBlurRadius = std::clamp(finite(in.MaxBlurRadius, 30.0f), out.minBlurRadius, 200.0f);
 	out.lobeAngleFraction = std::clamp(in.LobeAngleFraction, 0.0f, 1.0f);
 	out.roughnessFraction = std::clamp(in.RoughnessFraction, 0.0f, 1.0f);
-	out.planeDistanceSensitivity = std::max(in.PlaneDistanceSensitivity, 0.0f);
+	out.planeDistanceSensitivity = std::clamp(finite(in.PlaneDistanceSensitivity, 0.02f), 0.0f, 1.0f);
 	out.enableAntiFirefly = true;
 	out.hitDistanceReconstructionMode = static_cast<nrd::HitDistanceReconstructionMode>(std::min(in.HitDistanceReconstructionMode, 2u));
 	out.checkerboardMode = checkerboard;
@@ -342,19 +345,19 @@ bool NRD::DrawReblurSettings(REBLURSettings& s, bool showAdvanced, const char* t
 		ImGui::SeparatorText(T(TKEY("accumulation"), "Accumulation"));
 		{
 			int v = (int)s.MaxAccumulatedFrameNum;
-			if (ImGui::SliderInt(T(TKEY("max_accumulated_frames_at_60fps"), "Max Accumulated Frames (at 60 FPS)"), &v, 1, (int)nrd::REBLUR_MAX_HISTORY_FRAME_NUM)) {
+			if (ImGui::SliderInt(T(TKEY("max_accumulated_frames_at_60fps"), "Max Accumulated Frames (at 60 FPS)"), &v, 1, (int)nrd::REBLUR_MAX_HISTORY_FRAME_NUM, "%d", ImGuiSliderFlags_AlwaysClamp)) {
 				s.MaxAccumulatedFrameNum = (uint32_t)v;
 				changed = true;
 			}
 
 			v = (int)s.MaxFastAccumulatedFrameNum;
-			if (ImGui::SliderInt(T(TKEY("max_fast_accumulated_frames_at_60fps"), "Max Fast Accumulated Frames (at 60 FPS)"), &v, 1, (int)s.MaxAccumulatedFrameNum)) {
+			if (ImGui::SliderInt(T(TKEY("max_fast_accumulated_frames_at_60fps"), "Max Fast Accumulated Frames (at 60 FPS)"), &v, 1, (int)s.MaxAccumulatedFrameNum, "%d", ImGuiSliderFlags_AlwaysClamp)) {
 				s.MaxFastAccumulatedFrameNum = (uint32_t)v;
 				changed = true;
 			}
 
 			v = (int)s.MaxStabilizedFrameNum;
-			if (ImGui::SliderInt(T(TKEY("max_stabilized_frames_at_60fps"), "Max Stabilized Frames (at 60 FPS)"), &v, 0, (int)s.MaxAccumulatedFrameNum)) {
+			if (ImGui::SliderInt(T(TKEY("max_stabilized_frames_at_60fps"), "Max Stabilized Frames (at 60 FPS)"), &v, 0, (int)s.MaxAccumulatedFrameNum, "%d", ImGuiSliderFlags_AlwaysClamp)) {
 				s.MaxStabilizedFrameNum = (uint32_t)v;
 				changed = true;
 			}
@@ -375,13 +378,13 @@ bool NRD::DrawReblurSettings(REBLURSettings& s, bool showAdvanced, const char* t
 			changed |= ImGui::SliderFloat(T(TKEY("min_hit_distance_weight"), "Min Hit Distance Weight"), &s.MinHitDistanceWeight, 0.0001f, 0.2f, "%.4f");
 
 			int v = (int)s.HistoryFixFrameNum;
-			if (ImGui::SliderInt(T(TKEY("history_fix_frames_at_60fps"), "History Fix Frames (at 60 FPS)"), &v, 0, 4)) {
+			if (ImGui::SliderInt(T(TKEY("history_fix_frames_at_60fps"), "History Fix Frames (at 60 FPS)"), &v, 0, 4, "%d", ImGuiSliderFlags_AlwaysClamp)) {
 				s.HistoryFixFrameNum = (uint32_t)v;
 				changed = true;
 			}
 
 			v = (int)s.HistoryFixBasePixelStride;
-			if (ImGui::SliderInt(T(TKEY("history_fix_pixel_stride"), "History Fix Pixel Stride"), &v, 1, 20)) {
+			if (ImGui::SliderInt(T(TKEY("history_fix_pixel_stride"), "History Fix Pixel Stride"), &v, 1, 20, "%d", ImGuiSliderFlags_AlwaysClamp)) {
 				s.HistoryFixBasePixelStride = (uint32_t)v;
 				changed = true;
 			}
