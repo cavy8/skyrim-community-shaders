@@ -2600,9 +2600,15 @@ namespace SIE
 					defines.emplace_back(name.data(), value.empty() ? nullptr : value.data());
 			}
 		}
+		standalonePending.fetch_add(1, std::memory_order_relaxed);
 		compilationSet.EnqueueAux(
 			[this, sourcePath = std::move(sourcePath), entryPoint = std::move(entryPoint),
 				defines = std::move(defines), shaderClass, onReady = std::move(onReady)]() mutable {
+				struct PendingGuard
+				{
+					std::atomic<uint32_t>& count;
+					~PendingGuard() { count.fetch_sub(1, std::memory_order_relaxed); }
+				} pendingGuard{ standalonePending };
 				auto device = globals::d3d::device;
 				auto* state = globals::state;
 				if (!device || !state) {

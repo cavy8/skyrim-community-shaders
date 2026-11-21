@@ -23,7 +23,6 @@
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	LinearLighting::Settings,
-	enableLinearLighting,
 	enableACEScg,
 	gameGamma,
 	diffuseGamma,
@@ -66,10 +65,14 @@ void LinearLighting::DrawSettings()
 													   T(TKEY("off_in_vanilla"), "Vanilla post processing turns Linear Lighting off."));
 
 	if (!effects11Mode) {
-		// A disabled checkbox never reports a click, so the saved setting survives the forced-off display.
-		bool linearLightingDisplay = settings.enableLinearLighting && !overridden;
-		if (ImGui::Checkbox(T(TKEY("enable_linear_lighting"), "Enable Linear Lighting"), &linearLightingDisplay))
-			settings.enableLinearLighting = linearLightingDisplay;
+		// Read-only: Linear Lighting follows the mode, on with Post Processing and off otherwise.
+		bool linearLightingDisplay = !overridden;
+		ImGui::BeginDisabled();
+		ImGui::Checkbox(T(TKEY("enable_linear_lighting"), "Enable Linear Lighting"), &linearLightingDisplay);
+		ImGui::EndDisabled();
+		Util::AddTooltip(T(TKEY("follows_mode_tooltip"),
+							 "Linear Lighting is always on in Post Processing mode and off in the other modes. Physical Sky and Post Processing require it."),
+			Util::kTooltipWhenDisabled);
 		ImGui::Checkbox(T(TKEY("enable_acescg"), "Enable ACEScg Wide Gamut"), (bool*)&settings.enableACEScg);
 		Util::Text::Secondary("%s", T(TKEY("startup_settings"), "Linear Lighting and working color space settings require a restart."));
 	}
@@ -122,8 +125,6 @@ void LinearLighting::DrawSettings()
 void LinearLighting::LoadSettings(json& o_json)
 {
 	settings = o_json;
-	if (o_json.contains("mode") && !o_json.contains("enableLinearLighting"))
-		settings.enableLinearLighting = o_json.value("mode", 0u) == 1u;
 	if (o_json.contains("vanillaDiffuseColorMult") && !o_json.contains("diffuseMidReflectance")) {
 		const float scale = o_json.value("vanillaDiffuseColorMult", 1.0f);
 		settings.diffuseMidReflectance *= scale;
@@ -160,7 +161,7 @@ void LinearLighting::Reset()
 	const Mode mode = PostProcessingMode::Get();
 	const bool withEffects11 = settings.useWithEffects11 && mode == Mode::Effects11;
 	// Needs a display transform, Post Processing's or the preset's own, so Vanilla mode turns it off; Effects 11 gates it separately via IsActive.
-	const bool linearLighting = withEffects11 || (settings.enableLinearLighting && globals::features::postProcessing.loaded && mode != Mode::Vanilla);
+	const bool linearLighting = withEffects11 || (globals::features::postProcessing.loaded && mode != Mode::Vanilla);
 	const bool acescg = linearLighting && settings.enableACEScg && !withEffects11;
 	if (linearLighting != configuredLinearLighting || acescg != configuredACEScg || withEffects11 != configuredWithEffects11 || applyGameGamma)
 		globals::shaderCache->Reload([this, linearLighting, acescg, withEffects11] {
@@ -704,8 +705,7 @@ void LinearLighting::Load()
 	ApplyGameGamma();
 	// Matches Reset() so a saved Vanilla mode does not cost a shader reload on the first frame.
 	configuredWithEffects11 = loaded && settings.useWithEffects11 && PostProcessingMode::IsEffects11Pending();
-	configuredLinearLighting = configuredWithEffects11 || (loaded && settings.enableLinearLighting && globals::features::postProcessing.loaded &&
-															  !PostProcessingMode::IsVanillaPending());
+	configuredLinearLighting = configuredWithEffects11 || (loaded && globals::features::postProcessing.loaded && !PostProcessingMode::IsVanillaPending());
 	configuredACEScg = configuredLinearLighting && settings.enableACEScg && !configuredWithEffects11;
 
 	// Installed regardless of the toggle so Reset() can enable Linear Lighting without a restart.

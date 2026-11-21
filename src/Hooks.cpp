@@ -481,6 +481,7 @@ namespace PostProcessingExtensions
 			const auto output = static_cast<RE::RENDER_TARGET>(a4);
 
 			auto& nightEye = globals::features::nightEye;
+			const bool renderToUI = state->permutationData.RenderToUI;
 
 			// Effects11 replaces the pass outright; when it does, the vanilla call is skipped
 			// and HandlePostProcessing fixes up the render-target state the pass would have set.
@@ -492,12 +493,12 @@ namespace PostProcessingExtensions
 					// Effects11 already wrote its finished, tonemapped frame into `output`.
 					neuralRendering.ApplyFinishedImage(output);
 				}
-				nightEye.RenderPostProcess(output);
+				if (!renderToUI)
+					nightEye.RenderPostProcess(output);
 				return;
 			}
 
 			auto& postProcessing = globals::features::postProcessing;
-			const bool renderToUI = state->permutationData.RenderToUI;
 			const bool previousFallback = state->IsPostProcessingFallback();
 			const auto fallback = postProcessing.loaded ? postProcessing.PreProcess(input) : std::nullopt;
 			state->SetPostProcessingFallback(fallback.has_value());
@@ -517,7 +518,8 @@ namespace PostProcessingExtensions
 			if (neuralRendering.loaded)
 				neuralRendering.ApplyFinishedImage(output);
 
-			nightEye.RenderPostProcess(output);
+			if (!renderToUI)
+				nightEye.RenderPostProcess(output);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

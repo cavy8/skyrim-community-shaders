@@ -1007,6 +1007,12 @@ void ColorGrading::CompileShaders()
 	curveNeedsUpdate = true;  // shader changed, curve must update
 }
 
+void ColorGrading::ServicePendingRecompile()
+{
+	if (recompileFlag && IsActive())
+		ReloadActiveShaders();
+}
+
 bool ColorGrading::PrepareDraw()
 {
 	if (recompileFlag)

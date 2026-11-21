@@ -46,6 +46,8 @@ struct ScreenSpaceReflections : Feature
 
 	virtual void SetupResources() override;
 	void SetupNRDResources(uint32_t a_width, uint32_t a_height);
+	/** @brief Whether the specular REBLUR denoiser should hold its pools this frame. */
+	bool WantsReblur() const;
 	virtual void ClearShaderCache() override;
 	void CompileComputeShaders();
 	bool ShadersOK();
@@ -175,6 +177,7 @@ struct ScreenSpaceReflections : Feature
 	NRDReblurIntegration nrdReblurSpecular;
 	nrd::ReblurSettings reblurSpecularSettings{};
 	bool resetReblurHistory = true;
+	bool reblurInitAttempted = false;
 	uint lastDrawnFrame = 0;
 	// True only after the current DrawSSR invocation has produced a trace output.
 	bool outputReady = false;

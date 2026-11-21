@@ -1918,6 +1918,11 @@ void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex)
 		if (!camera.occluded.contains(geometry))
 			SetOccludedFlag(geometry, false);
 	}
+	for (uint32_t i = 0; i < geometryCount && i < geometrySnapshot.size(); ++i) {
+		const auto& entry = geometrySnapshot[i];
+		if (entry.geometry && entry.pass == kCameraPass && IsGeometryOccluded(entry.geometry.get()) && !camera.occluded.contains(entry.geometry.get()))
+			SetOccludedFlag(entry.geometry.get(), false);
+	}
 	for (auto& [geometry, geo] : camera.occluded)
 		SetOccludedFlag(geometry, true);
 
@@ -1936,9 +1941,12 @@ void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex)
 
 void HiZOcclusion::SetOccludedFlag(RE::BSGeometry* geometry, bool occluded)
 {
-	auto& flags = geometry->GetFlags();
-	const auto bits = occluded ? (flags.underlying() | kOccludedFlag) : (flags.underlying() & ~kOccludedFlag);
-	flags = stl::enumeration<RE::NiAVObject::Flag, uint32_t>(static_cast<RE::NiAVObject::Flag>(bits));
+	static_assert(sizeof(geometry->GetFlags()) == sizeof(uint32_t));
+	std::atomic_ref<uint32_t> bits(*reinterpret_cast<uint32_t*>(&geometry->GetFlags()));
+	if (occluded)
+		bits.fetch_or(kOccludedFlag, std::memory_order_relaxed);
+	else
+		bits.fetch_and(~kOccludedFlag, std::memory_order_relaxed);
 }
 
 void HiZOcclusion::ClearOcclusionState()

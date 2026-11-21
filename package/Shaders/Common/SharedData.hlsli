@@ -536,6 +536,10 @@ namespace SharedData
 		float distanceHazeStartDistance;
 		float distanceHazeFadeDistance;
 		float4 originalFogColorOverride;
+		float interiorFogStrength;
+		float interiorFogBrightness;
+		float2 pad5;
+		float4 interiorFogTint;
 	};
 
 	struct TruePBRSettings

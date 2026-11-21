@@ -35,6 +35,15 @@ RWTexture2D<float4> OutSpecRadianceHitDist : register(u0);
 
 SamplerState LinearSampler : register(s1);
 
+static const float DenoiserMaxExposedLuminance = 16.0;
+
+float3 ClampDenoiserRadiance(float3 radiance)
+{
+	const float maxLuminance = DenoiserMaxExposedLuminance * PreExposure::InverseScale;
+	const float luminance = Color::RGBToLuminance(radiance);
+	return luminance > maxLuminance ? radiance * (maxLuminance / luminance) : radiance;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Importance sampling helpers (from ssrt_common.hlsli)
 ///////////////////////////////////////////////////////////////////////////////
@@ -533,5 +542,5 @@ float SSRT_ValidateHit(float3 hit,
 			normHitDist = 1.0;
 #endif
 	}
-	OutSpecRadianceHitDist[outPixelPos] = REBLUR_FrontEnd_PackRadianceAndNormHitDist(sampleColor, normHitDist, true);
+	OutSpecRadianceHitDist[outPixelPos] = REBLUR_FrontEnd_PackRadianceAndNormHitDist(ClampDenoiserRadiance(sampleColor), normHitDist, true);
 }

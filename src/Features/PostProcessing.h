@@ -248,6 +248,11 @@ private:
 
 	D3D11_TEXTURE2D_DESC sceneColorDesc{};
 	D3D11_TEXTURE2D_DESC mainColorDesc{};
+	/** @brief Frees pooled color targets no pass has requested for a while, e.g. after an effect or Linear Lighting is turned off. */
+	void ReleaseIdleColorTargets();
+
 	std::vector<std::unique_ptr<Texture2D>> colorTargets;
+	std::vector<uint32_t> colorTargetLastUse;
+	uint32_t colorTargetSerial = 0;
 	std::map<std::tuple<UINT, UINT, DXGI_FORMAT, UINT>, std::chrono::steady_clock::time_point> colorTargetRetry;
 };

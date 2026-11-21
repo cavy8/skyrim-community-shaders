@@ -179,6 +179,8 @@ struct ColorGrading : public PostProcessFeature
 	virtual void Draw(TextureInfo&) override;
 	/// @brief Refreshes the active shaders if needed and checks whether grading can run.
 	bool PrepareDraw();
+	/// @brief Starts a pending recompile even on frames grading does not draw, so it can become ready to tonemap again.
+	void ServicePendingRecompile();
 	/// @brief Updates grading constants and regenerates the LUT when its inputs change.
 	void UpdateConstantsAndLUT();
 	/// @brief Runs requested diagnostic captures after the graded output is ready.

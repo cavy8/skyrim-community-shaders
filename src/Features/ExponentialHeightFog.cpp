@@ -60,7 +60,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	fogLightingInfluence,
 	distanceHazeMaxOpacity,
 	distanceHazeStartDistance,
-	distanceHazeFadeDistance)
+	distanceHazeFadeDistance,
+	interiorFogStrength,
+	interiorFogBrightness,
+	interiorFogTint)
 
 namespace
 {
@@ -88,6 +91,37 @@ namespace
 		a_settings.distanceHazeMaxOpacity = ClampFinite(a_settings.distanceHazeMaxOpacity, 0.0f, 1.0f, defaults.distanceHazeMaxOpacity);
 		a_settings.distanceHazeStartDistance = ClampFinite(a_settings.distanceHazeStartDistance, 0.0f, kMaxDistanceHazeDistance, defaults.distanceHazeStartDistance);
 		a_settings.distanceHazeFadeDistance = ClampFinite(a_settings.distanceHazeFadeDistance, kMinDistanceHazeFadeDistance, kMaxDistanceHazeDistance, defaults.distanceHazeFadeDistance);
+		a_settings.interiorFogStrength = ClampFinite(a_settings.interiorFogStrength, 0.0f, 4.0f, defaults.interiorFogStrength);
+		a_settings.interiorFogBrightness = ClampFinite(a_settings.interiorFogBrightness, 0.0f, 4.0f, defaults.interiorFogBrightness);
+		for (int i = 0; i < 4; ++i)
+			(&a_settings.interiorFogTint.x)[i] = ClampFinite((&a_settings.interiorFogTint.x)[i], 0.0f, 1.0f, (&defaults.interiorFogTint.x)[i]);
+	}
+
+	void ApplyInteriorFog(ExponentialHeightFog::Settings& a_data)
+	{
+		if (!Util::IsInterior())
+			return;
+		a_data.vanillaFogStrength *= a_data.interiorFogStrength;
+		a_data.fogDensity *= a_data.interiorFogStrength;
+		a_data.fogDensity2 *= a_data.interiorFogStrength;
+
+		const float tintAmount = a_data.interiorFogTint.w;
+		float4 color{
+			a_data.interiorFogBrightness * std::lerp(1.0f, a_data.interiorFogTint.x, tintAmount),
+			a_data.interiorFogBrightness * std::lerp(1.0f, a_data.interiorFogTint.y, tintAmount),
+			a_data.interiorFogBrightness * std::lerp(1.0f, a_data.interiorFogTint.z, tintAmount), 1.0f
+		};
+		for (auto* target : { &a_data.vanillaFogNearColor, &a_data.vanillaFogFarColor }) {
+			target->x *= color.x;
+			target->y *= color.y;
+			target->z *= color.z;
+		}
+		globals::features::linearLighting.SRGBToWorking(&color.x);
+		for (auto* target : { &a_data.inscatteringTint, &a_data.fogInscatteringColor }) {
+			target->x *= color.x;
+			target->y *= color.y;
+			target->z *= color.z;
+		}
 	}
 
 	bool CanReuseFogHistory(const ExponentialHeightFog::Settings& current, const ExponentialHeightFog::Settings& previous)
@@ -201,6 +235,7 @@ ExponentialHeightFog::Settings ExponentialHeightFog::GetCommonBufferData() const
 		data.vanillaFogFarColor = sanitizeColor(sky->skyColor[static_cast<uint32_t>(RE::TESWeather::ColorTypes::kFogFar)], kFallbackFogColor);
 		data.vanillaFogNearColor = sanitizeColor(sky->skyColor[static_cast<uint32_t>(RE::TESWeather::ColorTypes::kFogNear)], kFallbackFogColor);
 	}
+	ApplyInteriorFog(data);
 	if (!data.useVanillaFogSettings)
 		return data;
 
@@ -250,6 +285,20 @@ void ExponentialHeightFog::DrawHeightFogSettings()
 	ImGui::SliderFloat(T(TKEY("vanilla_strength"), "Weather Fog Strength"), &settings.vanillaFogStrength, 0.0f, 4.0f, "%.2f");
 	ImGui::SliderFloat(T(TKEY("lighting_influence"), "Weather Lighting Influence"), &settings.fogLightingInfluence, 0.0f, 1.0f, "%.2f");
 	ImGui::EndDisabled();
+
+	ImGui::SeparatorText(T(TKEY("interiors"), "Interiors"));
+	ImGui::SliderFloat(T(TKEY("interior_fog_strength"), "Interior Fog Strength"), &settings.interiorFogStrength, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("interior_fog_strength_tooltip"), "Scales fog density inside interiors only. Below 1 thins the fog a cell's lighting template asks for."));
+	}
+	ImGui::SliderFloat(T(TKEY("interior_fog_brightness"), "Interior Fog Brightness"), &settings.interiorFogBrightness, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("interior_fog_brightness_tooltip"), "Scales the fog color inside interiors only. Below 1 darkens fog that washes out dim rooms."));
+	}
+	ImGui::ColorEdit4(T(TKEY("interior_fog_tint"), "Interior Fog Tint"), (float*)&settings.interiorFogTint);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("interior_fog_tint_tooltip"), "Tints the fog color inside interiors. Alpha is how much of the tint applies."));
+	}
 
 	ImGui::SeparatorText(T(TKEY("density_height"), "Density and Height"));
 	ImGui::BeginDisabled(settings.useVanillaFogSettings != 0);
@@ -884,7 +933,9 @@ void ExponentialHeightFog::Prepass()
 		globals::state->frameCount == lastPrepassFrame + 1u;
 
 	auto computeGridZParams = [](double a_nearPlane, double a_farPlane, uint32_t a_gridZ, float a_distributionScale) {
-		const double nearWithOffset = a_nearPlane + 0.095 * 100.0;
+		constexpr double kNearOffset = 0.095 * 100.0;
+		// The offset must stay inside the slab: a fog start at or past Near Grid End leaves a 1-unit near slab.
+		const double nearWithOffset = a_nearPlane + std::min(kNearOffset, 0.5 * (a_farPlane - a_nearPlane));
 		const double depthDistributionScale = std::max(static_cast<double>(a_distributionScale), static_cast<double>(a_gridZ) / 120.0);
 		const double farExp = std::exp2(std::min(static_cast<double>(a_gridZ) / depthDistributionScale, 120.0));
 		const double gridZOffset = (a_farPlane - nearWithOffset * farExp) / (a_farPlane - nearWithOffset);

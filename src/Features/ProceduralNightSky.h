@@ -11,6 +11,7 @@ struct ProceduralNightSky : Feature
 		float auroraSpeed = 1.0f;
 		float auroraLighting = 1.0f;
 		float auroraDirectLight = 1.0f;
+		int auroraPalette = 0;
 		float shootingStarRate = 2.0f;
 		float shootingStarIntensity = 1.0f;
 	};

@@ -31,10 +31,10 @@ namespace TreeShapes
 		 * @brief Returns the bend data for a shape, built on first sight.
 		 * @return nullptr when the shape has nothing to sway or its block's trunks have not been drawn yet.
 		 */
-		ID3D11ShaderResourceView* Get(RE::BSGeometry* a_geometry, Kind a_kind, uint a_frame, bool a_treeModSupport);
+		ID3D11ShaderResourceView* Get(RE::BSGeometry* a_geometry, Kind a_kind, bool a_treeModSupport);
 
-		/** @brief Frees the bend data of shapes not drawn for a while, and the blocks left without shapes. */
-		void Evict(uint a_frame);
+		/** @brief Advances the eviction clock while tree LOD is drawn, and frees the bend data of shapes not drawn for a while. */
+		void BeginFrame(uint a_frame, float a_deltaTime);
 
 		/** @brief Frees all bend data, so it is rebuilt with new settings. */
 		void Clear();
@@ -52,8 +52,9 @@ namespace TreeShapes
 		{
 			std::vector<TrunkCard> cards;
 			std::unordered_map<int64_t, std::vector<int>> grid;  // cell -> card indices
-			std::unordered_set<const void*> trunkShapes;
+			std::unordered_set<uint64_t> trunkShapes;
 			uint32_t generation = 0;  // bumped when cards are added, so tree-mod crowns built before rebuild
+			uint changeFrame = 0;
 		};
 
 	private:
@@ -63,13 +64,20 @@ namespace TreeShapes
 			winrt::com_ptr<ID3D11ShaderResourceView> srv;  // nullptr for a shape checked once and left still
 			uint32_t vertexCount = 0;
 			float firstVertex[3]{};
-			uint lastFrame = 0;
+			double lastSeen = 0.0;
 			uint64_t blockKey = 0;
 			uint32_t generation = 0;
-			bool crown = false;
+			bool usesCards = false;
 		};
+
+		void Evict();
 
 		std::unordered_map<uint64_t, Block> blocks;      // key = the block's world translate
 		std::unordered_map<const void*, Entry> entries;  // key = the shape's vertex buffer
+		double clock = 0.0;
+		double lastEvict = 0.0;
+		uint frame = 0;
+		uint staleRebuildBudget = 0;
+		bool drewThisFrame = false;
 	};
 }

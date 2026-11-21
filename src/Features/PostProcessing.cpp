@@ -512,6 +512,7 @@ void PostProcessing::ClearShaderCache()
 void PostProcessing::SetupResources()
 {
 	colorTargets.clear();
+	colorTargetLastUse.clear();
 	colorTargetRetry.clear();
 
 	auto& renderTargets = globals::game::renderer->GetRuntimeData().renderTargets;
@@ -631,10 +632,14 @@ Texture2D* PostProcessing::GetColorTarget(ID3D11Texture2D* input, UINT width, UI
 
 	// Only the current input is live. Two targets per size and format suffice,
 	// even for a pass such as Camera that advances the chain twice.
-	for (const auto& target : colorTargets) {
+	const uint32_t frame = globals::state->frameCount;
+	for (size_t i = 0; i < colorTargets.size(); ++i) {
+		const auto& target = colorTargets[i];
 		if (target->resource.get() != input && target->desc.Width == width &&
-			target->desc.Height == height && target->desc.Format == format && target->desc.BindFlags == bindFlags)
+			target->desc.Height == height && target->desc.Format == format && target->desc.BindFlags == bindFlags) {
+			colorTargetLastUse[i] = frame;
 			return target.get();
+		}
 	}
 
 	const auto now = std::chrono::steady_clock::now();
@@ -656,19 +661,32 @@ Texture2D* PostProcessing::GetColorTarget(ID3D11Texture2D* input, UINT width, UI
 			.Usage = D3D11_USAGE_DEFAULT,
 			.BindFlags = bindFlags
 		};
-		auto name = std::format("PostProcessing::ColorScratch{}", colorTargets.size());
+		auto name = std::format("PostProcessing::ColorScratch{}", colorTargetSerial++);
 		auto target = std::make_unique<Texture2D>(desc, name.c_str());
 		target->CreateRTV({ .Format = format, .ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D, .Texture2D = { .MipSlice = 0 } });
 		if (needsShaderViews) {
 			target->CreateSRV({ .Format = format, .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D, .Texture2D = { .MostDetailedMip = 0, .MipLevels = 1 } });
 			target->CreateUAV({ .Format = format, .ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D, .Texture2D = { .MipSlice = 0 } });
 		}
+		colorTargetLastUse.push_back(frame);
 		return colorTargets.emplace_back(std::move(target)).get();
 	} catch (const std::exception& e) {
 		logger::error("[PostProcessing] Could not create a {}x{} color scratch target (format {}, bind flags {}): {}",
 			width, height, static_cast<uint>(format), bindFlags, e.what());
 		colorTargetRetry.emplace(key, now + std::chrono::seconds(5));
 		return nullptr;
+	}
+}
+
+void PostProcessing::ReleaseIdleColorTargets()
+{
+	constexpr uint32_t kIdleFrames = 600;
+	const uint32_t frame = globals::state->frameCount;
+	for (size_t i = colorTargets.size(); i-- > 0;) {
+		if (frame - colorTargetLastUse[i] > kIdleFrames) {
+			colorTargets.erase(colorTargets.begin() + static_cast<std::ptrdiff_t>(i));
+			colorTargetLastUse.erase(colorTargetLastUse.begin() + static_cast<std::ptrdiff_t>(i));
+		}
 	}
 }
 
@@ -769,6 +787,8 @@ std::optional<RE::RENDER_TARGET> PostProcessing::PreProcess(RE::RENDER_TARGET a_
 	auto& ll = globals::features::linearLighting;
 	const bool linear = ll.IsLinearLightingActive();
 	if (bypass && (!linear || globals::features::effects11.IsActive()))
+		return std::nullopt;
+	if (!linear && globals::state->GetTonemapOwner() != State::TonemapOwner::kPostProcessing)
 		return std::nullopt;
 
 	auto renderer = globals::game::renderer;
@@ -992,6 +1012,9 @@ void PostProcessing::Prepass()
 
 	if (auto* lut = GetPipelineFeature<::LUT>(FeaturePipelineIndex::LUT))
 		lut->UpdateTexture();
+	if (auto* grading = GetPipelineFeature<ColorGrading>(FeaturePipelineIndex::ColorGrading))
+		grading->ServicePendingRecompile();
+	ReleaseIdleColorTargets();
 
 	{
 		auto graphicsState = globals::game::graphicsState;

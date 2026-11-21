@@ -407,7 +407,14 @@ void ScreenSpaceReflections::SetupNRDResources(uint32_t a_width, uint32_t a_heig
 	texNRDSpecOutput->CreateUAV(uavDesc);
 
 	nrdReblurSpecular.Shutdown();
-	nrdReblurSpecular.Init(a_width, a_height, nrd::Denoiser::REBLUR_SPECULAR, 0);
+	reblurInitAttempted = WantsReblur();
+	if (reblurInitAttempted)
+		nrdReblurSpecular.Init(a_width, a_height, nrd::Denoiser::REBLUR_SPECULAR, 0);
+}
+
+bool ScreenSpaceReflections::WantsReblur() const
+{
+	return settings.Enabled && settings.EnableREBLUR && globals::features::dynamicCubemaps.loaded;
 }
 
 void ScreenSpaceReflections::ClearShaderCache()
@@ -510,6 +517,16 @@ void ScreenSpaceReflections::DrawSSR()
 		if (nrdSvc.loaded && nrdSvc.GetResourceExtent(nrdWidth, nrdHeight) &&
 			(texNRDSpecInput->desc.Width != nrdWidth || texNRDSpecInput->desc.Height != nrdHeight))
 			SetupNRDResources(nrdWidth, nrdHeight);
+
+		if (!WantsReblur()) {
+			if (nrdReblurSpecular.IsValid()) {
+				nrdReblurSpecular.Shutdown();
+				resetReblurHistory = true;
+			}
+			reblurInitAttempted = false;
+		} else if (!reblurInitAttempted) {
+			SetupNRDResources(texNRDSpecInput->desc.Width, texNRDSpecInput->desc.Height);
+		}
 	}
 
 	if ((settings.HalfRes && CanDenoise()) != tracedHalfRes) {
@@ -521,6 +538,9 @@ void ScreenSpaceReflections::DrawSSR()
 		ClearShaderCache();
 
 	if (!(settings.Enabled && globals::features::dynamicCubemaps.loaded && ShadersOK() && texHiZDepth && texNRDSpecInput))
+		return;
+
+	if (globals::state->isMapMenuOpen)
 		return;
 
 	ZoneScoped;
@@ -733,7 +753,7 @@ ID3D11ShaderResourceView* ScreenSpaceReflections::GetOutputTexture()
 ScreenSpaceReflections::SharedData ScreenSpaceReflections::GetCommonBufferData()
 {
 	SharedData data;
-	data.Enabled = (loaded && settings.Enabled && globals::features::dynamicCubemaps.loaded && !recompileFlag && ShadersOK() && texHiZDepth && texNRDSpecInput) ? 1u : 0u;
+	data.Enabled = (loaded && settings.Enabled && globals::features::dynamicCubemaps.loaded && !recompileFlag && ShadersOK() && texHiZDepth && texNRDSpecInput && !globals::state->isMapMenuOpen) ? 1u : 0u;
 	data.SpecularMult = settings.SpecularMult;
 	data.SpecCubemapMult = settings.UseDynamicCubemapsAsFallback && globals::features::dynamicCubemaps.loaded ? settings.SpecCubemapMult : 0.0f;
 	data.pad0 = 0;

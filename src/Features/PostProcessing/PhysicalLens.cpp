@@ -255,6 +255,15 @@ void PhysicalLens::SetupResources()
 {
 	resourcesReady = false;
 	outputReady = cameraReady = waveReady = false;
+	splatIndices = nullptr;
+	indirect = nullptr;
+	indirectUAV = nullptr;
+	indirectSRV = nullptr;
+	planArguments = nullptr;
+	planArgumentsUAV = nullptr;
+	additive = nullptr;
+	twoSided = nullptr;
+	sampler = nullptr;
 	if (!IsActive())
 		return;
 	cachedPreset = -1;
@@ -586,6 +595,7 @@ float PhysicalLens::ResolveCameraFocus(const CinematicCamera::PhysicalCameraStat
 		desc.Usage = D3D11_USAGE_STAGING;
 		desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 		for (auto& texture : focusReadback) {
+			texture = nullptr;
 			winrt::check_hresult(globals::d3d::device->CreateTexture2D(&desc, nullptr, texture.put()));
 			Util::SetResourceName(texture.get(), "PhysicalLens::FocusReadback");
 		}

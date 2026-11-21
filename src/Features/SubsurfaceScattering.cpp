@@ -15,6 +15,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SubsurfaceScattering::Settings,
 	EnableCharacterLighting,
 	CharacterLightingStrength,
+	CharacterLightingHumanoidOnly,
 	SSMode,
 	ScatterMode,
 	BaseProfile,
@@ -37,6 +38,10 @@ void SubsurfaceScattering::DrawSettings()
 	}
 	if (settings.EnableCharacterLighting) {
 		ImGui::SliderFloat(T(TKEY("strength"), "Strength"), &settings.CharacterLightingStrength, 0, 5, "%.2f");
+		ImGui::Checkbox(T(TKEY("character_lighting_humanoid_only"), "Humanoid Races Only"), (bool*)&settings.CharacterLightingHumanoidOnly);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("character_lighting_humanoid_only_tooltip"), "Applies character lighting only to human, elf and beast races. Creatures such as Falmer and draugr stop glowing."));
+		}
 	}
 
 	ImGui::RadioButton(T(TKEY("separable_sss"), "Separable SSS"), &settings.SSMode, 0);
@@ -573,6 +578,28 @@ void SubsurfaceScattering::DataLoaded()
 void SubsurfaceScattering::PostPostLoad()
 {
 	Hooks::Install();
+}
+
+bool SubsurfaceScattering::SuppressCharacterLight(RE::BSGeometry* a_geometry) const
+{
+	if (!loaded || !settings.EnableCharacterLighting || !settings.CharacterLightingHumanoidOnly || !a_geometry)
+		return false;
+	auto* ref = a_geometry->GetUserData();
+	auto* actor = ref ? ref->As<RE::Actor>() : nullptr;
+	auto* race = actor ? actor->GetRace() : nullptr;
+	return race && !race->data.flags.any(RE::RACE_DATA::Flag::kFaceGenHead);
+}
+
+RE::BSShaderProperty::RenderPassArray* SubsurfaceScattering::Hooks::BSLightingShaderProperty_GetRenderPasses::thunk(RE::BSLightingShaderProperty* a_property, RE::BSGeometry* a_geometry, std::uint32_t a_renderFlags, RE::BSShaderAccumulator* a_accumulator)
+{
+	constexpr auto kCharacterLighting = RE::BSShaderProperty::EShaderPropertyFlag::kCharacterLighting;
+	if (!a_property->flags.any(kCharacterLighting) || !globals::features::subsurfaceScattering.SuppressCharacterLight(a_geometry))
+		return func(a_property, a_geometry, a_renderFlags, a_accumulator);
+
+	a_property->flags.reset(kCharacterLighting);
+	auto* renderPasses = func(a_property, a_geometry, a_renderFlags, a_accumulator);
+	a_property->flags.set(kCharacterLighting);
+	return renderPasses;
 }
 
 void SubsurfaceScattering::BSLightingShader_SetupSkin(RE::BSRenderPass* a_pass)

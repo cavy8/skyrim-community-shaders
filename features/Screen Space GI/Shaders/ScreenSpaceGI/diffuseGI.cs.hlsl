@@ -82,6 +82,15 @@ RWTexture2D<float4> outRadianceHitDist : register(u0);
 RWTexture2D<float4> outSH1 : register(u2);
 #endif
 
+static const float DenoiserMaxExposedLuminance = 16.0;
+
+float3 ClampDenoiserRadiance(float3 radiance)
+{
+	const float maxLuminance = DenoiserMaxExposedLuminance * PreExposure::InverseScale;
+	const float luminance = Color::RGBToLuminance(radiance);
+	return luminance > maxLuminance ? radiance * (maxLuminance / luminance) : radiance;
+}
+
 static const float SSGI_NORMAL_BIAS = 0.01;
 static const uint SSGI_MAX_RAY = 32;
 static const uint SSGI_ROTATION_COUNT = 1;
@@ -502,7 +511,7 @@ void CalculateGI(
 #endif
 	);
 
-	radiance = filterNaN(radiance);
+	radiance = ClampDenoiserRadiance(filterNaN(radiance));
 
 #ifdef SSGI_QUARTER
 	// One out of four pixels carries a sample. Compensate its energy so the

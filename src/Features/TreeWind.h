@@ -109,8 +109,11 @@ private:
 	/** @brief How stormy a weather is, 0 calm to 1 storm: the larger of its type and its own wind speed. */
 	float GetStorminess(const RE::TESWeather* a_weather) const;
 
+	void BindWindCB(ID3D11DeviceContext* a_context, ID3D11Buffer* a_buffer);
+
 	std::unique_ptr<ConstantBuffer> windOnCB;
 	std::unique_ptr<ConstantBuffer> windOffCB;
+	ID3D11Buffer* boundCB = nullptr;
 
 	TreeShapes::BendWeights bendWeights;
 	// Bend data of the tree LOD shape being drawn, nullptr for every other draw

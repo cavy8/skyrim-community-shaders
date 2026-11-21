@@ -26,6 +26,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	auroraSpeed,
 	auroraLighting,
 	auroraDirectLight,
+	auroraPalette,
 	shootingStarRate,
 	shootingStarIntensity)
 
@@ -84,8 +85,50 @@ namespace
 		return kAuroraDefault;
 	}
 
-	AuroraPalette GetAuroraPalette(const RE::Sky* a_sky)
+	enum AuroraPaletteChoice : int
 	{
+		kPaletteAuto,
+		kPaletteNightly,
+		kPaletteGreen,
+		kPaletteGreenBlue,
+		kPaletteBlueViolet,
+		kPaletteRedYellow,
+		kPaletteCount
+	};
+
+	const AuroraPalette& GetNightlyPalette()
+	{
+		const auto* calendar = RE::Calendar::GetSingleton();
+		const float days = calendar ? calendar->GetDaysPassed() : 0.0f;
+		std::uint32_t hash = static_cast<std::uint32_t>(std::floor(days + 0.5f)) * 2654435761u;
+		hash ^= hash >> 16;
+		const std::uint32_t roll = hash % 20u;
+		if (roll < 8u)
+			return kAuroraDefault;
+		if (roll < 13u)
+			return kAuroraGreenBlue;
+		if (roll < 17u)
+			return kAuroraBlueViolet;
+		return kAuroraRedYellow;
+	}
+
+	AuroraPalette GetAuroraPalette(const RE::Sky* a_sky, int a_choice)
+	{
+		switch (a_choice) {
+		case kPaletteNightly:
+			return GetNightlyPalette();
+		case kPaletteGreen:
+			return kAuroraDefault;
+		case kPaletteGreenBlue:
+			return kAuroraGreenBlue;
+		case kPaletteBlueViolet:
+			return kAuroraBlueViolet;
+		case kPaletteRedYellow:
+			return kAuroraRedYellow;
+		default:
+			break;
+		}
+
 		const auto* current = a_sky->currentWeather;
 		const auto* previous = a_sky->lastWeather;
 		if (!HasAurora(previous))
@@ -157,7 +200,7 @@ ProceduralNightSky::PerFrameData ProceduralNightSky::GetCommonBufferData() const
 	data.starIntensity = settings.starIntensity;
 	data.starTwinkle = settings.starTwinkle;
 	if (sky) {
-		const AuroraPalette palette = GetAuroraPalette(sky);
+		const AuroraPalette palette = GetAuroraPalette(sky, settings.auroraPalette);
 		data.auroraLowColor = palette.low;
 		data.auroraHighColor = palette.high;
 		data.auroraIntensity = settings.auroraIntensity * GetAuroraVisibility(sky);
@@ -223,7 +266,7 @@ float3 ProceduralNightSky::GetAuroraLightColor(bool a_linear) const
 	if (visibility <= 0.0f)
 		return {};
 	// Most of the light comes from the bright lower border
-	const AuroraPalette palette = GetAuroraPalette(sky);
+	const AuroraPalette palette = GetAuroraPalette(sky, settings.auroraPalette);
 	float3 color = float3::Lerp(palette.low, palette.high, 0.25f);
 	if (a_linear)
 		Util::ColorSpace::SRGBToLinear(&color.x);
@@ -496,7 +539,7 @@ void ProceduralNightSky::DrawSettings()
 		ImGui::TextWrapped("%s", T(TKEY("enabled_tooltip"), "Replaces the vanilla stars and aurora. Each only shows when the weather and time of day would show it."));
 
 	if (ImGui::TreeNodeEx(T(TKEY("stars"), "Stars"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		ImGui::SliderFloat(T(TKEY("star_intensity"), "Brightness"), &settings.starIntensity, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("star_intensity"), "Brightness"), &settings.starIntensity, 0.0f, 16.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
 		ImGui::SliderFloat(T(TKEY("star_twinkle"), "Twinkle"), &settings.starTwinkle, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T(TKEY("shooting_star_rate"), "Shooting Stars Per Minute"), &settings.shootingStarRate, 0.0f, 20.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
@@ -516,6 +559,17 @@ void ProceduralNightSky::DrawSettings()
 		ImGui::SliderFloat(T(TKEY("aurora_direct_light"), "Aurora Direct Light"), &settings.auroraDirectLight, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("aurora_direct_light_tooltip"), "A faint glow in the aurora's color added to the moonlight. 0 turns it off."));
+		const char* auroraPaletteNames[] = {
+			T(TKEY("aurora_palette_auto"), "From Weather"),
+			T(TKEY("aurora_palette_nightly"), "Vary Nightly"),
+			T(TKEY("aurora_palette_green"), "Green and Violet"),
+			T(TKEY("aurora_palette_green_blue"), "Green and Blue"),
+			T(TKEY("aurora_palette_blue_violet"), "Blue and Violet"),
+			T(TKEY("aurora_palette_red_yellow"), "Red and Yellow")
+		};
+		ImGui::Combo(T(TKEY("aurora_palette"), "Aurora Colors"), &settings.auroraPalette, auroraPaletteNames, IM_ARRAYSIZE(auroraPaletteNames));
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("aurora_palette_tooltip"), "From Weather follows the weather's aurora mesh; vanilla weathers only use green. Vary Nightly picks a palette for each night, mostly green."));
 		ImGui::TreePop();
 	}
 }
@@ -527,7 +581,8 @@ void ProceduralNightSky::LoadSettings(json& o_json)
 	auto sanitize = [](float& a_value, float a_default, float a_min, float a_max) {
 		a_value = std::clamp(std::isfinite(a_value) ? a_value : a_default, a_min, a_max);
 	};
-	sanitize(settings.starIntensity, defaults.starIntensity, 0.0f, 4.0f);
+	sanitize(settings.starIntensity, defaults.starIntensity, 0.0f, 16.0f);
+	settings.auroraPalette = std::clamp(settings.auroraPalette, 0, static_cast<int>(kPaletteCount) - 1);
 	sanitize(settings.starTwinkle, defaults.starTwinkle, 0.0f, 1.0f);
 	sanitize(settings.auroraIntensity, defaults.auroraIntensity, 0.0f, 4.0f);
 	sanitize(settings.auroraSpeed, defaults.auroraSpeed, 0.0f, 4.0f);

@@ -3297,14 +3297,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	diffuseColor += lightsDiffuseColor;
 	specularColor += lightsSpecularColor;
 
-#	if !defined(LANDSCAPE)
-	if (Permutation::PixelShaderDescriptor & Permutation::LightingFlags::CharacterLight) {
-		float charLightMul = saturate(dot(viewDirection, worldNormal.xyz)) * CharacterLightParams.x + CharacterLightParams.y * saturate(dot(float2(0.164398998, -0.986393988), worldNormal.yz));
-		float charLightColor = min(CharacterLightParams.w, max(0, CharacterLightParams.z * TexCharacterLightProjNoiseSampler.SampleLevel(SampCharacterLightProjNoiseSampler, float2(0.5, 0.5), 16).x));
-		diffuseColor += (charLightMul * charLightColor).xxx;
-	}
-#	endif
-
 #	if defined(EYE) && defined(VANILLA_EYE_NORMAL)
 	worldNormal.xyz = input.EyeNormal;
 #	endif  // EYE
@@ -3426,6 +3418,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		if (!(SharedData::iblSettings.UseStaticIBL && !inWorld && !inReflection)) {
 			directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -ambientNormal, input.WorldPosition.xyz);
 		}
+	}
+#	endif
+
+#	if !defined(LANDSCAPE)
+	if (Permutation::PixelShaderDescriptor & Permutation::LightingFlags::CharacterLight) {
+		float charLightMul = saturate(dot(viewDirection, worldNormal.xyz)) * CharacterLightParams.x + CharacterLightParams.y * saturate(dot(float2(0.164398998, -0.986393988), worldNormal.yz));
+		float charLightColor = min(CharacterLightParams.w, max(0, CharacterLightParams.z));
+		float3 charLightAmbient = directionalAmbientColor;
+#		if defined(SKYLIGHTING)
+		charLightAmbient *= skylightingDiffuse;
+#		endif
+		float3 charLightScale = saturate(charLightAmbient / max(Color::Ambient(0.4.xxx), EPSILON_DIVISION));
+		diffuseColor += charLightMul * charLightColor * charLightScale;
 	}
 #	endif
 

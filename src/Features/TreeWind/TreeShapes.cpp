@@ -1,6 +1,7 @@
 #include "TreeShapes.h"
 
 #include <DirectXPackedVector.h>
+#include <bit>
 #include <cfloat>
 #include <numeric>
 
@@ -17,8 +18,10 @@ namespace TreeShapes
 		// Crown vertices sit within this many model units (at LOD4 scale) of their trunk
 		constexpr float kCrownRadius = 100.0f;
 		constexpr float kCellSize = 128.0f;
-		// Bend data of a shape not drawn for this many frames is freed
-		constexpr uint kEvictFrames = 600;
+		constexpr float kPairDistance = 8.0f;
+		constexpr double kEvictSeconds = 60.0;
+		constexpr double kEvictInterval = 5.0;
+		constexpr uint kStaleRebuildsPerFrame = 4;
 
 		bool IsTreeShapeName(const RE::BSGeometry* a_geometry)
 		{
@@ -70,6 +73,11 @@ namespace TreeShapes
 			return static_cast<int>(std::floor(a_value / kCellSize));
 		}
 
+		int PairCellOf(float a_value)
+		{
+			return static_cast<int>(std::floor(a_value / kPairDistance));
+		}
+
 		struct VertexView
 		{
 			const uint8_t* raw = nullptr;
@@ -99,6 +107,15 @@ namespace TreeShapes
 
 			a_out = { rendererData->rawVertexData, stride, triShape->GetTrishapeRuntimeData().vertexCount, rendererData->vertexBuffer };
 			return a_out.count > 0;
+		}
+
+		uint64_t ShapeSignature(const VertexView& a_vertices)
+		{
+			const auto p = a_vertices(0);
+			uint64_t h = a_vertices.count;
+			for (const float v : { p.x, p.y, p.z })
+				h = (h ^ std::bit_cast<uint32_t>(v)) * 0x100000001B3ull;
+			return h;
 		}
 
 		// Connected pieces of a shape from its CPU index copy: the root vertex of each vertex's piece.
@@ -277,33 +294,42 @@ namespace TreeShapes
 		return Kind::None;
 	}
 
-	ID3D11ShaderResourceView* BendWeights::Get(RE::BSGeometry* a_geometry, Kind a_kind, uint a_frame, bool a_treeModSupport)
+	ID3D11ShaderResourceView* BendWeights::Get(RE::BSGeometry* a_geometry, Kind a_kind, bool a_treeModSupport)
 	{
 		VertexView vertices;
 		if (!a_geometry || a_kind == Kind::None || !GetVertices(a_geometry, vertices))
 			return nullptr;
 
+		drewThisFrame = true;
 		const auto firstVertex = vertices(0);
 		if (auto it = entries.find(vertices.vertexBuffer); it != entries.end()) {
 			auto& entry = it->second;
-			// Tree-mod crowns rebuild when their block gains trunk cards
-			const bool stale = a_treeModSupport && entry.crown && [&] {
-				const auto blockIt = blocks.find(entry.blockKey);
-				return blockIt != blocks.end() && blockIt->second.generation != entry.generation;
-			}();
-			if (!stale && entry.vertexCount == vertices.count && entry.firstVertex[0] == firstVertex.x && entry.firstVertex[1] == firstVertex.y && entry.firstVertex[2] == firstVertex.z) {
-				entry.lastFrame = a_frame;
-				return entry.srv.get();
+			if (entry.vertexCount == vertices.count && entry.firstVertex[0] == firstVertex.x && entry.firstVertex[1] == firstVertex.y && entry.firstVertex[2] == firstVertex.z) {
+				bool rebuild = false;
+				if (entry.usesCards) {
+					const auto blockIt = blocks.find(entry.blockKey);
+					rebuild = blockIt != blocks.end() && blockIt->second.generation != entry.generation && blockIt->second.changeFrame != frame && staleRebuildBudget > 0;
+				}
+				if (!rebuild) {
+					entry.lastSeen = clock;
+					return entry.srv.get();
+				}
+				--staleRebuildBudget;
 			}
-			// Stale, or the vertex buffer address was reused by another shape
 			entries.erase(it);
 		}
 
-		ZoneScopedN("TreeWind::BuildBendWeights");
 		const uint64_t blockKey = BlockKey(a_geometry);
-		auto& block = blocks[blockKey];
 		const float worldScale = a_geometry->world.scale;
 		const bool allQuads = IsAllQuads(a_geometry);
+		if (a_kind == Kind::Crown && !allQuads && !IsTreeShapeName(a_geometry) && !(a_treeModSupport && worldScale >= 6.0f)) {
+			const auto blockIt = blocks.find(blockKey);
+			if (blockIt == blocks.end() || blockIt->second.cards.empty())
+				return nullptr;
+		}
+
+		ZoneScopedN("TreeWind::BuildBendWeights");
+		auto& block = blocks[blockKey];
 		const auto indices = a_geometry->GetGeometryRuntimeData().rendererData->rawIndexData;
 		const uint32_t triangleCount = a_geometry->AsTriShape()->GetTrishapeRuntimeData().triangleCount;
 
@@ -312,9 +338,8 @@ namespace TreeShapes
 		entry.firstVertex[0] = firstVertex.x;
 		entry.firstVertex[1] = firstVertex.y;
 		entry.firstVertex[2] = firstVertex.z;
-		entry.lastFrame = a_frame;
+		entry.lastSeen = clock;
 		entry.blockKey = blockKey;
-		entry.crown = a_kind == Kind::Crown;
 
 		// Remembers a shape with nothing to sway, so it is not scanned again
 		const auto keepStill = [&]() -> ID3D11ShaderResourceView* {
@@ -351,15 +376,32 @@ namespace TreeShapes
 					}
 				}
 				std::vector<QuadBounds> bounds;
-				for (const auto c : candidates)
-					bounds.push_back(GetQuadBounds(vertices, c));
+				bounds.reserve(candidates.size());
+				std::unordered_map<int64_t, std::vector<size_t>> pairGrid;
 				for (size_t a = 0; a < candidates.size(); ++a) {
-					for (size_t b = 0; b < candidates.size(); ++b) {
-						if (a != b && std::hypot(bounds[a].cx - bounds[b].cx, bounds[a].cy - bounds[b].cy) < 8.0f) {
-							cardStarts.push_back(candidates[a]);
-							break;
+					bounds.push_back(GetQuadBounds(vertices, candidates[a]));
+					pairGrid[CellKey(PairCellOf(bounds[a].cx), PairCellOf(bounds[a].cy))].push_back(a);
+				}
+				constexpr float kPairDistanceSq = kPairDistance * kPairDistance;
+				for (size_t a = 0; a < candidates.size(); ++a) {
+					const int px = PairCellOf(bounds[a].cx), py = PairCellOf(bounds[a].cy);
+					bool paired = false;
+					for (int dy = -1; dy <= 1 && !paired; ++dy) {
+						for (int dx = -1; dx <= 1 && !paired; ++dx) {
+							const auto it = pairGrid.find(CellKey(px + dx, py + dy));
+							if (it == pairGrid.end())
+								continue;
+							for (const size_t b : it->second) {
+								const float ox = bounds[a].cx - bounds[b].cx, oy = bounds[a].cy - bounds[b].cy;
+								if (a != b && ox * ox + oy * oy < kPairDistanceSq) {
+									paired = true;
+									break;
+								}
+							}
 						}
 					}
+					if (paired)
+						cardStarts.push_back(candidates[a]);
 				}
 			}
 
@@ -407,8 +449,9 @@ namespace TreeShapes
 			}
 
 			// Each trunk registers its tree for the crowns of this block, once per shape
-			if (block.trunkShapes.insert(vertices.vertexBuffer).second && (!cardStarts.empty() || !trunks.empty())) {
+			if (block.trunkShapes.insert(ShapeSignature(vertices)).second && (!cardStarts.empty() || !trunks.empty())) {
 				++block.generation;
+				block.changeFrame = frame;
 				for (const auto& trunk : trunks)
 					AddCard(block, trunk, worldScale);
 				for (const auto c : cardStarts) {
@@ -485,8 +528,7 @@ namespace TreeShapes
 			// with real trunks). In the far rings tree-mod billboards are not plain quads and have no trunk cards, so
 			// each piece there bends from its own foot.
 			const bool farRing = worldScale >= 6.0f;
-			if (block.cards.empty() && !farRing)
-				return nullptr;
+			entry.usesCards = true;
 			const float crownRadius = kCrownRadius * 4.0f / std::max(worldScale, 0.01f);
 			const float maxDistance = 1.2f * crownRadius;
 			const auto roots = PieceRoots(indices, triangleCount, vertices.count);
@@ -550,8 +592,6 @@ namespace TreeShapes
 				return keepStill();
 		} else {
 			// 3D crowns follow the nearest trunk card of their block; until those trunks are drawn, the crown stays still
-			if (block.cards.empty())
-				return nullptr;
 			const float crownRadius = kCrownRadius * 4.0f / std::max(worldScale, 0.01f);
 			for (uint32_t i = 0; i < vertices.count; ++i) {
 				const auto p = vertices(i);
@@ -590,11 +630,26 @@ namespace TreeShapes
 	{
 		entries.clear();
 		blocks.clear();
+		lastEvict = clock;
 	}
 
-	void BendWeights::Evict(uint a_frame)
+	void BendWeights::BeginFrame(uint a_frame, float a_deltaTime)
 	{
-		std::erase_if(entries, [a_frame](const auto& a_entry) { return a_frame - a_entry.second.lastFrame > kEvictFrames; });
+		if (drewThisFrame)
+			clock += std::clamp(static_cast<double>(a_deltaTime), 0.0, 0.25);
+		drewThisFrame = false;
+		frame = a_frame;
+		staleRebuildBudget = kStaleRebuildsPerFrame;
+		if (clock - lastEvict >= kEvictInterval) {
+			lastEvict = clock;
+			Evict();
+		}
+	}
+
+	void BendWeights::Evict()
+	{
+		const double now = clock;
+		std::erase_if(entries, [now](const auto& a_entry) { return now - a_entry.second.lastSeen > kEvictSeconds; });
 		// A block lives only while one of its shapes does, so its cards do not pile up
 		std::unordered_set<uint64_t> liveBlocks;
 		for (const auto& [vertexBuffer, entry] : entries)

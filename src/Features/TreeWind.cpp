@@ -251,7 +251,7 @@ void TreeWind::BeginDraw(RE::BSRenderPass* a_pass)
 	if (!swayActive)
 		return;
 	const auto kind = TreeShapes::Classify(a_pass, settings.TreeModSupport);
-	drawBendWeights = kind == TreeShapes::Kind::None ? nullptr : bendWeights.Get(a_pass->geometry, kind, globals::state->frameCount, settings.TreeModSupport);
+	drawBendWeights = kind == TreeShapes::Kind::None ? nullptr : bendWeights.Get(a_pass->geometry, kind, settings.TreeModSupport);
 }
 
 void TreeWind::EndDraw()
@@ -334,12 +334,21 @@ void TreeWind::Reset()
 	data.Params.z = 0.0f;
 	windOffCB->Update(data);
 
+	boundCB = nullptr;
+
 	if (bendWeightsTreeModSupport != settings.TreeModSupport) {
 		bendWeights.Clear();
 		bendWeightsTreeModSupport = settings.TreeModSupport;
-	} else if (globals::state->frameCount % 300 == 0) {
-		bendWeights.Evict(globals::state->frameCount);
 	}
+	bendWeights.BeginFrame(globals::state->frameCount, RE::GetSecondsSinceLastFrame());
+}
+
+void TreeWind::BindWindCB(ID3D11DeviceContext* a_context, ID3D11Buffer* a_buffer)
+{
+	if (boundCB == a_buffer)
+		return;
+	a_context->VSSetConstantBuffers(3, 1, &a_buffer);
+	boundCB = a_buffer;
 }
 
 void TreeWind::SetShaderResources(ID3D11DeviceContext* a_context)
@@ -347,21 +356,23 @@ void TreeWind::SetShaderResources(ID3D11DeviceContext* a_context)
 	if (!swayActive)
 		return;
 	const auto shader = globals::state->currentShader;
-	if (!shader)
+	if (!shader) {
+		boundCB = nullptr;
 		return;
+	}
 
 	const auto type = shader->shaderType.get();
 	// Standard tree LOD draws only trees, and sways from its instance data without bend data
 	if (type == RE::BSShader::Type::DistantTree) {
-		ID3D11Buffer* buffer = windOnCB->CB();
-		a_context->VSSetConstantBuffers(3, 1, &buffer);
+		BindWindCB(a_context, windOnCB->CB());
 		return;
 	}
-	if (type != RE::BSShader::Type::Lighting && type != RE::BSShader::Type::Utility)
+	if (type != RE::BSShader::Type::Lighting && type != RE::BSShader::Type::Utility) {
+		boundCB = nullptr;
 		return;
+	}
 
-	ID3D11Buffer* buffer = drawBendWeights ? windOnCB->CB() : windOffCB->CB();
-	a_context->VSSetConstantBuffers(3, 1, &buffer);
+	BindWindCB(a_context, drawBendWeights ? windOnCB->CB() : windOffCB->CB());
 	if (drawBendWeights)
 		a_context->VSSetShaderResources(120, 1, &drawBendWeights);
 }
