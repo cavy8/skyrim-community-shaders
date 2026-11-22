@@ -1138,12 +1138,13 @@ void ScreenSpaceGI::Composite()
 	auto& rts = renderer->GetRuntimeData().renderTargets;
 	auto& main = rts[globals::deferred->forwardRenderTargets[0]];
 
-	std::array<ID3D11ShaderResourceView*, 5> srvs = {
+	std::array<ID3D11ShaderResourceView*, 6> srvs = {
 		rts[ALBEDO].SRV,
 		rts[NORMALROUGHNESS].SRV,
 		Util::GetCurrentSceneDepthSRV(false),
 		GetDiffuseOutputTexture(),
-		GetDiffuseSH1Texture()
+		GetDiffuseSH1Texture(),
+		rts[MASKS].SRV
 	};
 
 	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());

@@ -907,7 +907,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.Albedo = float4(outputAlbedo, 1);
 	psout.Specular = float4(totalLighting.specular + wetnessDirectSpecularColor * Color::PBRLightingScale, 1);
 	psout.Reflectance = float4(indirectLobes.specular + wetnessReflectance, 1);
-	psout.Masks = float4(0, 0, Color::RGBToYCoCg(directionalAmbientColor).x, 0);
+	psout.Masks = float4(0, 0, SharedData::ssgiSettings.ReplaceAmbient == 0 ? Color::RGBToYCoCg(directionalAmbientColor).x : 0, 0);
 	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, 1);
 #				if !defined(RENDER_DEPTH)
 	psout.Diffuse.rgb = PreExposure::EncodeScene(psout.Diffuse.rgb);
@@ -1348,7 +1348,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(normalVS), 1.0 - outputRoughness, 1);
 
 	psout.Specular = float4(specularColor, 1);
-	psout.Masks = float4(0, 0, Color::RGBToYCoCg(directionalAmbientColor).x, 0);
+	psout.Masks = float4(0, 0, SharedData::ssgiSettings.ReplaceAmbient == 0 ? Color::RGBToYCoCg(directionalAmbientColor).x : 0, 0);
 	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, NeuralRenderingCategories::Foliage), 0, 0, 0);
 #			endif
 #			if !defined(RENDER_DEPTH)
@@ -1540,7 +1540,7 @@ PS_OUTPUT main(PS_INPUT input)
 	psout.Normal.zw = 0;
 
 	psout.Albedo = float4(albedo, 1);
-	psout.Masks = float4(0, 0, Color::RGBToYCoCg(directionalAmbientColor).x, 0);
+	psout.Masks = float4(0, 0, SharedData::ssgiSettings.ReplaceAmbient == 0 ? Color::RGBToYCoCg(directionalAmbientColor).x : 0, 0);
 	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, NeuralRenderingCategories::Foliage), 0, 0, 0);
 #		endif
 

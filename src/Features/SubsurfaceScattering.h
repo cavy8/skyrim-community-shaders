@@ -35,7 +35,6 @@ public:
 	struct Settings
 	{
 		uint EnableCharacterLighting = true;
-		float CharacterLightingStrength = 1.0f;
 		uint CharacterLightingHumanoidOnly = true;
 		int SSMode = 0;
 		int ScatterMode = kPreAndPostScatter;
@@ -53,8 +52,6 @@ public:
 	};
 
 	Settings settings;
-
-	float CharacterLightingStrengthOriginal = -1.0f;
 
 	struct alignas(16) Kernel
 	{

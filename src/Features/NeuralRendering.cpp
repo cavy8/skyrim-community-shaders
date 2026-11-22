@@ -728,7 +728,7 @@ NeuralRendering::ProxyCurve NeuralRendering::ResolveProxyCurve() const
 
 bool NeuralRendering::IsLinearLightingActive()
 {
-	return globals::features::linearLighting.settings.enableLinearLighting && !globals::state->IsFlatWorldMapOpen();
+	return globals::features::linearLighting.IsLinearLightingActive() && !globals::state->IsFlatWorldMapOpen();
 }
 
 NeuralRendering::ColorDomain NeuralRendering::SceneColorDomain(ProxyCurve a_curve) const
@@ -745,7 +745,7 @@ void NeuralRendering::DrawSettings()
 	const bool backendAvailable = IsAvailable();
 	if (!backendAvailable) {
 		ImGui::TextWrapped("%s", T(TKEY("unavailable"),
-			"Neural Rendering is unavailable. Place a compatible nvngx_dlssnr.dll in your Skyrim installation's Data/Shaders/Upscaling/Streamline/ folder, then restart Skyrim.\nBottled Shaders cannot provide or help you acquire the required files."));
+									 "Neural Rendering is unavailable. Place a compatible nvngx_dlssnr.dll in your Skyrim installation's Data/Shaders/Upscaling/Streamline/ folder, then restart Skyrim.\nBottled Shaders cannot provide or help you acquire the required files."));
 	}
 
 	if (!IsDLSSActive()) {

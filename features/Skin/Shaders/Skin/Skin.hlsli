@@ -121,13 +121,22 @@ namespace Skin
 		       BRDF::F_Schlick(material.FuzzColor, saturate(dot(V, H))) * NdotL;
 	}
 
+	float3 PenumbraScattering(float shadow)
+	{
+		const float3 sharpness = float3(0.64, 0.91, 0.94);
+		const float s = clamp(shadow, 1e-4, 1.0 - 1e-4);
+		const float3 lit = pow(s.xxx, sharpness);
+		const float3 shadowed = pow((1.0 - s).xxx, sharpness);
+		return max(shadow.xxx, lit / (lit + shadowed));
+	}
+
 	void SkinDirectLightInput(
 		out DirectLightingOutput lightingOutput,
 		DirectContext context,
 		MaterialProperties material)
 	{
 		lightingOutput = (DirectLightingOutput)0;
-		context.lightColor *= Color::PBRLightingCompensation * context.detailedShadow;
+		context.lightColor *= Color::PBRLightingCompensation * PenumbraScattering(context.detailedShadow);
 
 		const float3 N = context.worldNormal;
 		const float3 V = context.viewDir;

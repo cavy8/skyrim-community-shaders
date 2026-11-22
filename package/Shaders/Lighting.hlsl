@@ -3421,16 +3421,20 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
+	float characterLightFill = 0;
 #	if !defined(LANDSCAPE)
-	if (Permutation::PixelShaderDescriptor & Permutation::LightingFlags::CharacterLight) {
-		float charLightMul = saturate(dot(viewDirection, worldNormal.xyz)) * CharacterLightParams.x + CharacterLightParams.y * saturate(dot(float2(0.164398998, -0.986393988), worldNormal.yz));
-		float charLightColor = min(CharacterLightParams.w, max(0, CharacterLightParams.z));
-		float3 charLightAmbient = directionalAmbientColor;
-#		if defined(SKYLIGHTING)
-		charLightAmbient *= skylightingDiffuse;
+	if ((Permutation::PixelShaderDescriptor & Permutation::LightingFlags::CharacterLight) && (CharacterLightParams.x + CharacterLightParams.y) > 0) {
+		characterLightFill = 0.5 * saturate(dot(viewDirection, worldNormal.xyz));
+#		if defined(DEFERRED)
+		if (SharedData::ssgiSettings.ReplaceAmbient == 0 || inReflection)
 #		endif
-		float3 charLightScale = saturate(charLightAmbient / max(Color::Ambient(0.4.xxx), EPSILON_DIVISION));
-		diffuseColor += charLightMul * charLightColor * charLightScale;
+		{
+			float3 charLightAmbient = directionalAmbientColor;
+#		if defined(SKYLIGHTING)
+			charLightAmbient *= skylightingDiffuse;
+#		endif
+			diffuseColor += charLightAmbient * characterLightFill;
+		}
 	}
 #	endif
 
@@ -3906,6 +3910,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		else
 	float masksZ = Color::RGBToYCoCg(directionalAmbientColor).x;
 #		endif
+	if (SharedData::ssgiSettings.ReplaceAmbient != 0 && !inReflection)
+		masksZ = characterLightFill;
 
 #		if defined(SSS) && defined(SKIN)
 	float skinSSSAmount = baseColor.a;

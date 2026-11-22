@@ -15,6 +15,7 @@ Texture2D<float4> SsgiTexture : register(t3);
 #if defined(SSGI_SH)
 Texture2D<float4> SsgiSH1Texture : register(t4);
 #endif
+Texture2D<float3> MasksTexture : register(t5);
 
 RWTexture2D<float4> MainRW : register(u0);
 
@@ -44,6 +45,8 @@ float3 SampleSSGIIL(uint2 pixCoord)
 	float3 linAlbedo = ColorManagement::SceneToLinear(AlbedoTexture[dispatchID.xy] / Color::PBRLightingScale);
 	float3 ssgiIl = SampleSSGIIL(dispatchID.xy);
 	ssgiIl = max(lerp(Color::RGBToLuminance(ssgiIl), ssgiIl, SharedData::ssgiSettings.ILSaturation), 0.0);
+	if (SharedData::ssgiSettings.ReplaceAmbient != 0)
+		ssgiIl *= 1.0 + saturate(MasksTexture[dispatchID.xy].z);
 
 	float4 mainColor = MainRW[dispatchID.xy];
 	float3 linDiffuseColor = ColorManagement::SceneToLinear(mainColor.xyz);

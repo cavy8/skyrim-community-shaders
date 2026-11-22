@@ -344,7 +344,7 @@ PS_OUTPUT main(PS_INPUT input)
 	psout.Normal.zw = 0;
 
 	psout.Albedo = float4(baseColor.xyz, 1);
-	psout.Masks = float4(0, 0, 1, 0);
+	psout.Masks = float4(0, 0, SharedData::ssgiSettings.ReplaceAmbient == 0 ? 1.0 : 0.0, 0);
 #		else
 	float cloudScatter;
 #			if defined(TREE_WIND)

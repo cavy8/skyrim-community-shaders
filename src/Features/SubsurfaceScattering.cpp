@@ -14,7 +14,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SubsurfaceScattering::DiffusionP
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SubsurfaceScattering::Settings,
 	EnableCharacterLighting,
-	CharacterLightingStrength,
 	CharacterLightingHumanoidOnly,
 	SSMode,
 	ScatterMode,
@@ -37,7 +36,6 @@ void SubsurfaceScattering::DrawSettings()
 		ImGui::Text("%s", T(TKEY("enable_character_lighting_tooltip"), "Vanilla feature."));
 	}
 	if (settings.EnableCharacterLighting) {
-		ImGui::SliderFloat(T(TKEY("strength"), "Strength"), &settings.CharacterLightingStrength, 0, 5, "%.2f");
 		ImGui::Checkbox(T(TKEY("character_lighting_humanoid_only"), "Humanoid Races Only"), (bool*)&settings.CharacterLightingHumanoidOnly);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("character_lighting_humanoid_only_tooltip"), "Applies character lighting only to human, elf and beast races. Creatures such as Falmer and draugr stop glowing."));
@@ -454,12 +452,6 @@ void SubsurfaceScattering::Reset()
 	auto shaderManager = globals::game::smState;
 	auto shaderCache = globals::shaderCache;
 	shaderManager->characterLightEnabled = shaderCache->IsEnabled() ? settings.EnableCharacterLighting : true;
-	if (shaderManager->characterLightEnabled) {
-		if (CharacterLightingStrengthOriginal == -1.0f) {
-			CharacterLightingStrengthOriginal = shaderManager->characterLightParams[2];
-		}
-		shaderManager->characterLightParams[2] = settings.CharacterLightingStrength * CharacterLightingStrengthOriginal;
-	}
 
 	if (updateKernels) {
 		updateKernels = false;

@@ -370,6 +370,58 @@ float SampleShadow3x3(Texture2DArray<float4> tex, SamplerComparisonState samp, f
 	return visibility / 9.0;
 }
 
+float GetSunTanAngularRadius()
+{
+#	if defined(PHYSICAL_SKY)
+	if (SharedData::physSkyData.enabled)
+		return tan(SharedData::physSkyData.diskAngularRadius.w);
+#	endif
+	return 0.00465;
+}
+
+float2 GetShadowProjectionScale(float4x3 projection)
+{
+	return float2(length(float3(projection[0].x, projection[1].x, projection[2].x)),
+		length(float3(projection[0].z, projection[1].z, projection[2].z)));
+}
+
+float SampleShadowPCSS(Texture2DArray<float4> tex, SamplerComparisonState samp, float2 baseUV, float layerIndex, float compareValue, float2x2 rotationMatrix, float2 projectionScale, float maxOccluderDistance)
+{
+	uint width, height, elements;
+	tex.GetDimensions(width, height, elements);
+	const float2 texSize = float2(width, height);
+	const float minRadius = 1.5 / texSize.x;
+	const float sunTan = GetSunTanAngularRadius();
+	const float searchRadius = max(maxOccluderDistance * sunTan * projectionScale.x, minRadius);
+
+	float blockerDepth = 0.0;
+	float blockerCount = 0.0;
+	[unroll] for (uint i = 0; i < 16; i++)
+	{
+		const float2 uv = baseUV + mul(Random::PoissonSampleOffsets16[i], rotationMatrix) * searchRadius;
+		const int2 texel = clamp(int2(uv * texSize), 0, int2(texSize) - 1);
+		const float depth = tex.Load(int4(texel, (int)layerIndex, 0)).x;
+		if (depth < compareValue) {
+			blockerDepth += depth;
+			blockerCount += 1.0;
+		}
+	}
+
+	if (blockerCount == 0.0)
+		return 1.0;
+
+	const float occluderDistance = (compareValue - blockerDepth / blockerCount) / max(projectionScale.y, 1e-8);
+	const float radius = clamp(occluderDistance * sunTan * projectionScale.x, minRadius, searchRadius);
+
+	float visibility = 0.0;
+	[unroll] for (uint j = 0; j < 16; j++)
+	{
+		const float2 uv = baseUV + mul(Random::PoissonSampleOffsets16[j], rotationMatrix) * radius;
+		visibility += tex.SampleCmpLevelZero(samp, float3(uv, layerIndex), compareValue).x;
+	}
+	return visibility / 16.0;
+}
+
 float SampleDualParaboloidShadowPCF(Texture2DArray<float4> tex, SamplerComparisonState samp, float2 baseUV, float layerIndex, float compareValue, float2x2 rotationMatrix, float radius, bool lowerHalf)
 {
 	float visibility = 0.0;
@@ -531,7 +583,10 @@ PS_OUTPUT main(PS_INPUT input)
 #			elif SHADOWFILTER == 2
 		shadowVisibility = SampleShadow3x3(TexShadowMapSamplerComp, SampShadowMapSamplerComp, positionLS.xy, cascadeIndex, shadowMapCompareValue, ShadowSampleParam.zw);
 #			elif SHADOWFILTER == 4 || SHADOWFILTER == 8
-		shadowVisibility = SampleShadowPCF(TexShadowMapSamplerComp, SampShadowMapSamplerComp, positionLS.xy, cascadeIndex, shadowMapCompareValue, rotationMatrix, ShadowSampleParam.z);
+		if (stencilValue != 0)
+			shadowVisibility = SampleShadowPCSS(TexShadowMapSamplerComp, SampShadowMapSamplerComp, positionLS.xy, cascadeIndex, shadowMapCompareValue, rotationMatrix, GetShadowProjectionScale(lightProjectionMatrix), 1024.0);
+		else
+			shadowVisibility = SampleShadowPCF(TexShadowMapSamplerComp, SampShadowMapSamplerComp, positionLS.xy, cascadeIndex, shadowMapCompareValue, rotationMatrix, ShadowSampleParam.z);
 #			endif
 
 		if (cascadeIndex < 1 && StartSplitDistances.y < shadowMapDepth) {
@@ -550,7 +605,10 @@ PS_OUTPUT main(PS_INPUT input)
 #			elif SHADOWFILTER == 2
 			cascade1ShadowVisibility = SampleShadow3x3(TexShadowMapSamplerComp, SampShadowMapSamplerComp, cascade1PositionLS.xy, 1, cascade1ShadowMapCompareValue, ShadowSampleParam.zw);
 #			elif SHADOWFILTER == 4 || SHADOWFILTER == 8
-			cascade1ShadowVisibility = SampleShadowPCF(TexShadowMapSamplerComp, SampShadowMapSamplerComp, cascade1PositionLS.xy, 1, cascade1ShadowMapCompareValue, rotationMatrix, ShadowSampleParam.z);
+			if (stencilValue != 0)
+				cascade1ShadowVisibility = SampleShadowPCSS(TexShadowMapSamplerComp, SampShadowMapSamplerComp, cascade1PositionLS.xy, 1, cascade1ShadowMapCompareValue, rotationMatrix, GetShadowProjectionScale(ShadowMapProj[1]), 1024.0);
+			else
+				cascade1ShadowVisibility = SampleShadowPCF(TexShadowMapSamplerComp, SampShadowMapSamplerComp, cascade1PositionLS.xy, 1, cascade1ShadowMapCompareValue, rotationMatrix, ShadowSampleParam.z);
 #			endif
 
 			float cascade1BlendFactor = smoothstep(0, 1, (shadowMapDepth - StartSplitDistances.y) / (EndSplitDistances.x - StartSplitDistances.y));
@@ -565,7 +623,7 @@ PS_OUTPUT main(PS_INPUT input)
 			float3 focusShadowMapUv = float3(focusShadowMapPosition.xy, StartSplitDistances.w + focusShadowIndex);
 			float focusShadowMapCompareValue = focusShadowMapPosition.z - 3 * shadowMapThreshold;
 #			if SHADOWFILTER == 4 || SHADOWFILTER == 8
-			float focusShadowVisibility = SampleShadowPCF(TexFocusShadowMapSamplerComp, SampFocusShadowMapSamplerComp, focusShadowMapUv.xy, focusShadowMapUv.z, focusShadowMapCompareValue, rotationMatrix, ShadowSampleParam.z);
+			float focusShadowVisibility = SampleShadowPCSS(TexFocusShadowMapSamplerComp, SampFocusShadowMapSamplerComp, focusShadowMapUv.xy, focusShadowMapUv.z, focusShadowMapCompareValue, rotationMatrix, GetShadowProjectionScale(FocusShadowMapProj[focusShadowIndex]), 256.0);
 #			elif SHADOWFILTER == 2
 			float focusShadowVisibility = SampleShadow3x3(TexFocusShadowMapSamplerComp, SampFocusShadowMapSamplerComp, focusShadowMapUv.xy, focusShadowMapUv.z, focusShadowMapCompareValue, ShadowSampleParam.zw);
 #			else
