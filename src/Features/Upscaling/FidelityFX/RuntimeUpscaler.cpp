@@ -827,7 +827,9 @@ bool FidelityFX::IsRuntimeFsr4Available() const
 
 bool FidelityFX::ShouldUseRuntimeUpscalerForFSR() const
 {
-	return globals::features::upscaling.fsr4RuntimeEnableBoot && IsRuntimeUpscalerPresent() && IsAmdAdapterDetected();
+	// Same eligibility as the menu toggle (which is hidden on other GPUs), so a settings file carrying the option
+	// from an eligible card cannot route an older AMD GPU through the runtime bridge with no way to turn it off.
+	return globals::features::upscaling.fsr4RuntimeEnableBoot && IsRuntimeFsr4Available();
 }
 
 bool FidelityFX::CanUseRuntimeUpscalerPath()

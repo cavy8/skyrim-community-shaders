@@ -79,6 +79,8 @@ namespace
 		const auto option = static_cast<size_t>(std::clamp<float>(v, 0.0f, static_cast<float>(kSSGICustomIndex + 1)));
 		auto& s = SSGIRoot::Live();
 		s.Enabled = option != 0;
+		// SaveSettings writes userSettings, so Disabled and Custom must reach it too or the choice is lost on restart.
+		globals::features::screenSpaceGI.userSettings.Enabled = s.Enabled;
 
 		// Custom keeps the current values, so it re-enables without losing tuning.
 		if (option == 0 || option - 1 >= kSSGIPresets.size())

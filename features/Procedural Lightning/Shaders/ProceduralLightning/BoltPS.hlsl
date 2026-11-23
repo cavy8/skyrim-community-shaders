@@ -53,7 +53,7 @@ PS_OUTPUT main(ProceduralLightning::VertexOutput input)
 
 		float falloff = 1.0 - radiusSquared;
 		float noise = Random::perlinNoise(float3(input.Corner * 2.6, input.Shape.x)) * 0.65 + Random::perlinNoise(float3(input.Corner * 6.1, input.Shape.y)) * 0.35;
-		output.Color = float4(min(input.Tint.rgb * input.Tint.a * falloff * falloff * saturate(0.55 + noise), MaxRadiance), 0.0);
+		output.Color = float4(PreExposure::Encode(min(input.Tint.rgb * input.Tint.a * falloff * falloff * saturate(0.55 + noise), MaxRadiance)), 0.0);
 		return output;
 	}
 

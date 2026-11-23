@@ -109,6 +109,26 @@ namespace
 	/// Set when a shortcut moved the selection, so the list scrolls the newly selected row into view.
 	bool g_scrollToSelection = false;
 
+	/// Where the category headers' labels start, measured in the heading font each frame the list draws.
+	float g_headerLabelInset = 0.0f;
+
+	/**
+	 * @brief Left inset of a list row's text. Rows line up with the category labels above them, so the
+	 * disclosure triangles alone sit in the gutter and the groups read as groups; never less than the
+	 * room the selected row's accent bar needs.
+	 */
+	float ListRowTextInset()
+	{
+		return std::max({ g_headerLabelInset, ImGui::GetStyle().FramePadding.x, ThemeManager::Constants::ANIM_SELECTED_BAR_WIDTH * Util::GetUIScale() });
+	}
+
+	/** @brief Room above a section heading so the groups of a long list read apart. Skipped above the list's first row. */
+	void AddSectionGap()
+	{
+		if (ImGui::GetCursorPosY() > ImGui::GetCursorStartPos().y)
+			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ThemeManager::Constants::FEATURE_LIST_SECTION_GAP * Util::GetUIScale());
+	}
+
 	/**
 	 * @brief Moves the selection to the nearest feature entry in a direction, skipping category headers,
 	 * labels and built-in pages. Nothing changes when there is no feature that way.
@@ -916,6 +936,10 @@ bool FeatureListRenderer::RenderNavigation(
 	const std::string currentKey = selectedMenu < menuList.size() ? EntryKey(menuList[selectedMenu]) : std::string();
 	const bool selectOnNav = !inPopup;
 	const auto& style = ImGui::GetStyle();
+	{
+		MenuFonts::FontRoleGuard fontGuard(Menu::FontRole::Heading);
+		g_headerLabelInset = Util::CategoryLabelInset();
+	}
 
 	float footerHeight = 0.0f;
 	{
@@ -1113,13 +1137,13 @@ void FeatureListRenderer::ListMenuVisitor::operator()(const BuiltInMenu& menu)
 	if (isFeatureIssues)
 		ImGui::PushStyleColor(ImGuiCol_Text, globals::menu->GetSettings().Theme.StatusPalette.Error);
 
-	// The row's content clears the selected row's accent bar; the highlight still spans the whole row
-	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(ImGui::GetStyle().FramePadding.x, ThemeManager::Constants::ANIM_SELECTED_BAR_WIDTH * Util::GetUIScale()));
+	// The row's text lines up with the category labels; the highlight still spans the whole row
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ListRowTextInset());
 	const std::string label = std::format("{} ###{}", menu.name, menu.id);
 	if (menu.id == MenuPageIds::kCSEditor) {
 		// Launcher entry: opens the editor without leaving the current page.
 		const bool canOpenEditor = EditorWindow::CanBeOpen();
-		if (Util::Selectable(label.c_str(), false)) {
+		if (Util::Selectable(label.c_str(), false, NavigationSelectableFlags(false))) {
 			if (canOpenEditor)
 				CSEditor::OpenEditorWindow();
 			else  // Without a save, says why
@@ -1138,16 +1162,38 @@ void FeatureListRenderer::ListMenuVisitor::operator()(const BuiltInMenu& menu)
 void FeatureListRenderer::ListMenuVisitor::operator()(const std::string& label)
 {
 	// Static list headings share the category header's font, metrics and alignment.
+	AddSectionGap();
 	MenuFonts::FontRoleGuard fontGuard(Menu::FontRole::Heading);
 	Util::DrawCategoryLabel(label.c_str());
 }
 
 void FeatureListRenderer::ListMenuVisitor::operator()(const CategoryHeader& header)
 {
+	AddSectionGap();
 	MenuFonts::FontRoleGuard fontGuard(Menu::FontRole::Heading);
 	bool isExpanded = header.expanded;
+	const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+	const float rowWidth = ImGui::GetContentRegionAvail().x;
 	if (Util::DrawCategoryHeader(header.name.c_str(), header.label.c_str(), isExpanded, header.count))
-		categoryExpansionStates[header.name] = isExpanded;
+		globals::menu->SetFeatureSectionExpanded(header.name, isExpanded);
+	const ImVec2 rowMax(rowMin.x + rowWidth, ImGui::GetCursorScreenPos().y);
+
+	// Right-click: fold the whole list down to its headings, or open all of it
+	ImGui::PushID(header.name.c_str());
+	if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(rowMin, rowMax) && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+		ImGui::OpenPopup("##CategoryHeaderMenu");
+	if (ImGui::BeginPopup("##CategoryHeaderMenu")) {
+		{
+			// Scoped so the font pops before EndPopup closes the popup
+			MenuFonts::FontRoleGuard menuFont(Menu::FontRole::Body);
+			if (ImGui::MenuItem(T("menu.features.collapse_all", "Collapse All")))
+				globals::menu->SetAllFeatureSectionsExpanded(false);
+			if (ImGui::MenuItem(T("menu.features.expand_all", "Expand All")))
+				globals::menu->SetAllFeatureSectionsExpanded(true);
+		}
+		ImGui::EndPopup();
+	}
+	ImGui::PopID();
 }
 
 void FeatureListRenderer::ListMenuVisitor::operator()(Feature* feat)
@@ -1190,8 +1236,9 @@ void FeatureListRenderer::ListMenuVisitor::DrawFeatureRow(Feature* feat, bool in
 	ImGui::PushID(featureName.c_str());
 
 	const bool isUtility = feat->GetCategory() == FeatureCategories::kUtility;
-	// The row's content clears the selected row's accent bar; the highlight still spans the whole row
-	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(ImGui::GetStyle().FramePadding.x, ThemeManager::Constants::ANIM_SELECTED_BAR_WIDTH * Util::GetUIScale()));
+	// The row's text lines up with the category label above it; the highlight still spans the whole row
+	const float rowTextInset = ListRowTextInset();
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() + rowTextInset);
 	ImGui::PushStyleColor(ImGuiCol_Text, textColor);
 	// The ID comes from the short name, so it survives a language change.
 	if (Util::Selectable(std::format("{} ###Row", feat->GetDisplayName()).c_str(), key == currentKey, NavigationSelectableFlags(selectOnNav && !isUtility))) {
@@ -1241,7 +1288,7 @@ void FeatureListRenderer::ListMenuVisitor::DrawFeatureRow(Feature* feat, bool in
 		if (const auto it = hits.find(feat); it != hits.end() && !it->second.nameMatch && !it->second.settingLabel.empty()) {
 			MenuFonts::FontRoleGuard subtextGuard(Menu::FontRole::Subtext);
 			const std::string hint = it->second.extraSettings > 0 ? std::format("{} (+{})", it->second.settingLabel, it->second.extraSettings) : it->second.settingLabel;
-			const float indent = ImGui::GetFontSize();
+			const float indent = rowTextInset + ImGui::GetFontSize() * ThemeManager::Constants::FEATURE_LIST_HINT_INDENT_EM;
 			ImGui::Indent(indent);
 			Util::TextUnformattedDisabled(hint.c_str());
 			ImGui::Unindent(indent);

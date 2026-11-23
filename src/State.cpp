@@ -35,7 +35,6 @@
 #include "Features/SnowDeformation.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainHelper.h"
-#include "Features/TreeWind.h"
 #include "Features/Upscaling.h"
 #include "Features/ViewAtmosphere.h"
 #include "Features/VolumetricShadows.h"
@@ -222,11 +221,6 @@ void State::Draw()
 			truePBR.SetShaderResources(context);
 		}
 
-		if (globals::features::treeWind.loaded) {
-			ZoneScopedN("TreeWind::SetShaderResources");
-			globals::features::treeWind.SetShaderResources(context);
-		}
-
 		if (permutationData != permutationDataPrevious) {
 			permutationCB->Update(permutationData);
 			permutationDataPrevious = permutationData;
@@ -250,7 +244,7 @@ void State::Draw()
 			}
 		}
 
-		if (globals::menu->overlayVisible && globals::features::performanceOverlay.loaded && globals::features::performanceOverlay.IsOverlayVisible())
+		if (globals::features::performanceOverlay.loaded && globals::features::performanceOverlay.IsOverlayVisible())
 			Debug();
 
 		// Active Shaders counts draws per frame whether or not the performance overlay is up
@@ -540,7 +534,7 @@ namespace
 	{
 		json data = json::object();
 		for (const auto* info : BaselineManager::GetSingleton()->GetFeatureFiles(featureShortName))
-			if ((packId.empty() || info->packId == packId) && info->unknownKeys.empty())
+			if (packId.empty() || info->packId == packId)
 				Util::Settings::MergeSettings(data, info->values);
 		return data;
 	}
@@ -621,8 +615,10 @@ void State::Load(bool a_allowReload)
 		}
 		json merged = BuildFeatureBase(feature);
 		// A value whose type changed between versions would make LoadSettings throw and lose every edit.
+		// Checked against the defaults: a Baseline may hold a boolean where the feature stores a number.
 		std::vector<std::string> mismatched;
-		Util::Settings::EraseMismatchedSettings(edits, merged, "", mismatched);
+		if (const auto defaults = defaultSettings.find(name); defaults != defaultSettings.end())
+			Util::Settings::EraseMismatchedSettings(edits, *defaults, "", mismatched);
 		for (const auto& path : mismatched)
 			logger::warn("Dropped {} setting '{}': its saved type no longer matches", name, path);
 		featureBases[name] = merged;

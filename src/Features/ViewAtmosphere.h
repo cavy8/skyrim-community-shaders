@@ -10,7 +10,7 @@ public:
 	std::string GetName() override { return "Atmosphere and Fog"; }
 	std::string GetShortName() override { return "ViewAtmosphere"; }
 	std::string GetDisplayName() override { return T("feature.view_atmosphere.name", "Atmosphere and Fog"); }
-	std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
+	std::string_view GetCategory() const override { return FeatureCategories::kSkyAndWeather; }
 	bool IsCore() const override { return true; }
 	bool IsAlwaysEnabled() const override { return true; }
 	/** @brief Describes the shared volume and its quality controls. */

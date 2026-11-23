@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <dxgi1_4.h>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <shared_mutex>
@@ -528,6 +529,12 @@ public:
 	void SetFeaturePinned(const std::string& shortName, bool pinned);
 	const std::vector<std::string>& GetPinnedFeatures() const { return pinnedFeatures; }
 
+	/** @brief Expands or collapses one feature list section (a category key, or the Pinned / No Settings section)
+	 *  and queues the layout save, so collapsed sections stay collapsed across sessions. */
+	void SetFeatureSectionExpanded(const std::string& section, bool expanded);
+	/** @brief Expands or collapses every feature list section seen so far and queues the layout save. */
+	void SetAllFeatureSectionsExpanded(bool expanded);
+
 	bool IsSidePanelLayout() const { return sidePanelLayout; }
 	void SetSidePanelLayout(bool enabled);
 
@@ -536,8 +543,6 @@ public:
 
 	/** @brief The menu's keyboard shortcut table; empty until the first frame is drawn. */
 	const std::vector<MenuShortcuts::Shortcut>& GetShortcuts() const { return shortcuts; }
-
-	bool overlayVisible = false;
 
 public:
 	// Move KeyEvent struct here
@@ -596,6 +601,7 @@ private:
 	// Menu navigation
 	std::string pendingFeatureSelection;  // Feature to select on next frame
 	std::vector<std::string> pinnedFeatures;
+	std::map<std::string, bool> featureSectionExpansion;
 	bool sidePanelLayout = false;
 	bool layoutChangeRequested = false;
 	bool unsavedChanges = false;

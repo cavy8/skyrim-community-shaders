@@ -8,7 +8,7 @@ struct SnowDeformation : Feature
 	virtual inline std::string GetName() override { return "Snow Deformation"; }
 	virtual std::string GetDisplayName() override { return T("feature.snow_deformation.name", "Snow Deformation"); }
 	virtual inline std::string GetShortName() override { return "SnowDeformation"; }
-	virtual std::string_view GetCategory() const override { return FeatureCategories::kLandscapeAndTextures; }
+	virtual std::string_view GetCategory() const override { return FeatureCategories::kSkyAndWeather; }
 
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
@@ -16,7 +16,8 @@ struct SnowDeformation : Feature
 			{ T("feature.snow_deformation.key_feature_1", "Footprints and body impressions from the player, NPCs and creatures"),
 				T("feature.snow_deformation.key_feature_2", "Works on vanilla snow textures and on Snow Cover snow"),
 				T("feature.snow_deformation.key_feature_3", "Prints fill back in over time, faster while it snows"),
-				T("feature.snow_deformation.key_feature_4", "Optional snow blanket raises snowy ground so prints become trenches down to the ground") } };
+				T("feature.snow_deformation.key_feature_4", "Optional snow blanket raises snowy ground so prints become trenches down to the ground"),
+				T("feature.snow_deformation.key_feature_5", "Mud, sand and ash take prints too, each with its own depth, shape and fade time") } };
 	}
 
 	static constexpr uint32_t kTexels = 2048;
@@ -50,6 +51,8 @@ struct SnowDeformation : Feature
 		bool DisplaceShadows = true;
 		bool SinkActors = true;
 		bool FirmRoads = true;
+		bool SoftGround = true;
+		bool SnowHeightVariable = true;
 		float BlanketHeight = 20.0f;
 		float Depth = 6.0f;
 		float Lifetime = 240.0f;
@@ -237,8 +240,15 @@ private:
 		float clearance = 0.0f;
 		RE::FormID owner = 0;
 		uint8_t kind = 0;
+		uint8_t ground = 0;
 		bool trail = false;
 		bool road = false;
+	};
+
+	struct SnowHeight
+	{
+		float value = 0.0f;
+		float sinceMeasure = 0.0f;
 	};
 
 	struct ActorSink
@@ -365,6 +375,7 @@ private:
 		uint32_t decalDraws = 0;
 		uint32_t skippedDraws = 0;
 		uint32_t layoutRejects = 0;
+		uint32_t groundStamps = 0;
 		bool snowCover = false;
 	};
 
@@ -393,7 +404,10 @@ private:
 	void DispatchProbes(uint32_t a_stampCount);
 	void ReadProbes();
 	void PublishMeasurements(const std::vector<std::pair<RE::FormID, float>>& a_measurements);
-	void UpdateLevel(uint32_t a_index, const RE::NiPoint3& a_position, float a_decay, float a_deltaTime, float a_snowfall, bool a_sinking, bool a_gateSnowCover, bool a_skylightingReady);
+	void UpdateSnowHeights(const std::vector<RE::ActorPtr>& a_actors, float a_deltaTime);
+	uint8_t GroundKind(RE::TES* a_tes, const RE::NiPoint3& a_position);
+	void ApplyGround(Stamp& a_stamp, RE::TES* a_tes, const RE::NiPoint3& a_position);
+	void UpdateLevel(uint32_t a_index, const RE::NiPoint3& a_position, float a_decay, const float4& a_surfaceKeep, float a_deltaTime, float a_snowfall, bool a_sinking, bool a_gateSnowCover, bool a_skylightingReady);
 	void LoadRoadTextures();
 	bool IsRoad(RE::TES* a_tes, const RE::NiPoint3& a_position) const;
 	void RebuildActivity(Level& a_level);
@@ -475,6 +489,13 @@ private:
 	std::unordered_map<RE::FormID, bool> bootedRaces;
 	std::unordered_map<RE::FormID, float> measuredSinks;
 	std::unordered_map<RE::FormID, float> gatherMeasured;
+	std::unordered_map<RE::FormID, float> measuredRaise;
+	std::unordered_map<RE::FormID, float> gatherRaise;
+	std::unordered_map<RE::FormID, SnowHeight> snowHeights;
+	std::unordered_map<const RE::TESLandTexture*, uint8_t> groundKinds;
+	float gatherRainfall = 0.0f;
+	uint32_t snowHeightActors = 0;
+	float playerSnowHeight = 0.0f;
 	std::unordered_map<RE::FormID, ActorSink> actorSinks;
 	std::vector<Contact> contactScratch;
 	std::vector<RE::ObjectRefHandle> objectRefs;

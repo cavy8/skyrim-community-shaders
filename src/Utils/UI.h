@@ -713,6 +713,11 @@ namespace Util
 		const char* title = "";              /**< @brief Heading-sized title. */
 		const char* status = nullptr;        /**< @brief Short status line under the title, or null. */
 		ImVec4 statusColor{ 1, 1, 1, 1 };    /**< @brief Colour of the status line. */
+		const char* status2 = nullptr;       /**< @brief Second status segment after a divider, in its own colour, or null. */
+		ImVec4 status2Color{ 1, 1, 1, 1 };   /**< @brief Colour of the second status segment. */
+		const char* cornerIcon = nullptr;    /**< @brief Tabler glyph of a small button on the top right corner (e.g. a power toggle), or null. */
+		const char* cornerTooltip = nullptr; /**< @brief Hover text of the corner button, or null. */
+		bool cornerActive = false;           /**< @brief Tints the corner button with the accent while the option is on. */
 		const char* description = nullptr;   /**< @brief Wrapped secondary text, or null. */
 		const char* action = nullptr;        /**< @brief Label of a button along the card's bottom edge, or null for none. */
 		const char* actionTooltip = nullptr; /**< @brief Hover text of the action button, or null. */
@@ -724,7 +729,7 @@ namespace Util
 	{
 		None,
 		Card,  /**< @brief The card itself: select it. */
-		Action /**< @brief The action button. */
+		Action /**< @brief The action or corner button. */
 	};
 
 	/** @brief Height an OptionCard needs to show its content at a given width; take the max to line up a row of cards. */
@@ -1068,6 +1073,12 @@ namespace Util
 	void DrawCategoryLabel(const char* displayName);
 
 	/**
+	 * @brief How far a category header's label sits from the row's left edge, for the current font: the
+	 * gutter kept for its disclosure triangle. Rows listed under a header start here to line up with it.
+	 */
+	float CategoryLabelInset();
+
+	/**
 	 * Draws a custom styled section header with lines extending from both sides
 	 * @param sectionName The name of the section to display
 	 * @param useWhiteText Whether to use white text (for differentiation)
@@ -1303,12 +1314,20 @@ namespace Util
 	/**
 	 * @brief Checks if a feature matches the search query.
 	 * Case-insensitively (ASCII) searches the short name, English name, translated display name and
-	 * translated category label.
+	 * translated category label, then the feature's search keywords (GetFeatureSearchKeywords).
 	 * @param feat The feature to check
 	 * @param searchQuery The search query string
 	 * @return True if the feature matches the search query
 	 */
 	bool FeatureMatchesSearch(Feature* feat, const std::string& searchQuery);
+
+	/**
+	 * @brief What people type for a feature whose name does not say it: abbreviations, the technique's
+	 * common name and the effects it produces ("dlss", "ambient occlusion", "god rays").
+	 * @param shortName The feature's short name
+	 * @return Lower-case English words separated by single spaces; empty when the feature has none
+	 */
+	std::string_view GetFeatureSearchKeywords(std::string_view shortName);
 
 	/**
 	 * @brief Generic case-insensitive string matching for search functionality.

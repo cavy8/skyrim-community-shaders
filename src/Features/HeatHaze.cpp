@@ -354,7 +354,10 @@ void HeatHaze::Prepass()
 	const float frameTime = std::clamp(RE::GetSecondsSinceLastFrame(), 0.0f, 0.1f);
 	const bool paused = globals::game::ui && globals::game::ui->GameIsPaused();
 	if (!paused)
-		time = std::fmod(time + frameTime, 1024.0f);
+		// The shimmer scrolls at Time * 1.1 (and 2.3x that for the fine octave) through value noise that repeats every
+		// 256 cells. Wrap where both octaves have moved a whole number of periods (10 and 23), or every plume's
+		// pattern snaps to an unrelated one on the wrap frame.
+		time = std::fmod(time + frameTime, 2560.0f / 1.1f);
 
 	scanTimer += frameTime;
 	if (scanTimer >= kScanInterval) {

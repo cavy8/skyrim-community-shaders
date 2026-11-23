@@ -70,7 +70,7 @@ namespace SnowCover
 
 	float GetEnvironmentalMultiplier(float3 p)
 	{
-		return (GetHeightMult(p) + SharedData::snowCoverSettings.SeasonalAltitude) / SharedData::snowCoverSettings.BlendSmoothness;
+		return (GetHeightMult(p) + SharedData::snowCoverSettings.SeasonalAltitude) / max(SharedData::snowCoverSettings.BlendSmoothness, 1.0);
 	}
 
 	float GetRooftopLift(float modelHeight, float skyVisibility)

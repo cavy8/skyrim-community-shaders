@@ -413,27 +413,6 @@ cbuffer AlphaTestRefCB : register(b11)
 	float AlphaTestRefRS : packoffset(c0);
 }
 
-#	if defined(RENDER_DEPTH) || (defined(GRASS_LIGHTING) && defined(TRUE_PBR) && defined(DO_ALPHA_TEST) && defined(GRASS_OPTIMIZATIONS))
-float SampleGrassAlpha(float2 uv)
-{
-#		ifdef GRASS_OPTIMIZATIONS
-	float width, height;
-	TexBaseSampler.GetDimensions(width, height);
-
-	const float2 texels = float2(width, height);
-	const float2 footprintX = ddx(uv) * texels;
-	const float2 footprintY = ddy(uv) * texels;
-	const float lengthSqX = dot(footprintX, footprintX);
-	const float lengthSqY = dot(footprintY, footprintY);
-	const float lod = 0.5 * log2(max(min(lengthSqX, lengthSqY), 0.25 * max(lengthSqX, lengthSqY)));
-
-	return TexBaseSampler.SampleLevel(SampBaseSampler, uv, lod + SharedData::MipBias).w;
-#		else
-	return TexBaseSampler.SampleBias(SampBaseSampler, uv, SharedData::MipBias).w;
-#		endif
-}
-#	endif
-
 #	if defined(GRASS_OPTIMIZATIONS) && !defined(RENDER_DEPTH)
 float GetLODBrightness(float tier)
 {
@@ -511,20 +490,26 @@ cbuffer PerMaterial : register(b1)
 #			include "WetnessEffects/WetnessEffects.hlsli"
 #		endif
 
+// When SSGI replaces ambient, its IL (traced plus cubemap fallback) only multiplies the reflection albedo, and the
+// SSGI composite scales IL by 1 + Masks.z. Transmission takes its ambient from IL through that factor, so it is
+// occluded like the rest of the ambient instead of keeping unoccluded vanilla ambient (bright grass in shade).
+float GetSSGITransmissionBoost(float3 reflectionAlbedo, float3 transmissionAlbedo)
+{
+	float reflectionLuminance = Color::RGBToLuminance(ColorManagement::SceneToLinear(max(0, reflectionAlbedo)));
+	float totalLuminance = Color::RGBToLuminance(ColorManagement::SceneToLinear(max(0, reflectionAlbedo + transmissionAlbedo)));
+	return max(0, totalLuminance / max(reflectionLuminance, EPSILON_DIVISION) - 1.0);
+}
+
 #		if defined(TRUE_PBR)
 PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 {
 	PS_OUTPUT psout = (PS_OUTPUT)0;
 #			if defined(RENDER_DEPTH)
-	float diffuseAlpha = input.Fade * SampleGrassAlpha(input.TexCoord.xy);
+	float diffuseAlpha = input.Fade * TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias).w;
 #			elif defined(DO_ALPHA_TEST)
 	// Match the depth pass's UVs and mip selection before applying parallax.
 	float4 baseColor = TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias);
-#				ifdef GRASS_OPTIMIZATIONS
-	float diffuseAlpha = input.Color.w * SampleGrassAlpha(input.TexCoord.xy);
-#				else
-	float diffuseAlpha = input.Color.w * baseColor.w;
-#				endif
+	float diffuseAlpha = input.Color.w * TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias).w;
 #			endif
 #			if defined(RENDER_DEPTH) || defined(DO_ALPHA_TEST)
 	if ((diffuseAlpha - AlphaTestRefRS) < 0)
@@ -842,17 +827,21 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		skylightingDiffuse = PBR::GetFoliageShadowVisibility(skylightingDiffuse, material.Thickness);
 	Skylighting::ApplySkylighting(directColor, directionalAmbientColor, outputAlbedo, skylightingDiffuse);
 	sh2 backSkylightingSH = skylightingSH;
-	[branch] if (any(indirectLobes.backTransmission > 0.0f))
+	[branch] if (SharedData::ssgiSettings.ReplaceAmbient == 0 && any(indirectLobes.backTransmission > 0.0f))
 	{
 		float unusedShadowVisibility;
 		backSkylightingSH = Skylighting::Sample(input.WorldPosition.xyz, -normal, unusedShadowVisibility, false);
 	}
 #				endif
 
+	float ssgiTransmissionBoost = 0;
+	if (SharedData::ssgiSettings.ReplaceAmbient != 0)
+		ssgiTransmissionBoost = GetSSGITransmissionBoost(indirectLobes.diffuse, indirectLobes.frontTransmission + indirectLobes.backTransmission);
+
 	[unroll] for (uint side = 0; side < 2; ++side)
 	{
 		float3 transmissionWeight = side == 0 ? indirectLobes.frontTransmission : indirectLobes.backTransmission;
-		[branch] if (any(transmissionWeight > 0.0f))
+		[branch] if (SharedData::ssgiSettings.ReplaceAmbient == 0 && any(transmissionWeight > 0.0f))
 		{
 			float3 transmissionNormal = side == 0 ? normal : -normal;
 			float3 ambientColor = Color::Ambient(max(0, SharedData::GetAmbient(transmissionNormal)));
@@ -907,7 +896,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.Albedo = float4(outputAlbedo, 1);
 	psout.Specular = float4(totalLighting.specular + wetnessDirectSpecularColor * Color::PBRLightingScale, 1);
 	psout.Reflectance = float4(indirectLobes.specular + wetnessReflectance, 1);
-	psout.Masks = float4(0, 0, SharedData::ssgiSettings.ReplaceAmbient == 0 ? Color::RGBToYCoCg(directionalAmbientColor).x : 0, 0);
+	psout.Masks = float4(0, 0, SharedData::ssgiSettings.ReplaceAmbient == 0 ? Color::RGBToYCoCg(directionalAmbientColor).x : ssgiTransmissionBoost, 0);
 	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, 1);
 #				if !defined(RENDER_DEPTH)
 	psout.Diffuse.rgb = PreExposure::EncodeScene(psout.Diffuse.rgb);
@@ -944,10 +933,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		complex = complexTest.z > 0.0 && abs(length(complexTest) - 1.0) < SharedData::grassLightingSettings.ComplexGrassThreshold;
 	}
 
+	const float2 diffuseUV = float2(input.TexCoord.x, input.TexCoord.y * (complex ? 0.5 : 1.0));
 #			if defined(RENDER_DEPTH)
-	// Depth testing needs only alpha from the atlas's diffuse half.
-	const float2 alphaUV = float2(input.TexCoord.x, input.TexCoord.y * (complex ? 0.5 : 1.0));
-	const float baseAlpha = SampleGrassAlpha(alphaUV);
+	const float baseAlpha = TexBaseSampler.SampleBias(SampBaseSampler, diffuseUV, SharedData::MipBias).w;
 	const float diffuseAlpha = input.Fade * baseAlpha;
 	if ((diffuseAlpha - AlphaTestRefRS) < 0)
 		discard;
@@ -960,20 +948,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif
 	psout.PS.w = diffuseAlpha;
 #			else
-	float4 baseColor;
-	if (complex) {
-		baseColor = TexBaseSampler.SampleBias(SampBaseSampler, float2(input.TexCoord.x, input.TexCoord.y * 0.5), SharedData::MipBias);
-	} else {
-		baseColor = TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias);
-	}
-
 #				if defined(DO_ALPHA_TEST)
-	float diffuseAlpha = input.Color.w * baseColor.w;
+	float diffuseAlpha = input.Color.w * TexBaseSampler.SampleBias(SampBaseSampler, diffuseUV, SharedData::MipBias).w;
 	if ((diffuseAlpha - AlphaTestRefRS) < 0) {
 		discard;
 	}
 #				endif
 
+	float4 baseColor = TexBaseSampler.SampleBias(SampBaseSampler, diffuseUV, SharedData::MipBias);
 	baseColor.xyz = Color::Albedo(ColorManagement::DiffuseToWorking(baseColor.xyz));
 
 	if (SharedData::lodBlendingSettings.DisableTerrainVertexColors)
@@ -1289,10 +1271,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	Skylighting::ApplySkylighting(diffuseColor, directionalAmbientColor, diffuseLobeWeight, skylightingDiffuse);
 #				endif
 
+	float ssgiTransmissionBoost = 0;
+	if (SharedData::ssgiSettings.ReplaceAmbient != 0)
+		ssgiTransmissionBoost = GetSSGITransmissionBoost(diffuseLobeWeight, (frontTransmissionAlbedo + backTransmissionAlbedo) * canopyVisibility);
+
 	[unroll] for (uint side = 0; side < 2; ++side)
 	{
 		float3 transmissionAlbedo = (side == 0 ? frontTransmissionAlbedo : backTransmissionAlbedo) * canopyVisibility;
-		[branch] if (any(transmissionAlbedo > 0.0))
+		[branch] if (SharedData::ssgiSettings.ReplaceAmbient == 0 && any(transmissionAlbedo > 0.0))
 		{
 			float3 transmissionNormal = side == 0 ? normal : -normal;
 			float3 ambientColor = Color::Ambient(max(0, SharedData::GetAmbient(transmissionNormal)));
@@ -1348,7 +1334,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(normalVS), 1.0 - outputRoughness, 1);
 
 	psout.Specular = float4(specularColor, 1);
-	psout.Masks = float4(0, 0, SharedData::ssgiSettings.ReplaceAmbient == 0 ? Color::RGBToYCoCg(directionalAmbientColor).x : 0, 0);
+	psout.Masks = float4(0, 0, SharedData::ssgiSettings.ReplaceAmbient == 0 ? Color::RGBToYCoCg(directionalAmbientColor).x : ssgiTransmissionBoost, 0);
 	psout.Masks2 = float4(NeuralRenderingCategories::Pack(1.0 - vertexAO, NeuralRenderingCategories::Foliage), 0, 0, 0);
 #			endif
 #			if !defined(RENDER_DEPTH)
@@ -1370,7 +1356,7 @@ PS_OUTPUT main(PS_INPUT input)
 #		endif
 
 #		if defined(RENDER_DEPTH)
-	const float baseAlpha = SampleGrassAlpha(input.TexCoord.xy);
+	const float baseAlpha = TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias).w;
 	const float diffuseAlpha = input.Fade * baseAlpha;
 	if ((diffuseAlpha - AlphaTestRefRS) < 0) {
 		discard;
@@ -1383,13 +1369,14 @@ PS_OUTPUT main(PS_INPUT input)
 #			endif
 	psout.PS.w = diffuseAlpha;
 #		else
-	float4 baseColor = TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias);
-	baseColor.xyz = Color::Albedo(ColorManagement::DiffuseToWorking(baseColor.xyz));
 #			if defined(DO_ALPHA_TEST)
-	const float diffuseAlpha = input.Color.w * baseColor.w;
+	const float diffuseAlpha = input.Color.w * TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias).w;
 	if ((diffuseAlpha - AlphaTestRefRS) < 0)
 		discard;
 #			endif
+
+	float4 baseColor = TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias);
+	baseColor.xyz = Color::Albedo(ColorManagement::DiffuseToWorking(baseColor.xyz));
 
 #			ifdef GRASS_OPTIMIZATIONS
 	baseColor.xyz *= GetLODBrightness(input.LodTier);
@@ -1506,6 +1493,10 @@ PS_OUTPUT main(PS_INPUT input)
 	if (SharedData::iblSettings.EnableIBL)
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal, input.WorldPosition.xyz);
 #			endif
+
+	// SSGI IL replaces this ambient in the composite; keeping it would add ambient twice.
+	if (SharedData::ssgiSettings.ReplaceAmbient != 0)
+		directionalAmbientColor = 0;
 
 	directionalAmbientColor += ShadowSampling::GetCloudScatterLighting(cloudScatterColor, cloudScatter, normal);
 

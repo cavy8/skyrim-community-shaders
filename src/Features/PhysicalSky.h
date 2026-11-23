@@ -154,6 +154,9 @@ struct PhysicalSky final : public Feature
 		float sunDiskRad = DirectX::XMConvertToRadians(0.53f);
 		float masserDiskRad = DirectX::XMConvertToRadians(8.f);
 		float secundaDiskRad = DirectX::XMConvertToRadians(4.f);
+		// Visible moon billboard gain in stops; does not change the moon's light.
+		float masserDiscBrightnessEV = 0.f;
+		float secundaDiscBrightnessEV = 0.f;
 
 		std::map<std::string, WorldspaceInfo> worldspaceWhitelist = {
 			{ "Tamriel", { -14500.f } },
@@ -316,6 +319,7 @@ struct PhysicalSky final : public Feature
 		uint dirLightDiskIndex;              // body whose disc phase the clouds show
 		float4 dirLightDisc;                 // world direction to that body, and its glow weight fading out and back in across a swap
 		float4 diskBillboardScale;
+		float4 diskBrightness;  // Sun (unused, 1), Masser, Secunda linear gains on the visible disc; w unused
 	} cbData;
 	STATIC_ASSERT_ALIGNAS_16(CbData);
 
@@ -713,7 +717,10 @@ struct PhysicalSky final : public Feature
 	void RestoreSamplers();
 	void ModifyGrass();
 	void RestoreGrassSampler();
+	/** @brief Render thread, start of a water batch: binds the sky sampler to s13 once for every draw in it. */
 	void ModifyWater();
+	/** @brief Render thread, each water draw: keeps the renderer from re-binding s13. */
+	void HoldWaterSampler();
 	void RestoreWaterSampler();
 	struct Hooks
 	{
@@ -759,9 +766,15 @@ struct PhysicalSky final : public Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		struct BSWaterShader_RestoreGeometry
+		struct BSWaterShader_SetupTechnique
 		{
-			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
+			static bool thunk(RE::BSShader* This, uint32_t Technique);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct BSWaterShader_RestoreTechnique
+		{
+			static void thunk(RE::BSShader* This, uint32_t Technique);
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
@@ -775,7 +788,8 @@ struct PhysicalSky final : public Feature
 			stl::write_vfunc<0x6, BSGrassShader_SetupGeometry>(RE::VTABLE_BSGrassShader[0]);
 			stl::write_vfunc<0x7, BSGrassShader_RestoreGeometry>(RE::VTABLE_BSGrassShader[0]);
 			stl::write_vfunc<0x6, BSWaterShader_SetupGeometry>(RE::VTABLE_BSWaterShader[0]);
-			stl::write_vfunc<0x7, BSWaterShader_RestoreGeometry>(RE::VTABLE_BSWaterShader[0]);
+			stl::write_vfunc<0x2, BSWaterShader_SetupTechnique>(RE::VTABLE_BSWaterShader[0]);
+			stl::write_vfunc<0x3, BSWaterShader_RestoreTechnique>(RE::VTABLE_BSWaterShader[0]);
 		}
 	};
 };

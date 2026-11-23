@@ -1,6 +1,12 @@
 #ifndef __SNOW_DEFORMATION_COMMON_HLSLI__
 #define __SNOW_DEFORMATION_COMMON_HLSLI__
 
+#include "SnowDeformation/Surface.hlsli"
+
+static const float CameraClearance = 20.0;
+static const float CameraDuckInner = 32.0;
+static const float CameraDuckOuter = 64.0;
+
 cbuffer DrawParams : register(b0)
 {
 	float4 InverseRow0;
@@ -93,10 +99,35 @@ float BlanketAt(float2 windowPosition)
 	return raise;
 }
 
-float SnowSurface(float raise, float field)
+uint FieldKind(float2 windowPosition)
+{
+	uint bits = 0;
+	precise float2 windowPosition1 = windowPosition + WindowOffset1.xy;
+	[branch] if (WindowFade(windowPosition) > 0.5)
+	{
+		precise float2 texel = windowPosition * FieldParams.x + FieldParams.yz + 0.5;
+		bits = asuint(Field.Load(int3((int2)floor(texel) & SURFACE_FIELD_MASK, 0)));
+	}
+	else if (WindowFade1(windowPosition1) > 0.0)
+	{
+		precise float2 texel = windowPosition1 * FieldParams1.x + FieldParams1.yz + 0.5;
+		bits = asuint(Field1.Load(int3((int2)floor(texel) & SURFACE_FIELD_MASK, 0)));
+	}
+	return bits & SURFACE_MASK;
+}
+
+float SnowSurface(float raise, float field, uint kind)
 {
 	precise float surface = raise + field;
-	return BlanketParams.z > 0.5 ? max(surface, 0.0) : surface;
+	return BlanketParams.z > 0.5 && kind == SURFACE_SNOW ? max(surface, 0.0) : surface;
+}
+
+float CameraDuck(float3 cameraRelative, float displacement)
+{
+	precise float3 fromEye = cameraRelative - EyePosition.xyz;
+	float duck = 1.0 - smoothstep(CameraDuckInner, CameraDuckOuter, length(fromEye.xy));
+	precise float ducked = min(displacement, max(-CameraClearance - fromEye.z, 0.0));
+	return lerp(displacement, ducked, duck);
 }
 
 float4 DisplaceClipPosition(float4 clipPosition, float displacement)

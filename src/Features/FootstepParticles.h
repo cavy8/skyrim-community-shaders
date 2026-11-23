@@ -118,6 +118,12 @@ struct FootstepParticles : Feature
 	virtual void ClearShaderCache() override;
 	virtual void PostPostLoad() override;
 	virtual void DataLoaded() override;
+	/** @brief Requests a particle clear: the GPU buffer is only aged by the simulate pass, so particles from the session being left would otherwise replay after a load. */
+	virtual void GameReset() override
+	{
+		clearRequested = true;
+		hasLastCamera = false;
+	}
 	virtual void DrawSettings() override;
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;

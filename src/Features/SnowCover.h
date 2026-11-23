@@ -244,7 +244,7 @@ public:
 	float SummerHeightOffset = DEFAULT_SUMMER_HEIGHT_OFFSET;
 	float WinterHeightOffset = DEFAULT_WINTER_HEIGHT_OFFSET;
 
-	float lastHour = 12;
+	float lastHoursPassed = -1.0f;  // Calendar::GetHoursPassed() at the last accumulation step; negative = no sample yet
 	float timeSnowing = 0.0f;
 	float snowingDensity = 0.0f;
 	const char* debug_text = nullptr;
@@ -284,6 +284,10 @@ public:
 	virtual void SetupResources();
 	virtual void Prepass() override;
 	virtual void DataLoaded() override;
+	/** @brief Drops the accumulated snowfall and restarts its clock: both belong to the session being left. */
+	virtual void GameReset() override;
+	/** @brief Restarts the snowfall clock from the loaded save's game time. */
+	virtual void GameLoaded() override { GameReset(); }
 
 	virtual void DrawSettings();
 

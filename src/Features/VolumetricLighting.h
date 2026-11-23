@@ -12,6 +12,8 @@ public:
 		int32_t Width = 320;
 		int32_t Height = 192;
 		int32_t Depth = 90;
+
+		bool operator==(const TextureSize&) const = default;
 	};
 
 	struct Settings
@@ -29,6 +31,8 @@ public:
 		float InteriorSunFocus = 1.0f;
 		float InteriorShaftDefinition = 0.0f;
 		int32_t Effects11Priority = 0;
+
+		bool operator==(const Settings&) const = default;
 	};
 
 	Settings settings;
@@ -174,6 +178,8 @@ private:
 	void DrawEffects11PrioritySetting();
 	TextureSize& FetchCurrentSizeInUnits(bool interior);
 	void SetupVL();
+	/** @brief Pushes the settings to the game if they differ from \p previous, so presets and resets apply without a manual toggle. */
+	void ApplyIfChanged(const Settings& previous);
 
 	enum class Quality : uint8_t
 	{

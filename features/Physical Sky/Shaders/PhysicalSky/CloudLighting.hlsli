@@ -26,7 +26,7 @@ float GetCloudLightScreenVisibility()
 	[unroll] for (uint i = 0; i < FlareOcclusion::SampleCount; i++)
 	{
 		const float2 sampleUV = lightUV + FlareOcclusion::GetSampleOffset(i);
-		visibleSamples += FrameBuffer::IsOutsideFrame(sampleUV) || TexDepth.Load(SharedData::ConvertUVToSampleCoord(sampleUV)) >= 1.0;
+		visibleSamples += FrameBuffer::IsOutsideFrame(sampleUV) || FrameBuffer::ToStandardDepth(TexDepth.Load(SharedData::ConvertUVToSampleCoord(sampleUV))) >= 1.0;
 	}
 	return FlareOcclusion::GetVisibility(visibleSamples);
 }

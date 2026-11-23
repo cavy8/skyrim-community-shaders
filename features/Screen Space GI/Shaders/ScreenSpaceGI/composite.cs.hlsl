@@ -45,8 +45,9 @@ float3 SampleSSGIIL(uint2 pixCoord)
 	float3 linAlbedo = ColorManagement::SceneToLinear(AlbedoTexture[dispatchID.xy] / Color::PBRLightingScale);
 	float3 ssgiIl = SampleSSGIIL(dispatchID.xy);
 	ssgiIl = max(lerp(Color::RGBToLuminance(ssgiIl), ssgiIl, SharedData::ssgiSettings.ILSaturation), 0.0);
+	// Masks.z is an IL gain here: Lighting's character light fill, or grass transmission albedo relative to reflection albedo.
 	if (SharedData::ssgiSettings.ReplaceAmbient != 0)
-		ssgiIl *= 1.0 + saturate(MasksTexture[dispatchID.xy].z);
+		ssgiIl *= 1.0 + clamp(MasksTexture[dispatchID.xy].z, 0.0, 8.0);
 
 	float4 mainColor = MainRW[dispatchID.xy];
 	float3 linDiffuseColor = ColorManagement::SceneToLinear(mainColor.xyz);

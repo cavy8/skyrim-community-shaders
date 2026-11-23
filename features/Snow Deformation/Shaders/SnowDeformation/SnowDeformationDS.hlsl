@@ -3,6 +3,7 @@
 #define SD_INTERPOLATE(member) output.member = patch[0].member * bary.x + patch[1].member * bary.y + patch[2].member * bary.z
 
 static const float PackedSnowDepth = 4.0;
+static const float SurfaceWetness[4] = { 0.0, 1.0, 0.45, 0.2 };
 
 [domain("tri")]
 ControlPoint main(PatchConstants constants, float3 bary : SV_DomainLocation, const OutputPatch<ControlPoint, 3> patch)
@@ -10,10 +11,12 @@ ControlPoint main(PatchConstants constants, float3 bary : SV_DomainLocation, con
 	ControlPoint output;
 
 	precise float4 clipPosition = patch[0].Position * bary.x + patch[1].Position * bary.y + patch[2].Position * bary.z;
-	precise float2 windowPosition = ToWindow(ToCameraRelative(clipPosition));
+	precise float3 cameraRelative = ToCameraRelative(clipPosition);
+	precise float2 windowPosition = ToWindow(cameraRelative);
 	precise float raise = BlanketAt(windowPosition);
 	precise float field = SampleField(windowPosition);
-	precise float displacement = SnowSurface(raise, field);
+	uint kind = FieldKind(windowPosition);
+	precise float displacement = CameraDuck(cameraRelative, SnowSurface(raise, field, kind));
 	precise float4 displacedPosition = DisplaceClipPosition(clipPosition, displacement);
 	output.Position = displacedPosition;
 
@@ -32,15 +35,16 @@ ControlPoint main(PatchConstants constants, float3 bary : SV_DomainLocation, con
 
 	output.WorldPosition.z += displacement;
 	output.PreviousWorldPosition.z += displacement;
-	output.LandBlendWeights2.z = saturate(-field * (1.0 / PackedSnowDepth));
+	float pressed = saturate(-field * (1.0 / PackedSnowDepth));
+	output.LandBlendWeights2.z = kind == SURFACE_SNOW ? pressed : -pressed * SurfaceWetness[kind];
 
 	float2 gradient = 0.0;
 	[branch] if (ActivityAt(windowPosition) > 0.0)
 	{
 		float gradientStep = GradientStep(windowPosition);
 		gradient = float2(
-					   SnowSurface(raise, SampleField(windowPosition + float2(gradientStep, 0.0))) - SnowSurface(raise, SampleField(windowPosition - float2(gradientStep, 0.0))),
-					   SnowSurface(raise, SampleField(windowPosition + float2(0.0, gradientStep))) - SnowSurface(raise, SampleField(windowPosition - float2(0.0, gradientStep)))) *
+					   SnowSurface(raise, SampleField(windowPosition + float2(gradientStep, 0.0)), kind) - SnowSurface(raise, SampleField(windowPosition - float2(gradientStep, 0.0)), kind),
+					   SnowSurface(raise, SampleField(windowPosition + float2(0.0, gradientStep)), kind) - SnowSurface(raise, SampleField(windowPosition - float2(0.0, gradientStep)), kind)) *
 		           (0.5 / gradientStep);
 	}
 

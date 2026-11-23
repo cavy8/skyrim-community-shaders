@@ -19,6 +19,7 @@ cbuffer UpdateParams : register(b0)
 	float4 BlanketShape;
 	float4 BlanketFade;
 	float4 Coarse;
+	float4 SurfaceKeep;
 	float4 Stamps[MAX_STAMPS];
 	float4 StampShape[MAX_STAMPS];
 	float4 StampMotion[MAX_STAMPS];

@@ -738,7 +738,10 @@ void HiZOcclusion::Reset()
 		if (!wasEnabled) {
 			wasEnabled = true;
 		}
-		if (globals::state->IsMainOrLoadingMenuOpen())
+		// Occlusion flags are only refreshed by Prepass. On a frame where it did not get through (shader compile
+		// failure, resource creation failure, shaders toggled off) drop them, or the registration hook would keep
+		// hiding whatever was occluded when the tests stopped. Feature resets run before frameCount advances.
+		if (globals::state->IsMainOrLoadingMenuOpen() || lastBuiltFrame != globals::state->frameCount)
 			ReleaseGeometryReferences();
 	}
 }
@@ -802,6 +805,8 @@ void HiZOcclusion::Prepass()
 			return;
 		}
 	}
+
+	lastBuiltFrame = globals::state->frameCount;
 
 	UpdateCameraMotion();
 

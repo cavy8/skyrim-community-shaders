@@ -745,6 +745,9 @@ void Menu::Init()
 	handler.TypeHash = ImHashStr("CommunityShaders");
 	handler.UserData = this;
 	handler.ReadOpenFn = [](ImGuiContext*, ImGuiSettingsHandler*, const char*) -> void* { return (void*)1; };
+	// "Collapsed=" / "Expanded=": comma-separated feature list sections, as SetFeatureSectionExpanded keys them
+	static constexpr std::string_view kCollapsedKey = "Collapsed=";
+	static constexpr std::string_view kExpandedKey = "Expanded=";
 	handler.ReadLineFn = [](ImGuiContext*, ImGuiSettingsHandler* h, void*, const char* line) {
 		auto* menu = static_cast<Menu*>(h->UserData);
 		const std::string_view text(line);
@@ -762,6 +765,12 @@ void Menu::Init()
 					std::ranges::find(menu->pinnedFeatures, entry) == menu->pinnedFeatures.end())
 					menu->pinnedFeatures.push_back(std::move(entry));
 			}
+		} else if (const bool collapsed = text.starts_with(kCollapsedKey); collapsed || text.starts_with(kExpandedKey)) {
+			for (auto name : std::views::split(text.substr((collapsed ? kCollapsedKey : kExpandedKey).size()), ',')) {
+				std::string section(name.begin(), name.end());
+				if (!section.empty())
+					menu->featureSectionExpansion[std::move(section)] = !collapsed;
+			}
 		}
 	};
 	handler.WriteAllFn = [](ImGuiContext*, ImGuiSettingsHandler* h, ImGuiTextBuffer* buf) {
@@ -776,6 +785,18 @@ void Menu::Init()
 				pinned += menu->pinnedFeatures[i];
 			}
 			buf->appendf("%s\n", pinned.c_str());
+		}
+		for (const bool expanded : { false, true }) {
+			std::string sections;
+			for (const auto& [section, isExpanded] : menu->featureSectionExpansion) {
+				if (isExpanded != expanded)
+					continue;
+				if (!sections.empty())
+					sections += ',';
+				sections += section;
+			}
+			if (!sections.empty())
+				buf->appendf("%s%s\n", (expanded ? kExpandedKey : kCollapsedKey).data(), sections.c_str());
 		}
 		buf->append("\n");
 	};
@@ -886,7 +907,7 @@ void Menu::DrawSettings()
 
 		// Static storage for menu state - must persist across frames
 		static size_t selectedMenu = 0;
-		static std::map<std::string, bool> categoryExpansionStates;
+		auto& categoryExpansionStates = featureSectionExpansion;
 
 		shownFeature = nullptr;
 		FeatureListRenderer::Hooks listHooks{
@@ -998,6 +1019,19 @@ bool Menu::HasUnsavedChanges() const
 bool Menu::IsFeaturePinned(const std::string& shortName) const
 {
 	return std::ranges::find(pinnedFeatures, shortName) != pinnedFeatures.end();
+}
+
+void Menu::SetFeatureSectionExpanded(const std::string& section, bool expanded)
+{
+	featureSectionExpansion[section] = expanded;
+	ImGui::MarkIniSettingsDirty();
+}
+
+void Menu::SetAllFeatureSectionsExpanded(bool expanded)
+{
+	for (auto& [section, isExpanded] : featureSectionExpansion)
+		isExpanded = expanded;
+	ImGui::MarkIniSettingsDirty();
 }
 
 void Menu::SetFeaturePinned(const std::string& shortName, bool pinned)
@@ -1375,7 +1409,7 @@ void Menu::ProcessInputEventQueue()
 					{ settings.EffectToggleKey, [shaderCache]() { shaderCache->SetEnabled(!shaderCache->IsEnabled()); } },
 					{ settings.ShaderBlockPrevKey, [this, shaderCache]() { if (settings.EnableShaderBlocking) shaderCache->IterateShaderBlock(); } },
 					{ settings.ShaderBlockNextKey, [this, shaderCache]() { if (settings.EnableShaderBlocking) shaderCache->IterateShaderBlock(false); } },
-					{ settings.OverlayToggleKey, []() { Menu::GetSingleton()->overlayVisible = !Menu::GetSingleton()->overlayVisible; } },
+					{ settings.OverlayToggleKey, []() { auto& overlay = globals::features::performanceOverlay; if (overlay.loaded) overlay.SetShowInOverlay(!overlay.settings.ShowInOverlay); } },
 					{ settings.CSEditorToggleKey, []() {
 						 auto* ew = EditorWindow::GetSingleton();
 						 if (!ew)

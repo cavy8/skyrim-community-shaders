@@ -9,8 +9,9 @@ ControlPoint main(PatchConstants constants, float3 bary : SV_DomainLocation, con
 	ControlPoint output;
 
 	precise float4 clipPosition = patch[0].Position * bary.x + patch[1].Position * bary.y + patch[2].Position * bary.z;
-	precise float2 windowPosition = ToWindow(ToCameraRelative(clipPosition));
-	precise float displacement = SnowSurface(BlanketAt(windowPosition), SampleField(windowPosition));
+	precise float3 cameraRelative = ToCameraRelative(clipPosition);
+	precise float2 windowPosition = ToWindow(cameraRelative);
+	precise float displacement = CameraDuck(cameraRelative, SnowSurface(BlanketAt(windowPosition), SampleField(windowPosition), FieldKind(windowPosition)));
 	output.Position = DisplaceClipPosition(clipPosition, displacement);
 
 	SD_FIELDS

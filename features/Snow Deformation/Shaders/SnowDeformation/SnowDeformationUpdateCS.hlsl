@@ -1,10 +1,17 @@
 #include "SnowDeformation/UpdateParams.hlsli"
 #include "SnowDeformation/Coverage.hlsli"
+#include "SnowDeformation/Surface.hlsli"
 
 #define STAMP_WORDS 3
 #define FLAG_FRESH 1
 #define FLAG_CLEAR 2
 #define FLAG_SEED 4
+
+static const float SurfaceShoulder[4] = { 0.4, 0.35, 0.15, 0.2 };
+static const float SurfaceChurn[4] = { 1.0, 0.55, 0.4, 0.6 };
+static const float SurfaceRimNoise[4] = { 1.0, 0.3, 0.6, 0.4 };
+static const float SurfaceReposeSlope[4] = { 1.19175, 2.0, 0.67, 1.0 };
+static const float SurfaceReposeRate[4] = { 1.0, 0.3, 1.5, 1.0 };
 
 StructuredBuffer<int4> TileList : register(t3);
 Texture2D<float> BlanketRaise : register(t4);
@@ -132,18 +139,25 @@ float StampDistance(float2 delta, float4 stamp, float4 shape)
 	GroupMemoryBarrierWithGroupSync();
 
 	float height = 0.0;
+	uint surfaceKind = SURFACE_SNOW;
 	[branch] if (!clear)
 	{
 		[branch] if (!fresh)
-			height = BeforeAt(int2(texel)) * Control.x;
+		{
+			const float before = BeforeAt(int2(texel));
+			surfaceKind = SurfaceOf(before);
+			height = before * SurfaceKeep[surfaceKind];
+		}
 		else if ((flags & FLAG_SEED) != 0 && Options.z > 0.5)
 		{
 			const float2 coarseTexel = ((windowPosition + Coarse.xy) * Coarse.z + float2(OriginCell.zw) + 0.5) * (1.0 / FIELD_TEXELS);
 			height = CoarseField.SampleLevel(FieldSampler, coarseTexel, 0);
+			surfaceKind = SurfaceOf(CoarseField.Load(int3((int2)floor(coarseTexel * FIELD_TEXELS) & (FIELD_TEXELS - 1), 0)));
 		}
 	}
 
 	float target = 0.0;
+	uint targetKind = SURFACE_SNOW;
 	float snowCover = -1.0;
 	float raise = -1.0;
 	float churn = 0.0;
@@ -173,11 +187,12 @@ float StampDistance(float2 delta, float4 stamp, float4 shape)
 		const float4 motion = StampMotion[i];
 		const float4 surface = StampSurface[i];
 
+		const uint ground = surface.z > 1.5 ? (uint)(surface.z - 0.5) : SURFACE_SNOW;
 		const float halfLength = max(stamp.z, 1e-3);
 		const float distance = StampDistance(SweptDelta(windowPosition, stamp.xy, motion.xy), stamp, shape);
-		const float press = 1.0 - smoothstep(halfLength * Control.w, halfLength, distance);
+		const float press = 1.0 - smoothstep(halfLength * (ground != SURFACE_SNOW ? SurfaceShoulder[ground] : Control.w), halfLength, distance);
 
-		[branch] if (surface.z > 0.5)
+		[branch] if (surface.z > 0.5 && surface.z < 1.5)
 		{
 			const float meltHere = stamp.w * press;
 			if (meltHere > melt) {
@@ -207,25 +222,36 @@ float StampDistance(float2 delta, float4 stamp, float4 shape)
 		if (snowCover < 0.0)
 			snowCover = SnowCoverAt(worldPosition, windowPosition, surface.x, surface.y);
 
-		const float snow = max(motion.z, snowCover);
+		const uint stampKind = ground != SURFACE_SNOW && snowCover < 0.5 ? ground : SURFACE_SNOW;
+		const float snow = ground != SURFACE_SNOW ? 1.0 : max(motion.z, snowCover);
+		// motion.w is the global blanket height. Limit it to the blanket that exists at this texel: carving the full
+		// height where the blanket is absent (indoors, fire melt, shoreline) left a negative field that the pixel
+		// shader tints as packed snow on bare ground.
 		float carve = motion.w;
-		[branch] if (surface.w > 0.5)
+		[branch] if (surface.w > 0.5 || carve > 0.0)
 		{
 			if (raise < 0.0)
 				raise = RaiseAt(worldPosition);
-			carve = max(raise - (surface.w - 1.0), 0.0);
+			carve = surface.w > 0.5 ? max(raise - (surface.w - 1.0), 0.0) : min(carve, raise);
 		}
 		if (keep < 0.0)
 			keep = 1.0 - RoadAt(worldPosition);
-		const float profile = ((rim * max(1.0 + Shape.y * rimNoise, 0.0) - stamp.w * press * max(1.0 + Shape.z * churn, 0.0)) * snow - carve * press) * keep;
-		if (abs(profile) > abs(target))
+		const float rimShape = rim * max(1.0 + Shape.y * SurfaceRimNoise[stampKind] * rimNoise, 0.0);
+		const float pressShape = stamp.w * press * max(1.0 + Shape.z * SurfaceChurn[stampKind] * churn, 0.0);
+		const float profile = ((rimShape - pressShape) * snow - carve * press) * keep;
+		if (abs(profile) > abs(target)) {
 			target = profile;
+			targetKind = stampKind;
+		}
 	}
 
-	if (target < 0.0 && target < height)
+	if (target < 0.0 && target < height) {
 		height = target;
-	else if (target > 0.0 && target > height && height >= 0.0)
+		surfaceKind = targetKind;
+	} else if (target > 0.0 && target > height && height >= 0.0) {
 		height = target;
+		surfaceKind = targetKind;
+	}
 
 	[branch] if (melt > 0.0 && Coarse.w > 0.0)
 	{
@@ -235,7 +261,7 @@ float StampDistance(float2 delta, float4 stamp, float4 shape)
 
 	[branch] if (!clear && !fresh && target == 0.0 && Options.w > 0.0)
 	{
-		const float maxStep = cellSize * Shape.w;
+		const float maxStep = cellSize * (surfaceKind == SURFACE_SNOW ? Shape.w : SurfaceReposeSlope[surfaceKind]);
 		const float n0 = BeforeAt(int2(texel) + int2(-1, 0));
 		const float n1 = BeforeAt(int2(texel) + int2(1, 0));
 		const float n2 = BeforeAt(int2(texel) + int2(0, -1));
@@ -244,8 +270,8 @@ float StampDistance(float2 delta, float4 stamp, float4 shape)
 		pull += sign(n1 - height) * max(abs(n1 - height) - maxStep, 0.0);
 		pull += sign(n2 - height) * max(abs(n2 - height) - maxStep, 0.0);
 		pull += sign(n3 - height) * max(abs(n3 - height) - maxStep, 0.0);
-		height += pull * 0.25 * Options.w;
+		height += pull * 0.25 * saturate(Options.w * SurfaceReposeRate[surfaceKind]);
 	}
 
-	Field[texel] = clear ? 0.0 : height;
+	Field[texel] = clear ? 0.0 : WithSurface(height, surfaceKind);
 }

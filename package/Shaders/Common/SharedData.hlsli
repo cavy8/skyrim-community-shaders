@@ -742,6 +742,7 @@ namespace SharedData
 		uint dirLightDiskIndex;
 		float4 dirLightDisc;
 		float4 diskBillboardScale;
+		float4 diskBrightness;
 	};
 
 	struct RainRefractionSettings

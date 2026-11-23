@@ -322,7 +322,11 @@ void SampleSSRTracedSpecular(uint2 pixCoord, out float3 specularRadiance, out fl
 					skySpecular = 0;
 				}
 
-				finalIrradiance = envSpecular + skySpecular;
+				float3 reflectionsSpecular = ColorManagement::SceneToLinear(fullSample) * SharedData::iblSettings.SkySpecularIBLScale;
+#		if defined(SKYLIGHTING)
+				reflectionsSpecular *= skylightingSpecular;
+#		endif
+				finalIrradiance = ImageBasedLighting::ApplyAmbientReflectionFallback(envSpecular, skySpecular, reflectionsSpecular, positionWS.xyz);
 			} else
 #	endif
 			{
@@ -394,7 +398,7 @@ void SampleSSRTracedSpecular(uint2 pixCoord, out float3 specularRadiance, out fl
 	color = ColorManagement::LinearToScene(color);
 
 #if defined(PHYSICAL_SKY)
-	if (SharedData::physSkyData.enabled && depth < 1 - 1e-6) {
+	if (SharedData::physSkyData.enabled && FrameBuffer::ToStandardDepth(depth) < 1 - 1e-6) {
 		color.xyz = PhysSky::CompositeAerialPerspective(color.xyz, normalize(positionWS.xyz), dispatchID.xy, length(positionWS.xyz), PhysSky::SampSv);
 	}
 #endif

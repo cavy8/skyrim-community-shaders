@@ -169,17 +169,8 @@ float2 GetTreeShiftVector(float4 position, float4 color)
 }
 #	endif  // TREE_ANIM
 
-#	if defined(TREE_WIND) && defined(VC) && !defined(TREE_ANIM) && !defined(LOD) && !defined(LODLANDSCAPE) && !defined(LANDSCAPE) && !defined(SKINNED) && !defined(EYE)
-#		define TREE_WIND_VS
-#		include "TreeWind/TreeWind.hlsli"
-#	endif
-
-#	if defined(FUR_SHELLS) && defined(TREE_WIND_VS)
-VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID, uint vertexID : SV_VertexID)
-#	elif defined(FUR_SHELLS)
+#	if defined(FUR_SHELLS)
 VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
-#	elif defined(TREE_WIND_VS)
-VS_OUTPUT main(VS_INPUT input, uint vertexID : SV_VertexID)
 #	else
 VS_OUTPUT main(VS_INPUT input)
 #	endif
@@ -215,14 +206,6 @@ VS_OUTPUT main(VS_INPUT input)
 	previousInputPosition.xyz += normal.xyz * treeShiftVector.y;
 #	endif
 
-#	if defined(TREE_WIND_VS)
-	if (TreeWind::IsEnabled()) {
-		float nearScale = TreeWind::GetNearScale(World, input.Position.xyz);
-		inputPosition.xy += TreeWind::GetOffset(input.Position.xyz, TreeWind::Wind.x, vertexID, nearScale);
-		previousInputPosition.xy += TreeWind::GetOffset(input.Position.xyz, TreeWind::Wind.y, vertexID, nearScale);
-	}
-#	endif
-
 #	if defined(SKINNED)
 	precise int4 actualIndices = 765.01.xxxx * input.BoneIndices.xyzw;
 
@@ -243,11 +226,7 @@ VS_OUTPUT main(VS_INPUT input)
 
 	float4 viewPos = mul(ViewProj, worldPosition);
 #	else  // !SKINNED
-#		if defined(TREE_WIND_VS)
-	precise float4 previousWorldPosition = float4(mul(PreviousWorld, previousInputPosition), 1);
-#		else
 	precise float4 previousWorldPosition = float4(mul(PreviousWorld, inputPosition), 1);
-#		endif
 	precise float4 worldPosition = float4(mul(World, inputPosition), 1);
 	precise float4x4 world4x4 = float4x4(World[0], World[1], World[2], float4(0, 0, 0, 1));
 	precise float4x4 modelView = mul(ViewProj, world4x4);
@@ -2736,6 +2715,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		material.Shininess *= lerp(1.0, 1.3, packedSnow);
 #		endif
 	}
+	else if (input.LandBlendWeights2.z < 0.0)
+	{
+		float pressedWet = saturate(-input.LandBlendWeights2.z);
+		material.BaseColor *= lerp(1.0, 0.72, pressedWet);
+		material.Roughness *= lerp(1.0, 0.6, pressedWet);
+#		if !defined(TRUE_PBR)
+		material.Shininess *= lerp(1.0, 1.6, pressedWet);
+#		endif
+	}
 #	endif
 
 	float2 uvOriginal_ddx = ddx(uvOriginal);
@@ -3646,16 +3634,16 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	)
 #		if defined(DYNAMIC_CUBEMAPS)
 #			if defined(SKYLIGHTING)
-		color.xyz += indirectLobeWeights.specular * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(specularNormal, viewDirection, material.Roughness, skylightingSpecularSH, skylightingSpecularFadeOut);
+		color.xyz += indirectLobeWeights.specular * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(specularNormal, viewDirection, material.Roughness, input.WorldPosition.xyz, skylightingSpecularSH, skylightingSpecularFadeOut);
 #				if defined(WETNESS_EFFECTS)
 	if (waterRoughnessSpecular < 1)
-		color.xyz += wetnessReflectance * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(wetnessNormal, viewDirection, waterRoughnessSpecular, skylightingSpecularSH, skylightingSpecularFadeOut);
+		color.xyz += wetnessReflectance * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(wetnessNormal, viewDirection, waterRoughnessSpecular, input.WorldPosition.xyz, skylightingSpecularSH, skylightingSpecularFadeOut);
 #				endif
 #			else
-		color.xyz += indirectLobeWeights.specular * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(specularNormal, viewDirection, material.Roughness);
+		color.xyz += indirectLobeWeights.specular * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(specularNormal, viewDirection, material.Roughness, input.WorldPosition.xyz);
 #				if defined(WETNESS_EFFECTS)
 	if (waterRoughnessSpecular < 1)
-		color.xyz += wetnessReflectance * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(wetnessNormal, viewDirection, waterRoughnessSpecular);
+		color.xyz += wetnessReflectance * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(wetnessNormal, viewDirection, waterRoughnessSpecular, input.WorldPosition.xyz);
 #				endif
 #			endif
 #		else

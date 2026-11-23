@@ -964,6 +964,9 @@ void FootstepParticles::Render(RE::BSShaderAccumulator* a_accumulator)
 	if (!settings.Enabled) {
 		std::scoped_lock lock(pendingMutex);
 		pendingFootsteps.clear();
+		// Frozen particles would otherwise reappear at their old positions when the feature is switched back on.
+		clearRequested = true;
+		hasLastCamera = false;
 		return;
 	}
 

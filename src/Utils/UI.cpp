@@ -1560,6 +1560,25 @@ namespace Util
 
 		// The action button comes before the card button so it wins the hover where they overlap
 		OptionCardClick result = OptionCardClick::None;
+		if (content.cornerIcon) {
+			// Small filled square on the top right so it reads as a button, not as card text
+			const float edge = m.titleHeight;
+			const ImVec2 cornerMin(inner.z - edge, inner.y);
+			ImGui::SetCursorScreenPos(cornerMin);
+			if (ImGui::InvisibleButton("##Corner", ImVec2(edge, edge), ImGuiButtonFlags_EnableNav))
+				result = OptionCardClick::Action;
+			const bool cornerHovered = ImGui::IsItemHovered();
+			if (content.cornerTooltip)
+				HoverTip(content.cornerTooltip);
+			ImVec4 fill = style.Colors[ImGuiCol_Button];
+			if (cornerHovered)
+				fill = style.Colors[ImGuiCol_ButtonHovered];
+			ImVec4 glyph = content.cornerActive ? Colors::GetAccent() : style.Colors[ImGuiCol_TextDisabled];
+			drawList->AddRectFilled(cornerMin, ImVec2(cornerMin.x + edge, cornerMin.y + edge), faded(fill), style.FrameRounding);
+			Icons::DrawCenteredGlyph(drawList, cornerMin, ImVec2(edge, edge), edge * 0.7f, Icons::TI(content.cornerIcon), faded(glyph));
+			if (cornerHovered)
+				ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+		}
 		if (content.action) {
 			ImGui::SetCursorScreenPos(ImVec2(inner.x, inner.w - m.actionHeight));
 			if (Button(content.action))
@@ -1579,12 +1598,22 @@ namespace Util
 					Icons::TI(content.icon), faded(style.Colors[ImGuiCol_Text]));
 				x += m.titleHeight + style.ItemInnerSpacing.x;
 			}
-			drawList->AddText(ImGui::GetFont(), titleSize, ImVec2(x, y), faded(style.Colors[ImGuiCol_Text]), content.title);
+			// Keep a long title clear of the corner button, which sits in the title row
+			const ImVec4 titleClip(inner.x, inner.y, content.cornerIcon ? inner.z - m.titleHeight - style.ItemInnerSpacing.x : inner.z, inner.y + m.titleHeight);
+			drawList->AddText(ImGui::GetFont(), titleSize, ImVec2(x, y), faded(style.Colors[ImGuiCol_Text]), content.title, nullptr, 0.0f,
+				content.cornerIcon ? &titleClip : nullptr);
 			y += m.titleHeight;
 		}
 		if (content.status) {
 			y += m.gap;
 			drawList->AddText(ImVec2(inner.x, y), faded(content.statusColor), content.status);
+			if (content.status2) {
+				const char* divider = " | ";
+				float x = inner.x + ImGui::CalcTextSize(content.status).x;
+				drawList->AddText(ImVec2(x, y), faded(style.Colors[ImGuiCol_TextDisabled]), divider);
+				x += ImGui::CalcTextSize(divider).x;
+				drawList->AddText(ImVec2(x, y), faded(content.status2Color), content.status2);
+			}
 			y += m.statusHeight;
 		}
 		if (content.description) {
@@ -2066,6 +2095,11 @@ namespace Util
 		ImGui::Dummy(ImVec2(availableWidth, 0.0f));
 	}
 
+	float CategoryLabelInset()
+	{
+		return ImGui::GetFontSize() * kCategoryArrowSlotRatio;
+	}
+
 	bool DrawSectionHeader(const char* sectionName, bool useWhiteText, bool isCollapsible, bool* isExpanded)
 	{
 		bool stateChanged = false;
@@ -2304,6 +2338,84 @@ namespace Util
 			return badColor;
 	}
 
+	namespace
+	{
+		// Keyed by short name. Lower case, single spaces; a phrase is simply its words in order.
+		// Only terms the feature's name, category and setting labels do not already carry.
+		constexpr std::pair<std::string_view, std::string_view> kFeatureSearchKeywords[] = {
+			{ "CameraFX", "lens flare dirt motion blur screen effects blood frost" },
+			{ "CapsuleShadows", "character shadows npc shadows soft shadows" },
+			{ "DetailMaps", "micro detail close-up textures" },
+			{ "DynamicCubemaps", "reflections environment map envmap" },
+			{ "Effects11", "enb enbseries fx preset" },
+			{ "ExponentialHeightFog", "mist ground fog" },
+			{ "ExtendedMaterials", "parallax pom complex material displacement" },
+			{ "ExtendedTranslucency", "transparency cloth fabric glass alpha" },
+			{ "FootstepParticles", "dust splashes footprints" },
+			{ "FurShells", "cloaks creatures" },
+			{ "GrassCollision", "bending trample" },
+			{ "GrassOptimizations", "performance fps culling" },
+			{ "HDRDisplay", "brightness nits paper white" },
+			{ "HeatHaze", "shimmer distortion fire" },
+			{ "HiZOcclusion", "hi-z performance fps" },
+			{ "ImageBasedLighting", "ibl ambient light environment lighting" },
+			{ "InteriorSun", "windows sunlight indoors" },
+			{ "LandscapeSeams", "terrain quad borders texture limit" },
+			{ "LightLimitFix", "llf light count particle lights" },
+			{ "LinearLighting", "gamma srgb color space colour space" },
+			{ "LODBlending", "lod pop transition distant" },
+			{ "NightEye", "night vision" },
+			{ "NRD", "denoiser denoise nvidia reblur" },
+			{ "PerformanceOverlay", "fps frame time vram benchmark" },
+			{ "PhysicalSky", "atmosphere clouds sun moon stars" },
+			{ "PostProcessing", "bloom tonemap tonemapping lut color grading colour grading dof depth of field exposure vignette" },
+			{ "ProceduralLightning", "thunder storm bolts" },
+			{ "ProceduralNightSky", "stars aurora" },
+			{ "RainRefraction", "raindrops droplets" },
+			{ "ReverseZ", "z-fighting depth precision flicker" },
+			{ "ScreenSpaceGI", "ssgi ao ambient occlusion global illumination indirect light bounce" },
+			{ "ScreenSpaceReflections", "ssr" },
+			{ "ScreenSpaceShadows", "contact shadows" },
+			{ "Skin", "face pores" },
+			{ "Skylighting", "sky occlusion ambient shadow" },
+			{ "SnowDeformation", "footprints trails tracks" },
+			{ "SubsurfaceScattering", "sss skin" },
+			{ "TerrainBlending", "ground mesh blending" },
+			{ "TerrainShadows", "mountain shadows distant shadows heightmap" },
+			{ "TerrainVariation", "tiling repetition repeating" },
+			{ "UnifiedWater", "water lod seams" },
+			{ "Upscaling", "dlss dlaa fsr taa anti-aliasing antialiasing aa frame generation reflex resolution performance fps" },
+			{ "ViewAtmosphere", "haze aerial perspective" },
+			{ "VolumetricLighting", "god rays light shafts" },
+			{ "WaterEffects", "caustics underwater" },
+			{ "WetnessEffects", "rain puddles wet ripples" },
+		};
+
+		// Shorter queries match too much of a keyword list to be useful.
+		constexpr size_t kMinKeywordQueryLength = 2;
+
+		/** @brief True when the query, already lower case, starts at a word boundary of the keywords. */
+		bool KeywordsMatchSearch(std::string_view keywords, std::string_view loweredQuery)
+		{
+			if (loweredQuery.size() < kMinKeywordQueryLength)
+				return false;
+			for (size_t pos = keywords.find(loweredQuery); pos != std::string_view::npos; pos = keywords.find(loweredQuery, pos + 1)) {
+				if (pos == 0 || keywords[pos - 1] == ' ')
+					return true;
+			}
+			return false;
+		}
+	}
+
+	std::string_view GetFeatureSearchKeywords(std::string_view shortName)
+	{
+		for (const auto& [name, keywords] : kFeatureSearchKeywords) {
+			if (name == shortName)
+				return keywords;
+		}
+		return {};
+	}
+
 	bool FeatureMatchesSearch(Feature* feat, const std::string& searchQuery)
 	{
 		if (searchQuery.empty())
@@ -2316,10 +2428,16 @@ namespace Util
 		};
 
 		// The list shows the (possibly translated) display name and category label, so match those as well as the English names
-		return contains(feat->GetShortName()) ||
-		       contains(feat->GetName()) ||
-		       contains(feat->GetDisplayName()) ||
-		       contains(FeatureListRenderer::TranslateCategory(feat->GetCategory()));
+		const std::string shortName = feat->GetShortName();
+		if (contains(shortName) ||
+			contains(feat->GetName()) ||
+			contains(feat->GetDisplayName()) ||
+			contains(FeatureListRenderer::TranslateCategory(feat->GetCategory())))
+			return true;
+
+		std::string loweredQuery(searchQuery);
+		std::ranges::transform(loweredQuery, loweredQuery.begin(), lowerAscii);
+		return KeywordsMatchSearch(GetFeatureSearchKeywords(shortName), loweredQuery);
 	}
 
 	bool StringMatchesSearch(const std::string& text, const std::string& searchQuery)
