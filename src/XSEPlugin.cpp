@@ -209,7 +209,10 @@ bool Load()
 		L"Data/SKSE/Plugins/NativeWaterLightStabilizer.dll",
 		L"Data/SKSE/Plugins/DynamicWetness.dll",
 		L"Data/SKSE/Plugins/NMN_DeformableTerrain.dll",
-		L"Data/SKSE/Plugins/skyrim-runtime-extender/reversed_z.dll"
+		L"Data/SKSE/Plugins/skyrim-runtime-extender/reversed_z.dll",
+		L"Data/SKSE/Plugins/NativeMeshLightFlickerFix.dll",
+		L"Data/SKSE/Plugins/DripSim.dll",
+		L"Data/SKSE/Plugins/DripSimRain.dll"
 	};
 
 	for (const auto dll : incompatibleDLLs) {

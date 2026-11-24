@@ -268,9 +268,49 @@ namespace
 	};
 }
 
+namespace
+{
+	const char* GetSwapChainFormatName(DXGI_FORMAT a_format)
+	{
+		switch (a_format) {
+		case DXGI_FORMAT_R10G10B10A2_UNORM:
+			return "R10G10B10A2_UNORM (HDR10)";
+		case DXGI_FORMAT_R16G16B16A16_FLOAT:
+			return "R16G16B16A16_FLOAT (scRGB)";
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+			return "R8G8B8A8_UNORM (SDR 8-bit)";
+		case DXGI_FORMAT_B8G8R8A8_UNORM:
+			return "B8G8R8A8_UNORM (SDR 8-bit)";
+		default:
+			return "other";
+		}
+	}
+
+	DXGI_FORMAT GetPresentSwapChainFormat()
+	{
+		auto& upscaling = globals::features::upscaling;
+		if (upscaling.d3d12SwapChainActive)
+			return upscaling.dx12SwapChain.swapChainDesc.Format;
+		DXGI_SWAP_CHAIN_DESC desc{};
+		if (globals::d3d::swapChain && SUCCEEDED(globals::d3d::swapChain->GetDesc(&desc)))
+			return desc.BufferDesc.Format;
+		return DXGI_FORMAT_UNKNOWN;
+	}
+}
+
 bool HDRDisplay::isHDRMonitor = false;
 bool HDRDisplay::isHDRCapableMonitor = false;
 bool HDRDisplay::wasExclusiveFullscreen = false;
+
+void HDRDisplay::HoldHDROffWithoutHDRSwapChain()
+{
+	if (swapChainSupportsHDR || !settings.enableHDR)
+		return;
+	settings.enableHDR = false;
+	hdrHeldOffBySwapChain = true;
+	logger::warn("[HDR] HDR held off: the swap chain is {}, which cannot carry an HDR signal. Another mod may be creating the swap chain.",
+		GetSwapChainFormatName(presentFormat));
+}
 
 bool HDRDisplay::DetectHDR()
 {
@@ -337,14 +377,12 @@ void HDRDisplay::DrawSettings()
 
 	// Disable the checkbox only when no HDR monitor is detected AND HDR is not already on
 	// (allow disabling HDR even on SDR if it was enabled from saved settings).
-	if (!isHDRMonitor && !currentEnableHDR) {
-		ImGui::BeginDisabled();
-	}
-
-	if (ImGui::Checkbox(T(TKEY("enable_hdr"), "Enable HDR"), &currentEnableHDR)) {
-		{
+	{
+		auto _ = Util::DisableGuard(!swapChainSupportsHDR || (!isHDRMonitor && !currentEnableHDR));
+		if (ImGui::Checkbox(T(TKEY("enable_hdr"), "Enable HDR"), &currentEnableHDR)) {
 			std::lock_guard<std::mutex> lock(settingsMutex);
 			settings.enableHDR = currentEnableHDR;
+			HoldHDROffWithoutHDRSwapChain();
 			if (settings.enableHDR && !oldEnableHDR) {
 				logger::info("HDR: enableHDR changed to: true");
 				UpdateHDRData();
@@ -357,12 +395,10 @@ void HDRDisplay::DrawSettings()
 		}
 	}
 
-	if (!isHDRMonitor && !oldEnableHDR) {
-		ImGui::EndDisabled();
-	}
-
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		if (isHDRMonitor) {
+		if (!swapChainSupportsHDR) {
+			ImGui::TextUnformatted(T(TKEY("enable_hdr_tooltip_sdr_swap_chain"), "The game's swap chain is 8-bit SDR, so HDR output is unavailable this session."));
+		} else if (isHDRMonitor) {
 			ImGui::TextUnformatted(T(TKEY("enable_hdr_tooltip"), "Enable HDR output. Matches vanilla visuals with extended dynamic range."));
 		} else if (isHDRCapableMonitor) {
 			ImGui::TextUnformatted(T(TKEY("enable_hdr_tooltip_windows_off"), "Monitor supports HDR but Windows HDR is off. Enable HDR in Windows Display Settings, then restart the game."));
@@ -371,8 +407,14 @@ void HDRDisplay::DrawSettings()
 		}
 	}
 
+	if (!swapChainSupportsHDR) {
+		ImGui::Spacing();
+		Util::Text::WrappedWarning(T(TKEY("sdr_swap_chain_warning"), "HDR is unavailable: the game's swap chain is 8-bit SDR, so HDR output would look grey and washed out."));
+		Util::Text::WrappedWarning(T(TKEY("sdr_swap_chain_warning_detail"), "Another mod (an ENB or ReShade d3d11.dll, a display tweak) may be creating the swap chain. Your Enable HDR choice is kept and returns once the swap chain supports HDR."));
+	}
+
 	// Advanced override button — shown when HDR is neither active nor auto-detected
-	if (!isHDRMonitor && !oldEnableHDR) {
+	if (!isHDRMonitor && !oldEnableHDR && swapChainSupportsHDR) {
 		ImGui::SameLine();
 		if (Util::Button(T(TKEY("advanced"), "Advanced"))) {
 			bool dontShowWarning;
@@ -390,6 +432,7 @@ void HDRDisplay::DrawSettings()
 					std::lock_guard<std::mutex> lock(settingsMutex);
 					settings.enableHDR = true;
 					logger::info("HDR: enableHDR changed to: true (advanced override, warning suppressed)");
+					HoldHDROffWithoutHDRSwapChain();
 					UpdateHDRData();
 					UpdateSwapChainColorSpace();
 				}
@@ -441,6 +484,7 @@ void HDRDisplay::DrawSettings()
 				std::lock_guard<std::mutex> lock(settingsMutex);
 				settings.enableHDR = true;
 				logger::info("HDR: enableHDR changed to: true (forced override)");
+				HoldHDROffWithoutHDRSwapChain();
 				UpdateHDRData();
 				UpdateSwapChainColorSpace();
 			}
@@ -579,6 +623,8 @@ void HDRDisplay::SaveSettings(json& o_json)
 {
 	std::lock_guard<std::mutex> lock(settingsMutex);
 	o_json = settings;
+	if (hdrHeldOffBySwapChain)
+		o_json["enableHDR"] = true;
 }
 
 void HDRDisplay::LoadSettings(json& o_json)
@@ -591,6 +637,8 @@ void HDRDisplay::LoadSettings(json& o_json)
 	settings.hdrPeakNits = std::clamp(settings.hdrPeakNits, kHdrPeakNitsMin, kHdrPeakNitsMax);
 	settings.hdrPaperWhite = std::clamp(settings.hdrPaperWhite, 80u, settings.hdrPeakNits - 1);
 	settings.hdrUIBrightness = std::isfinite(settings.hdrUIBrightness) ? std::clamp(settings.hdrUIBrightness, 0.5f, 5.0f) : 1.0f;
+	hdrHeldOffBySwapChain = false;
+	HoldHDROffWithoutHDRSwapChain();
 
 	// Defer auto-detection to SetupResources where the swap chain is available.
 	// DetectHDR() needs globals::d3d::swapChain which isn't valid during early plugin init.
@@ -618,6 +666,8 @@ void HDRDisplay::RestoreDefaultSettings()
 	settings.hdrPeakNits = 1000;
 	settings.hdrUIBrightness = 1.0f;
 	settings.dontShowHDRWarning = false;
+	hdrHeldOffBySwapChain = false;
+	HoldHDROffWithoutHDRSwapChain();
 	if (settings.enableHDR != oldEnableHDR) {
 		UpdateHDRData();
 		UpdateSwapChainColorSpace();
@@ -657,12 +707,19 @@ void HDRDisplay::SetupResources()
 
 	DetectHDR();
 
-	if (pendingAutoDetect) {
-		pendingAutoDetect = false;
+	presentFormat = GetPresentSwapChainFormat();
+	swapChainSupportsHDR = presentFormat == DXGI_FORMAT_UNKNOWN || presentFormat == DXGI_FORMAT_R10G10B10A2_UNORM || presentFormat == DXGI_FORMAT_R16G16B16A16_FLOAT;
+	logger::info("[HDR] Presenting swap chain format: {}", GetSwapChainFormatName(presentFormat));
+
+	{
 		std::lock_guard<std::mutex> lock(settingsMutex);
-		settings.enableHDR = isHDRMonitor;
-		settings.hdrAutoDetected = true;
-		logger::info("[HDR] Auto-configured HDR based on display: {}", isHDRMonitor ? "enabled" : "disabled");
+		if (pendingAutoDetect) {
+			pendingAutoDetect = false;
+			settings.enableHDR = isHDRMonitor;
+			settings.hdrAutoDetected = true;
+			logger::info("[HDR] Auto-configured HDR based on display: {}", isHDRMonitor ? "enabled" : "disabled");
+		}
+		HoldHDROffWithoutHDRSwapChain();
 	}
 
 	cachedDisplayMaxLuminance = GetDisplayMaxLuminance();
@@ -700,12 +757,7 @@ void HDRDisplay::CreateHDRTextures()
 	DXGI_SWAP_CHAIN_DESC scDesc;
 	if (SUCCEEDED(globals::d3d::swapChain->GetDesc(&scDesc))) {
 		swapChainFormat = scDesc.BufferDesc.Format;
-		logger::info("[HDR] Swap chain format: {} ({})", (int)swapChainFormat,
-			swapChainFormat == DXGI_FORMAT_R10G10B10A2_UNORM  ? "R10G10B10A2_UNORM (HDR10)" :
-			swapChainFormat == DXGI_FORMAT_R16G16B16A16_FLOAT ? "R16G16B16A16_FLOAT (scRGB)" :
-			swapChainFormat == DXGI_FORMAT_R8G8B8A8_UNORM     ? "R8G8B8A8_UNORM (SDR 8-bit)" :
-			swapChainFormat == DXGI_FORMAT_B8G8R8A8_UNORM     ? "B8G8R8A8_UNORM (SDR 8-bit)" :
-																"other");
+		logger::info("[HDR] Swap chain format: {} ({})", (int)swapChainFormat, GetSwapChainFormatName(swapChainFormat));
 	}
 
 	texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;

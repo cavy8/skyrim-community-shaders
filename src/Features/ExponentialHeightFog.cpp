@@ -234,6 +234,16 @@ ExponentialHeightFog::Settings ExponentialHeightFog::GetCommonBufferData() const
 		};
 		data.vanillaFogFarColor = sanitizeColor(sky->skyColor[static_cast<uint32_t>(RE::TESWeather::ColorTypes::kFogFar)], kFallbackFogColor);
 		data.vanillaFogNearColor = sanitizeColor(sky->skyColor[static_cast<uint32_t>(RE::TESWeather::ColorTypes::kFogNear)], kFallbackFogColor);
+		const auto& tint = settings.originalFogColorOverride;
+		const float tintLuminance = 0.2126f * tint.x + 0.7152f * tint.y + 0.0722f * tint.z;
+		if (data.useVanillaFogSettings && !Util::IsInterior() && tint.w > 0.0f && tintLuminance > 0.0f) {
+			for (auto* target : { &data.vanillaFogNearColor, &data.vanillaFogFarColor }) {
+				const float scale = (0.2126f * target->x + 0.7152f * target->y + 0.0722f * target->z) / tintLuminance;
+				target->x = std::lerp(target->x, tint.x * scale, tint.w);
+				target->y = std::lerp(target->y, tint.y * scale, tint.w);
+				target->z = std::lerp(target->z, tint.z * scale, tint.w);
+			}
+		}
 	}
 	ApplyInteriorFog(data);
 	if (!data.useVanillaFogSettings)
@@ -330,13 +340,13 @@ void ExponentialHeightFog::DrawHeightFogSettings()
 	ImGui::ColorEdit4(T(TKEY("fog_inscattering_color"), "Fog Inscattering Color"), (float*)&settings.fogInscatteringColor);
 	ImGui::BeginDisabled(settings.useVanillaFogSettings != 0);
 	ImGui::SliderFloat(T(TKEY("original_fog_color_amount"), "Original Fog Color Amount"), &settings.originalFogColorAmount, 0.0f, 1.0f, "%.2f");
+	ImGui::EndDisabled();
 	ImGui::ColorEdit4(T(TKEY("original_fog_color_override"), "Original Fog Color Override"), (float*)&settings.originalFogColorOverride);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("original_fog_color_override_tooltip"),
-							  "Replaces the weather's fog colour used by Original Fog Color Amount.\n"
-							  "Alpha blends from the weather colour (0) to this colour (1)."));
+							  "Replaces the weather's fog colour. Alpha blends from the weather colour (0) to this colour (1).\n"
+							  "With weather fog settings, outdoors, only the hue changes: the weather fog keeps its brightness."));
 	}
-	ImGui::EndDisabled();
 	ImGui::BeginDisabled(settings.useVanillaFogSettings != 0 && settings.fogLightingInfluence <= 0.0f);
 	ImGui::SliderFloat(T(TKEY("dir_inscattering_mul"), "Directional Light Inscattering Multiplier"), &settings.directionalInscatteringMultiplier, 0.0f, 10.0f, "%.2f");
 	ImGui::BeginDisabled(settings.directionalInscatteringMultiplier <= 0.0f);
