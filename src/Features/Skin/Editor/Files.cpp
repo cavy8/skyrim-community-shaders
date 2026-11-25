@@ -81,6 +81,14 @@ namespace SkinEditor
 		return bytes;
 	}
 
+	bool ResourceExists(const std::string& a_path)
+	{
+		if (const auto file = SessionOutput(a_path); file && std::filesystem::exists(*file))
+			return true;
+		RE::BSResourceNiBinaryStream input(ResourcePath(a_path));
+		return input.good() && input.stream;
+	}
+
 	Bytes ReadResource(const std::string& a_path)
 	{
 		const auto path = std::filesystem::u8path(a_path);

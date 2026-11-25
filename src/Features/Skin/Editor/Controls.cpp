@@ -36,6 +36,11 @@ namespace
 			return 4;
 		case Parameter::WetResponse:
 			return 5;
+		case Parameter::NormalShadowStrength:
+		case Parameter::NormalShadowLength:
+		case Parameter::NormalShadowHardness:
+		case Parameter::ContactShadowStrength:
+			return 6;
 		default:
 			return 1;
 		}
@@ -55,8 +60,8 @@ void Skin::DrawMaterialControls()
 	const auto* current = LayerChanges(layer);
 	auto changes = current ? *current : Changes{};
 
-	const char* sections[] = { T("feature.skin.section_textures", "Textures"), T("feature.skin.section_specular", "Dual specular lobes"), T("feature.skin.section_fuzz", "Fuzz and edges"), T("feature.skin.section_transmission", "Transmission and SSS"), T("feature.skin.section_detail", "Detail normals"), T("feature.skin.section_wetness", "Wet response") };
-	Util::SegmentedControl("##skin_sections", sections, 6, editor.section);
+	const char* sections[] = { T("feature.skin.section_textures", "Textures"), T("feature.skin.section_specular", "Dual specular lobes"), T("feature.skin.section_fuzz", "Fuzz and edges"), T("feature.skin.section_transmission", "Transmission and SSS"), T("feature.skin.section_detail", "Detail normals"), T("feature.skin.section_wetness", "Wet response"), T("feature.skin.section_shadows", "Shadows") };
+	Util::SegmentedControl("##skin_sections", sections, 7, editor.section);
 	ImGui::Spacing();
 	const auto effective = Apply(inherited, changes);
 	switch (editor.section) {
@@ -71,6 +76,9 @@ void Skin::DrawMaterialControls()
 		break;
 	case 5:
 		Util::Text::WrappedSecondary("%s", T("feature.skin.wet_section_help", "Set how strongly this skin responds to wetness. Overall wetness, sweat and noise controls remain in the Advanced Skin feature settings."));
+		break;
+	case 6:
+		Util::Text::WrappedSecondary("%s", T("feature.skin.shadow_section_help", "Normal map shadows trace the sun across the skin's own normal map, so wrinkles and muscle grooves shade themselves. Length is in game units. Screen-space shadow strength scales contact shadows from other geometry, such as hair, on this skin."));
 		break;
 	default:
 		break;

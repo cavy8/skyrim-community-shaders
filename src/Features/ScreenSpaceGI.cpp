@@ -508,13 +508,16 @@ void ScreenSpaceGI::SetupResources()
 		mainTex.texture->GetDesc(&texDesc);
 		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-		texDesc.MipLevels = srvDesc.Texture2D.MipLevels = 5;
+		const uint mipCount = std::clamp<uint>(static_cast<uint>(std::bit_width(std::min(texDesc.Width, texDesc.Height))), 1u, 5u);
+		texDesc.MipLevels = srvDesc.Texture2D.MipLevels = mipCount;
+		for (uint i = 0; i < 5; ++i)
+			uavRadiance[i] = uavWorkingDepth[i] = uavNormal[i] = nullptr;
 
 		{
 			texRadiance = eastl::make_unique<Texture2D>(texDesc, "SSGI::Radiance");
 			texRadiance->CreateSRV(srvDesc);
 
-			for (uint i = 0; i < 5; ++i) {
+			for (uint i = 0; i < mipCount; ++i) {
 				D3D11_UNORDERED_ACCESS_VIEW_DESC mipUavDesc = {
 					.Format = DXGI_FORMAT_R16G16B16A16_FLOAT,
 					.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
@@ -532,10 +535,10 @@ void ScreenSpaceGI::SetupResources()
 		{
 			texWorkingDepth = eastl::make_unique<Texture2D>(texDesc, "SSGI::WorkingDepth");
 			texWorkingDepth->CreateSRV(srvDesc);
-			for (int i = 0; i < 5; ++i) {
+			for (uint i = 0; i < mipCount; ++i) {
 				uavDesc.Texture2D.MipSlice = i;
 				DX::ThrowIfFailed(device->CreateUnorderedAccessView(texWorkingDepth->resource.get(), &uavDesc, uavWorkingDepth[i].put()));
-				Util::SetResourceName(uavWorkingDepth[i].get(), "SSGI::WorkingDepth UAV mip%d", i);
+				Util::SetResourceName(uavWorkingDepth[i].get(), "SSGI::WorkingDepth UAV mip%u", i);
 			}
 		}
 
@@ -543,7 +546,7 @@ void ScreenSpaceGI::SetupResources()
 		{
 			texNormal = eastl::make_unique<Texture2D>(texDesc, "SSGI::Normal");
 			texNormal->CreateSRV(srvDesc);
-			for (uint i = 0; i < 5; ++i) {
+			for (uint i = 0; i < mipCount; ++i) {
 				uavDesc.Texture2D.MipSlice = i;
 				DX::ThrowIfFailed(device->CreateUnorderedAccessView(texNormal->resource.get(), &uavDesc, uavNormal[i].put()));
 				Util::SetResourceName(uavNormal[i].get(), "SSGI::Normal UAV mip%u", i);

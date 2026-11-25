@@ -31,7 +31,8 @@ namespace SkinMaterials
 		Parameter::PhysicalMainRoughnessMultiplier, Parameter::PhysicalSecondRoughnessMultiplier, Parameter::PhysicalSpecularStrength,
 		Parameter::ExtraEdgeRoughness, Parameter::Fuzz, Parameter::FuzzRoughness, Parameter::FuzzF0,
 		Parameter::TransmissionEnabled, Parameter::Transmission, Parameter::TransmissionDepth, Parameter::SSSAmount,
-		Parameter::DetailEnabled, Parameter::DetailStrength, Parameter::DetailTiling, Parameter::BodyTilingMultiplier, Parameter::WetResponse
+		Parameter::DetailEnabled, Parameter::DetailStrength, Parameter::DetailTiling, Parameter::BodyTilingMultiplier, Parameter::WetResponse,
+		Parameter::NormalShadowStrength, Parameter::NormalShadowLength, Parameter::NormalShadowHardness, Parameter::ContactShadowStrength
 	};
 
 	/// Extension textures, in the order used everywhere else: Skin controls (RFAOS), wet surface, detail.
@@ -70,6 +71,8 @@ namespace SkinMaterials
 		Parameters parameters;
 		std::array<bool, ParameterCount> specified{};
 		std::array<std::string, TextureCount> textures;
+		/// A layer chose this texture, including an explicit "none"; unset inputs fall back to the naming convention.
+		std::array<bool, TextureCount> textureSpecified{};
 		bool enabled = false;
 		bool operator==(const Material&) const = default;
 		bool Empty() const

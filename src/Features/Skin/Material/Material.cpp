@@ -59,6 +59,14 @@ namespace SkinMaterials
 			return T("feature.skin.transmission_enabled", "Enable transmission");
 		case Parameter::BodyTilingMultiplier:
 			return T("feature.skin.body_tiling_multiplier", "Body Tiling Multiplier");
+		case Parameter::NormalShadowStrength:
+			return T("feature.skin.normal_shadow_strength", "Normal map shadow strength");
+		case Parameter::NormalShadowLength:
+			return T("feature.skin.normal_shadow_length", "Normal map shadow length");
+		case Parameter::NormalShadowHardness:
+			return T("feature.skin.normal_shadow_hardness", "Normal map shadow hardness");
+		case Parameter::ContactShadowStrength:
+			return T("feature.skin.contact_shadow_strength", "Screen-space shadow strength");
 		default:
 			return "";
 		}
@@ -66,7 +74,7 @@ namespace SkinMaterials
 	const char* SettingName(size_t a_index)
 	{
 		static constexpr std::array<const char*, ParameterCount> names{
-			"SkinMainRoughness", "F0", "FuzzStrength", "EnableSkinDetail", "SkinDetailStrength", "SkinDetailTiling", "SSSAmount", "Translucency", "sssWidth", "WetResponse", "SkinSecondRoughness", "SkinSpecularTexMultiplier", "SecondarySpecularStrength", "BaseColorMultiplier", "PhysicalMainRoughnessMultiplier", "PhysicalSecondRoughnessMultiplier", "PhysicalSpecularStrength", "ExtraEdgeRoughness", "FuzzRoughness", "FuzzF0", "UseSSS", "BodyTilingMultiplier"
+			"SkinMainRoughness", "F0", "FuzzStrength", "EnableSkinDetail", "SkinDetailStrength", "SkinDetailTiling", "SSSAmount", "Translucency", "sssWidth", "WetResponse", "SkinSecondRoughness", "SkinSpecularTexMultiplier", "SecondarySpecularStrength", "BaseColorMultiplier", "PhysicalMainRoughnessMultiplier", "PhysicalSecondRoughnessMultiplier", "PhysicalSpecularStrength", "ExtraEdgeRoughness", "FuzzRoughness", "FuzzF0", "UseSSS", "BodyTilingMultiplier", "NormalShadowStrength", "NormalShadowLength", "NormalShadowHardness", "ContactShadowStrength"
 		};
 		return names.at(a_index);
 	}
@@ -254,8 +262,10 @@ namespace SkinMaterials
 			}
 		for (size_t i = 0; i < a_changes.textures.size(); ++i) {
 			const auto& texture = a_changes.textures[i];
-			if (texture.mode != TextureMode::Inherit)
+			if (texture.mode != TextureMode::Inherit) {
 				a_base.textures[i] = texture.mode == TextureMode::Resource ? texture.path : "";
+				a_base.textureSpecified[i] = true;
+			}
 		}
 		a_base.enabled = true;
 		return a_base;
@@ -266,8 +276,10 @@ namespace SkinMaterials
 		for (size_t i = 0; i < ParameterCount; ++i)
 			if (!a_material.enabled || !a_material.specified[i])
 				a_material.parameters.values[i] = a_defaults.values[i];
-		if (!a_material.enabled)
+		if (!a_material.enabled) {
 			a_material.textures = {};
+			a_material.textureSpecified = {};
+		}
 		a_material.specified.fill(true);
 		a_material.enabled = true;
 		return a_material;
@@ -314,6 +326,8 @@ namespace SkinMaterials
 		for (size_t i = 0; i < TextureCount; ++i)
 			if (!a_material.textures[i].empty())
 				changes.textures[i] = { TextureMode::Resource, a_material.textures[i] };
+			else if (a_material.textureSpecified[i])
+				changes.textures[i] = { TextureMode::Default, {} };
 		const auto body = Encode(changes);
 		nlohmann::ordered_json result{ { "format", Format }, { "version", Version } };
 		result["parameters"] = body.at("parameters");

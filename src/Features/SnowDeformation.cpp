@@ -1283,7 +1283,7 @@ const std::vector<SnowDeformation::CachedShape>& SnowDeformation::ActorCollision
 		entry.root.reset(a_root);
 		entry.ragdoll = ragdoll;
 		entry.audit = gatherFrame + kShapeAuditFrames + (a_actor->GetFormID() % 17);
-		RE::BSVisit::TraverseScenegraphCollision(a_root, [&](RE::bhkNiCollisionObject* a_object) -> RE::BSVisit::BSVisitControl {
+		Util::TraverseCollision(a_root, [&](RE::bhkNiCollisionObject* a_object) -> RE::BSVisit::BSVisitControl {
 			if (a_object->sceneObject && a_object->AsBhkBlendCollisionObject())
 				entry.shapes.push_back({ RE::NiPointer<RE::bhkNiCollisionObject>(a_object), RE::NiPointer<RE::NiAVObject>(a_object->sceneObject) });
 			return RE::BSVisit::BSVisitControl::kContinue;
@@ -1465,7 +1465,7 @@ void SnowDeformation::AppendObjectStamps(std::vector<Stamp>& a_stamps)
 			continue;
 
 		contactScratch.clear();
-		RE::BSVisit::TraverseScenegraphCollision(root, [&](RE::bhkNiCollisionObject* a_object) -> RE::BSVisit::BSVisitControl {
+		Util::TraverseCollision(root, [&](RE::bhkNiCollisionObject* a_object) -> RE::BSVisit::BSVisitControl {
 			RE::NiPoint3 centre;
 			float radius = 0.0f;
 			if (Util::GetShapeBound(a_object, centre, radius) && radius > 0.1f && radius <= 128.0f)

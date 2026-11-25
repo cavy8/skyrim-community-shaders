@@ -2341,7 +2341,7 @@ namespace SIE
 			computeShaders[static_cast<size_t>(a_type)].clear();
 		}
 		ClearShaderMap(a_type);
-		compilationSet.Clear();
+		compilationSet.ClearType(a_type);
 	}
 
 	bool ShaderCache::AddCompletedShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, winrt::com_ptr<ID3DBlob> a_blob, bool fromDisk, std::wstring diskPath)
@@ -3976,6 +3976,35 @@ namespace SIE
 			std::lock_guard slowLock(slowTasksMutex);
 			slowTaskRecords.clear();
 		}
+	}
+
+	void CompilationSet::ClearType(RE::BSShader::Type a_type)
+	{
+		{
+			std::scoped_lock lock(compilationMutex);
+			for (auto* queue : { &availableTasks, &demandedTasks }) {
+				for (auto it = queue->begin(); it != queue->end();) {
+					if (it->GetShaderType() != a_type) {
+						++it;
+						continue;
+					}
+					if (totalTasks > 0)
+						--totalTasks;
+					const auto weight = static_cast<uint64_t>(it->GetPriority()) + 1;
+					totalPriorityWeight -= std::min<uint64_t>(weight, totalPriorityWeight.load(std::memory_order_relaxed));
+					it = queue->erase(it);
+				}
+			}
+			const auto ofType = [a_type](const ShaderCompilationTask& a_task) { return a_task.GetShaderType() == a_type; };
+			std::erase_if(tasksInProgress, ofType);
+			std::erase_if(processedTasks, ofType);
+			if (totalTasks != 0 && completedTasks + failedTasks >= totalTasks && completionTime.load(std::memory_order_relaxed) == 0) {
+				LARGE_INTEGER now;
+				QueryPerformanceCounter(&now);
+				completionTime.store(now.QuadPart, std::memory_order_relaxed);
+			}
+		}
+		conditionVariable.notify_one();
 	}
 
 	std::string CompilationSet::GetHumanTime(double a_totalMs)

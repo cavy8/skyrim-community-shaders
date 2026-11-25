@@ -196,6 +196,8 @@ namespace SIE
 		int64_t GetEnqueuedQpc() const { return enqueuedQpc; }
 		/** @brief Whether this task was requested only to populate the startup cache. */
 		bool IsPrecompile() const { return precompile; }
+		/** @brief The shader type this task compiles. */
+		RE::BSShader::Type GetShaderType() const { return shader.shaderType.get(); }
 		/** @brief Keeps a queued startup task when rendering requests the same permutation. */
 		void RequireForRendering() { precompile = false; }
 
@@ -281,6 +283,8 @@ namespace SIE
 		void EnqueueAux(std::function<void()> work);
 		/** @brief Resets all task queues and counters for a fresh compilation pass. */
 		void Clear();
+		/** @brief Drops queued and finished tasks of one shader type, keeping every other type's work and counters. */
+		void ClearType(RE::BSShader::Type a_type);
 		/** @brief Formats a millisecond duration into a human-readable time string. */
 		static std::string GetHumanTime(double a_totalMs);
 		/** @brief Estimates remaining compilation time based on completed task throughput. */

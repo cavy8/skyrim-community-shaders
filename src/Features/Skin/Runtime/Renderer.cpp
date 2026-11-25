@@ -14,6 +14,7 @@ void Skin::Invalidate(bool a_resources)
 	if (a_resources) {
 		textures.clear();
 		library.clear();
+		conventionResources.clear();
 		for (auto& [geometry, entry] : geometries)
 			entry.textures = {};
 	}
@@ -87,6 +88,28 @@ std::shared_ptr<Skin::TextureEntry> Skin::RequestTexture(const std::string& a_pa
 	if (!entry)
 		entry = std::make_shared<TextureEntry>();
 	return entry;
+}
+
+std::string Skin::ConventionTexture(const GeometryEntry& a_entry, std::string_view a_suffix)
+{
+	constexpr std::array<std::string_view, 4> stripped{ "_msn", "_n", "_d", "_s" };
+	for (const auto& key : { a_entry.diffuseKey, a_entry.normalKey }) {
+		if (key.size() <= 4)
+			continue;
+		std::string base = key.substr(0, key.size() - 4);
+		for (const auto suffix : stripped)
+			if (base.ends_with(suffix)) {
+				base.resize(base.size() - suffix.size());
+				break;
+			}
+		auto path = base + std::string(a_suffix);
+		auto [found, inserted] = conventionResources.try_emplace(path, false);
+		if (inserted)
+			found->second = SkinEditor::ResourceExists(path);
+		if (found->second)
+			return path;
+	}
+	return {};
 }
 
 SkinLibrary::Pointer Skin::FindMaterial(const std::string& a_key)
@@ -210,6 +233,9 @@ void Skin::Prepare(GeometryEntry& a_entry, const SkinCharacters::State& a_state)
 				break;
 		}
 		a_entry.effective = Resolve(Compose(a_entry.activeKey, customization, Layer::CharacterMaterial), settings.DefaultProfile);
+		for (size_t i = 0; i < ConventionSuffixes.size(); ++i)
+			if (!a_entry.effective.textureSpecified[i] && a_entry.effective.textures[i].empty())
+				a_entry.effective.textures[i] = ConventionTexture(a_entry, ConventionSuffixes[i]);
 		for (size_t i = 0; i < a_entry.textures.size(); ++i) {
 			try {
 				a_entry.textures[i] = RequestTexture(NormalizeTexturePath(a_entry.effective.textures[i]));
@@ -292,6 +318,7 @@ Skin::SkinData Skin::MakeData(const SkinMaterials::Material& a_material, bool a_
 	data.fuzzParams = { p[Parameter::Fuzz], p[Parameter::FuzzRoughness], p[Parameter::FuzzF0], p[Parameter::ExtraEdgeRoughness] };
 	data.physicalParams = { p[Parameter::PhysicalMainRoughnessMultiplier], p[Parameter::PhysicalSecondRoughnessMultiplier], p[Parameter::PhysicalSpecularStrength], p[Parameter::WetResponse] };
 	data.wetParams = settings.WetParams;
+	data.shadowParams = { p[Parameter::NormalShadowStrength], p[Parameter::NormalShadowLength], p[Parameter::NormalShadowHardness], p[Parameter::ContactShadowStrength] };
 	return data;
 }
 

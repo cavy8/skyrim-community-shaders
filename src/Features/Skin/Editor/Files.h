@@ -13,6 +13,8 @@ namespace SkinEditor
 	Bytes ReadResource(const std::string& a_path);
 	/// Reads a game resource (loose file or archive). Returns nothing when it does not exist.
 	std::optional<Bytes> FindResource(const std::string& a_path);
+	/// True when a game resource (loose file, archive or session output) exists, without reading it.
+	bool ResourceExists(const std::string& a_path);
 	/// True when the game resource exists as a loose file under Data (including a mod manager's virtual Data).
 	bool IsLooseResource(const std::string& a_path);
 	uint64_t Fingerprint(std::span<const uint8_t> a_bytes);

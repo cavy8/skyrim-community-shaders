@@ -562,6 +562,7 @@ namespace SharedData
 		float4 fuzzParams;
 		float4 physicalParams;
 		float4 wetParams;
+		float4 shadowParams;
 	};
 
 	struct VanillaFresnelSettings

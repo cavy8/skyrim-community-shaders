@@ -147,7 +147,7 @@ namespace BRDF
 	// [Estevez et al. 2017, "Production Friendly Microfacet Sheen BRDF"]
 	float D_Charlie(float roughness, float NdotH)
 	{
-		float invAlpha = pow(abs(roughness), -4);
+		float invAlpha = rcp(max(roughness * roughness, 1e-4));
 		float cos2h = NdotH * NdotH;
 		float sin2h = 1.0 - cos2h;
 		return (2.0 + invAlpha) * pow(abs(sin2h), invAlpha * 0.5) / Math::TAU;

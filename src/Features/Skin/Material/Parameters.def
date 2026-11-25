@@ -20,3 +20,7 @@ SKIN_PARAMETER(FuzzRoughness, "FuzzRoughness", "Fuzz Roughness", 0.35f, 0.1f, 1.
 SKIN_PARAMETER(FuzzF0, "FuzzF0", "Fuzz F0", 0.045f, 0.0f, 0.5f, false)
 SKIN_PARAMETER(TransmissionEnabled, "TransmissionEnabled", "Enable Transmission", 1.0f, 0.0f, 1.0f, true)
 SKIN_PARAMETER(BodyTilingMultiplier, "BodyTilingMultiplier", "Body Tiling Multiplier", 2.0f, 0.1f, 5.0f, false)
+SKIN_PARAMETER(NormalShadowStrength, "NormalShadowStrength", "Normal Map Shadow Strength", 0.6f, 0.0f, 1.0f, false)
+SKIN_PARAMETER(NormalShadowLength, "NormalShadowLength", "Normal Map Shadow Length", 1.5f, 0.1f, 4.0f, false)
+SKIN_PARAMETER(NormalShadowHardness, "NormalShadowHardness", "Normal Map Shadow Hardness", 6.0f, 1.0f, 32.0f, false)
+SKIN_PARAMETER(ContactShadowStrength, "ContactShadowStrength", "Screen-Space Shadow Strength", 0.5f, 0.0f, 1.0f, false)

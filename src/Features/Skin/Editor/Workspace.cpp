@@ -25,6 +25,8 @@ namespace
 		for (size_t i = 0; i < TextureCount; ++i)
 			if (!a_material.textures[i].empty())
 				result.textures[i] = { TextureMode::Resource, a_material.textures[i] };
+			else if (a_material.textureSpecified[i])
+				result.textures[i] = { TextureMode::Default, {} };
 		return result;
 	}
 }
