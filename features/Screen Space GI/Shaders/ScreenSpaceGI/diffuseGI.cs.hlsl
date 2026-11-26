@@ -65,6 +65,7 @@
 #endif
 
 Texture2D<float> srcWorkingDepth : register(t0);
+Texture2D<float4> srcMasks : register(t1);
 Texture2D<float3> srcRadiance : register(t2);
 Texture2D<unorm float2> srcNoise : register(t3);
 #if defined(DYNAMIC_CUBEMAPS)
@@ -98,6 +99,13 @@ static const uint SSGI_FALLBACK_SAMPLE_COUNT = 4;
 static const float SSGI_EXP_FACTOR = 2.0;
 static const float SSGI_FALLBACK_POWER = 1.0;
 static const float SSGI_FALLBACK_MIP = 3.0;
+static const float SSGI_SKIN_FALLBACK_AO_SCALE = 0.5;
+
+bool IsSkinPixel(uint2 pxCoord)
+{
+	const float2 mask = srcMasks[pxCoord].xy;
+	return mask.x > 0.0 && mask.y < 1.5;
+}
 
 // sin/cos of the positive bit-center offsets from the projected receiver normal.
 // The negative half is mirrored, reducing the table and avoiding per-bit sincos.
@@ -444,7 +452,7 @@ void CalculateGI(
 	// GTAO visibility also represents unresolved local occlusion. Apply both to
 	// ambient cubemap fallback; screen-space hit radiance remains unchanged.
 	// AOPower shapes only this fallback occlusion: traced GI already carries its own visibility.
-	fallbackRadiance *= pow(normHitDist, AOPower);
+	fallbackRadiance *= pow(normHitDist, AOPower * (IsSkinPixel(dtid) ? SSGI_SKIN_FALLBACK_AO_SCALE : 1.0));
 
 	o_ao = normHitDist;
 	o_radiance = totalRadiance + fallbackRadiance;

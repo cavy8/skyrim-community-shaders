@@ -11,4 +11,13 @@ cbuffer AutoExposureCB : register(b1)
 
 	float BrightSceneKneeLogLum;
 	float BrightSceneCompression;
+
+	float2 GBufferScale;
+	float BrightSurfaceCompensation;
+	float SkyMeteringWeight;
+
+	float AdaptationStrength;
+	float BaselineLerp;
+	float BrightSurfaceReference;
+	float AutoExposurePadding;
 };

@@ -105,6 +105,7 @@ public:
 		// mix
 		float AOPower = 1.0f;
 		float GIStrength = 1.0f;
+		float ILSaturation = 1.0f;
 		bool EnableMultiBounce = false;
 		bool UseDynamicCubemapsAsFallback = true;
 		float DiffuseCubemapMult = 1.0f;

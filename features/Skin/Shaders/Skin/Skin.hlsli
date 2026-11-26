@@ -121,7 +121,14 @@ namespace Skin
 		       BRDF::F_Schlick(material.FuzzColor, saturate(dot(V, H))) * NdotL;
 	}
 
-	float NormalMapShadow(Texture2D<float4> normalTexture, SamplerState normalSampler, float2 uv, float3x3 decode, float3x3 frame, float3 lightDir, float worldPerUV, float footprint, float noise, float4 shadowParams)
+	float FilterRoughness(float roughness, float3 normalDx, float3 normalDy)
+	{
+		const float variance = 0.25 * (dot(normalDx, normalDx) + dot(normalDy, normalDy));
+		const float alpha = roughness * roughness;
+		return sqrt(sqrt(saturate(alpha * alpha + min(2.0 * variance, 0.18))));
+	}
+
+	float NormalMapShadow(Texture2D<float4> normalTexture, SamplerState normalSampler, float2 uv, float3x3 decode, float3x3 frame, float3 lightDir, float worldPerUV, float footprint, float4 shadowParams)
 	{
 		const float maxSlope = 2.7;
 		const float3 localLight = mul(frame, lightDir);
@@ -149,7 +156,7 @@ namespace Skin
 			const float t = (float)i / (float)stepCount;
 			const float end = traceLength * t * t;
 			const float stepLength = end - previousEnd;
-			const float2 sampleUV = uv + dir * ((previousEnd + stepLength * noise) * uvPerWorld);
+			const float2 sampleUV = uv + dir * ((previousEnd + stepLength * 0.5) * uvPerWorld);
 			const float mipLevel = log2(max(max(footprint, stepLength * uvPerWorld) * texDim, 1.0));
 			const float3 encoded = normalTexture.SampleLevel(normalSampler, sampleUV, mipLevel).xyz;
 #	if defined(MODELSPACENORMALS)
@@ -196,8 +203,20 @@ namespace Skin
 		float VdotH = saturate(dot(V, H));
 
 		float averageRoughness = lerp(material.Roughness, material.RoughnessSecondary, material.SecondarySpecIntensity);
+		SharedData::SkinData skinData = GetSkinData();
 
-		lightingOutput.diffuse += context.lightColor * diffuseCosine * BRDF::Diffuse_Burley(averageRoughness, NdotV, diffuseCosine, saturate(dot(V, context.halfVector)));
+#	if defined(DEFERRED)
+		const float3 scatteredCosine = diffuseCosine;
+#	else
+		const float3 wrap = float3(0.4, 0.15, 0.1) * saturate(skinData.sssParams.z);
+		const float3 scatteredCosine = max(float3(
+											   LightDisk::WrappedCosine(oNdotL, wrap.x, rcp(1.0 + wrap.x), context.lightDisk),
+											   LightDisk::WrappedCosine(oNdotL, wrap.y, rcp(1.0 + wrap.y), context.lightDisk),
+											   LightDisk::WrappedCosine(oNdotL, wrap.z, rcp(1.0 + wrap.z), context.lightDisk)),
+			1e-5);
+#	endif
+
+		lightingOutput.diffuse += context.lightColor * scatteredCosine * BRDF::Diffuse_Burley(averageRoughness, NdotV, diffuseCosine, saturate(dot(V, context.halfVector)));
 		float3 F;
 		float3 F0 = material.F0;
 
@@ -225,7 +244,6 @@ namespace Skin
 			lightingOutput.specular += fuzzSpecular * material.FuzzWeight;
 		}
 
-		SharedData::SkinData skinData = GetSkinData();
 		float3 sssTransmittance = SSSSTransmittance(
 									  0.0f,
 									  max(skinData.sssParams.y, 1e-4f),
@@ -263,11 +281,8 @@ namespace Skin
 		horizon *= horizon;
 		lobeWeights.specular *= horizon;
 
-		float3 diffuseAO = material.AO;
-		float3 specularAO = SpecularAOLagarde(NdotV, material.AO, averageRoughness);
-
-		diffuseAO = MultiBounceAO(material.BaseColor, diffuseAO.x).y;
-		specularAO = MultiBounceAO(material.F0, specularAO.x).y;
+		float3 diffuseAO = MultiBounceAO(material.BaseColor, material.AO);
+		float3 specularAO = MultiBounceAO(material.F0, SpecularAOLagarde(NdotV, material.AO, averageRoughness));
 
 		lobeWeights.diffuse *= diffuseAO;
 		lobeWeights.specular *= specularAO;

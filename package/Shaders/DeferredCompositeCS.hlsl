@@ -89,6 +89,11 @@ float GetSpecularOcclusionFromAmbientOcclusion(float NdotV, float ao, float roug
 	return saturate(pow(abs(NdotV + ao), exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
 }
 
+bool IsSkinMask(float2 mask)
+{
+	return mask.x > 0.0 && mask.y < 1.5;
+}
+
 #if defined(SSGI)
 Texture2D<float4> SsgiTexture : register(t9);
 #	if defined(SSGI_SH)
@@ -107,6 +112,26 @@ float SampleSSGIAO(uint2 pixCoord)
 	REBLUR_BackEnd_UnpackRadianceAndNormHitDist(data, radiance, normHitDist);
 	return saturate(normHitDist);
 #	endif
+}
+
+float SampleSSGIAOSkin(uint2 pixCoord)
+{
+	const int2 maxCoord = int2(SharedData::BufferDim.xy) - 1;
+	const float centerDepth = SharedData::GetScreenDepth(DepthTexture[pixCoord]);
+	float ao = 0.0;
+	float totalWeight = 0.0;
+	[unroll] for (int y = -3; y <= 3; y += 3)
+	{
+		[unroll] for (int x = -3; x <= 3; x += 3)
+		{
+			const int2 tap = clamp(int2(pixCoord) + int2(x, y), 0, maxCoord);
+			const float difference = abs(SharedData::GetScreenDepth(DepthTexture[tap]) - centerDepth) / max(centerDepth * 0.01, 1.0);
+			const float weight = exp2(-difference * difference) * (IsSkinMask(MasksTexture[tap].xy) ? 1.0 : 0.05);
+			ao += SampleSSGIAO(tap) * weight;
+			totalWeight += weight;
+		}
+	}
+	return ao / max(totalWeight, EPSILON_DIVISION);
 }
 #endif
 
@@ -195,7 +220,7 @@ void SampleSSRTracedSpecular(uint2 pixCoord, out float3 specularRadiance, out fl
 #if defined(SSGI)
 	if (abs(depth - FrameBuffer::FarPlaneDepth()) > 1e-6 && SharedData::ssgiSettings.Enabled != 0) {
 		float3 multiBounceSSGIAo = 1.0;
-		ssgiAo = SampleSSGIAO(dispatchID.xy);
+		ssgiAo = IsSkinMask(MasksTexture[dispatchID.xy].xy) ? SampleSSGIAOSkin(dispatchID.xy) : SampleSSGIAO(dispatchID.xy);
 		if (SharedData::ssgiSettings.ReplaceAmbient == 0)
 			ssgiAo = pow(max(ssgiAo, EPSILON_DIVISION), SharedData::ssgiSettings.AOPower);
 		float3 linAlbedo = ColorManagement::SceneToLinear(albedo / Color::PBRLightingScale);
@@ -271,6 +296,10 @@ void SampleSSRTracedSpecular(uint2 pixCoord, out float3 specularRadiance, out fl
 #endif
 
 	float3 color = linDiffuseColor + specularColor;
+
+#if defined(DEBUG_VIEW)
+	float3 debugDiffuseLighting = linDiffuseColor / max(ColorManagement::SceneToLinear(albedo / Color::PBRLightingScale), 0.02);
+#endif
 
 #if defined(DYNAMIC_CUBEMAPS)
 
@@ -467,6 +496,10 @@ void SampleSSRTracedSpecular(uint2 pixCoord, out float3 specularRadiance, out fl
 #	else
 			color = 0;
 #	endif
+		} else if (DebugView == 11) {
+			color = ColorManagement::LinearToScene(max(debugDiffuseLighting, 0));
+		} else if (DebugView == 12) {
+			color = IsSkinMask(MasksTexture[dispatchID.xy].xy) ? float3(ssgiAo, ssgiAo * 0.85, ssgiAo * 0.85) : ssgiAo.xxx;
 		}
 	}
 

@@ -34,6 +34,33 @@ float3 SampleSSGIIL(uint2 pixCoord)
 	return max(0, radiance);
 }
 
+bool IsSkinMask(float2 mask)
+{
+	return mask.x > 0.0 && mask.y < 1.5;
+}
+
+float3 SampleSSGIILSkin(uint2 pixCoord)
+{
+	const int2 maxCoord = int2(SharedData::BufferDim.xy) - 1;
+	const float centerDepth = SharedData::GetScreenDepth(DepthTexture[pixCoord]);
+	float3 il = 0.0;
+	float totalWeight = 0.0;
+	[unroll] for (int y = -6; y <= 6; y += 3)
+	{
+		[unroll] for (int x = -6; x <= 6; x += 3)
+		{
+			const int2 tap = clamp(int2(pixCoord) + int2(x, y), 0, maxCoord);
+			if (!IsSkinMask(MasksTexture[tap].xy))
+				continue;
+			const float difference = abs(SharedData::GetScreenDepth(DepthTexture[tap]) - centerDepth) / max(centerDepth * 0.01, 1.0);
+			const float weight = exp2(-difference * difference);
+			il += SampleSSGIIL(tap) * weight;
+			totalWeight += weight;
+		}
+	}
+	return il / max(totalWeight, EPSILON_DIVISION);
+}
+
 [numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID) {
 	if (any(dispatchID.xy >= uint2(SharedData::BufferDim.xy)) || SharedData::ssgiSettings.EnableIL == 0)
 		return;
@@ -43,7 +70,7 @@ float3 SampleSSGIIL(uint2 pixCoord)
 		return;
 
 	float3 linAlbedo = ColorManagement::SceneToLinear(AlbedoTexture[dispatchID.xy] / Color::PBRLightingScale);
-	float3 ssgiIl = SampleSSGIIL(dispatchID.xy);
+	float3 ssgiIl = IsSkinMask(MasksTexture[dispatchID.xy].xy) ? SampleSSGIILSkin(dispatchID.xy) : SampleSSGIIL(dispatchID.xy);
 	ssgiIl = max(lerp(Color::RGBToLuminance(ssgiIl), ssgiIl, SharedData::ssgiSettings.ILSaturation), 0.0);
 	// Masks.z is an IL gain here: Lighting's character light fill, or grass transmission albedo relative to reflection albedo.
 	if (SharedData::ssgiSettings.ReplaceAmbient != 0)

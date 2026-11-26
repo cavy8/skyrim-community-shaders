@@ -2415,8 +2415,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			material.Roughness = skinRoughness * skinData.physicalParams.x;
 			material.RoughnessSecondary = skinRoughness * skinData.physicalParams.y;
 		}
-		material.Roughness = clamp(material.Roughness + extraRoughness, 0.02f, 1.0f);
-		material.RoughnessSecondary = clamp(material.RoughnessSecondary + extraRoughness, 0.02f, 1.0f);
+		const float3 skinNormalDx = ddx(worldNormal.xyz);
+		const float3 skinNormalDy = ddy(worldNormal.xyz);
+		material.Roughness = Skin::FilterRoughness(clamp(material.Roughness + extraRoughness, 0.02f, 1.0f), skinNormalDx, skinNormalDy);
+		material.RoughnessSecondary = Skin::FilterRoughness(clamp(material.RoughnessSecondary + extraRoughness, 0.02f, 1.0f), skinNormalDx, skinNormalDy);
 		material.SecondarySpecIntensity = skinData.skinParams2.x;
 		material.Thickness = 1.0f - saturate(skinsk.x);
 		material.F0 = hasSkinExtra ? 0.08f * skinSpecular * skinData.physicalParams.z : skinData.skinParams2.zzz;
@@ -3008,7 +3010,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		const float3x3 skinShadowDecode = tbn;
 #		endif
 		[branch] if (skinShadowParams.x > 0.0)
-			dirDetailedShadow *= Skin::NormalMapShadow(TexNormalSampler, SampNormalSampler, uv, skinShadowDecode, skinShadowFrame, DirLightDirection.xyz, skinWorldPerUV, skinUVFootprint, screenNoise, skinShadowParams);
+			dirDetailedShadow *= Skin::NormalMapShadow(TexNormalSampler, SampNormalSampler, uv, skinShadowDecode, skinShadowFrame, DirLightDirection.xyz, skinWorldPerUV, skinUVFootprint, skinShadowParams);
 	}
 #	endif
 

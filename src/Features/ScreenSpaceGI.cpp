@@ -33,6 +33,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Thickness,
 	AOPower,
 	GIStrength,
+	ILSaturation,
 	EnableMultiBounce,
 	UseDynamicCubemapsAsFallback,
 	DiffuseCubemapMult,
@@ -201,6 +202,9 @@ void ScreenSpaceGI::DrawSettings()
 					resetReblurHistory = true;
 					hasMultiBounceHistory = false;
 				}
+				ImGui::SliderFloat(T(TKEY("il_saturation"), "IL Saturation"), &settings.ILSaturation, 0.f, 2.f, "%.2f");
+				if (auto _tt = Util::HoverTooltipWrapper())
+					ImGui::Text("%s", T(TKEY("il_saturation_tooltip"), "Colour of the bounce light. Below 1 keeps sunlit grass and ground from tinting shade, so it keeps the sky's cool fill; 1 is unchanged."));
 			}
 			if (ImGui::Checkbox(T(TKEY("multi_bounce"), "Multi-Bounce"), &settings.EnableMultiBounce)) {
 				resetReblurHistory = true;
@@ -358,6 +362,7 @@ void ScreenSpaceGI::LoadSettings(json& o_json)
 	ResetIfOutOfRange(settings.Thickness, 0.0f, 0.2f, defaults.Thickness);
 	ResetIfOutOfRange(settings.AOPower, 0.0f, 6.0f, defaults.AOPower);
 	ResetIfOutOfRange(settings.GIStrength, 0.0f, 6.0f, defaults.GIStrength);
+	ResetIfOutOfRange(settings.ILSaturation, 0.0f, 2.0f, defaults.ILSaturation);
 	ResetIfOutOfRange(settings.DiffuseCubemapMult, 0.0f, 5.0f, defaults.DiffuseCubemapMult);
 	ResetIfOutOfRange(settings.DiffusePrepassBlurRadius, 0.0f, 75.0f, defaults.DiffusePrepassBlurRadius);
 	if (settings.QuarterRes)
@@ -1013,6 +1018,7 @@ void ScreenSpaceGI::DrawSSGI()
 
 		resetViews();
 		srvs.at(0) = texWorkingDepth->srv.get();
+		srvs.at(1) = renderer->GetRuntimeData().renderTargets[MASKS].SRV;
 		srvs.at(2) = texRadiance->srv.get();
 		srvs.at(3) = texNoise->srv.get();
 		if (dynamicCubemaps.loaded) {
@@ -1211,7 +1217,7 @@ ScreenSpaceGI::SharedData ScreenSpaceGI::GetCommonBufferData()
 	data.EnableIL = (enabled && settings.EnableGI) ? 1u : 0u;
 	data.ReplaceAmbient = (data.EnableIL && UsesCubemapFallback()) ? 1u : 0u;
 	data.AOPower = settings.AOPower;
-	data.ILSaturation = appliedE11Overlay.active ? userSettings.E11ILSaturation : 1.0f;
+	data.ILSaturation = appliedE11Overlay.active ? userSettings.E11ILSaturation : settings.ILSaturation;
 	return data;
 }
 

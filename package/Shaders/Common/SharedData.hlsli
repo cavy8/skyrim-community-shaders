@@ -775,7 +775,8 @@ namespace SharedData
 		float auroraTime;
 
 		float auroraLighting;
-		float3 pad0;
+		float riftIntensity;
+		float2 pad0;
 
 		float3 shootingStarHead;
 		float shootingStarIntensity;

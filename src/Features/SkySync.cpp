@@ -830,6 +830,7 @@ void SkySync::ShadowFader::Reset()
 	intensityFactor = startIntensityFactor = 1.0f;
 	sourceShare = 0.0f;
 	casterFade = startCasterFade = 1.0f;
+	hasHeldDir = false;
 }
 
 void SkySync::ShadowFader::Update(const RE::Sky* sky, RE::NiPoint3 dirs[], float intensities[], float fadeDuration, float fadeAdvance, bool a_immediateTransition)
@@ -929,12 +930,19 @@ void SkySync::ShadowFader::Update(const RE::Sky* sky, RE::NiPoint3 dirs[], float
 void SkySync::ShadowFader::SetLighting(const RE::Sky* sky, RE::NiPoint3 dir)
 {
 	// Steer towards the strike for as long as the flash outshines the caster
-	if (const float flashWeight = globals::features::skySync.flashWeight; flashWeight > 0.0f) {
-		dir = dir + (ZenithDirection - dir) * flashWeight;
+	const float strikeWeight = globals::features::skySync.flashWeight;
+	if (strikeWeight > 0.0f) {
+		dir = dir + (ZenithDirection - dir) * strikeWeight;
 		if (dir.Unitize() <= FLT_EPSILON)
 			dir = ZenithDirection;
 	}
 	ClampDirection(dir);
+
+	static const float holdCos = std::cos(DirectX::XMConvertToRadians(ShadowDirectionHoldAngle));
+	if (!transitioning && strikeWeight <= 0.0f && hasHeldDir && dir.Dot(heldDir) >= holdCos)
+		dir = heldDir;
+	heldDir = dir;
+	hasHeldDir = true;
 
 	RE::NiMatrix3& m = sky->sun->light->local.rotate;
 	m.entry[0][0] = -dir.x;

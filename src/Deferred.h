@@ -67,6 +67,8 @@ public:
 		SSGI,
 		SSR,
 		DynamicCubemaps,
+		DiffuseLighting,
+		SSGIAO,
 		Count
 	};
 

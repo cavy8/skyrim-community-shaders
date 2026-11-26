@@ -7,11 +7,14 @@
 #include "PostProcessing/HistogramAutoExposure/common.hlsli"
 
 #include "Common/Color.hlsli"
+#include "PostProcessing/SurfaceMetering.hlsli"
 
 RWStructuredBuffer<uint> RWBufferHistogram : register(u0);
 RWStructuredBuffer<float> RWBufferAdaptation : register(u1);
 
 Texture2D<float4> TexColor : register(t0);
+Texture2D<unorm float4> TexAlbedo : register(t1);
+Texture2D<float> TexDepth : register(t2);
 
 const static float MinLogLum = -13;
 const static float LogLumRange = 31;
@@ -24,6 +27,8 @@ const static uint HistogramWeightScale = 16;
 const static uint SampleWeight = SampleStride * SampleStride * HistogramWeightScale;
 const static float LowPercent = 0.10;
 const static float HighPercent = 0.90;
+const static float BaselineCatchUpStart = 3.0;
+const static float BaselineCatchUpEnd = 4.5;
 
 // Increased thread count per group for better occupancy
 groupshared uint histogramShared[256];
@@ -78,15 +83,26 @@ float4 ComputeBoxBounds(float2 dims)
 
 		// Optimized bin calculation - avoid unnecessary saturate
 		if (luma > 1e-10) {
-			float histogramPos = saturate((log2(luma) - MinLogLum) * RcpLogLumRange);
+			float logLuma = log2(luma);
+			float sampleWeight = SampleWeight;
+			[branch] if (BrightSurfaceCompensation > 0.0 || SkyMeteringWeight < 1.0)
+			{
+				bool isSky;
+				float brightSurfaceStops = SurfaceMetering::BrightSurfaceStops(TexAlbedo, TexDepth, (float2(pxCoord) + 0.5) / float2(dims), GBufferScale, BrightSurfaceReference, isSky);
+				logLuma -= BrightSurfaceCompensation * brightSurfaceStops;
+				if (isSky)
+					sampleWeight *= SkyMeteringWeight;
+			}
+
+			float histogramPos = saturate((logLuma - MinLogLum) * RcpLogLumRange);
 			float fBin = FirstLuminanceBin + histogramPos * (LastLuminanceBin - FirstLuminanceBin);
 			uint bin0 = min((uint)fBin, LastLuminanceBin);
 			uint bin1 = min(bin0 + 1, LastLuminanceBin);
 			float weight1 = frac(fBin);
 			float weight0 = 1.0 - weight1;
 
-			InterlockedAdd(histogramShared[bin0], (uint)(weight0 * SampleWeight + 0.5));
-			InterlockedAdd(histogramShared[bin1], (uint)(weight1 * SampleWeight + 0.5));
+			InterlockedAdd(histogramShared[bin0], (uint)(weight0 * sampleWeight + 0.5));
+			InterlockedAdd(histogramShared[bin1], (uint)(weight1 * sampleWeight + 0.5));
 		}
 	}
 
@@ -138,7 +154,14 @@ float4 ComputeBoxBounds(float2 dims)
 			if (keptWeight > 0.0) {
 				float avgLogLum = weightedLogLum / keptWeight;
 				avgLogLum -= max(avgLogLum - BrightSceneKneeLogLum, 0.0) * BrightSceneCompression;
-				avgLum = exp2(avgLogLum);
+
+				float baselineLum = RWBufferAdaptation[1];
+				float baselineLogLum = BaselineLerp < 1.0 && baselineLum > 0.0 ? log2(baselineLum) : avgLogLum;
+				float catchUp = smoothstep(BaselineCatchUpStart, BaselineCatchUpEnd, abs(avgLogLum - baselineLogLum));
+				baselineLogLum = lerp(baselineLogLum, avgLogLum, lerp(BaselineLerp, max(BaselineLerp, AdaptLerp), catchUp));
+				RWBufferAdaptation[1] = exp2(baselineLogLum);
+
+				avgLum = exp2(lerp(baselineLogLum, avgLogLum, AdaptationStrength));
 			}
 		}
 

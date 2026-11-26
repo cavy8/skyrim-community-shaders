@@ -27,11 +27,19 @@ struct HistogramAutoExposure : public PostProcessFeature
 		// auto exposure
 		float2 AdaptationRange = { -2.f, 6.f };  // Scene EV100: L = 2^(EV100 - 3) cd/m^2, K = 12.5.
 		float2 AdaptArea = { .6f, .6f };
+		float InteriorBrightening = 2.f;
 
 		float AdaptSpeed = 1.5f;
 
 		float BrightSceneCompression = 0.f;
 		float BrightSceneKneeEV = 3.f;  // Scene EV100, same calibration as AdaptationRange.
+
+		float BrightSurfaceCompensation = 1.f;
+		float BrightSurfaceReference = 0.05f;  // Linear albedo of ordinary ground; typical Skyrim terrain is about 0.05.
+		float SkyMeteringWeight = 0.5f;
+
+		float ExteriorAdaptationStrength = 0.35f;
+		float ExteriorSettleTime = 40.f;
 
 		// purkinje
 		float PurkinjeStartEV = 1.5f;  // Scene EV100 before exposure, same calibration as AdaptationRange.
@@ -53,10 +61,22 @@ struct HistogramAutoExposure : public PostProcessFeature
 
 		float BrightSceneKneeLogLum;
 		float BrightSceneCompression;
+
+		float2 GBufferScale;
+		float BrightSurfaceCompensation;
+		float SkyMeteringWeight;
+
+		float AdaptationStrength;
+		float BaselineLerp;
+		float BrightSurfaceReference;
+		float Padding;
 	};
-	static_assert(sizeof(AutoExposureCB) == 48);
+	static_assert(sizeof(AutoExposureCB) == 80);
 	static_assert(offsetof(AutoExposureCB, ExposureTarget) == 36);
 	static_assert(offsetof(AutoExposureCB, BrightSceneKneeLogLum) == 40);
+	static_assert(offsetof(AutoExposureCB, GBufferScale) == 48);
+	static_assert(offsetof(AutoExposureCB, AdaptationStrength) == 64);
+	static_assert(offsetof(AutoExposureCB, BrightSurfaceReference) == 72);
 	std::unique_ptr<ConstantBuffer> autoExposureCB = nullptr;
 	std::unique_ptr<StructuredBuffer> histogramSB = nullptr;
 	std::unique_ptr<StructuredBuffer> adaptationSB = nullptr;
@@ -91,6 +111,9 @@ struct HistogramAutoExposure : public PostProcessFeature
 	float adaptationValue = 0.f;
 	bool resetAdaptation = true;
 	bool hasMeasuredAdaptation = false;
+	bool baselineWasInterior = false;
+	float baselineSnapTime = 0.f;
+	uint baselineLastFrame = 0;
 	bool histogramReadbackRequested = false;
 	int64_t histogramReadbackRequestFrame = -1;
 	int64_t exposureReadbackRequestFrame = -1;

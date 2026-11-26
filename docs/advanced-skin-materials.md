@@ -80,11 +80,11 @@ A file is applied as a whole or not at all. A syntax error, an unknown parameter
 | Roughness                         |           0.7 | 0.0–1.0   |
 | SecondaryRoughness                |          0.35 | 0.0–1.0   |
 | SpecularTextureMultiplier         |           1.0 | 0.0–10.0  |
-| SecondarySpecularStrength         |          0.15 | 0.0–1.0   |
+| SecondarySpecularStrength         |           0.1 | 0.0–1.0   |
 | Reflectance                       |        0.0278 | 0.0–0.1   |
 | BaseColorMultiplier               |           1.0 | 0.0–2.0   |
 | PhysicalMainRoughnessMultiplier   |           1.3 | 0.0–2.0   |
-| PhysicalSecondRoughnessMultiplier |          0.75 | 0.0–2.0   |
+| PhysicalSecondRoughnessMultiplier |           1.0 | 0.0–2.0   |
 | PhysicalSpecularStrength          |           1.0 | 0.0–2.0   |
 | ExtraEdgeRoughness                |          0.25 | 0.0–1.0   |
 | Fuzz                              |           1.0 | 0.0–2.0   |

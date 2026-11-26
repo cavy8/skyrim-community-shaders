@@ -1,7 +1,9 @@
 #include "HistogramAutoExposure.h"
 
+#include "Deferred.h"
 #include "Features/LinearLighting.h"
 #include "Features/PostProcessing.h"
+#include "Features/Upscaling.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -13,9 +15,15 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ExposureCompensation,
 	AdaptationRange,
 	AdaptArea,
+	InteriorBrightening,
 	AdaptSpeed,
 	BrightSceneCompression,
 	BrightSceneKneeEV,
+	BrightSurfaceCompensation,
+	BrightSurfaceReference,
+	SkyMeteringWeight,
+	ExteriorAdaptationStrength,
+	ExteriorSettleTime,
 	PurkinjeStartEV,
 	PurkinjeMaxEV,
 	PurkinjeStrength)
@@ -24,6 +32,12 @@ namespace
 {
 	constexpr float kMinBrightSceneKneeEV = -10.f;
 	constexpr float kMaxBrightSceneKneeEV = 21.f;
+	constexpr float kMinBrightSurfaceReference = 0.02f;
+	constexpr float kMaxBrightSurfaceReference = 0.18f;
+	constexpr float kMinExteriorSettleTime = 1.f;
+	constexpr float kMaxExteriorSettleTime = 300.f;
+	constexpr float kBaselineSnapSeconds = 1.f;
+	constexpr uint kAdaptationElements = 2;
 }
 
 bool HistogramAutoExposure::IsActive() const
@@ -56,8 +70,9 @@ float HistogramAutoExposure::GetPreExposure()
 
 HistogramAutoExposure::ExposureParameters HistogramAutoExposure::GetExposureParameters() const
 {
+	const float interiorBrightening = Util::IsInterior() ? std::max(settings.InteriorBrightening, 0.0f) : 0.0f;
 	ExposureParameters parameters{
-		.LuminanceRange = { exp2(std::min(settings.AdaptationRange.x, settings.AdaptationRange.y) - 3.0f), exp2(std::max(settings.AdaptationRange.x, settings.AdaptationRange.y) - 3.0f) },
+		.LuminanceRange = { exp2(std::min(settings.AdaptationRange.x, settings.AdaptationRange.y) - interiorBrightening - 3.0f), exp2(std::max(settings.AdaptationRange.x, settings.AdaptationRange.y) - 3.0f) },
 		.CompensationEV = settings.ExposureCompensation,
 	};
 	if (const auto* cam = owner ? owner->GetActivePhysicalCameraState() : nullptr) {
@@ -129,6 +144,16 @@ void HistogramAutoExposure::DrawSettings()
 	ImGui::TextWrapped("%s", T("feature.post_processing.histogram_auto_exposure.ev100_units", "Scene EV100 = log2(luminance in cd/m2) + 3 (K = 12.5). 0 EV100 = 0.125 cd/m2. Uses the Physical Sky / Linear Lighting unit scale; other lights are not yet physically calibrated. Exposure compensation is a relative adjustment in stops."));
 
 	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.adaptation_speed", "Adaptation Speed"), &settings.AdaptSpeed, 0.1f, 5.f, "%.2f");
+	ImGui::BeginDisabled(cam != nullptr);
+	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.exterior_adaptation_strength", "Exterior Adaptation Strength"), &settings.ExteriorAdaptationStrength, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.exterior_adaptation_strength_tooltip",
+			"How strongly exposure reacts outdoors when you look at something brighter or darker, such as sky or snow. Lower values keep the view steadier. Slow changes like time of day and weather are still followed in full. 1 adapts fully, as interiors always do."));
+	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.exterior_settle_time", "Exterior Settle Time"), &settings.ExteriorSettleTime, kMinExteriorSettleTime, kMaxExteriorSettleTime, "%.0f s", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.exterior_settle_time_tooltip",
+			"How long exposure takes to settle fully on a new outdoor view when Exterior Adaptation Strength is below 1. Longer keeps the view steadier for longer."));
+	ImGui::EndDisabled();
 	ImGui::SliderFloat2(T("feature.post_processing.histogram_auto_exposure.focus_area", "Focus Area"), &settings.AdaptArea.x, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.specifies_the_proportion_of_the_area_width_height", "Specifies the proportion of the area [width, height] that auto exposure will adapt to."));
@@ -140,13 +165,29 @@ void HistogramAutoExposure::DrawSettings()
 			T("feature.post_processing.histogram_auto_exposure.min_max_the_average_scene_luminance_will_be",
 				"[Min, Max] The average scene luminance will be clamped between them when doing auto exposure. "
 				"Turning up the minimum, for example, makes it adapt less to darkness and therefore prevents over-brightening of dark scenes."));
+	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.interior_brightening", "Interior Brightening"), &settings.InteriorBrightening, 0.f, 5.f, "%.2f EV", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.interior_brightening_tooltip",
+			"Lowers the Adaptation Range minimum by this many stops in interiors, so dark caves and dungeons can brighten further while night exteriors stay dark. 0 uses the same minimum everywhere."));
 	ImGui::EndDisabled();
 
 	ImGui::BeginDisabled(cam != nullptr);
+	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.bright_surface_compensation", "Bright Surface Compensation"), &settings.BrightSurfaceCompensation, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.bright_surface_compensation_tooltip",
+			"Meters snow, sand and other pale surfaces as if they were ordinary ground, so they stay bright instead of pulling the whole view down to grey. Darker surfaces and scenes without pale ground are not affected. 0 meters raw brightness."));
+	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.bright_surface_reference", "Bright Surface Reference"), &settings.BrightSurfaceReference, kMinBrightSurfaceReference, kMaxBrightSurfaceReference, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.bright_surface_reference_tooltip",
+			"How reflective ordinary ground is. Bright Surface Compensation meters anything paler as if it were this. Skyrim grass, dirt and rock reflect about 0.05, so at that value a snow field meters like any other ground and exposure does not drop when you look at snow. Higher values let snow darken the view: 0.18, photographic mid grey, by about two stops."));
+	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.sky_metering_weight", "Sky Metering Weight"), &settings.SkyMeteringWeight, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.sky_metering_weight_tooltip",
+			"How much the sky counts when measuring scene brightness. Lower values stop a bright sky from darkening the ground. 1 counts sky like everything else, 0 ignores it."));
 	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.bright_scene_compression", "Bright Scene Compression"), &settings.BrightSceneCompression, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.bright_scene_compression_tooltip",
-			"How much of the brightness above the knee exposure ignores, so bright sky and snow keep the view bright instead of darkening everything around them. Local Exposure then holds the brightest areas back. 0 adapts fully, 1 stops adapting at the knee."));
+			"How much of the average brightness above the knee exposure ignores. It cannot tell snow from any other bright day, so try Bright Surface Compensation and Sky Metering Weight first. 0 adapts fully, 1 stops adapting at the knee."));
 	ImGui::SliderFloat(T("feature.post_processing.histogram_auto_exposure.bright_scene_knee", "Bright Scene Knee"), &settings.BrightSceneKneeEV, kMinBrightSceneKneeEV, kMaxBrightSceneKneeEV, "%.2f EV100", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextUnformatted(T("feature.post_processing.histogram_auto_exposure.bright_scene_knee_tooltip",
@@ -278,6 +319,11 @@ void HistogramAutoExposure::LoadSettings(json& o_json)
 	const Settings defaults{};
 	settings.BrightSceneCompression = Util::ClampFinite(settings.BrightSceneCompression, defaults.BrightSceneCompression, 0.f, 1.f);
 	settings.BrightSceneKneeEV = Util::ClampFinite(settings.BrightSceneKneeEV, defaults.BrightSceneKneeEV, kMinBrightSceneKneeEV, kMaxBrightSceneKneeEV);
+	settings.BrightSurfaceCompensation = Util::ClampFinite(settings.BrightSurfaceCompensation, defaults.BrightSurfaceCompensation, 0.f, 1.f);
+	settings.BrightSurfaceReference = Util::ClampFinite(settings.BrightSurfaceReference, defaults.BrightSurfaceReference, kMinBrightSurfaceReference, kMaxBrightSurfaceReference);
+	settings.SkyMeteringWeight = Util::ClampFinite(settings.SkyMeteringWeight, defaults.SkyMeteringWeight, 0.f, 1.f);
+	settings.ExteriorAdaptationStrength = Util::ClampFinite(settings.ExteriorAdaptationStrength, defaults.ExteriorAdaptationStrength, 0.f, 1.f);
+	settings.ExteriorSettleTime = Util::ClampFinite(settings.ExteriorSettleTime, defaults.ExteriorSettleTime, kMinExteriorSettleTime, kMaxExteriorSettleTime);
 }
 
 void HistogramAutoExposure::SaveSettings(json& o_json)
@@ -299,7 +345,7 @@ void HistogramAutoExposure::SetupResources()
 		histogramSB = std::make_unique<StructuredBuffer>(StructuredBufferDesc<uint>(256u, false), 256, "HistogramAutoExposure::Histogram");
 		histogramSB->CreateUAV();
 
-		adaptationSB = std::make_unique<StructuredBuffer>(StructuredBufferDesc<float>(1u, false), 1, "HistogramAutoExposure::Adaptation");
+		adaptationSB = std::make_unique<StructuredBuffer>(StructuredBufferDesc<float>(kAdaptationElements, false), kAdaptationElements, "HistogramAutoExposure::Adaptation");
 		adaptationSB->CreateSRV();
 		adaptationSB->CreateUAV();
 		hasMeasuredAdaptation = false;
@@ -320,7 +366,7 @@ void HistogramAutoExposure::SetupResources()
 		Util::SetResourceName(histogramStagingBuffer.get(), "HistogramAutoExposure::HistogramStaging");
 
 		D3D11_BUFFER_DESC adaptDesc{};
-		adaptDesc.ByteWidth = sizeof(float);
+		adaptDesc.ByteWidth = sizeof(float) * kAdaptationElements;
 		adaptDesc.Usage = D3D11_USAGE_STAGING;
 		adaptDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 		adaptDesc.StructureByteStride = sizeof(float);
@@ -379,23 +425,54 @@ void HistogramAutoExposure::Draw(TextureInfo& inout_tex)
 
 	const auto parameters = GetExposureParameters();
 	const bool menuScene = state->IsMenuSceneOpen();
+	const bool physicalCamera = owner && owner->GetActivePhysicalCameraState();
+
+	auto* renderer = globals::game::renderer;
+	auto* albedoSRV = renderer->GetRuntimeData().renderTargets[ALBEDO].SRV;
+	auto* depthSRV = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].depthSRV;
+	const bool surfaceMetering = albedoSRV && depthSRV && !physicalCamera;
+	float2 gbufferScale = { 1.f, 1.f };
+	if (const auto& upscaling = globals::features::upscaling; upscaling.loaded && upscaling.IsUpscalingActive())
+		gbufferScale = { std::clamp(upscaling.resolutionScale.x, 0.f, 1.f), std::clamp(upscaling.resolutionScale.y, 0.f, 1.f) };
 	const bool holdAdaptation = menuScene && hasMeasuredAdaptation;
+
+	const float deltaTime = RE::BSTimer::GetSingleton()->realTimeDelta;
+	const bool interior = Util::IsInterior();
+	if (resetAdaptation || interior != baselineWasInterior || state->frameCount - baselineLastFrame > 1u)
+		baselineSnapTime = kBaselineSnapSeconds;
+	baselineWasInterior = interior;
+	baselineLastFrame = state->frameCount;
+	const float adaptationStrength = interior || physicalCamera ? 1.f : std::clamp(settings.ExteriorAdaptationStrength, 0.f, 1.f);
+	float baselineLerp = 1.f;
+	if (holdAdaptation) {
+		baselineLerp = 0.f;
+	} else if (baselineSnapTime > 0.f) {
+		baselineSnapTime -= deltaTime;
+	} else if (adaptationStrength < 1.f) {
+		baselineLerp = std::clamp(1.f - exp(-deltaTime / std::clamp(settings.ExteriorSettleTime, kMinExteriorSettleTime, kMaxExteriorSettleTime)), 0.f, 1.f);
+	}
 
 	AutoExposureCB cbData = {
 		.AdaptArea = settings.AdaptArea,
 		.AdaptationRange = parameters.LuminanceRange,
-		.AdaptLerp = holdAdaptation ? 0.f : resetAdaptation ? 1.f : std::clamp(1.f - exp(-RE::BSTimer::GetSingleton()->realTimeDelta * settings.AdaptSpeed), 0.f, 1.f),
+		.AdaptLerp = holdAdaptation ? 0.f : resetAdaptation ? 1.f : std::clamp(1.f - exp(-deltaTime * settings.AdaptSpeed), 0.f, 1.f),
 		.ExposureCompensation = exp2(parameters.CompensationEV),
 		.PurkinjeStartEV = settings.PurkinjeStartEV,
 		.PurkinjeMaxEV = settings.PurkinjeMaxEV,
 		.PurkinjeStrength = settings.PurkinjeStrength,
 		.ExposureTarget = parameters.ExposureTarget,
 		.BrightSceneKneeLogLum = std::clamp(settings.BrightSceneKneeEV, kMinBrightSceneKneeEV, kMaxBrightSceneKneeEV) - 3.0f,
-		.BrightSceneCompression = owner && owner->GetActivePhysicalCameraState() ? 0.f : std::clamp(settings.BrightSceneCompression, 0.f, 1.f),
+		.BrightSceneCompression = physicalCamera ? 0.f : std::clamp(settings.BrightSceneCompression, 0.f, 1.f),
+		.GBufferScale = gbufferScale,
+		.BrightSurfaceCompensation = surfaceMetering ? std::clamp(settings.BrightSurfaceCompensation, 0.f, 1.f) : 0.f,
+		.SkyMeteringWeight = surfaceMetering ? std::clamp(settings.SkyMeteringWeight, 0.f, 1.f) : 1.f,
+		.AdaptationStrength = adaptationStrength,
+		.BaselineLerp = baselineLerp,
+		.BrightSurfaceReference = std::clamp(settings.BrightSurfaceReference, kMinBrightSurfaceReference, kMaxBrightSurfaceReference),
 	};
 	autoExposureCB->Update(cbData);
 
-	std::array<ID3D11ShaderResourceView*, 2> srvs = { nullptr };
+	std::array<ID3D11ShaderResourceView*, 3> srvs = { nullptr };
 	std::array<ID3D11UnorderedAccessView*, 2> uavs = { nullptr };
 	ID3D11Buffer* cb = autoExposureCB->CB();
 
@@ -425,6 +502,8 @@ void HistogramAutoExposure::Draw(TextureInfo& inout_tex)
 	{
 		state->BeginPerfEvent("Calculate Histogram");
 		srvs[0] = inout_tex.srv;
+		srvs[1] = surfaceMetering ? albedoSRV : nullptr;
+		srvs[2] = surfaceMetering ? depthSRV : nullptr;
 		uavs[0] = histogramSB->UAV();
 		uavs[1] = adaptationSB->UAV();
 

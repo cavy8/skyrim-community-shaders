@@ -736,7 +736,9 @@ void Deferred::DrawSettings()
 		T("menu.advanced.deferred_debug_view.specular", "Specular"),
 		T("menu.advanced.deferred_debug_view.ssgi", "SSGI"),
 		T("menu.advanced.deferred_debug_view.ssr", "SSR"),
-		T("menu.advanced.deferred_debug_view.dynamic_cubemaps", "Dynamic Cubemaps")
+		T("menu.advanced.deferred_debug_view.dynamic_cubemaps", "Dynamic Cubemaps"),
+		T("menu.advanced.deferred_debug_view.diffuse_lighting", "Diffuse Lighting"),
+		T("menu.advanced.deferred_debug_view.ssgi_ao", "SSGI AO")
 	};
 
 	int current = static_cast<int>(debugView);
