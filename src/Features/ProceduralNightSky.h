@@ -7,7 +7,6 @@ struct ProceduralNightSky : Feature
 		bool enabled = true;
 		float starIntensity = 1.0f;
 		float starTwinkle = 0.25f;
-		float riftIntensity = 1.0f;
 		float auroraIntensity = 1.0f;
 		float auroraSpeed = 1.0f;
 		float auroraLighting = 1.0f;
@@ -31,8 +30,7 @@ struct ProceduralNightSky : Feature
 		float auroraTime;
 
 		float auroraLighting;
-		float riftIntensity;
-		float2 pad = { 0.0f, 0.0f };
+		float3 pad = { 0.0f, 0.0f, 0.0f };
 
 		float3 shootingStarHead;
 		float shootingStarIntensity;
@@ -59,8 +57,7 @@ struct ProceduralNightSky : Feature
 			{ T("feature.procedural_night_sky.key_feature_1", "Stars with natural brightness and color that stay sharp at any resolution"),
 				T("feature.procedural_night_sky.key_feature_2", "Animated aurora curtains across the whole sky, following each weather's aurora colors and timing"),
 				T("feature.procedural_night_sky.key_feature_3", "Follows vanilla star fading, moons, clouds and reflections"),
-				T("feature.procedural_night_sky.key_feature_4", "Occasional shooting stars across clear night skies"),
-				T("feature.procedural_night_sky.key_feature_5", "A lore-friendly Aetherius Rift: a band of light bleeding through the holes in the sky, torn by lanes of the void") }
+				T("feature.procedural_night_sky.key_feature_4", "Occasional shooting stars across clear night skies") }
 		};
 	}
 

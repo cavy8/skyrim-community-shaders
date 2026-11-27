@@ -22,7 +22,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	enabled,
 	starIntensity,
 	starTwinkle,
-	riftIntensity,
 	auroraIntensity,
 	auroraSpeed,
 	auroraLighting,
@@ -200,7 +199,6 @@ ProceduralNightSky::PerFrameData ProceduralNightSky::GetCommonBufferData() const
 	data.enabled = true;
 	data.starIntensity = settings.starIntensity;
 	data.starTwinkle = settings.starTwinkle;
-	data.riftIntensity = settings.riftIntensity;
 	if (sky) {
 		const AuroraPalette palette = GetAuroraPalette(sky, settings.auroraPalette);
 		data.auroraLowColor = palette.low;
@@ -543,9 +541,6 @@ void ProceduralNightSky::DrawSettings()
 	if (ImGui::TreeNodeEx(T(TKEY("stars"), "Stars"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::SliderFloat(T(TKEY("star_intensity"), "Brightness"), &settings.starIntensity, 0.0f, 16.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
 		ImGui::SliderFloat(T(TKEY("star_twinkle"), "Twinkle"), &settings.starTwinkle, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat(T(TKEY("rift_intensity"), "Aetherius Rift"), &settings.riftIntensity, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("%s", T(TKEY("rift_intensity_tooltip"), "A band across the night sky where the holes the Magna Ge tore crowd together and the light of Aetherius bleeds through, cut by dark lanes of the void. It fades with the stars. 0 turns it off."));
 		ImGui::SliderFloat(T(TKEY("shooting_star_rate"), "Shooting Stars Per Minute"), &settings.shootingStarRate, 0.0f, 20.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("shooting_star_rate_tooltip"), "How often a shooting star crosses the sky. They only show where stars do, so clouds and daylight hide them. 0 turns them off."));
@@ -589,7 +584,6 @@ void ProceduralNightSky::LoadSettings(json& o_json)
 	sanitize(settings.starIntensity, defaults.starIntensity, 0.0f, 16.0f);
 	settings.auroraPalette = std::clamp(settings.auroraPalette, 0, static_cast<int>(kPaletteCount) - 1);
 	sanitize(settings.starTwinkle, defaults.starTwinkle, 0.0f, 1.0f);
-	sanitize(settings.riftIntensity, defaults.riftIntensity, 0.0f, 4.0f);
 	sanitize(settings.auroraIntensity, defaults.auroraIntensity, 0.0f, 4.0f);
 	sanitize(settings.auroraSpeed, defaults.auroraSpeed, 0.0f, 4.0f);
 	sanitize(settings.auroraLighting, defaults.auroraLighting, 0.0f, 4.0f);

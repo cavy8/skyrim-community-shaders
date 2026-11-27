@@ -5,6 +5,7 @@
 #include "Effects11.h"
 #include "LinearLighting.h"
 #include "Utils/Climate.h"
+#include "Utils/ColorSpace.h"
 #include "Utils/Game.h"
 
 #define I18N_KEY_PREFIX "feature.sky_sync."
@@ -236,10 +237,8 @@ void SkySync::DisableOnConflict(std::string_view conflictName)
 
 void SkySync::OnSkyUpdateColors(RE::Sky* sky)
 {
-	if (!settings.Enabled || !active || !sky) {
-		flashWeight = 0.0f;
+	if (!settings.Enabled || !active || !sky)
 		return;
-	}
 
 	const bool moonsHidden = lightNightWeight >= 1.0f && globals::features::effects11.enableEffect && sky->skyColor[RE::TESWeather::ColorTypes::kMoonGlare] == RE::NiColor{};
 	const float moonsVisible = moonsHidden ? 0.0f : 1.0f;
@@ -249,8 +248,6 @@ void SkySync::OnSkyUpdateColors(RE::Sky* sky)
 	const float flash = GetDirectionalFlash(sky);
 	const RE::NiColor flashLight{ std::min(flash, dirLight.red), std::min(flash, dirLight.green), std::min(flash, dirLight.blue) };
 	dirLight = (dirLight - flashLight) * GetLightFactor(settings.DimSunlightUnderHorizon) * moonsVisible + flashLight;
-	const float totalLight = dirLight.red + dirLight.green + dirLight.blue;
-	flashWeight = totalLight > 0.0f ? (flashLight.red + flashLight.green + flashLight.blue) / totalLight : 0.0f;
 
 	if (gVolumetricLighting)
 		gVolumetricLighting->intensity *= GetLightFactor(settings.DimVolumetricLighting) * moonsVisible;
@@ -497,6 +494,12 @@ void SkySync::ApplyLightColor(const RE::Sky* sky) const
 	const auto& secunda = (*workingLightColors)[static_cast<size_t>(Caster::Secunda)];
 	const auto& moonlight = secunda.red + secunda.green + secunda.blue > masser.red + masser.green + masser.blue ? secunda : masser;
 	light += globals::features::proceduralNightSky.GetAuroraWorkingLight(light, moonlight);
+	if (const float flash = GetDirectionalFlash(sky); flash > 0.0f) {
+		float linearFlash = Util::ColorSpace::GameGammaToLinear(flash);
+		if (!globals::features::linearLighting.IsLinearLightingActive())
+			linearFlash /= RE::NI_PI;
+		light += RE::NiColor{ linearFlash, linearFlash, linearFlash };
+	}
 	globals::features::linearLighting.SetSunlightColor(sky->sun->light.get(), light);
 }
 
@@ -830,7 +833,6 @@ void SkySync::ShadowFader::Reset()
 	intensityFactor = startIntensityFactor = 1.0f;
 	sourceShare = 0.0f;
 	casterFade = startCasterFade = 1.0f;
-	hasHeldDir = false;
 }
 
 void SkySync::ShadowFader::Update(const RE::Sky* sky, RE::NiPoint3 dirs[], float intensities[], float fadeDuration, float fadeAdvance, bool a_immediateTransition)
@@ -929,20 +931,7 @@ void SkySync::ShadowFader::Update(const RE::Sky* sky, RE::NiPoint3 dirs[], float
 
 void SkySync::ShadowFader::SetLighting(const RE::Sky* sky, RE::NiPoint3 dir)
 {
-	// Steer towards the strike for as long as the flash outshines the caster
-	const float strikeWeight = globals::features::skySync.flashWeight;
-	if (strikeWeight > 0.0f) {
-		dir = dir + (ZenithDirection - dir) * strikeWeight;
-		if (dir.Unitize() <= FLT_EPSILON)
-			dir = ZenithDirection;
-	}
 	ClampDirection(dir);
-
-	static const float holdCos = std::cos(DirectX::XMConvertToRadians(ShadowDirectionHoldAngle));
-	if (!transitioning && strikeWeight <= 0.0f && hasHeldDir && dir.Dot(heldDir) >= holdCos)
-		dir = heldDir;
-	heldDir = dir;
-	hasHeldDir = true;
 
 	RE::NiMatrix3& m = sky->sun->light->local.rotate;
 	m.entry[0][0] = -dir.x;

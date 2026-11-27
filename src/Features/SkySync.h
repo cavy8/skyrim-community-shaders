@@ -172,14 +172,12 @@ private:
 		float sourceShare = 0.0f;  // weight of the source body in the light's colour and disc, falling with the swing's progress
 		float casterFade = 1.0f;   // additionally scales directional light and VL, fading them out towards the zenith fallback
 		float startCasterFade = 1.0f;
-		RE::NiPoint3 heldDir = { 0.0f, 0.0f, 1.0f };
-		bool hasHeldDir = false;
 
 		/** @brief Fraction of the current transition completed, 0 to 1. */
 		float Progress(float fadeDuration) const { return fadeDuration > 0.0f ? fadeTimer / fadeDuration : 1.0f; }
 
 		void Update(const RE::Sky* sky, RE::NiPoint3 dirs[], float intensities[], float fadeDuration, float fadeAdvance, bool a_immediateTransition);
-		void SetLighting(const RE::Sky* sky, RE::NiPoint3 dir);
+		static void SetLighting(const RE::Sky* sky, RE::NiPoint3 dir);
 		static void SetDirection(RE::NiPoint3& dir, float headingRadians, float elevRadians);
 		static void SetElevation(RE::NiPoint3& dir, float elevRadians);
 		static void ClampDirection(RE::NiPoint3& dir);
@@ -195,7 +193,6 @@ private:
 	static constexpr float SecondsPerGameHour = 3600.0f;
 	static constexpr float AlignmentFadeStartAngle = 2.0f;
 	static constexpr float AlignmentFadeEndAngle = 15.0f;
-	static constexpr float ShadowDirectionHoldAngle = 0.1f;
 	static constexpr float MaxHorizonFadeHours = 1.5f;
 	static constexpr float DefaultSunAlphaTransTime = 2.0f;
 	static constexpr float AlternateSunHorizonOffsetHours = 0.25f;
@@ -234,7 +231,6 @@ private:
 	float twilightCap = 0.0f;
 	float moonNightWeight = 0.0f;
 	float lightNightWeight = 0.0f;
-	float flashWeight = 0.0f;  // lightning's share of this frame's directional light
 	bool sunBelowHorizon = false;
 	ShadowFader shadowFader;
 

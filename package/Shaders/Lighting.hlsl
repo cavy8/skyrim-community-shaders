@@ -986,31 +986,32 @@ bool HasSpecular()
 	return HasLightingFlag(Permutation::LightingFlags::Specular);
 }
 
+bool IsEyeMaterial()
+{
+#	if defined(EYE)
+	return true;
+#	else
+	return (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsEye) != 0;
+#	endif
+}
+
 bool HasSoftLighting()
 {
-#	if defined(EYE) || (defined(SSS) && defined(SKIN) && defined(DEFERRED))
+#	if defined(SSS) && defined(SKIN) && defined(DEFERRED)
 	return false;
 #	else
-	return HasLightingFlag(Permutation::LightingFlags::SoftLighting);
+	return !IsEyeMaterial() && HasLightingFlag(Permutation::LightingFlags::SoftLighting);
 #	endif
 }
 
 bool HasRimLighting()
 {
-#	if defined(EYE)
-	return false;
-#	else
-	return HasLightingFlag(Permutation::LightingFlags::RimLighting);
-#	endif
+	return !IsEyeMaterial() && HasLightingFlag(Permutation::LightingFlags::RimLighting);
 }
 
 bool HasBackLighting()
 {
-#	if defined(EYE)
-	return false;
-#	else
-	return HasLightingFlag(Permutation::LightingFlags::BackLighting);
-#	endif
+	return !IsEyeMaterial() && HasLightingFlag(Permutation::LightingFlags::BackLighting);
 }
 
 bool UseSkylightingShadowVisibility()
@@ -1020,7 +1021,7 @@ bool UseSkylightingShadowVisibility()
 	if (PBR::IsFoliageMaterial(PBRFlags) && (PBRFlags & PBR::Flags::Subsurface) != 0)
 		return true;
 #		endif
-	return HasLightingFlag(Permutation::LightingFlags::SoftLighting | Permutation::LightingFlags::RimLighting | Permutation::LightingFlags::BackLighting);
+	return !IsEyeMaterial() && HasLightingFlag(Permutation::LightingFlags::SoftLighting | Permutation::LightingFlags::RimLighting | Permutation::LightingFlags::BackLighting);
 #	else
 	return false;
 #	endif
@@ -2906,7 +2907,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float dirSoftShadow = 1.0;
 	float dirVSMDetailedShadow = 1.0;
 
-#	if defined(VOLUMETRIC_SHADOWS) && !(defined(DEFERRED) && defined(SKYLIGHTING_SHADOW_VIS) && !defined(TRUE_PBR) && !defined(CS_SKIN_SHADING) && !defined(CS_HAIR_SHADING))
+#	if defined(VOLUMETRIC_SHADOWS) && !(defined(DEFERRED) && defined(SKYLIGHTING_SHADOW_VIS) && !defined(TRUE_PBR) && !defined(CS_SKIN_SHADING) && !defined(CS_HAIR_SHADING) && !defined(EYE))
 #		if defined(DEFERRED)
 	if (!UseSkylightingShadowVisibility() && inWorld && !inReflection && ShadowSampling::HasDirectionalShadows())
 #		else
@@ -2929,7 +2930,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	else {
 		dirDetailedShadow = dirVSMDetailedShadow;
 	}
+#	elif defined(EYE) && defined(VOLUMETRIC_SHADOWS)
+	dirDetailedShadow = min(dirDetailedShadow, dirVSMDetailedShadow);
+	dirSoftShadow = min(dirSoftShadow, dirDetailedShadow);
 #	endif
+	const float dirMapShadow = dirDetailedShadow;
 
 #	if defined(SCREEN_SPACE_SHADOWS) && defined(DEFERRED)
 	if (!SharedData::InInterior) {
@@ -3035,14 +3040,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(SKYLIGHTING_SHADOW_VIS)
 	if (UseSkylightingShadowVisibility())
-		dirSoftShadow = skylightingShadowVisibility;
+		dirSoftShadow = min(skylightingShadowVisibility, dirMapShadow);
 #	endif
 
 #	if defined(TRUE_PBR)
 	[branch] if (isFoliage && (PBRFlags & PBR::Flags::Subsurface) != 0)
 	{
-		dirDetailedShadow = PBR::GetFoliageShadowVisibility(dirDetailedShadow, material.Thickness);
-		dirSoftShadow = PBR::GetFoliageShadowVisibility(dirSoftShadow, material.Thickness);
+		float foliageLeakCap = 1.0;
+#		if defined(SKYLIGHTING_SHADOW_VIS)
+		foliageLeakCap = skylightingShadowVisibility;
+#		endif
+		dirDetailedShadow = min(PBR::GetFoliageShadowVisibility(dirDetailedShadow, material.Thickness), max(dirDetailedShadow, foliageLeakCap));
+		dirSoftShadow = min(PBR::GetFoliageShadowVisibility(dirSoftShadow, material.Thickness), max(dirSoftShadow, foliageLeakCap));
 	}
 #	endif
 

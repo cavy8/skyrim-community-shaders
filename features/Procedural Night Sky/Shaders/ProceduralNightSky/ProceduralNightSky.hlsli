@@ -98,87 +98,6 @@ namespace ProceduralNightSky
 		return stars;
 	}
 
-	static const float3 RiftNormal = float3(0.75, 0.4330127, 0.5);
-	static const float RiftPeriod = 24.0;
-	static const float TwoPi = 6.2831853;
-
-	float RiftNoise(float2 p, float period)
-	{
-		float2 cell = floor(p);
-		float2 offset = p - cell;
-		float2 blend = offset * offset * offset * (offset * (offset * 6.0 - 15.0) + 10.0);
-
-		float2 low = float2(cell.x - period * floor(cell.x / period), WrapCell(cell).y);
-		float2 high = float2(low.x + 1.0 >= period ? 0.0 : low.x + 1.0, WrapCell(cell + 1.0).y);
-		float bottom = lerp(dot(Hash22(low) * 2.0 - 1.0, offset), dot(Hash22(float2(high.x, low.y)) * 2.0 - 1.0, offset - float2(1.0, 0.0)), blend.x);
-		float top = lerp(dot(Hash22(float2(low.x, high.y)) * 2.0 - 1.0, offset - float2(0.0, 1.0)), dot(Hash22(high) * 2.0 - 1.0, offset - 1.0), blend.x);
-		return lerp(bottom, top, blend.y);
-	}
-
-	float RiftDetail(float period, float pixelAngle)
-	{
-		return saturate(TwoPi / (period * max(pixelAngle, 1e-6)) * 0.25 - 0.5);
-	}
-
-	float3 RiftBand(float3 direction, float pixelAngle, float twinkle, float timer)
-	{
-		float3 tangent = normalize(cross(RiftNormal, float3(0.0, 0.0, 1.0)));
-		float3 bitangent = cross(RiftNormal, tangent);
-		float latitude = asin(clamp(dot(direction, RiftNormal), -1.0, 1.0));
-		float3 band = 0.0;
-
-		[branch] if (abs(latitude) < 1.0)
-		{
-			float longitude = atan2(dot(direction, bitangent), dot(direction, tangent)) / TwoPi + 0.5;
-			float2 p = float2(longitude, latitude / TwoPi) * RiftPeriod;
-
-			float centre = 0.07 * RiftNoise(float2(p.x, 3.0), RiftPeriod) + 0.03 * RiftNoise(float2(p.x * 3.0, 11.0), RiftPeriod * 3.0);
-			float width = 0.11 * (0.8 + 0.6 * RiftNoise(float2(p.x * 2.0, 17.0), RiftPeriod * 2.0));
-			float across = (latitude - centre) / width;
-			float core = exp(-across * across);
-			float halo = exp(-across * across / 7.0);
-
-			[branch] if (halo > 1e-3)
-			{
-				float2 warp = float2(RiftNoise(p * 1.5 + 31.0, RiftPeriod * 1.5), RiftNoise(p * 1.5 + 57.0, RiftPeriod * 1.5)) * 0.6;
-				float2 q = p * 2.0 + warp;
-				float period = RiftPeriod * 2.0;
-				float cloud = 0.0;
-				float amplitude = 1.0;
-				[unroll] for (uint i = 0; i < 4; i++)
-				{
-					cloud += RiftNoise(q + float(i) * 13.1, period) * amplitude * RiftDetail(period, pixelAngle);
-					q *= 2.0;
-					period *= 2.0;
-					amplitude *= 0.5;
-				}
-				float clumps = saturate(0.55 + 0.9 * cloud);
-				float knots = clumps * clumps * clumps;
-
-				float2 tear = float2(p.x * 2.0, p.y * 7.0) + warp * 1.4;
-				float ridge = saturate(1.0 - abs(RiftNoise(tear, RiftPeriod * 2.0)));
-				float fineRidge = saturate(1.0 - abs(RiftNoise(tear * 2.0 + 5.3, RiftPeriod * 4.0)));
-				float lanes = pow(ridge, 7.0) + 0.6 * pow(fineRidge, 9.0) * RiftDetail(RiftPeriod * 4.0, pixelAngle);
-				float splitOffset = across - 0.3 - 0.35 * RiftNoise(float2(p.x * 2.5, 23.0), RiftPeriod * 2.5);
-				float splitPresence = smoothstep(-0.15, 0.25, RiftNoise(float2(p.x * 1.25, 29.0), RiftPeriod * 1.25));
-				float split = exp(-splitOffset * splitOffset / 0.05) * splitPresence;
-				float voids = saturate(1.0 - 0.8 * saturate(lanes) - 0.85 * split);
-
-				float hue = saturate(abs(across) * 0.8 + 0.35 * RiftNoise(p * 3.0 + 41.0, RiftPeriod * 3.0));
-				float3 color = lerp(float3(1.0, 0.88, 0.66), float3(0.58, 0.66, 1.0), hue);
-				color = lerp(color, float3(0.62, 0.45, 0.92), saturate(abs(across) * 0.5 - 0.4));
-				color = lerp(color, float3(1.0, 0.95, 0.85), knots * core * 0.5);
-
-				float glow = core * (0.3 + 0.9 * knots) + halo * 0.3 * (0.5 + 0.5 * clumps);
-				band = color * glow * voids * 0.06;
-
-				float2 uv = ToOctahedron(direction);
-				band += StarLayer(uv + float2(3.3, 6.1), 420.0, 0.55 * core * clumps, 0.07, pixelAngle, twinkle, timer) * 0.4 * voids;
-			}
-		}
-		return band;
-	}
-
 	float3 ShootingStar(float3 view, float pixelAngle, float3 head, float3 tail, float width)
 	{
 		float3 axis = head - tail;
@@ -285,8 +204,6 @@ namespace ProceduralNightSky
 			starLight += ShootingStar(view, pixelAngle, settings.shootingStarHead, settings.shootingStarTail, settings.shootingStarWidth) * settings.shootingStarIntensity;
 
 		float3 emitted = ColorManagement::SRGBToWorking(starLight) * starTint;
-		[branch] if (settings.riftIntensity > 0.0)
-			emitted += ColorManagement::SRGBToWorking(RiftBand(starDirection, pixelAngle, settings.starTwinkle, SharedData::Timer)) * settings.riftIntensity * starTint;
 		return ToAdditiveBlend(emitted * horizon, settings.radianceLimit);
 	}
 }
