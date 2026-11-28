@@ -25,6 +25,7 @@
 #include "Features/PerformanceOverlay.h"
 #include "Features/PostProcessing.h"
 #include "Features/PostProcessing/HistogramAutoExposure.h"
+#include "Features/ProceduralNightSky.h"
 #include "Features/RainRefraction.h"
 #include "Features/RemoteControl/NvPerf.h"
 #include "Features/ScreenSpaceShadows.h"
@@ -142,11 +143,20 @@ void State::UpdateSkyShaderPermutation(RE::BSRenderPass* a_pass)
 	permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsMoon);
 	permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsSecunda);
 	permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::NoSkyScattering);
+	permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsStarField);
+	permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsGalaxyLayer);
 
 	if (!a_pass || !a_pass->shaderProperty)
 		return;
 
 	auto* skyProperty = static_cast<const RE::BSSkyShaderProperty*>(a_pass->shaderProperty);
+	if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_STARS && globals::features::proceduralNightSky.loaded) {
+		const auto layer = globals::features::proceduralNightSky.GetStarsLayer(a_pass->geometry);
+		if (layer == ProceduralNightSky::StarsLayer::StarField)
+			permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::IsStarField);
+		else if (layer == ProceduralNightSky::StarsLayer::Galaxy)
+			permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::IsGalaxyLayer);
+	}
 	if (skyProperty->uiSkyObjectType == RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS) {
 		constexpr std::uint16_t noSkyScatteringCloudLayer = 28;
 		auto* sky = globals::game::sky;

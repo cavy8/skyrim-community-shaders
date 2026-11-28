@@ -403,7 +403,7 @@ float4 PSComposite(FullscreenTriangleVSOutput input) :
 #endif
 
 #ifdef COMPOSITE_APPLY_LUT
-	return ApplyGradeOutput(ApplyLUT(ApplyGameCinematic(result)));
+	return float4(ApplyOutputDither(ApplyGradeOutput(ApplyLUT(ApplyGameCinematic(result))).rgb, input.Position.xy), 1);
 #elif defined(COMPOSITE_CONVERT_OUTPUT)
 	return ConvertColor(float4(result, 1), InputGamut, OutputGamut, OutputGamma, OutputScale);
 #else

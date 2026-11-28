@@ -1153,6 +1153,8 @@ void ColorGrading::Draw(TextureInfo& inout_tex)
 		std::array<ID3D11SamplerState*, 1> psSamplers = { linearSampler.get() };
 		const auto restoreVertexCB = BindVertexConstants(context, psCB);
 		context->PSSetConstantBuffers(1, 1, &psCB);
+		ID3D11Buffer* sharedData = globals::state->sharedDataCB->CB();
+		context->PSSetConstantBuffers(5, 1, &sharedData);
 		context->PSSetSamplers(0, 1, psSamplers.data());
 		context->PSSetShaderResources(0, (UINT)(settings.skipLUT ? 1 : 2), srvs.data());
 		pass.SetTargets({ texColor->rtv.get() }, (float)texColor->desc.Width, (float)texColor->desc.Height);

@@ -28,7 +28,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	auroraDirectLight,
 	auroraPalette,
 	shootingStarRate,
-	shootingStarIntensity)
+	shootingStarIntensity,
+	galaxySource,
+	galaxyIntensity,
+	galaxyDust,
+	showConstellations)
 
 namespace
 {
@@ -142,6 +146,37 @@ namespace
 		return { float3::Lerp(from.low, to.low, blend), float3::Lerp(from.high, to.high, blend) };
 	}
 
+	enum GalaxySourceChoice : int
+	{
+		kGalaxyTexture,
+		kGalaxyProcedural,
+		kGalaxySourceCount
+	};
+
+	bool ContainsNoCase(std::string_view a_text, std::string_view a_word)
+	{
+		return !std::ranges::search(a_text, a_word, [](char a_left, char a_right) {
+			return std::tolower(static_cast<unsigned char>(a_left)) == std::tolower(static_cast<unsigned char>(a_right));
+		}).empty();
+	}
+
+	std::optional<ProceduralNightSky::StarsLayer> ClassifyStarsShape(RE::BSGeometry* a_geometry)
+	{
+		std::string_view texture;
+		if (const auto* property = skyrim_cast<RE::BSSkyShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()); property && property->pBaseTexture)
+			texture = property->pBaseTexture->name.c_str();
+		const std::string_view shape = a_geometry->name.c_str();
+		auto matches = [&](std::string_view a_word) { return ContainsNoCase(texture, a_word) || ContainsNoCase(shape, a_word); };
+
+		if (matches("constellation"))
+			return ProceduralNightSky::StarsLayer::Constellations;
+		if (matches("galaxy") || matches("nebula") || matches("milky"))
+			return ProceduralNightSky::StarsLayer::Galaxy;
+		if (matches("star"))
+			return ProceduralNightSky::StarsLayer::StarField;
+		return std::nullopt;
+	}
+
 	struct BSShaderAccumulator_RenderEffects
 	{
 		static void thunk(RE::BSShaderAccumulator* a_accumulator, uint32_t a_renderFlags)
@@ -207,6 +242,9 @@ ProceduralNightSky::PerFrameData ProceduralNightSky::GetCommonBufferData() const
 	}
 	data.auroraTime = static_cast<float>(auroraClock);
 	data.auroraLighting = settings.auroraLighting;
+	data.galaxyIntensity = settings.galaxyIntensity;
+	data.galaxyDust = settings.galaxyDust;
+	data.galaxyProcedural = settings.galaxySource == kGalaxyProcedural;
 	data.radianceLimit = Util::Sun::GetMainTargetRadianceLimit();
 
 	if (shootingStar.age < shootingStar.life) {
@@ -433,10 +471,67 @@ void ProceduralNightSky::PostPostLoad()
 	logger::info("[ProceduralNightSky] Installed hooks");
 }
 
+void ProceduralNightSky::UpdateStarsLayers()
+{
+	starsShapes.clear();
+	const auto sky = globals::game::sky;
+	auto* node = sky && sky->stars ? sky->stars->stars.get() : nullptr;
+	if (node) {
+		RE::BSGeometry* largest = nullptr;
+		bool hasStarField = false;
+		for (auto& child : node->GetChildren()) {
+			auto* geometry = child ? child->AsGeometry() : nullptr;
+			if (!geometry)
+				continue;
+			const auto layer = ClassifyStarsShape(geometry);
+			hasStarField = hasStarField || layer == StarsLayer::StarField;
+			if (layer != StarsLayer::Constellations && (!largest || geometry->worldBound.radius > largest->worldBound.radius))
+				largest = geometry;
+			starsShapes.push_back({ geometry, layer.value_or(StarsLayer::Galaxy) });
+		}
+		if (!hasStarField) {
+			for (auto& shape : starsShapes) {
+				if (shape.geometry == largest)
+					shape.layer = StarsLayer::StarField;
+			}
+		}
+	}
+
+	const bool active = settings.enabled && globals::shaderCache->IsEnabled();
+	const bool hideGalaxy = active && (settings.galaxySource == kGalaxyProcedural || settings.galaxyIntensity <= 0.0f);
+	const bool hideConstellations = active && !settings.showConstellations;
+
+	auto wantsHidden = [&](const StarsShape& a_shape) {
+		return a_shape.layer == StarsLayer::Constellations ? hideConstellations : a_shape.layer == StarsLayer::Galaxy && hideGalaxy;
+	};
+	for (auto* geometry : culledStarsShapes) {
+		const auto shape = std::ranges::find(starsShapes, geometry, &StarsShape::geometry);
+		if (shape != starsShapes.end() && !wantsHidden(*shape))
+			geometry->SetAppCulled(false);
+	}
+	culledStarsShapes.clear();
+	for (const auto& shape : starsShapes) {
+		if (wantsHidden(shape)) {
+			shape.geometry->SetAppCulled(true);
+			culledStarsShapes.push_back(shape.geometry);
+		}
+	}
+}
+
+std::optional<ProceduralNightSky::StarsLayer> ProceduralNightSky::GetStarsLayer(const RE::BSGeometry* a_geometry) const
+{
+	for (const auto& shape : starsShapes) {
+		if (shape.geometry == a_geometry)
+			return shape.layer;
+	}
+	return std::nullopt;
+}
+
 void ProceduralNightSky::Reset()
 {
 	UpdateAuroraClock();
 	UpdateShootingStar();
+	UpdateStarsLayers();
 
 	const auto sky = globals::game::sky;
 	const auto aurora = sky ? sky->auroraRoot.get() : nullptr;
@@ -545,6 +640,29 @@ void ProceduralNightSky::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("shooting_star_rate_tooltip"), "How often a shooting star crosses the sky. They only show where stars do, so clouds and daylight hide them. 0 turns them off."));
 		ImGui::SliderFloat(T(TKEY("shooting_star_intensity"), "Shooting Star Brightness"), &settings.shootingStarIntensity, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::Checkbox(T(TKEY("show_constellations"), "Show Constellations"), &settings.showConstellations);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("show_constellations_tooltip"), "Draws the game's constellation textures over the procedural stars."));
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(TKEY("galaxy"), "Milky Way"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		const char* galaxySourceNames[] = {
+			T(TKEY("galaxy_source_texture"), "Sky Texture"),
+			T(TKEY("galaxy_source_procedural"), "Procedural")
+		};
+		ImGui::Combo(T(TKEY("galaxy_source"), "Milky Way Source"), &settings.galaxySource, galaxySourceNames, IM_ARRAYSIZE(galaxySourceNames));
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("galaxy_source_tooltip"), "Sky Texture keeps the game's Milky Way, or a replacer's, behind the procedural stars. Procedural draws star clouds and dust lanes instead."));
+		ImGui::SliderFloat(T(TKEY("galaxy_intensity"), "Milky Way Brightness"), &settings.galaxyIntensity, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("galaxy_intensity_tooltip"), "0 hides it."));
+		{
+			auto _ = Util::DisableGuard(settings.galaxySource != kGalaxyProcedural);
+			ImGui::SliderFloat(T(TKEY("galaxy_dust"), "Dust Lanes"), &settings.galaxyDust, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("%s", T(TKEY("galaxy_dust_tooltip"), "How dark the procedural Milky Way's dust lanes are. They also dim the stars behind them."));
+		}
 		ImGui::TreePop();
 	}
 
@@ -590,6 +708,9 @@ void ProceduralNightSky::LoadSettings(json& o_json)
 	sanitize(settings.auroraDirectLight, defaults.auroraDirectLight, 0.0f, 4.0f);
 	sanitize(settings.shootingStarRate, defaults.shootingStarRate, 0.0f, 20.0f);
 	sanitize(settings.shootingStarIntensity, defaults.shootingStarIntensity, 0.0f, 4.0f);
+	settings.galaxySource = std::clamp(settings.galaxySource, 0, static_cast<int>(kGalaxySourceCount) - 1);
+	sanitize(settings.galaxyIntensity, defaults.galaxyIntensity, 0.0f, 4.0f);
+	sanitize(settings.galaxyDust, defaults.galaxyDust, 0.0f, 2.0f);
 }
 
 void ProceduralNightSky::SaveSettings(json& o_json)

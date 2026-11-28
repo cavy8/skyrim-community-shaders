@@ -14,6 +14,17 @@ struct ProceduralNightSky : Feature
 		int auroraPalette = 0;
 		float shootingStarRate = 2.0f;
 		float shootingStarIntensity = 1.0f;
+		int galaxySource = 0;
+		float galaxyIntensity = 1.0f;
+		float galaxyDust = 1.0f;
+		bool showConstellations = false;
+	};
+
+	enum class StarsLayer : uint8_t
+	{
+		StarField,
+		Galaxy,
+		Constellations
 	};
 
 	struct alignas(16) PerFrameData
@@ -30,7 +41,9 @@ struct ProceduralNightSky : Feature
 		float auroraTime;
 
 		float auroraLighting;
-		float3 pad = { 0.0f, 0.0f, 0.0f };
+		float galaxyIntensity;
+		float galaxyDust;
+		uint galaxyProcedural;
 
 		float3 shootingStarHead;
 		float shootingStarIntensity;
@@ -57,7 +70,8 @@ struct ProceduralNightSky : Feature
 			{ T("feature.procedural_night_sky.key_feature_1", "Stars with natural brightness and color that stay sharp at any resolution"),
 				T("feature.procedural_night_sky.key_feature_2", "Animated aurora curtains across the whole sky, following each weather's aurora colors and timing"),
 				T("feature.procedural_night_sky.key_feature_3", "Follows vanilla star fading, moons, clouds and reflections"),
-				T("feature.procedural_night_sky.key_feature_4", "Occasional shooting stars across clear night skies") }
+				T("feature.procedural_night_sky.key_feature_4", "Occasional shooting stars across clear night skies"),
+				T("feature.procedural_night_sky.key_feature_5", "A Milky Way from the game's sky texture, or a procedural one with star clouds and dust lanes") }
 		};
 	}
 
@@ -77,6 +91,9 @@ struct ProceduralNightSky : Feature
 
 	/** @brief Returns true while the aurora should add to the sky IBL. */
 	bool HasAuroraLight() const;
+
+	/** @brief Which layer of the stars mesh a sky pass draws, or nothing when the geometry is not part of it. */
+	std::optional<StarsLayer> GetStarsLayer(const RE::BSGeometry* a_geometry) const;
 
 	/**
 	 * @brief Adds the aurora's glow to the weather sunlight colour.
@@ -109,6 +126,13 @@ private:
 	/** @brief The aurora's light colour at luminance 1, scaled by visibility and the direct light setting; black when there is none. */
 	float3 GetAuroraLightColor(bool a_linear) const;
 
+	struct StarsShape
+	{
+		RE::BSGeometry* geometry = nullptr;
+		StarsLayer layer = StarsLayer::Galaxy;
+	};
+
+	void UpdateStarsLayers();
 	void UpdateAuroraClock();
 	void UpdateShootingStar();
 	void SpawnShootingStar();
@@ -121,6 +145,9 @@ private:
 	bool shaderCompileFailed = false;
 	uint32_t lastRenderedFrame = UINT32_MAX;
 	double auroraClock = 0.0;
+
+	std::vector<StarsShape> starsShapes;
+	std::vector<RE::BSGeometry*> culledStarsShapes;
 
 	ShootingStar shootingStar;
 	float shootingStarTimer = 20.0f;

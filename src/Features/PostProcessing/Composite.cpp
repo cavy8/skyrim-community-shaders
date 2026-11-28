@@ -284,6 +284,8 @@ Composite::Output Composite::Draw(TextureInfo& inout_tex, ColorGrading* grading,
 		if (applyLUT) {
 			cb = grading->colorCB->CB();
 			context->PSSetConstantBuffers(0, 1, &cb);
+			cb = globals::state->sharedDataCB->CB();
+			context->PSSetConstantBuffers(5, 1, &cb);
 			ID3D11SamplerState* sampler = grading->linearSampler.get();
 			context->PSSetSamplers(2, 1, &sampler);
 		} else if (convertOutput) {

@@ -101,6 +101,8 @@ public:
 
 	ID3D11ShaderResourceView* defaultCubemap = nullptr;
 
+	static constexpr uint32_t ReflectionsGraceFrames = 30;
+	uint32_t framesWithoutReflections = ReflectionsGraceFrames;
 	bool activeReflections = false;
 	bool fakeReflections = false;
 

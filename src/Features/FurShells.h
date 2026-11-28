@@ -140,6 +140,8 @@ private:
 	void UpdateOverrideFadeEnd();
 	void DrawOverrideSettings();
 	bool CopySceneDepth();
+	void UpdateGhostActors();
+	bool IsGhostGeometry(RE::BSGeometry* a_geometry) const;
 
 	std::unordered_map<std::string, ShellData> shellTextures;
 	std::string selectedShellName;
@@ -152,6 +154,7 @@ private:
 	std::vector<DeferredPass> deferredPasses;
 	std::vector<DeferredPass> deferredOverlayPasses;
 	std::vector<FrameBody> frameBodies;
+	std::vector<const RE::Actor*> ghostActors;
 	winrt::com_ptr<ID3D11Texture2D> depthCopy;
 	winrt::com_ptr<ID3D11ShaderResourceView> depthCopyView;
 	bool depthCopyFailed = false;

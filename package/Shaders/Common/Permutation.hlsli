@@ -99,6 +99,8 @@ namespace Permutation
 		static const uint ProjectedTextureIsSRGB = (1 << 21);
 		static const uint GrassPBR = (1 << 22);
 		static const uint IsSecunda = (1 << 23);
+		static const uint IsStarField = (1 << 24);
+		static const uint IsGalaxyLayer = (1 << 25);
 	}
 
 	namespace ExtraFeatureFlags

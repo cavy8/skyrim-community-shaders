@@ -4,6 +4,7 @@
 
 #include <DDSTextureLoader.h>
 
+#include "Features/CameraFX.h"
 #include "Features/HDRDisplay.h"
 #include "Features/PostProcessing/ImageSpaceModifiers.h"
 #include "I18n/I18n.h"
@@ -317,6 +318,29 @@ namespace
 			a_path.insert(0, "textures\\");
 		return a_path;
 	}
+
+	// Installed after Camera FX's detour, so it runs first and lens effects land on the graded scene.
+	struct MenuManager_DrawInterfaceStart
+	{
+		static void thunk(int64_t a1)
+		{
+			globals::features::nightEye.DrawBeforeInterface();
+			func(a1);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	// Marks frames where the world was drawn; freeze-frame menus reuse the old image, which must not be graded again.
+	struct Main_PostProcessing
+	{
+		static void thunk(RE::ImageSpaceManager* a_this, uint32_t a3, RE::RENDER_TARGET a_target, void* a_4, bool a_5)
+		{
+			func(a_this, a3, a_target, a_4, a_5);
+			if (a_target == RE::RENDER_TARGET::kFRAMEBUFFER)
+				globals::features::nightEye.MarkWorldPostProcessed();
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
 }
 
 void NightEye::SetupResources()
@@ -485,6 +509,37 @@ bool NightEye::IsVisionModifier(const RE::TESImageSpaceModifier* a_modifier) con
 void NightEye::PostPostLoad()
 {
 	ImageSpaceModifiers::Install();
+	if (!REL::Module::IsVR()) {
+		stl::write_thunk_call<Main_PostProcessing>(REL::RelocationID(100430, 107148).address() + REL::Relocate(0x1F0, 0x1E7));
+		stl::detour_thunk<MenuManager_DrawInterfaceStart>(REL::RelocationID(79947, 82084));
+		logger::info("[NightEye] Hooked world post-processing and interface start");
+	}
+}
+
+void NightEye::MarkWorldPostProcessed()
+{
+	if (auto* state = globals::state) {
+		worldPostProcessedFrame = state->frameCount;
+		worldPostProcessSeen = true;
+	}
+}
+
+void NightEye::DrawBeforeInterface()
+{
+	auto* state = globals::state;
+	if (!loaded || !state || !globals::game::renderer || activation <= 0.0f)
+		return;
+	if (lastDrawnFrame == state->frameCount)
+		return;
+	// No fresh world this frame (a freeze-frame menu is open): grading again would compound on last frame's output.
+	if (worldPostProcessSeen && worldPostProcessedFrame != state->frameCount)
+		return;
+	lastDrawnFrame = state->frameCount;
+
+	const auto target = globals::features::cameraFX.GetSceneTarget();
+	if (!target.texture || !target.rtv)
+		return;
+	RenderPostProcess(target.texture, target.rtv);
 }
 
 void NightEye::GameLoaded()
@@ -615,15 +670,13 @@ void NightEye::SetupGeometry(RE::BSRenderPass* a_pass)
 	}
 }
 
-void NightEye::RenderPostProcess(RE::RENDER_TARGET a_output)
+void NightEye::RenderPostProcess(ID3D11Texture2D* a_texture, ID3D11RenderTargetView* a_view)
 {
-	if (!loaded || !parameters || !sampler || !blendState || !rasterizerState || !depthStencilState || activation <= 0.0f ||
-		static_cast<unsigned int>(a_output) >= RE::RENDER_TARGETS::kTOTAL || !PrepareShaders())
+	if (!loaded || !parameters || !sampler || !blendState || !rasterizerState || !depthStencilState || activation <= 0.0f || !PrepareShaders())
 		return;
 
-	auto& target = globals::game::renderer->GetRuntimeData().renderTargets[a_output];
-	auto* texture = target.texture;
-	auto* view = target.RTV;
+	auto* texture = a_texture;
+	auto* view = a_view;
 	if (!texture || !view || !PrepareInput(texture, view))
 		return;
 

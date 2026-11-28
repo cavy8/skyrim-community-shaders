@@ -285,12 +285,6 @@ namespace
 
 	constexpr float kSunIlluminanceSpeed = 0.1f;
 	constexpr float kMoonIlluminanceSpeed = 0.001f;
-	/** @brief Floor on a moon texture channel's mean, relative to its luminance, so a channel the texture lacks cannot blow up its gain. */
-	constexpr float kMinDiscChannelShare = 0.01f;
-	/** @brief moonDiscRadiance.w modes, matching Sky.hlsl: radiance per texture colour, weather-glare tinted, or the vanilla disc. */
-	constexpr float kDiscModeLight = 0.f;
-	constexpr float kDiscModeGlare = 1.f;
-	constexpr float kDiscModeVanilla = -1.f;
 
 	/** @brief Zeroes negative or non-finite channels of a light color, since light cannot be negative. */
 	void ClampLightColor(float3& color)
@@ -328,14 +322,6 @@ namespace
 			photometry.fullMean = *full;
 			photometry.currentMean = *current;
 		}
-	}
-
-	/** @brief Solid angle of a square sky billboard whose half-width subtends the given angle. */
-	float GetBillboardSolidAngle(float halfAngle)
-	{
-		const float halfTan = std::tan(halfAngle);
-		const float halfTanSq = halfTan * halfTan;
-		return 4.f * std::asin(halfTanSq / (1.f + halfTanSq));
 	}
 
 	/** @brief Lux control that scales all channels of a light color together, preserving its chromaticity. */
@@ -839,13 +825,13 @@ void PhysicalSky::SettingsCelestials()
 	const auto drawMoonIlluminance = [](float3& color) {
 		DrawIlluminanceControl(T(TKEY("moon_illuminance"), "Lunar Illuminance"), color, kMoonIlluminanceSpeed);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextUnformatted(T(TKEY("moon_illuminance_hint"), "Full-moon illuminance on a surface perpendicular to the moon, before atmospheric extinction. Other phases scale it by how much of the moon texture is lit, and the visible disc is drawn to match. Scales all channels together, preserving the color."));
+			ImGui::TextUnformatted(T(TKEY("moon_illuminance_hint"), "Full-moon illuminance on a surface perpendicular to the moon, before atmospheric extinction. Other phases scale it by how much of the moon texture is lit. The visible disc brightens with it, keeping the same contrast against the ground it lights. Scales all channels together, preserving the color."));
 	};
 
 	const auto drawDiscMatchLight = [](bool& matchLight) {
 		ImGui::Checkbox(T(TKEY("moon_disc_match_light"), "Disc Matches Light Color"), &matchLight);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextUnformatted(T(TKEY("moon_disc_match_light_hint"), "Tint the visible moon with its Light Color. Off uses the weather's moon glare color instead. Brightness follows Lunar Illuminance either way."));
+			ImGui::TextUnformatted(T(TKEY("moon_disc_match_light_hint"), "Tint the visible moon with its Light Color. Off uses the weather's moon glare color instead. The weather still sets how bright it is either way, so moons fade in fog and overcast."));
 	};
 
 	ImGui::SeparatorText(T(TKEY("masser"), "Masser"));
@@ -2163,29 +2149,20 @@ void PhysicalSky::Reset()
 		0.f  // the directional light's, blended below
 	};
 	cbData.diskBillboardScale = float4(1.f);
-	// The drawn phase texture integrates to the phased light, so the disc and the moonlight always match
-	const auto discRadiance = [&](const float3& lightColor, float diskRadius, const MoonPhotometry& photometry, bool matchLight) {
-		if (GetWorkingLuminance(photometry.fullMean) <= 0.f)
-			return float4(0.f, 0.f, 0.f, kDiscModeVanilla);
-		const float3 phasedLight = lightColor * photometry.phase;
-		const float currentLuminance = GetWorkingLuminance(photometry.currentMean);
-		const float lightLuminance = GetWorkingLuminance(phasedLight);
-		// A blank phase texture draws nothing to scale, and a dark light leaves nothing to draw
-		if (currentLuminance <= 0.f || lightLuminance <= 0.f)
-			return float4(0.f, 0.f, 0.f, kDiscModeLight);
-		const float solidAngle = GetBillboardSolidAngle(diskRadius);
-		const float3 meanWorking = sRGBToWorkingGamut(photometry.currentMean);
-		if (matchLight) {
-			// Divides out the texture's mean colour, as the light colour already carries the moon's
-			const float3 radiance = sRGBToWorkingGamut(phasedLight) / (float3::Max(meanWorking, float3(currentLuminance * kMinDiscChannelShare)) * solidAngle);
-			return float4(radiance.x, radiance.y, radiance.z, kDiscModeLight);
-		}
-		// The glare is only known per vertex, so the shader divides by Y(glare * this) to normalise the tinted texture
-		const float3 meanPerLight = meanWorking * (solidAngle / lightLuminance);
-		return float4(meanPerLight.x, meanPerLight.y, meanPerLight.z, kDiscModeGlare);
+	const Settings defaults{};
+	const auto moonDisc = [&](const float3& lightColor, const float3& defaultColor, bool matchLight) {
+		const float lightLuminance = GetWorkingLuminance(lightColor);
+		const float defaultLuminance = GetWorkingLuminance(defaultColor);
+		if (!(lightLuminance > 0.f) || !(defaultLuminance > 0.f))
+			return float4(0.f);
+		const float gain = lightLuminance / defaultLuminance;
+		if (!matchLight)
+			return float4(0.f, 0.f, 0.f, gain);
+		const float3 tint = sRGBToWorkingGamut(lightColor / lightLuminance);
+		return float4(tint.x, tint.y, tint.z, gain);
 	};
-	cbData.moonDiscRadiance[0] = discRadiance(settings.masserColor, cbData.diskAngularRadius.y, moonPhotometry[0], settings.masserDiscMatchLight);
-	cbData.moonDiscRadiance[1] = discRadiance(settings.secundaColor, cbData.diskAngularRadius.z, moonPhotometry[1], settings.secundaDiscMatchLight);
+	cbData.moonDisc[0] = moonDisc(settings.masserColor, defaults.masserColor, settings.masserDiscMatchLight);
+	cbData.moonDisc[1] = moonDisc(settings.secundaColor, defaults.secundaColor, settings.secundaDiscMatchLight);
 	if (sky && sky->root) {
 		const auto& viewer = sky->root->world.translate;
 		const auto sunTan = sky->sun ? Util::GetBillboardHalfTan(sky->sun->sunBase.get(), viewer, 0.f) : 0.f;

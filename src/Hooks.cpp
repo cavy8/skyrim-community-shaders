@@ -482,11 +482,11 @@ namespace PostProcessingExtensions
 			const auto input = static_cast<RE::RENDER_TARGET>(a3);
 			const auto output = static_cast<RE::RENDER_TARGET>(a4);
 
-			auto& nightEye = globals::features::nightEye;
 			const bool renderToUI = state->permutationData.RenderToUI;
 
 			// Effects11 replaces the pass outright; when it does, the vanilla call is skipped
 			// and HandlePostProcessing fixes up the render-target state the pass would have set.
+			// Night Eye grades later, before the interface (NightEye::DrawBeforeInterface).
 			if (state->HandlePostProcessing(input, output)) {
 				auto& neuralRendering = globals::features::neuralRendering;
 				if (neuralRendering.loaded) {
@@ -495,8 +495,6 @@ namespace PostProcessingExtensions
 					// Effects11 already wrote its finished, tonemapped frame into `output`.
 					neuralRendering.ApplyFinishedImage(output);
 				}
-				if (!renderToUI)
-					nightEye.RenderPostProcess(output);
 				return;
 			}
 
@@ -519,9 +517,6 @@ namespace PostProcessingExtensions
 			// Neural Rendering consumes the finished output after either vanilla or Post Processing tone mapping.
 			if (neuralRendering.loaded)
 				neuralRendering.ApplyFinishedImage(output);
-
-			if (!renderToUI)
-				nightEye.RenderPostProcess(output);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

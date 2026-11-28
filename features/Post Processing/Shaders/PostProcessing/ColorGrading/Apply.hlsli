@@ -2,6 +2,8 @@
 #define POST_PROCESSING_COLOR_GRADING_APPLY_HLSLI
 
 #include "Common/Color.hlsli"
+#include "Common/Random.hlsli"
+#include "Common/SharedData.hlsli"
 #include "PostProcessing/common.hlsli"
 
 // The same constants and LUT are used by the standalone and fused pixel shaders.
@@ -115,5 +117,18 @@ float4 ApplyGradeOutput(float3 color)
 {
 	return float4(ApplyGameTintFade(pow(abs(color), inOutGamma.w)), 1);
 }
+
+#if defined(PSHADER)
+float3 ApplyOutputDither(float3 color, float2 position)
+{
+	float3 dithered = color;
+	[branch] if (!enableHDR)
+	{
+		float noise = Random::InterleavedGradientNoise(position, SharedData::FrameCount) + Random::InterleavedGradientNoise(position + float2(47.0, 17.0), SharedData::FrameCount + 7u) - 1.0;
+		dithered += noise * saturate(max(color.r, max(color.g, color.b)) * 255.0) / 255.0;
+	}
+	return dithered;
+}
+#endif
 
 #endif

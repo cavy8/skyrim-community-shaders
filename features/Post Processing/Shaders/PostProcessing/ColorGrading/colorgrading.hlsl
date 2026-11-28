@@ -886,6 +886,9 @@ float4 PSColorGrading(ColorGradingVSOutput input) : SV_Target
 		color = pow(color, inOutGamma.w);
 	[branch] if (!(input.NeutralControls & NeutralGrading::TintFade))
 		color = ApplyGameTintFade(color);
+#if defined(PSHADER)
+	color = ApplyOutputDither(color, input.Position.xy);
+#endif
 	return float4(color, 1);
 }
 

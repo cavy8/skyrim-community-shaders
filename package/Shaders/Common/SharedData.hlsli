@@ -743,7 +743,7 @@ namespace SharedData
 		uint dirLightDiskIndex;
 		float4 dirLightDisc;
 		float4 diskBillboardScale;
-		float4 moonDiscRadiance[2];  // Masser, Secunda; w = 0: rgb is radiance per texture colour, 1: rgb is mean * solid angle / light Y for the glare tint, -1: vanilla
+		float4 moonDisc[2];  // Masser, Secunda; rgb = light hue at luminance 1 replacing the glare hue (0 keeps the glare), w = gain from Lunar Illuminance
 	};
 
 	struct RainRefractionSettings
@@ -775,7 +775,9 @@ namespace SharedData
 		float auroraTime;
 
 		float auroraLighting;
-		float3 pad0;
+		float galaxyIntensity;
+		float galaxyDust;
+		uint galaxyProcedural;
 
 		float3 shootingStarHead;
 		float shootingStarIntensity;

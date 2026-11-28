@@ -133,7 +133,6 @@ struct CameraFX : Feature
 	void DrawBeforeInterface();
 	void MarkWorldPostProcessed();
 
-private:
 	struct SceneTarget
 	{
 		ID3D11Texture2D* texture = nullptr;
@@ -141,13 +140,16 @@ private:
 		bool hdr = false;
 	};
 
+	/** @brief The scene the interface draws over: HDR scene, frame generation buffer or framebuffer; empty if unusable. */
+	SceneTarget GetSceneTarget() const;
+
+private:
 	struct LensPass
 	{
 		bool overlay = false;
 		bool additive = false;
 	};
 
-	SceneTarget GetSceneTarget() const;
 	ID3D11RenderTargetView* GetLensTarget(const SceneTarget& a_scene, bool& o_uiLayer) const;
 	bool EnsureSceneCopy(const D3D11_TEXTURE2D_DESC& a_desc);
 	void EnsureLensTextures(bool a_needFrost, float a_deltaTime);

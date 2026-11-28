@@ -94,6 +94,28 @@ namespace
 		}
 	}
 
+	bool HasGhostTexture(const RE::TESTexture& a_texture)
+	{
+		const std::string_view path = a_texture.textureName.c_str();
+		return !std::ranges::search(path, std::string_view("ghost"), [](char a_left, char a_right) {
+			return std::tolower(static_cast<unsigned char>(a_left)) == a_right;
+		}).empty();
+	}
+
+	bool IsGhostShader(const RE::TESEffectShader* a_shader)
+	{
+		return a_shader && (HasGhostTexture(a_shader->fillTexture) || HasGhostTexture(a_shader->membranePaletteTexture));
+	}
+
+	const RE::Actor* GetOwnerActor(const RE::NiAVObject* a_object)
+	{
+		for (; a_object; a_object = a_object->parent) {
+			if (const auto* owner = a_object->GetUserData())
+				return owner->As<RE::Actor>();
+		}
+		return nullptr;
+	}
+
 	bool IsSkinTechnique(uint32_t a_descriptor)
 	{
 		using enum SIE::ShaderCache::LightingShaderTechniques;
@@ -454,6 +476,30 @@ void FurShells::Reset()
 	deferredOverlayPasses.clear();
 	frameBodies.clear();
 	deferralClosed = false;
+	UpdateGhostActors();
+}
+
+void FurShells::UpdateGhostActors()
+{
+	ghostActors.clear();
+	auto* processLists = settings.Enabled ? RE::ProcessLists::GetSingleton() : nullptr;
+	if (!processLists)
+		return;
+	processLists->ForEachShaderEffect([this](RE::ShaderReferenceEffect* a_effect) {
+		if (!a_effect->finished && IsGhostShader(a_effect->effectData)) {
+			if (const auto target = a_effect->target.get(); target) {
+				if (const auto* actor = target->As<RE::Actor>())
+					ghostActors.push_back(actor);
+			}
+		}
+		return RE::BSContainer::ForEachResult::kContinue;
+	});
+}
+
+bool FurShells::IsGhostGeometry(RE::BSGeometry* a_geometry) const
+{
+	const auto* actor = GetOwnerActor(a_geometry);
+	return actor && (actor->IsGhost() || std::ranges::find(ghostActors, actor) != ghostActors.end());
 }
 
 void FurShells::GenerateShaderPermutations(RE::BSShader* a_shader)
@@ -623,7 +669,7 @@ void FurShells::BeginPass(RE::BSShader* a_shader, RE::BSRenderPass* a_pass)
 	const auto lookup = FindShell(a_pass);
 	auto* data = lookup.data;
 	auto* shellView = lookup.shell && lookup.shell->rendererTexture ? lookup.shell->rendererTexture->resourceView : nullptr;
-	if (!shellView || !data)
+	if (!shellView || !data || IsGhostGeometry(geometry))
 		return;
 
 	data->skin = IsSkinTechnique(state->currentPixelDescriptor);

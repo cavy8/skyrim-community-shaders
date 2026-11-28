@@ -96,8 +96,10 @@ struct NightEye : Feature
 	virtual void ClearShaderCache() override;
 	virtual void PostPostLoad() override;
 
-	/** @brief Grades the tone-mapped image in place while a Night Eye effect is active. */
-	void RenderPostProcess(RE::RENDER_TARGET a_output);
+	/** @brief Grades the finished scene in place, just before the interface draws, while a Night Eye effect is active. */
+	void DrawBeforeInterface();
+	/** @brief Notes that the world was post-processed this frame, so freeze-frame menus are not graded repeatedly. */
+	void MarkWorldPostProcessed();
 	/** @brief Tags a Lighting or Effect draw for eyeshine and actor vision, and binds its eyeshine mask. */
 	void SetupGeometry(RE::BSRenderPass* a_pass);
 	/** @brief Returns the per-frame eyeshine and actor vision values for the feature buffer. */
@@ -126,6 +128,7 @@ private:
 	void QueryGame(bool a_actorVision);
 	bool PrepareShaders();
 	bool PrepareInput(ID3D11Texture2D* a_output, ID3D11RenderTargetView* a_view);
+	void RenderPostProcess(ID3D11Texture2D* a_texture, ID3D11RenderTargetView* a_view);
 	void LoadEyeshineMaskTable();
 	void LoadEyeshineMaskTextures();
 	bool IsEyeGeometry(RE::BSRenderPass* a_pass);
@@ -142,6 +145,9 @@ private:
 	float activation = 0.0f;
 	float elapsed = 0.0f;
 	float queryElapsed = 0.0f;
+	std::uint32_t lastDrawnFrame = UINT32_MAX;
+	std::uint32_t worldPostProcessedFrame = UINT32_MAX;
+	bool worldPostProcessSeen = false;
 
 	winrt::com_ptr<ID3D11VertexShader> vertexShader;
 	winrt::com_ptr<ID3D11PixelShader> pixelShader;

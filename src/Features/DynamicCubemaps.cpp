@@ -901,7 +901,11 @@ void DynamicCubemaps::SetupResources()
 
 void DynamicCubemaps::Reset()
 {
-	activeReflections = globals::state->activeReflections;
+	if (globals::state->activeReflections)
+		framesWithoutReflections = 0;
+	else if (framesWithoutReflections < ReflectionsGraceFrames)
+		framesWithoutReflections++;
+	activeReflections = framesWithoutReflections < ReflectionsGraceFrames;
 
 	if (globals::game::sky)
 		fakeReflections = activeReflections && globals::game::sky->flags.any(RE::Sky::Flags::kHideSky);

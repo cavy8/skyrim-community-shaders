@@ -466,7 +466,10 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 starDirection = normalize(input.StarDirection);
 	float starPixelAngle = length(fwidth(starDirection));
 	bool proceduralNightSkyActive = SharedData::proceduralNightSkySettings.enabled && (Permutation::ExtraShaderDescriptor & (Permutation::ExtraFlags::InWorld | Permutation::ExtraFlags::InReflection));
-	[branch] if (proceduralNightSkyActive)
+	bool proceduralStarField = proceduralNightSkyActive && (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsStarField);
+	if (proceduralNightSkyActive && (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsGalaxyLayer))
+		psout.Color.xyz *= SharedData::proceduralNightSkySettings.galaxyIntensity;
+	[branch] if (proceduralStarField)
 	{
 		float3 starTint = 1.5 * input.Color.xyz * input.Color.w;
 #				if defined(EFFECTS11)
@@ -481,12 +484,10 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 vertexColor = input.Color.xyz;
 #			if defined(PHYSICAL_SKY) && defined(TEX) && !defined(DITHER) && !defined(CLOUDS) && !defined(MOONMASK)
 	if (SharedData::physSkyData.enabled && (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsMoon)) {
-		const float4 discRadiance = SharedData::physSkyData.moonDiscRadiance[(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSecunda) ? 1 : 0];
-		// Glare mode scales the glare-tinted texture so its mean integrates to the light's illuminance; a negative mode keeps the vanilla disc
-		if (discRadiance.w == 0.0)
-			vertexColor = discRadiance.rgb;
-		else if (discRadiance.w > 0.0)
-			vertexColor /= max(Color::RGBToLuminance(discRadiance.rgb * vertexColor), 1e-6);
+		const float4 disc = SharedData::physSkyData.moonDisc[(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSecunda) ? 1 : 0];
+		if (any(disc.rgb > 0.0))
+			vertexColor = disc.rgb * Color::RGBToLuminance(vertexColor);
+		vertexColor *= disc.w;
 	}
 #			endif
 
@@ -660,7 +661,7 @@ PS_OUTPUT main(PS_INPUT input)
 #		if (defined(TEX) || defined(HORIZFADE)) && !defined(MOONMASK) && !defined(CLOUDS)
 	bool linearizeAlpha = (!Permutation::RenderToUI || inReflection) && !SharedData::physSkyData.enabled;
 #			if defined(PROCEDURAL_NIGHT_SKY) && defined(HORIZFADE)
-	linearizeAlpha = linearizeAlpha && !proceduralNightSkyActive;
+	linearizeAlpha = linearizeAlpha && !proceduralStarField;
 #			endif
 	if (linearizeAlpha) {
 		psout.Color.w = pow(saturate(psout.Color.w), TransferFunctions::GAME_GAMMA);
